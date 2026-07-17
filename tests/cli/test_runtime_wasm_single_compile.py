@@ -14,6 +14,7 @@ Verifies the combined-compile design invariants that make the dedup correct:
 from __future__ import annotations
 
 import subprocess
+import json
 from pathlib import Path
 
 import pytest
@@ -112,8 +113,17 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     shared, reloc = _specs(root)
     captured: dict[str, object] = {}
 
-    def _fake_build(*, cmd, root, env, cargo_timeout, profile_dir,
-                    target_root_override, json_output, artifact_kind):
+    def _fake_build(
+        *,
+        cmd,
+        root,
+        env,
+        cargo_timeout,
+        profile_dir,
+        target_root_override,
+        json_output,
+        artifact_kind,
+    ):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         # Return a non-zero build so _prepopulate returns without touching disk.
@@ -124,9 +134,7 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
 
     monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
     # Force a cold target dir so the fast-path reuse check misses and we build.
-    monkeypatch.setattr(
-        rb, "_current_runtime_target_artifact", lambda *a, **k: None
-    )
+    monkeypatch.setattr(rb, "_current_runtime_target_artifact", lambda *a, **k: None)
     monkeypatch.setattr(
         rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: Path(tmp_path)
     )
@@ -154,6 +162,90 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     # RUSTFLAGS must NOT carry the per-export link args (they moved to -C link-arg).
     env = captured["env"]
     assert "--export-if-defined" not in env.get("RUSTFLAGS", "")
+
+
+@pytest.mark.parametrize("report_staticlib", [True, False])
+def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    report_staticlib: bool,
+) -> None:
+    root = _compiler_root()
+    shared, reloc = _specs(root)
+    target_root = tmp_path / "target"
+    shared = shared._replace(target_root=target_root)
+    reloc = reloc._replace(target_root=target_root)
+    profile_root = target_root / "wasm32-wasip1" / shared.profile_dir
+    deps = profile_root / "deps"
+    stale_cdylib = profile_root / "molt_runtime.wasm"
+    stale_staticlib = profile_root / "libmolt_runtime.a"
+    reported_cdylib = deps / "molt_runtime-feedface.wasm"
+    reported_staticlib = deps / "libmolt_runtime-feedface.a"
+    for path, payload in (
+        (stale_cdylib, b"stale-cdylib"),
+        (stale_staticlib, b"stale-staticlib"),
+        (reported_cdylib, b"reported-cdylib"),
+        (reported_staticlib, b"reported-staticlib"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    reported_filenames = [str(reported_cdylib)]
+    if report_staticlib:
+        reported_filenames.append(str(reported_staticlib))
+    cargo_stdout = json.dumps(
+        {
+            "reason": "compiler-artifact",
+            "package_id": "path+file:///repo/runtime/molt-runtime#0.0.1",
+            "target": {"name": "molt_runtime"},
+            "filenames": reported_filenames,
+        }
+    )
+
+    def _fake_build(**kwargs):  # noqa: ANN003
+        cmd = kwargs["cmd"]
+        return (
+            subprocess.CompletedProcess(cmd, 0, cargo_stdout, ""),
+            reported_cdylib,
+        )
+
+    state_root = tmp_path / ".molt_state"
+    monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
+    monkeypatch.setattr(rb, "_current_runtime_target_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
+    monkeypatch.setattr(rb, "_inspect_wasm_binary", lambda _path: "valid")
+    monkeypatch.setattr(
+        rb, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+    )
+    monkeypatch.setattr(
+        rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: tmp_path
+    )
+
+    assert (
+        rb._prepopulate_combined_runtime_wasm_target(
+            shared_spec=shared,
+            reloc_spec=reloc,
+            json_output=True,
+            cargo_timeout=None,
+            project_root=root,
+            simd_enabled=True,
+            freestanding=False,
+        )
+        is report_staticlib
+    )
+
+    def _target_fingerprint(path: Path) -> Path:
+        return rb._runtime_target_fingerprint_path(
+            state_root,
+            path,
+            cargo_profile=shared.cargo_profile,
+            target_label="wasm32-wasip1",
+        )
+
+    assert _target_fingerprint(reported_cdylib).exists() is report_staticlib
+    assert _target_fingerprint(reported_staticlib).exists() is report_staticlib
+    assert not _target_fingerprint(stale_cdylib).exists()
+    assert not _target_fingerprint(stale_staticlib).exists()
 
 
 # ---------------------------------------------------------------------------
