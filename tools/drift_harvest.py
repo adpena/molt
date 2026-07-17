@@ -35,7 +35,6 @@ worktree, or locked worktrees.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import subprocess
 import sys
@@ -55,16 +54,13 @@ for import_root in (REPO_ROOT, SRC_ROOT):
     sys.path.insert(0, text)
 
 from tools import lane_maturity  # noqa: E402
+from tools.import_file import load_module_from_path  # noqa: E402
 
 
 def _worktree_canonical_molt_root(repo_root: Path) -> Path:
     """Load the invoking worktree's authority despite an older editable install."""
     module_path = SRC_ROOT / "molt" / "dx.py"
-    spec = importlib.util.spec_from_file_location("_molt_worktree_dx", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load canonical root authority from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_module_from_path("_molt_worktree_dx", module_path)
     return module.canonical_molt_root(repo_root)
 
 # Worktrees that must never be pruned regardless of freshness.
