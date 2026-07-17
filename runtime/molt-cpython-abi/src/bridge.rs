@@ -4584,6 +4584,17 @@ pub unsafe fn molt_foreign_setattr(
 ///
 /// # Safety
 /// `c_ptr` must be a live callable C-extension `PyObject*`.
+pub unsafe fn molt_foreign_is_callable(c_ptr: usize) -> bool {
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
+    if obj.is_null() {
+        return false;
+    }
+    let tp = unsafe { (*obj).ob_type };
+    !tp.is_null() && unsafe { (*tp).tp_call.is_some() }
+}
+
+/// # Safety
+/// `c_ptr` must be a live callable C-extension `PyObject*`.
 pub unsafe fn molt_foreign_call(c_ptr: usize, args_bits: u64, kwargs_bits: u64) -> u64 {
     let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
