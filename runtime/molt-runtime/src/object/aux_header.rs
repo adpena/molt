@@ -84,7 +84,9 @@ pub(crate) fn alloc_aux_sidecar(sidecar: MoltAuxSidecar) -> Option<u64> {
 #[inline]
 pub(crate) unsafe fn aux_sidecar_from_word(word: u64) -> &'static MoltAuxSidecar {
     debug_assert_ne!(word, 0, "SIDECAR aux word must carry a live address");
-    unsafe { &*std::ptr::with_exposed_provenance::<MoltAuxSidecar>(word as usize) }
+    let address = usize::try_from(word)
+        .expect("runtime-owned sidecar address must fit the active address space");
+    unsafe { &*std::ptr::with_exposed_provenance::<MoltAuxSidecar>(address) }
 }
 
 /// Reclaim a sidecar at object death.
@@ -97,7 +99,9 @@ pub(crate) unsafe fn aux_sidecar_from_word(word: u64) -> &'static MoltAuxSidecar
 pub(crate) unsafe fn free_aux_sidecar(word: u64) {
     if word != 0 {
         let layout = std::alloc::Layout::new::<MoltAuxSidecar>();
-        let ptr = std::ptr::with_exposed_provenance_mut::<MoltAuxSidecar>(word as usize);
+        let address = usize::try_from(word)
+            .expect("runtime-owned sidecar address must fit the active address space");
+        let ptr = std::ptr::with_exposed_provenance_mut::<MoltAuxSidecar>(address);
         unsafe {
             ptr.drop_in_place();
             std::alloc::dealloc(ptr.cast::<u8>(), layout);
@@ -116,3 +120,14 @@ pub(crate) const fn aux_sidecar_size() -> usize {
 const _: () = {
     assert!(std::mem::align_of::<MoltAuxSidecar>() >= std::mem::align_of::<MoltAuxWord>());
 };
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    #[should_panic(expected = "runtime-owned sidecar address must fit")]
+    fn corrupted_sidecar_word_cannot_alias_a_low_address() {
+        let malformed = u64::from(u32::MAX) + 1;
+        let _ = unsafe { super::aux_sidecar_from_word(malformed) };
+    }
+}

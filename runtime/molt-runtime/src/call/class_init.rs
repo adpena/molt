@@ -20,10 +20,10 @@ fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String>
     Some(text)
 }
 
-unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8) -> usize {
+unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8) -> Option<usize> {
     unsafe {
         if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-            return 0;
+            return Some(0);
         }
         let mut max_end = 0usize;
         let entries = dict_order(offsets_ptr).clone();
@@ -34,13 +34,14 @@ unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8
             if let Some(offset) = obj_from_bits(pair[1]).as_int()
                 && offset >= 0
             {
-                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
+                let offset = usize::try_from(offset).ok()?;
+                let end = offset.checked_add(std::mem::size_of::<u64>())?;
                 if end > max_end {
                     max_end = end;
                 }
             }
         }
-        max_end
+        Some(max_end)
     }
 }
 
@@ -48,7 +49,7 @@ unsafe fn max_slot_end_from_mro_offsets(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
     fields_name_bits: u64,
-) -> usize {
+) -> Option<usize> {
     unsafe {
         let mro = class_mro_view(_py, class_ptr);
         let mut max_end = 0usize;
@@ -75,9 +76,9 @@ unsafe fn max_slot_end_from_mro_offsets(
             if object_type_id(offsets_ptr) != TYPE_ID_DICT {
                 continue;
             }
-            max_end = max_end.max(max_slot_end_from_offsets_dict(_py, offsets_ptr));
+            max_end = max_end.max(max_slot_end_from_offsets_dict(_py, offsets_ptr)?);
         }
-        max_end
+        Some(max_end)
     }
 }
 
@@ -85,11 +86,19 @@ unsafe fn max_slot_end_from_mro_offsets(
 /// `class_ptr`.  This involves MRO walks, dict probes and name interning so
 /// it is expensive.  Callers in hot loops should cache the result (e.g. via
 /// the call-bind IC `cached_alloc_size` field).
-pub(crate) unsafe fn class_layout_size_cached(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
-    unsafe { class_layout_size(_py, class_ptr) }
+pub(crate) unsafe fn class_layout_size_cached(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+) -> Option<usize> {
+    unsafe {
+        if let Some(size) = crate::object::layout::class_cached_layout_size(class_ptr) {
+            return Some(size);
+        }
+        class_layout_size(_py, class_ptr)
+    }
 }
 
-unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
+unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usize> {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let fields_name_bits = intern_static_name(
@@ -104,38 +113,9 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         );
         let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
 
-        // Hot path: when the class dict already carries its own
-        // `__molt_layout_size__`, the
-        // cached size is the recomputation target the slow path
-        // below already converged on (`size = max_end + reserved_tail`). The
-        // memo lives in the class's own dict, so it is not an inherited guess;
-        // empty classes and subclasses without own field offsets are valid memo
-        // owners too. Subsequent calls in
-        // tight allocation loops (`while …: Point(0,0)`) hit this
-        // path and skip two MRO walks (`class_attr_lookup_raw_mro`
-        // for `size_name_bits`, `max_slot_end_from_mro_offsets`
-        // for `fields_name_bits`) plus the issubclass-bits MRO
-        // walks for the int/dict min-size guards.
-        //
-        // Soundness rests on the cache invalidation contract:
-        // anything that mutates layout offsets MUST clear or update the owning
-        // class's `__molt_layout_size__` in the same atomic
-        // operation, so a stale size never coexists with a fresh
-        // offsets dict.  Class definition / inheritance assembly
-        // already obey this (the slow path below writes
-        // `__molt_layout_size__` last and bumps the layout version);
-        // mutating `__molt_field_offsets__` after the class is
-        // sealed is unsupported.
-        if let Some(class_dict_ptr) = class_dict_ptr
-            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
-            && let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits)
-            && let Some(cached_size) = obj_from_bits(size_bits).as_int()
-            && cached_size > 0
-        {
-            return cached_size as usize;
-        }
-
-        // Slow path: cache miss — full recompute.
+        // The Python-visible layout metadata is an input to validation, never
+        // the hot-path cache authority. A forged smaller value therefore cannot
+        // under-allocate an instance.
         let builtins = builtin_classes(_py);
         let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
             2 * std::mem::size_of::<u64>()
@@ -153,7 +133,7 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
                 && val > 0
             {
                 has_own_layout = true;
-                size = val as usize;
+                size = usize::try_from(val).ok()?;
             }
             if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits) {
                 own_has_offsets = obj_from_bits(offsets_bits)
@@ -165,15 +145,14 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
             && let Some(val) = obj_from_bits(size_bits).as_int()
             && val > 0
         {
-            size = size.max(val as usize);
+            size = size.max(usize::try_from(val).ok()?);
         }
-        let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits);
-        let needs_recompute = !has_own_layout
-            || size < reserved_tail
-            || !own_has_offsets
-            || size < max_end.saturating_add(reserved_tail);
+        let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits)?;
+        let required = max_end.checked_add(reserved_tail)?;
+        let needs_recompute =
+            !has_own_layout || size < reserved_tail || !own_has_offsets || size < required;
         if needs_recompute && max_end != 0 {
-            size = size.max(max_end.saturating_add(reserved_tail));
+            size = size.max(required);
         }
         if size == 0 {
             size = reserved_tail.max(std::mem::size_of::<u64>());
@@ -191,11 +170,16 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
             && let Some(class_dict_ptr) = class_dict_ptr
             && object_type_id(class_dict_ptr) == TYPE_ID_DICT
         {
-            let size_bits = MoltObject::from_int(size as i64).bits();
-            dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
-            class_bump_layout_version(class_ptr);
+            if let Ok(size_i64) = i64::try_from(size) {
+                let size_bits = MoltObject::from_int(size_i64).bits();
+                dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
+                class_bump_layout_version(class_ptr);
+            }
         }
-        size
+        if crate::object::class_definition_is_finished(class_ptr) {
+            crate::object::layout::class_set_cached_layout_size(class_ptr, size);
+        }
+        Some(size)
     }
 }
 
@@ -228,47 +212,10 @@ pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
     unsafe {
-        let payload_size = class_layout_size(_py, class_ptr);
-        let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
+        let Some(payload_size) = class_layout_size_cached(_py, class_ptr) else {
             return MoltObject::none().bits();
         };
-        alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
-    }
-}
-
-/// Variant of [`alloc_instance_for_class`] that takes the payload
-/// size in bytes as a parameter, skipping the in-runtime
-/// `class_layout_size` lookup entirely.  Used by the native
-/// codegen for the `object_new_bound` heap path when the frontend
-/// already carries the static class size on the SimpleIR op (set
-/// by the class-instantiation fold from `class_info["size"]`).
-///
-/// **Soundness contract**: `payload_size_bytes` MUST equal what
-/// `class_layout_size(class_ptr)` would return.  The frontend
-/// derives this from the class definition's static field layout
-/// (`len(field_order) * 8 + reserved_tail`); the runtime's
-/// `class_layout_size` slow path computes the same thing from the
-/// dict offsets.  Per the CLAUDE.md no-runtime-monkeypatching
-/// contract, class definitions are immutable post-compile, so the
-/// two values must agree.
-///
-/// In debug builds we assert the equality to catch any divergence
-/// during testing; in release the assertion is compiled out and
-/// the caller pays nothing for the safety check.
-pub(crate) unsafe fn alloc_instance_for_class_sized(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    payload_size_bytes: usize,
-) -> u64 {
-    unsafe {
-        debug_assert_eq!(
-            payload_size_bytes,
-            class_layout_size(_py, class_ptr),
-            "alloc_instance_for_class_sized: caller-supplied size must match \
-             class_layout_size — frontend layout drift detected"
-        );
-        let Some(total_size) = payload_size_bytes.checked_add(std::mem::size_of::<MoltHeader>())
-        else {
+        let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
             return MoltObject::none().bits();
         };
         alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
@@ -295,7 +242,9 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     class_ptr: *mut u8,
 ) -> u64 {
     unsafe {
-        let payload_size = class_layout_size(_py, class_ptr);
+        let Some(payload_size) = class_layout_size_cached(_py, class_ptr) else {
+            return MoltObject::none().bits();
+        };
         let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
             return MoltObject::none().bits();
         };

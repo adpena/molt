@@ -1117,18 +1117,21 @@ pub const fn is_special_bits(bits: u64) -> bool {
 
 pub fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    #[inline]
+    fn write_bytes(hash: &mut u64, bytes: &[u8]) {
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        for b in bytes {
+            *hash ^= u64::from(*b);
+            *hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
     let mut hash = FNV_OFFSET;
-    for b in func_name.as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    for b in lane.as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash ^= op_idx as u64;
-    hash = hash.wrapping_mul(FNV_PRIME);
+    write_bytes(&mut hash, b"molt.ic.site.v2");
+    write_bytes(&mut hash, &(func_name.len() as u64).to_le_bytes());
+    write_bytes(&mut hash, func_name.as_bytes());
+    write_bytes(&mut hash, &(lane.len() as u64).to_le_bytes());
+    write_bytes(&mut hash, lane.as_bytes());
+    write_bytes(&mut hash, &(op_idx as u64).to_le_bytes());
     (hash & ((1u64 << 46) - 1)).max(1) as i64
 }
 
@@ -1427,6 +1430,15 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert!((1..=INT_MAX_INLINE).contains(&a));
+    }
+
+    #[test]
+    fn stable_site_id_length_prefixes_domains() {
+        assert_ne!(
+            stable_ic_site_id("ab", 7, "c"),
+            stable_ic_site_id("a", 7, "bc"),
+            "function and lane boundaries must not admit concatenation collisions"
+        );
     }
 
     #[test]

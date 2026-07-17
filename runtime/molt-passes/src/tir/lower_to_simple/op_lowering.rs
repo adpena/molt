@@ -333,27 +333,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                         ..OpIR::default()
                     });
                 }
-                if original_kind == "unpack_sequence" {
-                    let mut args = operand_args(op);
-                    args.extend(op.results.iter().map(|v| value_var(*v)));
-                    return Some(OpIR {
-                        kind: original_kind,
-                        args: Some(args),
-                        value: attr_int(&op.attrs, "value"),
-                        f_value: attr_float(&op.attrs, "f_value"),
-                        s_value: attr_str(&op.attrs, "s_value"),
-                        bytes: attr_bytes(&op.attrs, "bytes"),
-                        var: attr_str(&op.attrs, "_var"),
-                        task_kind: attr_str(&op.attrs, "task_kind"),
-                        container_type: attr_str(&op.attrs, "container_type"),
-                        ic_index: attr_int(&op.attrs, "ic_index"),
-                        native_callable_export: attr_str(&op.attrs, "native_callable_export"),
-                        native_callable_binding: attr_str(&op.attrs, "native_callable_binding"),
-                        native_callable_symbol: attr_str(&op.attrs, "native_callable_symbol"),
-                        native_callable_abi: attr_str(&op.attrs, "native_callable_abi"),
-                        ..OpIR::default()
-                    });
-                }
                 // Passthrough: reconstruct the original SimpleIR op with all fields.
                 Some(OpIR {
                     kind: original_kind,
@@ -434,6 +413,16 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 args: Some(operand_args(op)),
                 out: done_var,
                 var: val_var,
+                ..OpIR::default()
+            })
+        }
+        OpCode::UnpackSequence => {
+            let mut args = operand_args(op);
+            args.extend(op.results.iter().map(|v| value_var(*v)));
+            Some(OpIR {
+                kind: "unpack_sequence".to_string(),
+                args: Some(args),
+                value: attr_int(&op.attrs, "value"),
                 ..OpIR::default()
             })
         }

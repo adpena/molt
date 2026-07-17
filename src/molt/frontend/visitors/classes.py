@@ -950,12 +950,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                             # the runtime's `apply_class_slots_layout` assigns real
                             # offsets to. Register each declared slot name as a
                             # field here so `class_info["size"]` reserves storage
-                            # for it (slot_count * 8 + reserved_tail) — matching the
-                            # runtime's `class_layout_size`. Omitting them made a
-                            # `__slots__`-only class's frontend size disagree with
-                            # the runtime's (e.g. a single slot: 8 vs 16), tripping
-                            # the `alloc_instance_for_class_sized` layout-drift
-                            # assert (and silently under-allocating in release).
+                            # for it (slot_count * 8 + reserved_tail). The value is
+                            # a stack-layout hint only; heap allocation always loads
+                            # the immutable size published by the runtime class.
                             if target.id == "__slots__":
                                 for slot_name in _iter_slots_field_names(item.value):
                                     add_field(slot_name)

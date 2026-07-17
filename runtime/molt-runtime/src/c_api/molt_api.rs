@@ -2,6 +2,25 @@
 
 use super::*;
 
+thread_local! {
+    static PUBLIC_GIL_ACQUIRE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static PUBLIC_GIL_OUTER_CUSTODY: std::cell::Cell<PublicGilCustody> =
+        const { std::cell::Cell::new(PublicGilCustody::NONE) };
+}
+
+#[derive(Clone, Copy)]
+struct PublicGilCustody {
+    acquired_runtime_guard: bool,
+    established_runtime_attachment: bool,
+}
+
+impl PublicGilCustody {
+    const NONE: Self = Self {
+        acquired_runtime_guard: false,
+        established_runtime_attachment: false,
+    };
+}
+
 static C_HEAP_OBJECTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 static C_HEAP_TYPES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, usize>>> =
@@ -19,20 +38,81 @@ pub extern "C" fn molt_init() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutdown() -> i32 {
-    // Shutdown returning 0 means "already shut down", which is still a clean state.
-    let _ = molt_runtime_shutdown();
-    0
+    while PUBLIC_GIL_ACQUIRE_DEPTH.with(|depth| depth.get()) != 0 {
+        if molt_gil_release() != 0 {
+            return -1;
+        }
+    }
+    let result = molt_runtime_shutdown();
+    if result == 0 && crate::state::runtime_state::runtime_is_initialized() {
+        -1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_acquire() -> i32 {
-    molt_runtime_ensure_gil();
+    let outermost = match PUBLIC_GIL_ACQUIRE_DEPTH.with(|depth| {
+        let current = depth.get();
+        let Some(next) = current.checked_add(1) else {
+            return None;
+        };
+        depth.set(next);
+        Some(current == 0)
+    }) {
+        Some(outermost) => outermost,
+        None => return -1,
+    };
+    if outermost {
+        let held_before = gil_held();
+        #[cfg(not(target_arch = "wasm32"))]
+        let attached_before = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+        molt_runtime_ensure_gil();
+        PUBLIC_GIL_OUTER_CUSTODY.with(|custody| {
+            custody.set(PublicGilCustody {
+                acquired_runtime_guard: !held_before && gil_held(),
+                #[cfg(not(target_arch = "wasm32"))]
+                established_runtime_attachment: !attached_before
+                    && molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
+                #[cfg(target_arch = "wasm32")]
+                established_runtime_attachment: false,
+            });
+        });
+    }
     0
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release() -> i32 {
-    release_runtime_gil();
+    let outermost = PUBLIC_GIL_ACQUIRE_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current == 0 {
+            return None;
+        }
+        let next = current - 1;
+        depth.set(next);
+        Some(next == 0)
+    });
+    let Some(outermost) = outermost else {
+        return -1;
+    };
+    if !outermost {
+        return 0;
+    }
+    let custody = PUBLIC_GIL_OUTER_CUSTODY.with(|slot| slot.replace(PublicGilCustody::NONE));
+    if custody.acquired_runtime_guard || custody.established_runtime_attachment {
+        crate::with_gil_entry_nopanic!(_py, {
+            crate::state::clear_worker_thread_state(_py);
+            #[cfg(not(target_arch = "wasm32"))]
+            if custody.established_runtime_attachment {
+                molt_cpython_abi::api::object::detach_runtime_execution_thread();
+            }
+        });
+    }
+    if custody.acquired_runtime_guard {
+        release_runtime_gil();
+    }
     0
 }
 
@@ -1850,6 +1930,13 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 "buffer backing capacity exceeds Molt limit",
             );
         };
+        let Ok(itemsize) = usize::try_from(view.itemsize) else {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer itemsize exceeds the active address space",
+            );
+        };
         let ndim = view.ndim as usize;
         let shape = view.shape[..ndim].to_vec();
         let strides = view.strides[..ndim].to_vec();
@@ -1867,7 +1954,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         let storage = crate::object::memoryview::TypedStridedStorage::new(
             view.data,
             readonly,
-            view.itemsize as usize,
+            itemsize,
             view.offset,
             view.base,
             format_bits,

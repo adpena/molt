@@ -201,7 +201,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "object_field_set_ptr",
     "object_new",
     "object_new_bound",
-    "object_new_bound_sized",
     "object_set_class",
     "property_new",
     "staticmethod_new",
@@ -419,6 +418,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "frozenset_add",
     "frozenset_new",
     "index",
+    "unpack_sequence",
     "intarray_from_seq",
     "iter",
     "iter_next",
@@ -5796,7 +5796,6 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("object_field_set_ptr", ("i64", "i64", "i64"), ("i64",)),
     ("object_new", (), ("i64",)),
     ("object_new_bound", ("i64",), ("i64",)),
-    ("object_new_bound_sized", ("i64", "i64"), ("i64",)),
     ("object_set_class", ("i64", "i64"), ("i64",)),
     ("property_new", ("i64", "i64", "i64"), ("i64",)),
     ("staticmethod_new", ("i64",), ("i64",)),
@@ -6014,6 +6013,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("frozenset_add", ("i64", "i64"), ("i64",)),
     ("frozenset_new", ("i64",), ("i64",)),
     ("index", ("i64", "i64"), ("i64",)),
+    ("unpack_sequence", ("i64", "i64", "i64"), ("i64",)),
     ("intarray_from_seq", ("i64",), ("i64",)),
     ("iter", ("i64",), ("i64",)),
     ("iter_next", ("i64",), ("i64",)),
@@ -11439,7 +11439,6 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("object_field_set_ptr", "molt_object_field_set_ptr"),
     ("object_new", "molt_object_new"),
     ("object_new_bound", "molt_object_new_bound"),
-    ("object_new_bound_sized", "molt_object_new_bound_sized"),
     ("object_set_class", "molt_object_set_class"),
     ("property_new", "molt_property_new"),
     ("staticmethod_new", "molt_staticmethod_new"),
@@ -11657,6 +11656,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("frozenset_add", "molt_frozenset_add"),
     ("frozenset_new", "molt_frozenset_new"),
     ("index", "molt_index"),
+    ("unpack_sequence", "molt_unpack_sequence"),
     ("intarray_from_seq", "molt_intarray_from_seq"),
     ("iter", "molt_iter_checked"),
     ("iter_next", "molt_iter_next"),
@@ -14367,11 +14367,6 @@ WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] =
     ("len", "dict", "len_dict", None),
     ("len", "tuple", "len_tuple", None),
     ("len", "set", "len_set", None),
-)
-
-WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (
-    ("unsized", "object_new_bound", "ObjectNewBound"),
-    ("sized", "object_new_bound_sized", "ObjectNewBoundSized"),
 )
 
 WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (

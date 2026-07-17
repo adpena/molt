@@ -279,6 +279,13 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
+            return raise_exception::<_>(
+                _py,
+                "MemoryError",
+                "task closure size exceeds the active address space",
+            );
+        };
         let trace_alloc = matches!(
             std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
             Some("1")
@@ -297,10 +304,12 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 return raise_exception::<_>(_py, "TypeError", "unknown task kind");
             }
         };
-        if type_id == TYPE_ID_GENERATOR && (closure_size as usize) < GEN_CONTROL_SIZE {
+        if type_id == TYPE_ID_GENERATOR && closure_size < GEN_CONTROL_SIZE {
             return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
         }
-        let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
+        let Some(total_size) = std::mem::size_of::<MoltHeader>().checked_add(closure_size) else {
+            return raise_exception::<_>(_py, "MemoryError", "task allocation size overflow");
+        };
         let ptr = if type_id == TYPE_ID_OBJECT {
             alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Sidecar)
         } else {
@@ -311,7 +320,7 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             return MoltObject::none().bits();
         }
         unsafe {
-            let slots = closure_size as usize / std::mem::size_of::<u64>();
+            let slots = closure_size / std::mem::size_of::<u64>();
             if slots > 0 {
                 let payload_ptr = ptr as *mut u64;
                 for idx in 0..slots {
@@ -329,7 +338,7 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             if is_coroutine {
                 (*header).fetch_or_flags(HEADER_FLAG_COROUTINE);
             }
-            if type_id == TYPE_ID_GENERATOR && closure_size as usize >= GEN_CONTROL_SIZE {
+            if type_id == TYPE_ID_GENERATOR && closure_size >= GEN_CONTROL_SIZE {
                 *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
                 *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
                 *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();

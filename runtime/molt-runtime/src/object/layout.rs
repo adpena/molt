@@ -843,6 +843,13 @@ pub(crate) unsafe fn function_arity(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
+/// Decode the function metadata arity for host indexing/allocation without
+/// allowing a malformed 64-bit metadata word to alias a smaller 32-bit value.
+#[inline(always)]
+pub(crate) unsafe fn function_arity_usize(ptr: *mut u8) -> Option<usize> {
+    unsafe { usize::try_from(function_arity(ptr)).ok() }
+}
+
 #[allow(dead_code)]
 pub(crate) unsafe fn function_dict_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
@@ -1384,12 +1391,41 @@ pub(crate) unsafe fn class_set_mro_bits(ptr: *mut u8, bits: u64) {
 }
 
 pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe {
+        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 pub(crate) unsafe fn class_set_layout_version_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
+            .fetch_max(bits, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+pub(crate) unsafe fn class_cached_layout_size(ptr: *mut u8) -> Option<usize> {
+    unsafe {
+        let cached_size = (*(ptr.add(9 * std::mem::size_of::<u64>())
+            as *const std::sync::atomic::AtomicUsize))
+            .load(std::sync::atomic::Ordering::Acquire);
+        (cached_size != 0).then_some(cached_size)
+    }
+}
+
+pub(crate) unsafe fn class_set_cached_layout_size(ptr: *mut u8, size: usize) {
+    unsafe {
+        let slot =
+            &*(ptr.add(9 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicUsize);
+        match slot.compare_exchange(
+            0,
+            size,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(existing) => assert_eq!(existing, size, "immutable class layout size diverged"),
+        }
     }
 }
 
@@ -1450,8 +1486,13 @@ pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
 
 pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
     unsafe {
-        let current = class_layout_version_bits(ptr);
-        class_set_layout_version_bits(ptr, current.wrapping_add(1));
+        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |version| version.checked_add(1),
+            )
+            .expect("class layout generation exhausted");
     }
     // Also bump the global type version so inline caches are invalidated.
     super::bump_type_version();
@@ -1507,8 +1548,8 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ListIntStorage, ensure_function_code_bits, function_code_bits, function_set_code_bits,
-        zip_set_strict_bits, zip_strict_bits,
+        ListIntStorage, ensure_function_code_bits, function_arity_usize, function_code_bits,
+        function_set_code_bits, zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -1517,6 +1558,21 @@ mod tests {
         inc_ref_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
+
+    #[test]
+    fn function_arity_usize_preserves_the_active_target_width() {
+        let words = [0_u64, usize::MAX as u64];
+        let ptr = words.as_ptr().cast_mut().cast::<u8>();
+        assert_eq!(unsafe { function_arity_usize(ptr) }, Some(usize::MAX));
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn function_arity_usize_rejects_high_bits() {
+        let words = [0_u64, u64::from(u32::MAX) + 1];
+        let ptr = words.as_ptr().cast_mut().cast::<u8>();
+        assert_eq!(unsafe { function_arity_usize(ptr) }, None);
+    }
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }

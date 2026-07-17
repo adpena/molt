@@ -2200,6 +2200,10 @@ pub(crate) unsafe fn dict_set_in_place(
 ) {
     unsafe {
         crate::gil_assert();
+        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
+            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+            return;
+        }
         // Fast path: inline NaN-boxed ints bypass all exception checks,
         // hashability validation, and refcounting overhead.
         let key_obj = obj_from_bits(key_bits);
@@ -2778,6 +2782,10 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
 
 pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
     unsafe {
+        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
+            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+            return false;
+        }
         if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return false;
         }
@@ -2834,6 +2842,10 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
 
 pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
+        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
+            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+            return;
+        }
         crate::gil_assert();
         let order = dict_order(ptr);
         let removed: Vec<u64> = std::mem::take(order);

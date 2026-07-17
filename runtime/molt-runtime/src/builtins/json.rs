@@ -14,7 +14,9 @@ use std::io::Cursor;
 pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 0;
+            };
             let s = {
                 let slice = std::slice::from_raw_parts(ptr, len);
                 std::str::from_utf8(slice).unwrap()
@@ -930,7 +932,9 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 1;
+            };
             if out.is_null() {
                 return 2;
             }
@@ -961,7 +965,9 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 1;
+            };
             if out.is_null() {
                 return 2;
             }
@@ -998,7 +1004,9 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 1;
+            };
             if out.is_null() {
                 return 2;
             }

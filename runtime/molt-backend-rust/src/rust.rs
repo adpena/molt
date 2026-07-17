@@ -342,7 +342,10 @@ impl RustBackend {
         let mut sorted_hoisted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
         sorted_hoisted.sort();
         for v in &sorted_hoisted {
-            if !loop_idx_vars.contains(v) && !named_storage_vars.contains(v) {
+            if !loop_idx_vars.contains(v)
+                && !named_storage_vars.contains(v)
+                && !self.current_params.contains(v)
+            {
                 self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
             }
         }

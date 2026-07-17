@@ -58,7 +58,7 @@ pub(super) struct CallBindIcEntry {
     /// (header + payload) computed once at IC-population time.  Avoids
     /// re-running `class_layout_size` (MRO walks, dict probes, name
     /// interning) on every instance allocation.
-    pub(super) cached_alloc_size: u32,
+    pub(super) cached_alloc_size: usize,
     pub(super) arity: u8,
     pub(super) kind: u8,
 }
@@ -75,17 +75,12 @@ pub(super) const CALL_BIND_IC_KIND_TYPE_CALL: u8 = 5;
 // This replaces a Mutex<HashMap> that required a lock on every call.
 const IC_TLS_SIZE: usize = 256; // Must be power of 2
 
-thread_local! {
-    static IC_TLS: std::cell::RefCell<[(u64, CallBindIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, type_version: 0, cached_alloc_size: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
-}
-
 #[inline]
 pub(super) fn ic_tls_lookup(site_id: u64) -> Option<CallBindIcEntry> {
-    IC_TLS.with(|cache| {
+    REF_OWNING_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let (stored_id, entry) = cache[idx];
+        let (stored_id, entry) = cache.call[idx];
         if stored_id == site_id && entry.kind != 0 {
             Some(entry)
         } else {
@@ -107,11 +102,11 @@ pub(super) fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, entry: CallBindIcEn
     if call_bind_ic_owns_target(entry) {
         inc_ref_bits(_py, entry.target_bits);
     }
-    let previous = IC_TLS.with(|cache| {
+    let previous = REF_OWNING_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let previous = cache[idx].1;
-        cache[idx] = (site_id, entry);
+        let previous = cache.call[idx].1;
+        cache.call[idx] = (site_id, entry);
         previous
     });
     if call_bind_ic_owns_target(previous) {
@@ -120,9 +115,9 @@ pub(super) fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, entry: CallBindIcEn
 }
 
 pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) {
-    let previous = IC_TLS.with(|cache| {
+    let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
-            &mut *cache.borrow_mut(),
+            &mut cache.borrow_mut().call,
             [(
                 0u64,
                 CallBindIcEntry {
@@ -242,35 +237,12 @@ pub(super) unsafe fn method_ic_call_plan(
 
 const METHOD_IC_TLS_SIZE: usize = 256; // Must be power of 2.
 
-thread_local! {
-    static METHOD_IC_TLS: std::cell::RefCell<[(u64, MethodIcEntry); METHOD_IC_TLS_SIZE]> =
-        const {
-            std::cell::RefCell::new(
-                [(
-                    0u64,
-                    MethodIcEntry {
-                        class_bits: 0,
-                        class_version: 0,
-                        type_version: 0,
-                        func_bits: 0,
-                        attr_bits: 0,
-                        can_shadow: true,
-                        fixed_arity: 0,
-                        n_pos_defaults: 0,
-                        needs_binder: true,
-                        valid: false,
-                    },
-                ); METHOD_IC_TLS_SIZE],
-            )
-        };
-}
-
 #[inline]
 fn method_ic_lookup(site_id: u64) -> Option<MethodIcEntry> {
-    METHOD_IC_TLS.with(|cache| {
+    REF_OWNING_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
-        let (stored_id, entry) = cache[idx];
+        let (stored_id, entry) = cache.method[idx];
         if stored_id == site_id && entry.valid {
             Some(entry)
         } else {
@@ -285,11 +257,11 @@ fn method_ic_lookup(site_id: u64) -> Option<MethodIcEntry> {
 #[inline]
 fn method_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: MethodIcEntry) {
     inc_ref_bits(_py, entry.func_bits);
-    let prev = METHOD_IC_TLS.with(|cache| {
+    let prev = REF_OWNING_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
-        let (_, prev) = cache[idx];
-        cache[idx] = (site_id, entry);
+        let (_, prev) = cache.method[idx];
+        cache.method[idx] = (site_id, entry);
         prev
     });
     if prev.valid {
@@ -303,9 +275,9 @@ fn method_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: MethodIcEntry) {
 }
 
 pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
-    let previous = METHOD_IC_TLS.with(|cache| {
+    let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
-            &mut *cache.borrow_mut(),
+            &mut cache.borrow_mut().method,
             [(
                 0u64,
                 MethodIcEntry {
@@ -350,31 +322,73 @@ struct SuperIcEntry {
     valid: bool,
 }
 
+const EMPTY_CALL_IC_ENTRY: CallBindIcEntry = CallBindIcEntry {
+    fn_ptr: 0,
+    target_bits: 0,
+    class_bits: 0,
+    class_version: 0,
+    type_version: 0,
+    cached_alloc_size: 0,
+    arity: 0,
+    kind: 0,
+};
+const EMPTY_METHOD_IC_ENTRY: MethodIcEntry = MethodIcEntry {
+    class_bits: 0,
+    class_version: 0,
+    type_version: 0,
+    func_bits: 0,
+    attr_bits: 0,
+    can_shadow: true,
+    fixed_arity: 0,
+    n_pos_defaults: 0,
+    needs_binder: true,
+    valid: false,
+};
+const EMPTY_SUPER_IC_ENTRY: SuperIcEntry = SuperIcEntry {
+    self_class_bits: 0,
+    self_class_version: 0,
+    type_version: 0,
+    func_bits: 0,
+    attr_bits: 0,
+    valid: false,
+};
+
+struct RefOwningIcTls {
+    call: [(u64, CallBindIcEntry); IC_TLS_SIZE],
+    method: [(u64, MethodIcEntry); METHOD_IC_TLS_SIZE],
+    super_method: [(u64, SuperIcEntry); METHOD_IC_TLS_SIZE],
+}
+
+impl RefOwningIcTls {
+    const fn new() -> Self {
+        Self {
+            call: [(0, EMPTY_CALL_IC_ENTRY); IC_TLS_SIZE],
+            method: [(0, EMPTY_METHOD_IC_ENTRY); METHOD_IC_TLS_SIZE],
+            super_method: [(0, EMPTY_SUPER_IC_ENTRY); METHOD_IC_TLS_SIZE],
+        }
+    }
+}
+
+impl Drop for RefOwningIcTls {
+    fn drop(&mut self) {
+        // Never touch another LocalKey here: Rust does not specify cross-key
+        // destructor order. Worker wrappers and runtime teardown explicitly
+        // drain owned refs under a live PyToken; at process death integer
+        // carriers may be abandoned with the dying address space.
+    }
+}
+
 thread_local! {
-    static SUPER_IC_TLS: std::cell::RefCell<[(u64, SuperIcEntry); METHOD_IC_TLS_SIZE]> =
-        const {
-            std::cell::RefCell::new(
-                [(
-                    0u64,
-                    SuperIcEntry {
-                        self_class_bits: 0,
-                        self_class_version: 0,
-                        type_version: 0,
-                        func_bits: 0,
-                        attr_bits: 0,
-                        valid: false,
-                    },
-                ); METHOD_IC_TLS_SIZE],
-            )
-        };
+    static REF_OWNING_IC_TLS: std::cell::RefCell<RefOwningIcTls> =
+        const { std::cell::RefCell::new(RefOwningIcTls::new()) };
 }
 
 #[inline]
 fn super_ic_lookup(site_id: u64) -> Option<SuperIcEntry> {
-    SUPER_IC_TLS.with(|cache| {
+    REF_OWNING_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
-        let (stored_id, entry) = cache[idx];
+        let (stored_id, entry) = cache.super_method[idx];
         if stored_id == site_id && entry.valid {
             Some(entry)
         } else {
@@ -384,13 +398,28 @@ fn super_ic_lookup(site_id: u64) -> Option<SuperIcEntry> {
 }
 
 #[inline]
+pub(super) unsafe fn cached_attr_matches_bytes(attr_bits: u64, expected: &[u8]) -> bool {
+    unsafe {
+        let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
+            return false;
+        };
+        if object_type_id(attr_ptr) != TYPE_ID_STRING
+            || crate::string_len(attr_ptr) != expected.len()
+        {
+            return false;
+        }
+        std::slice::from_raw_parts(crate::string_bytes(attr_ptr), expected.len()) == expected
+    }
+}
+
+#[inline]
 fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: SuperIcEntry) {
     inc_ref_bits(_py, entry.func_bits);
-    let prev = SUPER_IC_TLS.with(|cache| {
+    let prev = REF_OWNING_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
-        let (_, prev) = cache[idx];
-        cache[idx] = (site_id, entry);
+        let (_, prev) = cache.super_method[idx];
+        cache.super_method[idx] = (site_id, entry);
         prev
     });
     if prev.valid {
@@ -404,9 +433,9 @@ fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: SuperIcEntry) {
 }
 
 pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) {
-    let previous = SUPER_IC_TLS.with(|cache| {
+    let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
-            &mut *cache.borrow_mut(),
+            &mut cache.borrow_mut().super_method,
             [(
                 0u64,
                 SuperIcEntry {
@@ -572,7 +601,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 // makes the final epoch check reject publication.
                 let _ = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
                 let type_version = crate::object::global_type_version();
-                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
+                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr)?;
                 trace_call_bind_ic_epoch_stage(type_version, "layout_memo_read");
                 // Cache installation must use the same metaclass-call policy as
                 // the slow path. A custom metaclass __call__ owns construction
@@ -627,7 +656,8 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 // Cache the allocation size so the IC fast path skips
                 // the entire class_layout_size computation (MRO walks,
                 // dict probes, name interning) on every instantiation.
-                let total_alloc = layout_size + std::mem::size_of::<crate::object::MoltHeader>();
+                let total_alloc =
+                    layout_size.checked_add(std::mem::size_of::<crate::object::MoltHeader>())?;
                 if !type_resolution_epoch_is_stable(type_version) {
                     trace_call_bind_ic_bypass("type_call", "type_epoch_changed_during_resolution");
                     return None;
@@ -638,7 +668,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     class_bits,
                     class_version: class_layout_version_bits(call_ptr),
                     type_version,
-                    cached_alloc_size: total_alloc as u32,
+                    cached_alloc_size: total_alloc,
                     arity: (init_arity - 1) as u8,
                     kind: CALL_BIND_IC_KIND_TYPE_CALL,
                 })
@@ -731,8 +761,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if args.pos.len() != entry.arity as usize {
                 return None;
             }
-            let pos = args.pos.clone();
-            let result = call_function_obj_bound_vec(_py, call_bits, pos.as_slice());
+            let result = call_function_obj_bound_vec(_py, call_bits, args.pos.as_slice());
             return Some(protect_callargs_aliased_return(_py, result, args_ptr));
         }
 
@@ -839,7 +868,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // instantiation — the layout was computed once when the IC
             // entry was populated.
             let inst_bits = if entry.cached_alloc_size > 0 {
-                let total = entry.cached_alloc_size as usize;
+                let total = entry.cached_alloc_size;
                 crate::call::class_init::alloc_published_instance_for_class_with_total_size(
                     _py, call_ptr, total,
                 )
@@ -874,7 +903,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // not apply there; the wasm arms below keep the stored `fn_ptr`
             // exactly as the surrounding wasm call paths already do.
             #[cfg(not(target_arch = "wasm32"))]
-            let call_addr = {
+            let call_target = {
                 let Some(call_target) = crate::call::function::function_required_call_target_ptr(
                     init_ptr,
                     entry.fn_ptr,
@@ -886,10 +915,20 @@ pub(super) unsafe fn try_call_bind_ic_fast(
                         "type-call inline cache function target is not initialized",
                     ));
                 };
-                call_target as usize as u64
+                call_target
             };
             #[cfg(target_arch = "wasm32")]
-            let call_addr = entry.fn_ptr;
+            let call_target = {
+                let Some(call_target) = crate::provenance::abi::function_ptr(entry.fn_ptr) else {
+                    dec_ref_bits(_py, inst_bits);
+                    return Some(raise_exception::<_>(
+                        _py,
+                        "RuntimeError",
+                        "type-call inline cache target exceeds the active address space",
+                    ));
+                };
+                call_target
+            };
             let closure_bits = function_closure_bits(init_ptr);
             let code_bits = ensure_function_code_bits(_py, init_ptr);
             if !recursion_guard_enter() {
@@ -907,23 +946,22 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             let _init_result = if closure_bits != 0 {
                 match args.pos.len() {
                     0 => {
-                        let f: extern "C" fn(u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                        let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
                         f(closure_bits, inst_bits) as u64
                     }
                     1 => {
                         let f: extern "C" fn(u64, u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                            std::mem::transmute(call_target);
                         f(closure_bits, inst_bits, args.pos[0]) as u64
                     }
                     2 => {
                         let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                            std::mem::transmute(call_target);
                         f(closure_bits, inst_bits, args.pos[0], args.pos[1]) as u64
                     }
                     3 => {
                         let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                            std::mem::transmute(call_target);
                         f(
                             closure_bits,
                             inst_bits,
@@ -948,22 +986,21 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             } else {
                 match args.pos.len() {
                     0 => {
-                        let f: extern "C" fn(u64) -> i64 = std::mem::transmute(call_addr as usize);
+                        let f: extern "C" fn(u64) -> i64 = std::mem::transmute(call_target);
                         f(inst_bits) as u64
                     }
                     1 => {
-                        let f: extern "C" fn(u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                        let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
                         f(inst_bits, args.pos[0]) as u64
                     }
                     2 => {
                         let f: extern "C" fn(u64, u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                            std::mem::transmute(call_target);
                         f(inst_bits, args.pos[0], args.pos[1]) as u64
                     }
                     3 => {
                         let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                            std::mem::transmute(call_addr as usize);
+                            std::mem::transmute(call_target);
                         f(inst_bits, args.pos[0], args.pos[1], args.pos[2]) as u64
                     }
                     _ => {
@@ -1032,10 +1069,18 @@ unsafe fn call_method_ic_dispatch(
     site_bits: u64,
     recv_bits: u64,
     name_ptr: *const u8,
-    name_len: usize,
+    name_len_bits: u64,
     args: &[u64],
 ) -> u64 {
     unsafe {
+        let Some(name) = crate::provenance::abi::slice(name_ptr, name_len_bits) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "method name range is invalid for the active target",
+            );
+        };
+        let name_len = name.len();
         // Largest `fixed_arity` (including `self`) the allocation-free direct
         // path serves from a stack arg buffer; wider methods fall to the binder.
         const DIRECT_ARGV_MAX: usize = 16;
@@ -1170,6 +1215,7 @@ unsafe fn call_method_ic_dispatch(
                 let class_bits = object_class_bits(recv_ptr);
                 if type_epoch_matches(entry.type_version)
                     && class_bits == entry.class_bits
+                    && cached_attr_matches_bytes(entry.attr_bits, name)
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && class_layout_version_bits(class_ptr) == entry.class_version
                 {
@@ -1198,8 +1244,7 @@ unsafe fn call_method_ic_dispatch(
             }
 
             // IC miss: resolve the method class-side, install the IC, dispatch.
-            let slice = std::slice::from_raw_parts(name_ptr, name_len);
-            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) {
                 let type_version = crate::object::global_type_version();
                 let info =
                     crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
@@ -1326,16 +1371,7 @@ pub extern "C" fn molt_call_method_ic0(
     name_len_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe {
-            call_method_ic_dispatch(
-                _py,
-                site_bits,
-                recv_bits,
-                name_ptr,
-                name_len_bits as usize,
-                &[],
-            )
-        }
+        unsafe { call_method_ic_dispatch(_py, site_bits, recv_bits, name_ptr, name_len_bits, &[]) }
     })
 }
 
@@ -1353,14 +1389,7 @@ pub extern "C" fn molt_call_method_ic1(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            call_method_ic_dispatch(
-                _py,
-                site_bits,
-                recv_bits,
-                name_ptr,
-                name_len_bits as usize,
-                &[a0],
-            )
+            call_method_ic_dispatch(_py, site_bits, recv_bits, name_ptr, name_len_bits, &[a0])
         }
     })
 }
@@ -1385,7 +1414,7 @@ pub extern "C" fn molt_call_method_ic2(
                 site_bits,
                 recv_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1],
             )
         }
@@ -1413,7 +1442,7 @@ pub extern "C" fn molt_call_method_ic3(
                 site_bits,
                 recv_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1, a2],
             )
         }
@@ -1442,7 +1471,7 @@ pub extern "C" fn molt_call_method_ic4(
                 site_bits,
                 recv_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1, a2, a3],
             )
         }
@@ -1471,10 +1500,18 @@ unsafe fn call_super_method_ic_dispatch(
     start_class_bits: u64,
     self_bits: u64,
     name_ptr: *const u8,
-    name_len: usize,
+    name_len_bits: u64,
     args: &[u64],
 ) -> u64 {
     unsafe {
+        let Some(name) = crate::provenance::abi::slice(name_ptr, name_len_bits) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "method name range is invalid for the active target",
+            );
+        };
+        let name_len = name.len();
         let call_direct = |_py: &PyToken<'_>, func_bits: u64| -> u64 {
             let mut argv = [0u64; 13];
             argv[0] = self_bits;
@@ -1494,6 +1531,7 @@ unsafe fn call_super_method_ic_dispatch(
             let self_class_bits = type_of_bits(_py, self_bits);
             if type_epoch_matches(entry.type_version)
                 && self_class_bits == entry.self_class_bits
+                && cached_attr_matches_bytes(entry.attr_bits, name)
                 && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
                 && class_layout_version_bits(self_class_ptr) == entry.self_class_version
             {
@@ -1502,8 +1540,7 @@ unsafe fn call_super_method_ic_dispatch(
             }
         }
 
-        let slice = std::slice::from_raw_parts(name_ptr, name_len);
-        if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+        if let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) {
             let type_version = crate::object::global_type_version();
             let resolved = crate::builtins::attr::super_resolve_method_unbound(
                 _py,
@@ -1586,7 +1623,7 @@ pub extern "C" fn molt_call_super_method_ic0(
                 start_class_bits,
                 self_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[],
             )
         }
@@ -1614,7 +1651,7 @@ pub extern "C" fn molt_call_super_method_ic1(
                 start_class_bits,
                 self_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0],
             )
         }
@@ -1643,7 +1680,7 @@ pub extern "C" fn molt_call_super_method_ic2(
                 start_class_bits,
                 self_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1],
             )
         }
@@ -1673,7 +1710,7 @@ pub extern "C" fn molt_call_super_method_ic3(
                 start_class_bits,
                 self_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1, a2],
             )
         }
@@ -1704,7 +1741,7 @@ pub extern "C" fn molt_call_super_method_ic4(
                 start_class_bits,
                 self_bits,
                 name_ptr,
-                name_len_bits as usize,
+                name_len_bits,
                 &[a0, a1, a2, a3],
             )
         }
@@ -1761,7 +1798,7 @@ unsafe fn call_bind_ic_dispatch(
                     );
                 }
                 profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
-                return protect_callargs_aliased_return(_py, res, args_ptr);
+                return res;
             }
         }
 

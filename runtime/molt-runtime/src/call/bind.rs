@@ -26,18 +26,18 @@ use crate::{
     class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
     dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order,
     dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
-    dict_update_set_via_store, exception_pending, function_arity, function_attr_bits,
-    function_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
-    generic_alias_origin_bits, has_capability, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits,
-    issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
-    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
-    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
-    molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
-    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
-    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
-    molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
-    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    dict_update_set_via_store, exception_pending, function_arity, function_arity_usize,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
+    inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted,
+    is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits, missing_bits,
+    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
+    molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
+    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
+    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
+    molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
+    molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
     molt_dict_pop_method, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
@@ -878,7 +878,7 @@ unsafe fn call_type_with_builder(
                     let new_type = type_name(_py, new_obj);
                     let fn_ptr = new_obj.as_ptr().and_then(|ptr| {
                         if object_type_id(ptr) == TYPE_ID_FUNCTION {
-                            Some(function_fn_ptr(ptr) as usize)
+                            crate::provenance::abi::address(function_fn_ptr(ptr))
                         } else {
                             None
                         }
@@ -959,7 +959,7 @@ unsafe fn call_type_with_builder(
             let init_type = type_name(_py, init_obj);
             let fn_ptr = init_obj.as_ptr().and_then(|ptr| {
                 if object_type_id(ptr) == TYPE_ID_FUNCTION {
-                    Some(function_fn_ptr(ptr) as usize)
+                    crate::provenance::abi::address(function_fn_ptr(ptr))
                 } else {
                     None
                 }
@@ -1468,11 +1468,7 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
                 if obj.is_ptr() || obj.is_none() || obj.is_pending() {
                     return None;
                 }
-                if bits <= usize::MAX as u64 {
-                    Some(bits as usize)
-                } else {
-                    None
-                }
+                crate::provenance::abi::address(bits)
             };
             let Some(pos_capacity) = decode_capacity(pos_capacity_bits) else {
                 let _ = raise_exception::<u64>(
@@ -2048,7 +2044,15 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
             return true;
         }
         let positional_defaults = function_positional_default_count(_py, func_ptr);
-        positional_defaults != 0 && supplied != function_arity(func_ptr) as usize
+        let Some(arity) = function_arity_usize(func_ptr) else {
+            let _ = raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "function arity exceeds the active address space",
+            );
+            return true;
+        };
+        positional_defaults != 0 && supplied != arity
     }
 }
 
@@ -2061,7 +2065,15 @@ pub(crate) unsafe fn function_fixed_positional_call_needs_binding(
         // Fixed-arity helpers are also the binder's already-bound execution
         // lane. Exact runtime arity is the canonical bound shape; only
         // non-exact positional calls need to re-enter argument binding.
-        if supplied == function_arity(func_ptr) as usize {
+        let Some(arity) = function_arity_usize(func_ptr) else {
+            let _ = raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "function arity exceeds the active address space",
+            );
+            return true;
+        };
+        if supplied == arity {
             return false;
         }
         if function_requires_binder_flag(func_ptr) {
@@ -2323,9 +2335,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                             && let Some(res) =
                                 try_call_bind_ic_fast(_py, entry, call_attr_bits, args_ptr)
                         {
-                            let result = protect_callargs_aliased_return(_py, res, args_ptr);
                             dec_ref_bits(_py, call_attr_bits);
-                            return result;
+                            return res;
                         }
                     }
                     builder_guard.release();
@@ -2894,9 +2905,9 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
 mod tests {
     use super::inline_cache::{
         CALL_BIND_IC_KIND_DIRECT_FUNC, CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
-        CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry, clear_call_bind_ic_cache, ic_tls_insert,
-        ic_tls_lookup, method_ic_call_plan, try_call_bind_ic_fast, type_epoch_matches,
-        type_resolution_epoch_is_stable,
+        CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry, cached_attr_matches_bytes,
+        clear_call_bind_ic_cache, ic_tls_insert, ic_tls_lookup, method_ic_call_plan,
+        try_call_bind_ic_fast, type_epoch_matches, type_resolution_epoch_is_stable,
     };
     use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
     use crate::object::builders::{alloc_list, alloc_tuple};
@@ -2914,6 +2925,21 @@ mod tests {
 
     extern "C" fn compiled_identity_returns_arg(arg_bits: u64) -> i64 {
         arg_bits as i64
+    }
+
+    #[test]
+    fn cached_method_name_must_match_even_at_the_same_site() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let alpha_ptr = super::alloc_string(_py, b"alpha");
+            assert!(!alpha_ptr.is_null());
+            let alpha_bits = MoltObject::from_ptr(alpha_ptr).bits();
+            assert!(unsafe { cached_attr_matches_bytes(alpha_bits, b"alpha") });
+            assert!(
+                !unsafe { cached_attr_matches_bytes(alpha_bits, b"beta") },
+                "a same-site lookup for another name must miss instead of reusing the target"
+            );
+            dec_ref_bits(_py, alpha_bits);
+        });
     }
 
     extern "C" fn compiled_second_arg_returns_arg(_first_bits: u64, second_bits: u64) -> i64 {
@@ -2958,7 +2984,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                compiled_identity_returns_arg as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    compiled_identity_returns_arg as *const (),
+                ),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -2996,7 +3024,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                compiled_second_arg_returns_arg as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    compiled_second_arg_returns_arg as *const (),
+                ),
                 2,
             );
             assert!(!func_ptr.is_null());
@@ -3143,7 +3173,9 @@ mod tests {
             clear_call_bind_ic_cache(_py);
             let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self_for_type_call_ic as *const (),
+                ),
                 1,
             );
             assert!(!init_ptr.is_null());
@@ -3160,9 +3192,9 @@ mod tests {
             let class_bits = unsafe {
                 crate::object::ops::molt_guarded_class_def(
                     name_bits,
-                    bases.as_ptr() as usize as u64,
+                    crate::provenance::abi::expose_address(bases.as_ptr()),
                     bases.len() as u64,
-                    attrs.as_ptr() as usize as u64,
+                    crate::provenance::abi::expose_address(attrs.as_ptr()),
                     1,
                     std::mem::size_of::<u64>() as i64,
                     0,
@@ -3171,16 +3203,48 @@ mod tests {
             };
             assert!(!obj_from_bits(class_bits).is_none());
             let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
-            let layout_size =
-                unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) };
+            let layout_size = unsafe {
+                crate::call::class_init::class_layout_size_cached(_py, class_ptr)
+                    .expect("class layout must be representable")
+            };
+            let churn_name = super::alloc_string(_py, b"unrelated_attr");
+            let churn_bits = MoltObject::from_ptr(churn_name).bits();
+            assert_eq!(
+                crate::molt_set_attr_name(class_bits, churn_bits, MoltObject::from_int(1).bits()),
+                MoltObject::none().bits()
+            );
+            assert_eq!(
+                unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) },
+                Some(layout_size),
+                "ordinary class attribute churn must not invalidate immutable payload size"
+            );
+            dec_ref_bits(_py, churn_bits);
+
+            let layout_name = super::alloc_string(_py, b"__molt_layout_size__");
+            let layout_name_bits = MoltObject::from_ptr(layout_name).bits();
+            let _ = crate::molt_set_attr_name(
+                class_bits,
+                layout_name_bits,
+                MoltObject::from_int(1).bits(),
+            );
+            assert_eq!(crate::molt_exception_pending(), 1);
+            let _ = crate::molt_exception_clear();
+            assert_eq!(
+                unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) },
+                Some(layout_size)
+            );
+            dec_ref_bits(_py, layout_name_bits);
             let entry = CallBindIcEntry {
-                fn_ptr: compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                fn_ptr: crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self_for_type_call_ic as *const (),
+                ),
                 target_bits: init_bits,
                 class_bits,
                 class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
                 type_version: crate::global_type_version(),
-                cached_alloc_size: (layout_size + std::mem::size_of::<crate::object::MoltHeader>())
-                    as u32,
+                cached_alloc_size: layout_size
+                    .checked_add(std::mem::size_of::<crate::object::MoltHeader>())
+                    .expect("class allocation size must be representable"),
                 arity: 0,
                 kind: CALL_BIND_IC_KIND_TYPE_CALL,
             };
@@ -3275,14 +3339,18 @@ mod tests {
             clear_call_bind_ic_cache(_py);
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self_for_type_call_ic as *const (),
+                ),
                 1,
             );
             assert!(!func_ptr.is_null());
             let target_bits = MoltObject::from_ptr(func_ptr).bits();
             let before = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
             let entry = CallBindIcEntry {
-                fn_ptr: compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                fn_ptr: crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self_for_type_call_ic as *const (),
+                ),
                 target_bits,
                 class_bits: 0,
                 class_version: 0,
@@ -3298,6 +3366,147 @@ mod tests {
             let released = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
             assert_eq!(released, before);
             dec_ref_bits(_py, target_bits);
+        });
+    }
+
+    #[test]
+    fn public_gil_release_drains_foreign_thread_call_cache_owners() {
+        let _guard = crate::test_mutex_guard();
+        assert_eq!(crate::c_api::molt_init(), 0);
+        let (target_bits, target_address, before) = crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self_for_type_call_ic as *const (),
+                ),
+                1,
+            );
+            assert!(!func_ptr.is_null());
+            let target_bits = MoltObject::from_ptr(func_ptr).bits();
+            let before = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
+            (target_bits, func_ptr as usize, before)
+        });
+
+        let worker = std::thread::spawn(move || {
+            assert_eq!(crate::c_api::molt_gil_acquire(), 0);
+            let retained = crate::with_gil_entry_nopanic!(_py, {
+                ic_tls_insert(
+                    _py,
+                    0x4d4f_4c54,
+                    CallBindIcEntry {
+                        fn_ptr: crate::provenance::abi::expose_function_address(
+                            compiled_init_borrows_self_for_type_call_ic as *const (),
+                        ),
+                        target_bits,
+                        class_bits: 0,
+                        class_version: 0,
+                        type_version: crate::global_type_version(),
+                        cached_alloc_size: 0,
+                        arity: 0,
+                        kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
+                    },
+                );
+                unsafe {
+                    (*crate::header_from_obj_ptr(target_address as *mut u8)).ref_count_snapshot()
+                }
+            });
+            assert_eq!(crate::c_api::molt_gil_release(), 0);
+            let released = unsafe {
+                (*crate::header_from_obj_ptr(target_address as *mut u8)).ref_count_snapshot()
+            };
+            (retained, released)
+        });
+        let (retained, released) = worker.join().expect("foreign thread must exit cleanly");
+        assert_eq!(retained, before + 1, "thread-local IC must own its target");
+        assert_eq!(
+            released, before,
+            "outermost public GIL release must drain foreign-thread IC owners before detach"
+        );
+        crate::with_gil_entry_nopanic!(_py, {
+            dec_ref_bits(_py, target_bits);
+        });
+    }
+
+    #[cfg(feature = "l7-attestation-probe")]
+    #[test]
+    fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(
+                    compiled_identity_returns_arg as *const (),
+                ),
+                1,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            let mut args = super::CallArgs {
+                pos: vec![MoltObject::from_int(17).bits()],
+                kw_names: Vec::new(),
+                kw_values: Vec::new(),
+                kw_seen: std::collections::HashSet::new(),
+            };
+            let entry = CallBindIcEntry {
+                fn_ptr: crate::provenance::abi::expose_function_address(
+                    compiled_identity_returns_arg as *const (),
+                ),
+                target_bits: 0,
+                class_bits: 0,
+                class_version: 0,
+                type_version: crate::global_type_version(),
+                cached_alloc_size: 0,
+                arity: 1,
+                kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
+            };
+            for _ in 0..64 {
+                assert_eq!(
+                    unsafe { try_call_bind_ic_fast(_py, entry, func_bits, &mut args) },
+                    Some(MoltObject::from_int(17).bits())
+                );
+            }
+
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..10_000 {
+                assert_eq!(
+                    unsafe { try_call_bind_ic_fast(_py, entry, func_bits, &mut args) },
+                    Some(MoltObject::from_int(17).bits())
+                );
+            }
+            crate::attestation_probe::set_tracking(false);
+            let fast = crate::attestation_probe::snapshot();
+            assert_eq!(
+                fast.allocations, 0,
+                "direct IC hot path allocated: {fast:?}"
+            );
+
+            // Bypass the IC and exercise the production CallArgs/binder entry as
+            // the observer control. This must register allocation traffic, or a
+            // zero fast-path count would not be meaningful evidence.
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..64 {
+                let builder_bits = super::molt_callargs_new(1, 0);
+                assert!(!obj_from_bits(builder_bits).is_none());
+                assert_eq!(
+                    unsafe {
+                        super::molt_callargs_push_pos(builder_bits, MoltObject::from_int(17).bits())
+                    },
+                    MoltObject::none().bits()
+                );
+                assert_eq!(
+                    super::molt_call_bind(func_bits, builder_bits),
+                    MoltObject::from_int(17).bits()
+                );
+            }
+            crate::attestation_probe::set_tracking(false);
+            let slow = crate::attestation_probe::snapshot();
+            assert!(
+                slow.allocations > 0,
+                "slow-path control observed no allocations: {slow:?}"
+            );
+            dec_ref_bits(_py, func_bits);
         });
     }
 

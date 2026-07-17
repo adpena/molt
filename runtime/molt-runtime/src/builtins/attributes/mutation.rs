@@ -26,7 +26,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
             }
@@ -89,6 +91,15 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         "cannot set '{attr_name}' attribute of immutable type '{class_label}'"
                     );
                     return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if crate::object::class_definition_is_finished(obj_ptr)
+                    && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
+                {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "class layout metadata is immutable",
+                    );
                 }
                 if attr_name == "__name__" || attr_name == "__qualname__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -939,6 +950,15 @@ pub(crate) unsafe fn del_attr_ptr(
                 let msg =
                     format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
                 return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            if crate::object::class_definition_is_finished(obj_ptr)
+                && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "class layout metadata is immutable",
+                );
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
                 return raise_exception::<_>(
@@ -1950,7 +1970,9 @@ pub unsafe extern "C" fn molt_del_attr_generic(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
             }
@@ -1992,7 +2014,9 @@ pub unsafe extern "C" fn molt_set_attr_object(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
             }
@@ -2020,7 +2044,9 @@ pub unsafe extern "C" fn molt_del_attr_object(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_del_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }

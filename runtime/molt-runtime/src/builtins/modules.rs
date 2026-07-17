@@ -2309,12 +2309,12 @@ pub extern "C" fn molt_debug_trace(
     crate::with_gil_entry_nopanic!(_py, {
         TRACE_LAST_OP.store(op_idx_bits, Ordering::Relaxed);
         ensure_sigtrap_handler();
-        let ptr = func_ptr_bits as usize as *const u8;
-        if ptr.is_null() {
+        let Some(ptr) = crate::provenance::abi::const_ptr::<u8>(func_ptr_bits) else {
             return MoltObject::none().bits();
-        }
-        let len = func_len_bits as usize;
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        };
+        let Some(bytes) = (unsafe { crate::provenance::abi::slice(ptr, func_len_bits) }) else {
+            return MoltObject::none().bits();
+        };
         if !trace_op_silent() {
             if let Ok(name) = std::str::from_utf8(bytes) {
                 eprintln!("trace {name} op={op_idx_bits}");

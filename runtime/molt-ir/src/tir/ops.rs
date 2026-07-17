@@ -189,6 +189,16 @@ pub enum OpCode {
     /// bypassing the tuple allocation + index ops.  Two results:
     /// results[0] = value, results[1] = done_flag.
     IterNextUnboxed,
+    /// Exact Python sequence unpacking with a variable number of independently
+    /// owned results.
+    ///
+    /// Operands: `[iterable]`. Results: one `DynBox` value per assignment
+    /// target, including zero results for Python's empty unpack targets. The
+    /// integer `value` attribute is the expected/result count and must equal
+    /// `results.len()`. The runtime ABI initializes every output slot to `None`,
+    /// then transactionally publishes one owned `+1` value per slot only after
+    /// exact-arity success.
+    UnpackSequence,
     ForIter,
     // Generator
     AllocTask,

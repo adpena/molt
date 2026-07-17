@@ -319,7 +319,13 @@ pub(super) unsafe fn backend_truncate(
             },
             MoltFileBackend::Memory(mem) => {
                 let data = memory_backend_vec(_py, handle)?;
-                let size_usize = size as usize;
+                let size_usize = usize::try_from(size).map_err(|_| {
+                    raise_exception::<u64>(
+                        _py,
+                        "OverflowError",
+                        "truncate size exceeds the active address space",
+                    )
+                })?;
                 if size_usize < data.len() {
                     data.truncate(size_usize);
                 } else if size_usize > data.len() {

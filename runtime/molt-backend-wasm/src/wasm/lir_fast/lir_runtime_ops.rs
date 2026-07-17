@@ -20,5 +20,5 @@ pub(super) use fallback_ops::emit_lir_unsupported_marker;
 pub(super) use object_ops::{emit_lir_alloc, emit_lir_object_new_bound};
 pub(super) use sequence_ops::{
     emit_lir_build_slice, emit_lir_del_index, emit_lir_get_iter, emit_lir_index,
-    emit_lir_iter_next, emit_lir_membership, emit_lir_store_index,
+    emit_lir_iter_next, emit_lir_membership, emit_lir_store_index, emit_lir_unpack_sequence,
 };

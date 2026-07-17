@@ -10,7 +10,7 @@ use crate::{
     dict_get_in_place, dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
     object_type_id, raise_exception, runtime_state, string_bytes, string_len,
 };
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
 const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
@@ -21,11 +21,14 @@ const RUNTIME_FLAG: &str = "_molt_runtime";
 static INTRINSIC_MANIFEST_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
 
-/// One-shot guard: only the first call (compiler-generated bootstrap) takes
-/// effect.  Uses compare_exchange to eliminate the TOCTOU race between
-/// load and store that a plain load+store pair would have on native
-/// multi-threaded targets.
-static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
+const PUBLICATION_EMPTY: u8 = 0;
+const PUBLICATION_INITIALIZING: u8 = 1;
+const PUBLICATION_READY: u8 = 2;
+
+/// Publication state for the split manifest payload. The compiler-generated
+/// bootstrap is the sole winner, but embedders may race it. Readers may consume
+/// PTR/LEN only after observing READY with Acquire ordering.
+static MANIFEST_STATE: AtomicU8 = AtomicU8::new(PUBLICATION_EMPTY);
 
 /// Per-app runtime-callable resolver function pointer.
 ///
@@ -37,10 +40,7 @@ static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
 /// materialization both consume this one executable authority, which keeps
 /// monolithic generated resolvers native-unreachable so the linker dead-strips
 /// every unused intrinsic and builtin callable.
-static APP_CALLABLE_RESOLVER: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
-
-/// One-shot guard for `APP_CALLABLE_RESOLVER`, mirroring `MANIFEST_SET`.
-static APP_CALLABLE_RESOLVER_SET: AtomicBool = AtomicBool::new(false);
+static APP_CALLABLE_RESOLVER_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 
 /// Register the per-app runtime-callable resolver. One-shot: only the first
 /// call (the compiler-generated main stub, run before `molt_runtime_init`)
@@ -52,25 +52,36 @@ static APP_CALLABLE_RESOLVER_SET: AtomicBool = AtomicBool::new(false);
 /// that callable.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_app_callable_resolver(fn_ptr: u64) -> u64 {
-    if APP_CALLABLE_RESOLVER_SET
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return 0; // another caller already registered the resolver
+    let Some(resolver_address) = crate::provenance::abi::address(fn_ptr) else {
+        return 1;
+    };
+    if resolver_address == 0 {
+        return 1;
     }
-    APP_CALLABLE_RESOLVER.store(fn_ptr as usize as *mut u8, Ordering::Release);
+    // The executable carrier is itself the one-shot state: zero is empty and
+    // the single successful CAS publishes the complete value atomically.
+    let _ = APP_CALLABLE_RESOLVER_ADDRESS.compare_exchange(
+        0,
+        resolver_address,
+        Ordering::Release,
+        Ordering::Acquire,
+    );
     0
 }
 
 pub(crate) fn try_app_resolve_runtime_callable(symbol: &str) -> Option<u64> {
-    let resolver_ptr = APP_CALLABLE_RESOLVER.load(Ordering::Acquire);
-    if resolver_ptr.is_null() {
+    let resolver_address = APP_CALLABLE_RESOLVER_ADDRESS.load(Ordering::Acquire);
+    if resolver_address == 0 {
         return None;
     }
     let name_bytes = symbol.as_bytes();
     let fn_ptr: u64 = unsafe {
-        let resolver: extern "C" fn(*const u8, usize) -> u64 =
-            core::mem::transmute(resolver_ptr as usize);
+        // Function addresses and wasm table indices are not data pointers. Keep
+        // the payload integer-valued until the one typed executable conversion.
+        let resolver_ptr = crate::provenance::abi::function_ptr(
+            u64::try_from(resolver_address).expect("supported function carriers fit in u64"),
+        )?;
+        let resolver: extern "C" fn(*const u8, usize) -> u64 = core::mem::transmute(resolver_ptr);
         resolver(name_bytes.as_ptr(), name_bytes.len())
     };
     if fn_ptr == 0 { None } else { Some(fn_ptr) }
@@ -105,36 +116,79 @@ pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
-    // Claim the one-shot slot FIRST.  Only the winner stores PTR/LEN.
-    // This avoids the race where a loser's pre-CAS stores clobber the
-    // winner's values before the loser discovers it lost.
-    if MANIFEST_SET
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return 0; // another caller already set the manifest
+    let Some(ptr) = crate::provenance::abi::mut_ptr::<u8>(ptr) else {
+        return 1;
+    };
+    let Ok(len) = u32::try_from(len) else {
+        return 1;
+    };
+    if crate::provenance::abi::checked_slice_len(ptr.cast_const(), u64::from(len)).is_none() {
+        return 1;
     }
-    // Winner: store PTR and LEN.  The Release edge from the CAS above
-    // ensures any reader that observes MANIFEST_SET=true will also see
-    // these stores (via an Acquire load on MANIFEST_SET).
-    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Release);
-    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Release);
+    publish_manifest(ptr, len, || {}, || {})
+}
+
+fn publish_manifest(
+    ptr: *mut u8,
+    len: u32,
+    after_claim: impl FnOnce(),
+    on_competing_initialization: impl FnOnce(),
+) -> u64 {
+    // Validate before claiming the one-shot slot: malformed input must not
+    // permanently prevent the generated app bootstrap from installing the
+    // real manifest.
+    match MANIFEST_STATE.compare_exchange(
+        PUBLICATION_EMPTY,
+        PUBLICATION_INITIALIZING,
+        Ordering::Acquire,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => after_claim(),
+        Err(mut state) => {
+            // A competing setter must not return while the winner's split
+            // payload is only half initialized. Observe its Release publication.
+            if state == PUBLICATION_INITIALIZING {
+                on_competing_initialization();
+            }
+            while state == PUBLICATION_INITIALIZING {
+                core::hint::spin_loop();
+                state = MANIFEST_STATE.load(Ordering::Acquire);
+            }
+            debug_assert_eq!(state, PUBLICATION_READY);
+            return 0;
+        }
+    }
+    INTRINSIC_MANIFEST_PTR.store(ptr, Ordering::Relaxed);
+    INTRINSIC_MANIFEST_LEN.store(len, Ordering::Relaxed);
+    MANIFEST_STATE.store(PUBLICATION_READY, Ordering::Release);
     0
+}
+
+#[allow(dead_code)]
+fn manifest_snapshot() -> Option<(*mut u8, usize)> {
+    if MANIFEST_STATE.load(Ordering::Acquire) != PUBLICATION_READY {
+        return None;
+    }
+    let ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Relaxed);
+    let len = INTRINSIC_MANIFEST_LEN.load(Ordering::Relaxed) as usize;
+    Some((ptr, len))
+}
+
+#[allow(dead_code)]
+fn manifest_bytes() -> Option<&'static [u8]> {
+    let (ptr, len) = manifest_snapshot()?;
+    if len == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts(ptr, len) })
 }
 
 #[cfg(target_arch = "wasm32")]
 fn parse_manifest() -> Option<std::collections::BTreeSet<&'static str>> {
-    // Gate on MANIFEST_SET (Acquire) to ensure we see the winner's
-    // PTR/LEN stores that were published with Release ordering.
-    if !MANIFEST_SET.load(Ordering::Acquire) {
-        return None;
-    }
-    let ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Acquire);
-    let len = INTRINSIC_MANIFEST_LEN.load(Ordering::Acquire) as usize;
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let bytes = manifest_bytes()?;
     let mut set = std::collections::BTreeSet::new();
     for chunk in bytes.split(|&b| b == 0) {
         if let Ok(name) = core::str::from_utf8(chunk) {
@@ -730,29 +784,28 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
 /// is stored on `RuntimeState`, so dropping the state is sufficient to clear it.
 #[cfg(test)]
 pub(crate) fn reset_for_testing() {
-    MANIFEST_SET.store(false, Ordering::SeqCst);
+    MANIFEST_STATE.store(PUBLICATION_EMPTY, Ordering::SeqCst);
     INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
     INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
-    APP_CALLABLE_RESOLVER_SET.store(false, Ordering::SeqCst);
-    APP_CALLABLE_RESOLVER.store(core::ptr::null_mut(), Ordering::SeqCst);
+    APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
 }
 
 // Expose internals for testing.
 #[cfg(test)]
-pub(crate) fn test_manifest_set() -> &'static AtomicBool {
-    &MANIFEST_SET
+pub(crate) fn test_manifest_state() -> &'static AtomicU8 {
+    &MANIFEST_STATE
 }
 #[cfg(test)]
 pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
     &INTRINSIC_MANIFEST_PTR
 }
 #[cfg(test)]
-pub(crate) fn test_app_resolver_set() -> &'static AtomicBool {
-    &APP_CALLABLE_RESOLVER_SET
+pub(crate) fn test_manifest_len() -> &'static AtomicU32 {
+    &INTRINSIC_MANIFEST_LEN
 }
 #[cfg(test)]
-pub(crate) fn test_app_resolver_ptr() -> &'static AtomicPtr<u8> {
-    &APP_CALLABLE_RESOLVER
+pub(crate) fn test_app_resolver_address() -> &'static AtomicUsize {
+    &APP_CALLABLE_RESOLVER_ADDRESS
 }
 
 /// Runtime implementation of require_intrinsic(name, namespace=None) -> function.
@@ -1053,28 +1106,35 @@ mod tests {
         });
     }
 
-    /// Test one-shot manifest guard: first call sets, second is ignored.
-    ///
-    /// Because MANIFEST_SET is a process-global static, this test must run
-    /// in a single function to avoid ordering issues with parallel test
-    /// execution.  We reset the flag at the start (safe in test-only code)
-    /// so the test is idempotent even if other tests ran first.
+    fn reset_manifest_publication_for_test() {
+        test_manifest_state().store(PUBLICATION_EMPTY, Ordering::SeqCst);
+        test_manifest_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        test_manifest_len().store(0, Ordering::SeqCst);
+    }
+
     #[test]
     #[cfg_attr(
         miri,
         ignore = "molt_set_intrinsic_manifest stores a wasm linear-memory address represented as u64; native Miri strict provenance cannot model this wasm-only pointer contract"
     )]
     fn manifest_one_shot_guard() {
-        // Reset globals so this test is self-contained.
-        test_manifest_set().store(false, Ordering::SeqCst);
-        test_manifest_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        let _guard = crate::test_mutex_guard();
+        reset_manifest_publication_for_test();
 
-        // First call should succeed and latch the guard.
+        let malformed_len = u64::from(u32::MAX) + 1;
+        assert_eq!(molt_set_intrinsic_manifest(0x1000, malformed_len), 1);
+        assert_eq!(
+            test_manifest_state().load(Ordering::SeqCst),
+            PUBLICATION_EMPTY,
+            "invalid input must not poison the one-shot slot"
+        );
+
         let ret = molt_set_intrinsic_manifest(0x1000, 10);
         assert_eq!(ret, 0, "first call should return 0 (success)");
-        assert!(
-            test_manifest_set().load(Ordering::SeqCst),
-            "MANIFEST_SET should be true after first call"
+        assert_eq!(
+            test_manifest_state().load(Ordering::SeqCst),
+            PUBLICATION_READY,
+            "manifest payload should be ready after first call"
         );
         assert_eq!(
             test_manifest_ptr().load(Ordering::SeqCst) as usize,
@@ -1082,7 +1142,6 @@ mod tests {
             "INTRINSIC_MANIFEST_PTR should be 0x1000 after first call"
         );
 
-        // Second call should be silently ignored.
         let ret2 = molt_set_intrinsic_manifest(0x2000, 20);
         assert_eq!(ret2, 0, "second call should also return 0");
         assert_eq!(
@@ -1090,6 +1149,80 @@ mod tests {
             0x1000,
             "INTRINSIC_MANIFEST_PTR must still be 0x1000, NOT 0x2000"
         );
+    }
+
+    #[test]
+    fn empty_manifest_is_ready_and_distinct_from_unset() {
+        let _guard = crate::test_mutex_guard();
+        reset_manifest_publication_for_test();
+        assert_eq!(manifest_snapshot(), None);
+
+        assert_eq!(molt_set_intrinsic_manifest(0, 0), 0);
+        assert_eq!(
+            manifest_snapshot().map(|(ptr, len)| (ptr.is_null(), len)),
+            Some((true, 0))
+        );
+        assert_eq!(manifest_bytes(), Some(&[][..]));
+        assert_eq!(
+            test_manifest_state().load(Ordering::Acquire),
+            PUBLICATION_READY
+        );
+    }
+
+    #[test]
+    fn manifest_payload_is_hidden_until_release_publication() {
+        let _guard = crate::test_mutex_guard();
+        reset_manifest_publication_for_test();
+        let first_payload = Box::leak(Box::new([1_u8, 2, 3, 4]));
+        let second_payload = Box::leak(Box::new([9_u8, 8]));
+        let first_address = first_payload.as_mut_ptr() as usize;
+        let second_address = second_payload.as_mut_ptr() as usize;
+        let (winner_claimed_tx, winner_claimed_rx) = std::sync::mpsc::channel();
+        let (publish_tx, publish_rx) = std::sync::mpsc::channel();
+        let (loser_waiting_tx, loser_waiting_rx) = std::sync::mpsc::channel();
+        let (loser_done_tx, loser_done_rx) = std::sync::mpsc::channel();
+
+        let winner = std::thread::spawn(move || {
+            publish_manifest(
+                core::ptr::with_exposed_provenance_mut(first_address),
+                4,
+                || {
+                    winner_claimed_tx.send(()).unwrap();
+                    publish_rx.recv().unwrap();
+                },
+                || unreachable!("CAS winner cannot enter the competing path"),
+            )
+        });
+        winner_claimed_rx.recv().unwrap();
+        assert_eq!(
+            test_manifest_state().load(Ordering::Acquire),
+            PUBLICATION_INITIALIZING
+        );
+        assert_eq!(
+            manifest_snapshot(),
+            None,
+            "readers must not see split payload"
+        );
+
+        let loser = std::thread::spawn(move || {
+            let result = publish_manifest(
+                core::ptr::with_exposed_provenance_mut(second_address),
+                2,
+                || unreachable!("competing setter cannot win after the claim"),
+                || loser_waiting_tx.send(()).unwrap(),
+            );
+            loser_done_tx.send(()).unwrap();
+            result
+        });
+        loser_waiting_rx.recv().unwrap();
+        assert!(
+            loser_done_rx.try_recv().is_err(),
+            "loser returned before READY"
+        );
+        publish_tx.send(()).unwrap();
+        assert_eq!(winner.join().unwrap(), 0);
+        assert_eq!(loser.join().unwrap(), 0);
+        assert_eq!(manifest_snapshot(), Some((first_payload.as_mut_ptr(), 4)));
     }
 
     /// A fake per-app resolver that returns a sentinel address for one known
@@ -1114,11 +1247,11 @@ mod tests {
     )]
     fn app_resolver_used_when_registered() {
         let _guard = crate::test_mutex_guard();
-        // Reset globals so this test is self-contained and order-independent.
-        test_app_resolver_set().store(false, Ordering::SeqCst);
-        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        test_app_resolver_address().store(0, Ordering::SeqCst);
 
-        let ret = molt_set_app_callable_resolver(fake_app_resolver as *const () as usize as u64);
+        let ret = molt_set_app_callable_resolver(crate::provenance::abi::expose_function_address(
+            fake_app_resolver as *const (),
+        ));
         assert_eq!(ret, 0, "first registration should return 0 (success)");
 
         assert_eq!(
@@ -1133,8 +1266,7 @@ mod tests {
         );
 
         // Clean up for other tests sharing the process-global statics.
-        test_app_resolver_set().store(false, Ordering::SeqCst);
-        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        test_app_resolver_address().store(0, Ordering::SeqCst);
     }
 
     /// The resolver registration is one-shot: a second call must be ignored so a
@@ -1147,32 +1279,26 @@ mod tests {
     )]
     fn app_resolver_one_shot_guard() {
         let _guard = crate::test_mutex_guard();
-        test_app_resolver_set().store(false, Ordering::SeqCst);
-        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        test_app_resolver_address().store(0, Ordering::SeqCst);
 
         let first = molt_set_app_callable_resolver(0x1000);
         assert_eq!(first, 0, "first registration should return 0 (success)");
-        assert!(
-            test_app_resolver_set().load(Ordering::SeqCst),
-            "APP_CALLABLE_RESOLVER_SET should be true after first registration"
-        );
         assert_eq!(
-            test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
+            test_app_resolver_address().load(Ordering::SeqCst),
             0x1000,
-            "APP_CALLABLE_RESOLVER should be 0x1000 after first registration"
+            "resolver address should be 0x1000 after first registration"
         );
 
         // Second registration must be silently ignored.
         let second = molt_set_app_callable_resolver(0x2000);
         assert_eq!(second, 0, "second registration should also return 0");
         assert_eq!(
-            test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
+            test_app_resolver_address().load(Ordering::SeqCst),
             0x1000,
-            "APP_CALLABLE_RESOLVER must still be 0x1000, NOT 0x2000"
+            "resolver address must still be 0x1000, NOT 0x2000"
         );
 
         // Clean up.
-        test_app_resolver_set().store(false, Ordering::SeqCst);
-        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+        test_app_resolver_address().store(0, Ordering::SeqCst);
     }
 }

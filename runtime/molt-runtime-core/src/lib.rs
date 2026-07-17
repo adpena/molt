@@ -781,7 +781,8 @@ pub fn rt_string_as_bytes(string_bits: u64) -> Option<&'static [u8]> {
     if ptr.is_null() {
         return None;
     }
-    Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+    let len = usize::try_from(len).ok()?;
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Read the raw bytes from a Molt bytes handle.
@@ -793,7 +794,8 @@ pub fn rt_bytes_as_slice(bytes_bits: u64) -> Option<&'static [u8]> {
     if ptr.is_null() {
         return None;
     }
-    Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+    let len = usize::try_from(len).ok()?;
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 unsafe extern "C" {

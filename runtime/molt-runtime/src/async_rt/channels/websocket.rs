@@ -96,7 +96,9 @@ pub unsafe extern "C" fn molt_ws_pair(
         if out_left.is_null() || out_right.is_null() {
             return 2;
         }
-        let capacity = usize_from_bits(capacity_bits);
+        let Some(capacity) = usize_from_bits(capacity_bits) else {
+            return 1;
+        };
         let (a_tx, a_rx) = bytes_channel(capacity);
         let (b_tx, b_rx) = bytes_channel(capacity);
         let left = Box::new(MoltWebSocket {
@@ -935,7 +937,9 @@ pub unsafe extern "C" fn molt_ws_connect(
         if out.is_null() {
             return 2;
         }
-        let url_len = usize_from_bits(url_len_bits);
+        let Some(url_len) = usize_from_bits(url_len_bits) else {
+            return 1;
+        };
         if url_ptr.is_null() && url_len != 0 {
             return 1;
         }
@@ -1045,7 +1049,9 @@ pub unsafe extern "C" fn molt_ws_connect(
             if out.is_null() {
                 return 2;
             }
-            let url_len = usize_from_bits(url_len_bits);
+            let Some(url_len) = usize_from_bits(url_len_bits) else {
+                return 1;
+            };
             if url_ptr.is_null() && url_len != 0 {
                 return 1;
             }
@@ -1423,7 +1429,9 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
 pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bits: u64) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ws_ptr = ptr_from_bits(ws_bits);
-        let len = usize_from_bits(len_bits);
+        let Some(len) = usize_from_bits(len_bits) else {
+            return pending_bits_i64();
+        };
         if ws_ptr.is_null() || (data_ptr.is_null() && len != 0) {
             return pending_bits_i64();
         }

@@ -139,7 +139,10 @@ pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         unsafe {
-            let capacity_hint = usize_from_bits(capacity_bits);
+            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             let Some(order_ptr) =
                 crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
             else {
@@ -187,7 +190,10 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         unsafe {
-            let capacity_hint = usize_from_bits(capacity_bits);
+            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             let Some(order_ptr) =
                 crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
             else {

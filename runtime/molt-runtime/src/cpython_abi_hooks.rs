@@ -2574,13 +2574,13 @@ impl CExtDispatchKind {
 
 #[derive(Clone, Copy)]
 struct CExtCallable {
-    meth_addr: usize,
+    meth_target: *const (),
     flags: i32,
     self_bits: u64,
     dispatch_kind: CExtDispatchKind,
 }
 
-// SAFETY: meth_addr is a `*const ()` we transmute back to the original
+// SAFETY: meth_target is transmuted back to the original
 // PyCFunction signature inside the trampoline.  The pointer is guaranteed
 // valid for the process lifetime by `loader::LOADED_EXTENSION_LIBRARIES`.
 unsafe impl Send for CExtCallable {}
@@ -3379,7 +3379,18 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
     // The closure encodes the registry id as a NaN-boxed int.
     let id_obj = MoltObject::from_bits(closure_bits);
     let id = match id_obj.as_int() {
-        Some(value) if value >= 0 => value as usize,
+        Some(value) if value >= 0 => match usize::try_from(value) {
+            Ok(value) => value,
+            Err(_) => {
+                return with_gil(|_py| {
+                    crate::raise_exception::<i64>(
+                        &_py,
+                        "SystemError",
+                        "C extension trampoline closure id exceeds the active address space",
+                    )
+                });
+            }
+        },
         _ => {
             return with_gil(|_py| {
                 crate::raise_exception::<i64>(
@@ -3404,19 +3415,23 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
         });
     };
 
-    let n = args_len as usize;
-    let args = if n == 0 {
-        &[][..]
-    } else if args_ptr == 0 {
+    let Some(args_ptr) = crate::provenance::abi::const_ptr::<u64>(args_ptr) else {
         return with_gil(|_py| {
             crate::raise_exception::<i64>(
                 &_py,
                 "SystemError",
-                "C extension trampoline received null args pointer",
+                "C extension argument address exceeds the active address space",
             )
         });
-    } else {
-        unsafe { std::slice::from_raw_parts(args_ptr as *const u64, n) }
+    };
+    let Some(args) = (unsafe { crate::provenance::abi::slice(args_ptr, args_len) }) else {
+        return with_gil(|_py| {
+            crate::raise_exception::<i64>(
+                &_py,
+                "SystemError",
+                "C extension argument range is invalid for the active target",
+            )
+        });
     };
 
     let Some(mut ingress) = CExtIngress::with_capacity(args.len().saturating_add(2)) else {
@@ -3444,7 +3459,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 }
-                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunction = std::mem::transmute(entry.meth_target);
                 f(self_obj, ptr::null_mut())
             }
             CExtDispatchKind::OneObject => {
@@ -3460,7 +3475,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                 let Some(arg) = ingress.push_borrowed_bits(args[0]) else {
                     return cext_ingress_failure("failed to materialize C extension argument view");
                 };
-                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunction = std::mem::transmute(entry.meth_target);
                 f(self_obj, arg)
             }
             CExtDispatchKind::VarArgs => {
@@ -3478,7 +3493,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                     });
                 };
                 ingress.push_owned_view(tuple_obj);
-                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunction = std::mem::transmute(entry.meth_target);
                 f(self_obj, tuple_obj)
             }
             CExtDispatchKind::VarArgsKeywords => {
@@ -3496,7 +3511,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                     });
                 };
                 ingress.push_owned_view(tuple_obj);
-                let f: PyCFunctionWithKeywords = std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunctionWithKeywords = std::mem::transmute(entry.meth_target);
                 f(self_obj, tuple_obj, ptr::null_mut())
             }
             CExtDispatchKind::FastCall => {
@@ -3523,7 +3538,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                 } else {
                     fast_args.as_mut_ptr()
                 };
-                let f: PyCFunctionFast = std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunctionFast = std::mem::transmute(entry.meth_target);
                 f(self_obj, fast_ptr, fast_args.len() as Py_ssize_t)
             }
             CExtDispatchKind::FastCallKeywords => {
@@ -3550,8 +3565,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                 } else {
                     fast_args.as_mut_ptr()
                 };
-                let f: PyCFunctionFastWithKeywords =
-                    std::mem::transmute(entry.meth_addr as *const ());
+                let f: PyCFunctionFastWithKeywords = std::mem::transmute(entry.meth_target);
                 f(
                     self_obj,
                     fast_ptr,
@@ -3647,6 +3661,12 @@ unsafe extern "C" fn hook_register_c_function(
     let Some(dispatch_kind) = CExtDispatchKind::from_flags(flags) else {
         return 0;
     };
+    let Some(meth_target) = crate::provenance::abi::function_ptr(meth_addr) else {
+        return 0;
+    };
+    if meth_target.is_null() {
+        return 0;
+    }
     let name_bytes = unsafe { std::slice::from_raw_parts(name_data, name_len) };
     with_gil(|_py| {
         // Reserve a registry slot for this C function.
@@ -3656,7 +3676,7 @@ unsafe extern "C" fn hook_register_c_function(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let id = guard.len();
             guard.push(CExtCallable {
-                meth_addr: meth_addr as usize,
+                meth_target,
                 flags,
                 self_bits,
                 dispatch_kind,
@@ -5070,7 +5090,7 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let id = registry.len();
             registry.push(CExtCallable {
-                meth_addr: gil_bench_noargs as *const () as usize,
+                meth_target: gil_bench_noargs as *const (),
                 flags: METH_NOARGS,
                 self_bits: MoltObject::none().bits(),
                 dispatch_kind: CExtDispatchKind::NoArgs,
@@ -5573,7 +5593,9 @@ mod tests {
         };
 
         let pyinit_result = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
-        let bits = molt_cpython_abi_pyinit_module_to_bits(pyinit_result as usize as u64);
+        let bits = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            pyinit_result,
+        ));
         let module_ptr = MoltObject::from_bits(bits)
             .as_ptr()
             .expect("PyModuleDef pointer must convert to a Molt module");
@@ -5613,8 +5635,9 @@ mod tests {
             m_free: std::ptr::null_mut(),
         };
 
-        let bits =
-            molt_cpython_abi_pyinit_module_to_bits((&mut def as *mut PyModuleDef) as usize as u64);
+        let bits = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            &mut def as *mut PyModuleDef,
+        ));
         let module_ptr = MoltObject::from_bits(bits)
             .as_ptr()
             .expect("split-WASM PyModuleDef type clone must convert to a Molt module");
@@ -5677,8 +5700,9 @@ mod tests {
             m_free: std::ptr::null_mut(),
         };
 
-        let bits =
-            molt_cpython_abi_pyinit_module_to_bits((&mut def as *mut PyModuleDef) as usize as u64);
+        let bits = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            &mut def as *mut PyModuleDef,
+        ));
         let module_ptr = MoltObject::from_bits(bits)
             .as_ptr()
             .expect("structural PyModuleDef must convert to a Molt module");
@@ -5743,7 +5767,9 @@ mod tests {
         };
 
         let pyinit_result = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
-        let bits = molt_cpython_abi_pyinit_module_to_bits(pyinit_result as usize as u64);
+        let bits = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            pyinit_result,
+        ));
 
         assert!(MoltObject::from_bits(bits).is_none());
         let message = pending_exception_message_for_assertion();
@@ -5762,7 +5788,9 @@ mod tests {
             "failed Py_mod_exec must unregister the def->module state before retry"
         );
 
-        let retry = molt_cpython_abi_pyinit_module_to_bits(pyinit_result as usize as u64);
+        let retry = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            pyinit_result,
+        ));
         assert!(MoltObject::from_bits(retry).is_none());
         let message = pending_exception_message_for_assertion();
         assert!(message.contains("moduledef_exec_error_module"), "{message}");
@@ -5802,7 +5830,9 @@ mod tests {
         let _ = crate::molt_exception_clear();
         let method_bits = unsafe {
             hook_register_c_function(
-                fastcall_null_with_type_error as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    fastcall_null_with_type_error as *const (),
+                ),
                 METH_FASTCALL,
                 MoltObject::none().bits(),
                 b"masked_fastcall".as_ptr(),
@@ -5833,7 +5863,9 @@ mod tests {
         let _ = crate::molt_exception_clear();
         let method_bits = unsafe {
             hook_register_c_function(
-                fastcall_null_without_exception as *const () as usize as u64,
+                crate::provenance::abi::expose_function_address(
+                    fastcall_null_without_exception as *const (),
+                ),
                 METH_FASTCALL,
                 MoltObject::none().bits(),
                 b"broken_fastcall".as_ptr(),
@@ -5909,7 +5941,9 @@ mod tests {
         }
 
         let pyinit_result = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
-        let bits = molt_cpython_abi_pyinit_module_to_bits(pyinit_result as usize as u64);
+        let bits = molt_cpython_abi_pyinit_module_to_bits(crate::provenance::abi::expose_address(
+            pyinit_result,
+        ));
 
         assert!(MoltObject::from_bits(bits).is_none());
         let message = pending_exception_message_for_assertion();

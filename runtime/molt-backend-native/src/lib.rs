@@ -11,9 +11,7 @@
         target_arch = "s390x"
     ))
 ))]
-compile_error!(
-    "Molt's Cranelift native backend supports x86_64, aarch64, riscv64, and s390x"
-);
+compile_error!("Molt's Cranelift native backend supports x86_64, aarch64, riscv64, and s390x");
 
 // Native and LLVM codegen authority lives here so Cranelift/LLVM edits do not
 // rebuild the backend composition crate.
