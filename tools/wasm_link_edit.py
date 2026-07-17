@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from collections.abc import Mapping
 from collections import Counter
 from pathlib import Path
 
@@ -16,14 +17,12 @@ from wasm_link_format import (
     SYMTAB_SUBSECTION_ID,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
-    _EMPTY_FUNC_BODY,
     _ESSENTIAL_EXPORTS,
     _INTERNAL_OUTPUT_EXPORT_PREFIXES,
     _OUTPUT_EXPORT_ALIAS_PREFIX,
     _OUTPUT_RUNTIME_EXPORT_ALIASES,
     _STANDARD_SECTION_ORDER,
     _append_linking_function_symbols,
-    _build_call_graph,
     _build_custom_section,
     _build_linking_payload,
     _build_sections,
@@ -33,9 +32,6 @@ from wasm_link_format import (
     _collect_linking_function_symbols,
     _count_func_imports,
     _find_func_import_index,
-    is_table_ref_export_name,
-    parse_table_ref_export_name,
-    table_ref_export_name,
     wasm_runtime_export_name,
     _parse_custom_section,
     _parse_func_type_indices,
@@ -53,116 +49,11 @@ from wasm_link_format import (
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from molt.cli.external_link_providers import wasm_external_link_provider_symbols
+from wasm_link_facts import callable_table_entry_rows, function_reference_rows
 
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 _SYMBOL_KIND_DATA = 1
-
-
-def _append_table_ref_elements(
-    data: bytes,
-    *,
-    min_table_index: int = 0,
-    allowed_table_indices: set[int] | None = None,
-) -> bytes | None:
-    table_refs: dict[int, int] = {}
-    for func_idx, name in _collect_func_names(data).items():
-        table_idx = parse_table_ref_export_name(name)
-        if table_idx is not None:
-            if table_idx >= min_table_index and (
-                allowed_table_indices is None or table_idx in allowed_table_indices
-            ):
-                table_refs[table_idx] = func_idx
-    for name, func_idx in _collect_function_exports(data).items():
-        table_idx = parse_table_ref_export_name(name)
-        if table_idx is not None:
-            if table_idx >= min_table_index and (
-                allowed_table_indices is None or table_idx in allowed_table_indices
-            ):
-                table_refs[table_idx] = func_idx
-    return _append_active_table_slot_elements(data, table_refs)
-
-
-def _append_active_table_slot_elements(
-    data: bytes, table_refs: dict[int, int]
-) -> bytes | None:
-    """Append active element segments installing ``table_index -> func_index``.
-
-    Later active segments override earlier ones at instantiation, so appended
-    slots win over any linker-synthesized table placement — the contract the
-    post-link callable-table materialization relies on.
-    """
-    if not table_refs:
-        return None
-
-    segments: list[bytes] = []
-    current_start: int | None = None
-    current_prev: int | None = None
-    current_funcs: list[int] = []
-    for table_idx, func_idx in sorted(table_refs.items()):
-        if current_start is None:
-            current_start = current_prev = table_idx
-            current_funcs = [func_idx]
-            continue
-        if table_idx == current_prev + 1:
-            current_prev = table_idx
-            current_funcs.append(func_idx)
-            continue
-        segment = bytearray()
-        segment.append(0x00)
-        segment.append(0x41)
-        segment.extend(_write_varuint(current_start))
-        segment.append(0x0B)
-        segment.extend(_write_varuint(len(current_funcs)))
-        for item in current_funcs:
-            segment.extend(_write_varuint(item))
-        segments.append(bytes(segment))
-        current_start = current_prev = table_idx
-        current_funcs = [func_idx]
-    if current_start is not None:
-        segment = bytearray()
-        segment.append(0x00)
-        segment.append(0x41)
-        segment.extend(_write_varuint(current_start))
-        segment.append(0x0B)
-        segment.extend(_write_varuint(len(current_funcs)))
-        for item in current_funcs:
-            segment.extend(_write_varuint(item))
-        segments.append(bytes(segment))
-
-    sections = _parse_sections(data)
-    new_sections: list[tuple[int, bytes]] = []
-    modified = False
-    for section_id, payload in sections:
-        if section_id != 9:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        rest = payload[offset:]
-        updated = bytearray()
-        updated.extend(_write_varuint(count + len(segments)))
-        updated.extend(rest)
-        for segment in segments:
-            updated.extend(segment)
-        new_sections.append((section_id, bytes(updated)))
-        modified = True
-    if not modified:
-        payload = _write_varuint(len(segments)) + b"".join(segments)
-        element_order = _STANDARD_SECTION_ORDER[9]
-        insert_at = len(new_sections)
-        for index, (section_id, _section_payload) in enumerate(new_sections):
-            if (
-                section_id != 0
-                and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order
-            ):
-                insert_at = index
-                break
-        new_sections.insert(insert_at, (9, payload))
-        modified = True
-    if not modified:
-        return None
-    return _build_sections(new_sections)
 
 
 def _add_symtab_alias(
@@ -213,10 +104,12 @@ def _add_symtab_alias(
 
 
 def _inject_output_export_aliases(
-    output: Path, temp_dir: tempfile.TemporaryDirectory
+    output: Path,
+    temp_dir: tempfile.TemporaryDirectory,
+    facts: Mapping[str, object],
 ) -> Path:
     data = output.read_bytes()
-    wrapper_specs = _collect_output_wrapper_specs(data)
+    wrapper_specs = _collect_output_wrapper_specs(data, facts)
     if not wrapper_specs:
         return output
     try:
@@ -315,6 +208,7 @@ def _inject_output_export_aliases(
                 body.append(0x10)
                 body.extend(_write_varuint(target_idx))
                 if local_count:
+                    assert inc_ref_import_index is not None
                     result_local = len(params)
                     body.append(0x22)
                     body.extend(_write_varuint(result_local))
@@ -341,7 +235,10 @@ def _inject_output_export_aliases(
     return alias_path
 
 
-def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]]:
+def _collect_output_wrapper_specs(
+    data: bytes,
+    facts: Mapping[str, object],
+) -> list[tuple[str, str, int, int]]:
     export_indices = _collect_function_exports(data)
     sections = _parse_sections(data)
     types = _parse_type_section(sections)
@@ -352,14 +249,12 @@ def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]
         return []
     import_count = _count_func_imports(sections)
     original_func_count = len(func_type_indices)
-    primary_prefix = _entry_module_prefix_from_main_init(data, export_indices)
+    primary_prefix = _entry_module_prefix_from_main_init(export_indices, facts)
     if primary_prefix is None:
         primary_prefix = _dominant_output_module_prefix(export_indices)
 
     wrapper_specs: list[tuple[str, str, int, int]] = []
     for name, func_index in export_indices.items():
-        if is_table_ref_export_name(name):
-            continue
         if name == "molt_main":
             continue
         local_index = func_index - import_count
@@ -384,10 +279,15 @@ def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]
     return wrapper_specs
 
 
-def _collect_preserved_output_export_names(data: bytes) -> list[str]:
+def _collect_preserved_output_export_names(
+    data: bytes,
+    facts: Mapping[str, object],
+) -> list[str]:
     return [
         name
-        for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(data)
+        for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(
+            data, facts
+        )
     ]
 
 
@@ -400,9 +300,6 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for public_name, index in export_indices.items():
         candidates = by_index.get(index, [])
-        if is_table_ref_export_name(public_name):
-            mapping[public_name] = public_name
-            continue
         preferred = next(
             (name for name in candidates if name.startswith("__molt_output_export_")),
             None,
@@ -414,142 +311,6 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
         if preferred is not None:
             mapping[public_name] = preferred
     return mapping
-
-
-def _inject_table_ref_export_symbols(
-    output: Path, temp_dir: tempfile.TemporaryDirectory
-) -> Path:
-    data = output.read_bytes()
-    func_import_count = _count_func_imports(_parse_sections(data))
-    # Table-ref exports that target a function IMPORT cannot carry a defined
-    # linker symbol: the WASM object format has no "defined alias of an
-    # import" and LLVM rejects such a symbol table with
-    # ``invalid function symbol index``. Those slots keep their existing
-    # undefined import symbols; the post-link element materialization
-    # resolves them by ABI export name instead
-    # (see ``_resolve_import_targeted_table_refs``).
-    entries = [
-        (
-            name,
-            index,
-            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED | FLAG_NO_STRIP,
-        )
-        for name, index in sorted(_collect_function_exports(data).items())
-        if is_table_ref_export_name(name) and index >= func_import_count
-    ]
-    updated = _append_linking_function_symbols(data, entries)
-    if updated is None:
-        return output
-    alias_path = Path(temp_dir.name) / "output_table_ref_symbols.wasm"
-    alias_path.write_bytes(updated)
-    return alias_path
-
-
-def _collect_import_targeted_table_refs(
-    output_data: bytes,
-) -> dict[int, tuple[str, str]]:
-    """Map callable-table slots exported by the reloc output object to the
-    function imports they target.
-
-    The backend publishes ``__molt_table_ref_<slot>`` exports for every
-    runtime-initialized callable-table slot. Slots whose target is a runtime
-    ABI function reference a function *import* of the output object; those
-    references cannot travel through wasm-ld as defined symbols and are
-    instead re-resolved against the final module by ABI export name.
-    """
-    func_imports: list[tuple[str, str]] = [
-        (module, name)
-        for module, name, kind, _desc in _collect_imports(output_data)
-        if kind == 0
-    ]
-    refs: dict[int, tuple[str, str]] = {}
-    for name, func_index in _collect_function_exports(output_data).items():
-        table_index = parse_table_ref_export_name(name)
-        if table_index is None or func_index >= len(func_imports):
-            continue
-        refs[table_index] = func_imports[func_index]
-    return refs
-
-
-def _import_symbol_name_candidates(module: str, name: str) -> tuple[str, ...]:
-    """Names under which a function import can resolve in a linked module.
-
-    Runtime ABI imports resolve through the generated runtime export-name
-    authority (the same mapping the Rust reloc lane uses for linker symbol
-    names); split-runtime cpython-ABI imports additionally publish a
-    dedicated split export name. The raw import field name is the final
-    fallback (native callable objects import under their own symbol name).
-    """
-    candidates: list[str] = []
-    if module == "molt_runtime":
-        export_name = wasm_runtime_export_name(name)
-        if export_name is not None:
-            candidates.append(export_name)
-        split_export_name = wasm_split_runtime_export_name_for_import(name)
-        if split_export_name is not None:
-            candidates.append(split_export_name)
-    candidates.append(name)
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for candidate in candidates:
-        if candidate not in seen:
-            seen.add(candidate)
-            ordered.append(candidate)
-    return tuple(ordered)
-
-
-def _resolve_import_targeted_table_refs(
-    data: bytes,
-    refs: dict[int, tuple[str, str]],
-    *,
-    description: str,
-) -> dict[int, int]:
-    """Resolve import-targeted table refs to function indices in ``data``.
-
-    In a fully linked module the target resolves to the runtime's defined
-    function (found by its ABI export name); in a still-importing split app
-    module it resolves to the surviving function import. Fails closed when a
-    published slot target cannot be located — a silent skip would leave the
-    callable table slot uninitialized.
-    """
-    if not refs:
-        return {}
-    function_exports = _collect_function_exports(data)
-    function_names: dict[str, int] = {}
-    for func_index, func_name in _collect_func_names(data).items():
-        function_names.setdefault(func_name, func_index)
-    func_import_indices: dict[str, int] = {}
-    func_import_index = 0
-    for _module, name, kind, _desc in _collect_imports(data):
-        if kind != 0:
-            continue
-        func_import_indices.setdefault(name, func_import_index)
-        func_import_index += 1
-    resolved: dict[int, int] = {}
-    unresolved: list[tuple[int, str, str]] = []
-    for table_index, (module, name) in sorted(refs.items()):
-        for candidate in _import_symbol_name_candidates(module, name):
-            func_index = function_exports.get(candidate)
-            if func_index is None:
-                func_index = function_names.get(candidate)
-            if func_index is None:
-                func_index = func_import_indices.get(candidate)
-            if func_index is not None:
-                resolved[table_index] = func_index
-                break
-        else:
-            unresolved.append((table_index, module, name))
-    if unresolved:
-        preview = ", ".join(
-            f"{table_ref_export_name(table_index)} -> {module}::{name}"
-            for table_index, module, name in unresolved[:8]
-        )
-        suffix = f", ... (+{len(unresolved) - 8} more)" if len(unresolved) > 8 else ""
-        raise ValueError(
-            f"{description} cannot resolve import-targeted callable table "
-            f"ref(s): {preview}{suffix}"
-        )
-    return resolved
 
 
 def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:
@@ -696,29 +457,26 @@ def _dominant_output_module_prefix(export_indices: dict[str, int]) -> str | None
 
 
 def _entry_module_prefix_from_main_init(
-    data: bytes, export_indices: dict[str, int]
+    export_indices: dict[str, int],
+    facts: Mapping[str, object],
 ) -> str | None:
     main_init_index = export_indices.get("molt_init___main__")
     if main_init_index is None:
         return None
-    sections = _parse_sections(data)
-    code_payload = next((payload for sid, payload in sections if sid == 10), None)
-    if code_payload is None:
-        return None
-    import_count = _count_func_imports(sections)
-    call_graph = _build_call_graph(code_payload, import_count)
+    callees: list[int] = []
+    for function_index, direct_calls, _ref_funcs in function_reference_rows(facts):
+        if function_index != main_init_index:
+            continue
+        callees = direct_calls
+        break
     inverse_exports: dict[int, list[str]] = {}
     for name, index in export_indices.items():
         inverse_exports.setdefault(index, []).append(name)
-    for callee in call_graph.get(main_init_index, ()):
+    for callee in callees:
         candidates = inverse_exports.get(callee, ())
         preferred = sorted(
             candidates,
-            key=lambda name: (
-                is_table_ref_export_name(name),
-                not name.startswith("molt_init_"),
-                name,
-            ),
+            key=lambda name: (not name.startswith("molt_init_"), name),
         )
         for target_name in preferred:
             if (
@@ -816,23 +574,26 @@ def _memory_import_min(data: bytes) -> int | None:
     return None
 
 
-def _highest_exported_table_ref_index(data: bytes) -> int | None:
-    refs = [
-        ref_index
-        for name in _collect_function_exports(data)
-        if (ref_index := parse_table_ref_export_name(name)) is not None
-    ]
-    if not refs:
+def _highest_active_table_slot(facts: Mapping[str, object]) -> int | None:
+    entries = callable_table_entry_rows(facts)
+    if not entries:
         return None
-    return max(refs)
+    highest: int | None = None
+    for slot, _function_index, _type_index, _role in entries:
+        highest = slot if highest is None else max(highest, slot)
+    return highest
 
 
-def _required_linked_table_min(data: bytes, fallback_min: int | None) -> int | None:
+def _required_linked_table_min(
+    data: bytes,
+    fallback_min: int | None,
+    facts: Mapping[str, object],
+) -> int | None:
     required = fallback_min
-    highest_ref = _highest_exported_table_ref_index(data)
-    if highest_ref is not None:
-        ref_required = highest_ref + 1
-        required = ref_required if required is None else max(required, ref_required)
+    highest_slot = _highest_active_table_slot(facts)
+    if highest_slot is not None:
+        slot_required = highest_slot + 1
+        required = slot_required if required is None else max(required, slot_required)
     current_min = _table_import_min(data)
     if current_min is not None:
         required = current_min if required is None else max(required, current_min)
@@ -935,65 +696,6 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
             new_sections.append((section_id, bytes(rebuilt)))
             continue
         new_sections.append((section_id, payload))
-    if not changed:
-        return None
-    return _build_sections(new_sections)
-
-
-def _neutralize_linked_table_init(data: bytes) -> bytes | None:
-    """Replace linked-output ``molt_table_init`` with a no-op body.
-
-    Relocatable app modules need ``molt_table_init`` to install table entries
-    into a separate runtime table. A fully linked monolith must not replay that
-    initializer because its pre-link table indices can overlap runtime-owned
-    active table slots after wasm-ld. App-owned slots are materialized through
-    linked active element cleanup after the runtime-owned prefix is known.
-    """
-    export_indices = _collect_function_exports(data)
-    table_init_index = export_indices.get("molt_table_init")
-    if table_init_index is None:
-        return None
-
-    sections = _parse_sections(data)
-    import_count = _count_func_imports(sections)
-    local_index = table_init_index - import_count
-    if local_index < 0:
-        return None
-
-    types = _parse_type_section(sections)
-    _func_section_idx, func_type_indices = _parse_func_type_indices(sections)
-    if local_index >= len(func_type_indices):
-        return None
-    type_index = func_type_indices[local_index]
-    params, results = types[type_index]
-    if params or results:
-        raise ValueError("molt_table_init must have no params and no results")
-
-    changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 10:
-            new_sections.append((section_id, payload))
-            continue
-
-        offset = 0
-        func_count, offset = _read_varuint(payload, offset)
-        if local_index >= func_count:
-            return None
-        rebuilt = bytearray(_write_varuint(func_count))
-        for idx in range(func_count):
-            body_size, body_start = _read_varuint(payload, offset)
-            body_end = body_start + body_size
-            if idx == local_index:
-                rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
-                rebuilt.extend(_EMPTY_FUNC_BODY)
-                changed = True
-            else:
-                rebuilt.extend(_write_varuint(body_size))
-                rebuilt.extend(payload[body_start:body_end])
-            offset = body_end
-        new_sections.append((section_id, bytes(rebuilt)))
-
     if not changed:
         return None
     return _build_sections(new_sections)
@@ -1275,7 +977,9 @@ def _rewrite_runtime_import_module_namespace(
 
 
 def _rewrite_output_imports(
-    output: Path, runtime_exports: set[str]
+    output: Path,
+    runtime_exports: set[str],
+    temp_dir: tempfile.TemporaryDirectory,
 ) -> tuple[Path, tempfile.TemporaryDirectory, list[str]] | None:
     """Rewrite output imports to add the ``molt_`` prefix where needed.
 
@@ -1349,9 +1053,8 @@ def _rewrite_output_imports(
         )
 
     if not needs_rewrite:
-        return output, tempfile.TemporaryDirectory(prefix="molt-wasm-link-"), []
+        return output, temp_dir, []
 
-    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
     wasm_path = Path(temp_dir.name) / "output_rewrite.wasm"
     wasm_path.write_bytes(_build_sections(new_sections))
     return wasm_path, temp_dir, force_exports
@@ -1452,25 +1155,10 @@ def _standard_section_order_error(data: bytes) -> str | None:
     return None
 
 
-def _split_app_reference_function_exports(reference_data: bytes | None) -> set[str]:
-    """Return the split-app function exports that must remain host-visible."""
-    if reference_data is None:
-        return set()
-    keep = {
-        "molt_host_init",
-        "molt_main",
-        "molt_table_init",
-        "molt_set_wasm_table_base",
-    }
-    keep.update(_collect_preserved_output_export_names(reference_data))
-    return {name for name in _collect_function_exports(reference_data) if name in keep}
-
-
 def _strip_internal_exports(
     data: bytes,
     *,
     preserve_exports: set[str] | None = None,
-    preserve_table_refs: bool = True,
 ) -> bytes | None:
     """Remove exports that only exist for internal ABI wiring or relocatable linking.
 
@@ -1505,9 +1193,7 @@ def _strip_internal_exports(
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if name not in keep_exports and (
-                not preserve_table_refs or not is_table_ref_export_name(name)
-            ):
+            if name not in keep_exports:
                 modified = True
                 continue
             if name in seen_exports:

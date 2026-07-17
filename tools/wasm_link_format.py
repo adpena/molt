@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -83,7 +83,133 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
     _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 )
 
-WASM_TABLE_REF_EXPORT_PREFIX = _WASM_ABI.WASM_TABLE_REF_EXPORT_PREFIX
+CALLABLE_TABLE_ATTESTATION_SECTION = _WASM_ABI.WASM_CALLABLE_TABLE_SECTION_NAME
+CALLABLE_TABLE_ATTESTATION_VERSION = _WASM_ABI.WASM_CALLABLE_TABLE_SECTION_VERSION
+CALLABLE_TABLE_LAYOUT_SECTION = _WASM_ABI.WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME
+CALLABLE_TABLE_LAYOUT_VERSION = _WASM_ABI.WASM_CALLABLE_TABLE_LAYOUT_VERSION
+CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = _WASM_ABI.WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE
+CALLABLE_TABLE_VALUE_TYPE_FORMAT = _WASM_ABI.WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT
+
+
+@dataclass(frozen=True, slots=True)
+class CallableTableEntry:
+    slot: int
+    func_index: int
+    type_index: int
+    params: tuple[bytes, ...]
+    results: tuple[bytes, ...]
+    role: int = CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE
+
+
+@dataclass(frozen=True, slots=True)
+class CallableTableLayout:
+    fixed_prefix_base: int
+    fixed_prefix_len: int
+    finalized_app_base: int
+    app_entry_count: int
+
+    def validate(self) -> None:
+        values = (
+            self.fixed_prefix_base,
+            self.fixed_prefix_len,
+            self.finalized_app_base,
+            self.app_entry_count,
+        )
+        if any(value < 0 or value > 0xFFFF_FFFF for value in values):
+            raise ValueError("callable-table layout values must fit u32")
+        if self.fixed_prefix_len == 0 and self.fixed_prefix_base != 0:
+            raise ValueError("empty callable-table fixed prefix must have base zero")
+        fixed_end = self.fixed_prefix_base + self.fixed_prefix_len
+        if fixed_end > 0xFFFF_FFFF:
+            raise ValueError("callable-table fixed prefix boundary overflows u32")
+        if self.fixed_prefix_len and fixed_end > self.finalized_app_base:
+            raise ValueError(
+                "callable-table fixed runtime prefix overlaps finalized app base"
+            )
+        app_end = self.finalized_app_base + self.app_entry_count
+        if app_end > 0xFFFF_FFFF:
+            raise ValueError("callable-table finalized app boundary overflows u32")
+
+
+def _validate_split_callable_table_ownership(
+    app_entries: Sequence[CallableTableEntry],
+    runtime_entries: Sequence[CallableTableEntry],
+    layout: CallableTableLayout,
+) -> None:
+    """Prove the final split artifacts publish one disjoint table authority."""
+    layout.validate()
+    app_slots = sorted(entry.slot for entry in app_entries)
+    runtime_slots = sorted(entry.slot for entry in runtime_entries)
+    for offset, slot in enumerate(app_slots):
+        if offset >= layout.app_entry_count:
+            raise ValueError(
+                "split callable-table app publication is not contiguous: "
+                f"unexpected app slot {slot}"
+            )
+        expected = layout.finalized_app_base + offset
+        if slot > expected:
+            raise ValueError(
+                "split callable-table app publication is not contiguous: "
+                f"missing app slot {expected}"
+            )
+        if slot < expected:
+            raise ValueError(
+                "split callable-table app publication is not contiguous: "
+                f"unexpected app slot {slot}"
+            )
+    if len(app_slots) < layout.app_entry_count:
+        raise ValueError(
+            "split callable-table app publication is not contiguous: "
+            f"missing app slot {layout.finalized_app_base + len(app_slots)}"
+        )
+
+    app_index = 0
+    runtime_index = 0
+    overlap_slot: int | None = None
+    while app_index < len(app_slots) and runtime_index < len(runtime_slots):
+        app_slot = app_slots[app_index]
+        runtime_slot = runtime_slots[runtime_index]
+        if app_slot == runtime_slot:
+            overlap_slot = app_slot
+            break
+        if app_slot < runtime_slot:
+            app_index += 1
+        else:
+            runtime_index += 1
+    if overlap_slot is not None:
+        raise ValueError(
+            "split callable-table ownership overlaps at slot " f"{overlap_slot}"
+        )
+    runtime_at_or_above_app = next(
+        (slot for slot in runtime_slots if slot >= layout.finalized_app_base),
+        None,
+    )
+    if runtime_at_or_above_app is not None:
+        raise ValueError(
+            "split callable-table runtime slot reaches finalized app base: "
+            f"{runtime_at_or_above_app} >= {layout.finalized_app_base}"
+        )
+    fixed_start = layout.fixed_prefix_base
+    fixed_end = fixed_start + layout.fixed_prefix_len
+    if layout.fixed_prefix_len and runtime_slots and runtime_slots[0] != fixed_start:
+        raise ValueError(
+            "split callable-table fixed prefix base is not the runtime base"
+        )
+    expected_fixed = fixed_start
+    for slot in runtime_slots:
+        if slot < fixed_start:
+            continue
+        if slot >= fixed_end:
+            break
+        if slot > expected_fixed:
+            break
+        if slot == expected_fixed:
+            expected_fixed += 1
+    if expected_fixed != fixed_end:
+        raise ValueError(
+            "split callable-table runtime fixed prefix is incomplete: "
+            f"missing slot {expected_fixed}"
+        )
 
 
 def wasm_runtime_import_name(name: str) -> str | None:
@@ -115,27 +241,6 @@ def is_call_indirect_import_name(name: str) -> bool:
     return name in _CALL_INDIRECT_IMPORT_SET
 
 
-def table_ref_export_name(index: int) -> str:
-    if index < 0:
-        raise ValueError("WASM table-ref export index must be non-negative")
-    return f"{WASM_TABLE_REF_EXPORT_PREFIX}{index}"
-
-
-def parse_table_ref_export_name(name: str) -> int | None:
-    if not name.startswith(WASM_TABLE_REF_EXPORT_PREFIX):
-        return None
-    raw = name[len(WASM_TABLE_REF_EXPORT_PREFIX) :]
-    if not raw or not raw.isascii() or not raw.isdecimal():
-        return None
-    if raw != str(int(raw)):
-        return None
-    return int(raw)
-
-
-def is_table_ref_export_name(name: str) -> bool:
-    return parse_table_ref_export_name(name) is not None
-
-
 _OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
 
 _OUTPUT_EXPORT_ALIAS_PREFIX = _WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX
@@ -159,9 +264,6 @@ class WasmModuleFacts:
     module_imports: Mapping[str, frozenset[str]]
     table_import_mins: Mapping[tuple[str, str], int]
     memory_import_mins: Mapping[tuple[str, str], int]
-    element_declared_funcs: frozenset[int]
-    code_ref_funcs: frozenset[int]
-    total_func_count: int
     element_validation_error: str | None
 
 
@@ -799,276 +901,6 @@ def _parse_element_payload(payload: bytes) -> tuple[set[int], str | None]:
     return declared, validation_error
 
 
-def _collect_element_declared_funcs(data: bytes) -> set[int]:
-    """Collect all function indices declared in element segments."""
-    for section_id, payload in _parse_sections(data):
-        if section_id != 9:
-            continue
-        declared, _ = _parse_element_payload(payload)
-        return declared
-    return set()
-
-
-def _scan_code_section_ref_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
-    """Scan all code bodies for ref.func (0xD2) instructions.
-
-    Returns the set of function indices referenced by ref.func instructions.
-    Uses the same full instruction decoder as ``_build_call_graph`` to avoid
-    desynchronisation on opcodes with multi-byte immediates.
-    """
-    ref_funcs: set[int] = set()
-    for section_id, payload in sections:
-        if section_id != 10:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            body_size, body_start = _read_varuint(payload, offset)
-            body_end = body_start + body_size
-            pos = body_start
-            # Skip locals
-            num_local_decls, pos = _read_varuint(payload, pos)
-            for _ld in range(num_local_decls):
-                _, pos = _read_varuint(payload, pos)  # count
-                pos += 1  # type
-            # Scan instructions — mirrors _build_call_graph's decoder
-            while pos < body_end:
-                op = payload[pos]
-                pos += 1
-                if pos > body_end:
-                    break
-                # ref.func — the instruction we are looking for
-                if op == 0xD2:
-                    func_idx, pos = _read_varuint(payload, pos)
-                    ref_funcs.add(func_idx)
-                # No-immediate opcodes
-                elif op in (
-                    0x00,
-                    0x01,
-                    0x05,
-                    0x0B,
-                    0x0F,
-                    0x1A,
-                    0x1B,
-                    0xD1,  # ref.is_null
-                    0xD3,  # ref.as_non_null
-                ):
-                    pass
-                # Block-type opcodes (block / loop / if)
-                elif op in (0x02, 0x03, 0x04):
-                    bt = payload[pos]
-                    if bt in (0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F, 0x7B):
-                        pos += 1
-                    else:
-                        # Signed LEB128 type index
-                        _, pos = _read_varsint(payload, pos)
-                # Single-varuint opcodes
-                elif op in (
-                    0x0C,
-                    0x0D,  # br, br_if
-                    0x20,
-                    0x21,
-                    0x22,
-                    0x23,
-                    0x24,  # local/global ops
-                    0x25,
-                    0x26,  # table.get, table.set
-                    0xD0,  # ref.null (heaptype)
-                    0xD4,
-                    0xD5,  # br_on_null, br_on_non_null
-                ):
-                    _, pos = _read_varuint(payload, pos)
-                # br_table
-                elif op == 0x0E:
-                    cnt, pos = _read_varuint(payload, pos)
-                    for _bt in range(cnt + 1):
-                        _, pos = _read_varuint(payload, pos)
-                # call / return_call
-                elif op in (0x10, 0x12):
-                    _, pos = _read_varuint(payload, pos)
-                # call_indirect / return_call_indirect
-                elif op in (0x11, 0x13):
-                    _, pos = _read_varuint(payload, pos)
-                    _, pos = _read_varuint(payload, pos)
-                # call_ref / return_call_ref (type index immediate)
-                elif op in (0x14, 0x15):
-                    _, pos = _read_varuint(payload, pos)
-                # select with types
-                elif op == 0x1C:
-                    n, pos = _read_varuint(payload, pos)
-                    pos += n
-                # Memory load/store (2 varuints: align + offset)
-                elif 0x28 <= op <= 0x3E:
-                    _, pos = _read_varuint(payload, pos)  # align
-                    _, pos = _read_varuint(payload, pos)  # offset
-                # memory.size / memory.grow
-                elif op in (0x3F, 0x40):
-                    _, pos = _read_varuint(payload, pos)  # memory index
-                # Constants
-                elif op == 0x41:  # i32.const
-                    _, pos = _read_varsint(payload, pos)
-                elif op == 0x42:  # i64.const
-                    _, pos = _read_varsint(payload, pos)
-                elif op == 0x43:  # f32.const
-                    pos += 4
-                elif op == 0x44:  # f64.const
-                    pos += 8
-                # Numeric ops (no immediates)
-                elif 0x45 <= op <= 0xC4:
-                    pass
-                # try_table (exception handling)
-                elif op == 0x1F:
-                    bt = payload[pos]
-                    if bt == 0x40 or (bt >= 0x7C and bt <= 0x7F):
-                        pos += 1
-                    else:
-                        _, pos = _read_varsint(payload, pos)
-                    n_catches, pos = _read_varuint(payload, pos)
-                    for _ in range(n_catches):
-                        catch_kind = payload[pos]
-                        pos += 1
-                        if catch_kind in (0x00, 0x01):
-                            _, pos = _read_varuint(payload, pos)
-                            _, pos = _read_varuint(payload, pos)
-                        elif catch_kind in (0x02, 0x03):
-                            _, pos = _read_varuint(payload, pos)
-                # Extended opcodes (0xFC prefix)
-                elif op == 0xFC:
-                    ext, pos = _read_varuint(payload, pos)
-                    if ext <= 7:  # trunc_sat
-                        pass
-                    elif ext == 8:  # memory.init
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 9:  # data.drop
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 10:  # memory.copy
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 11:  # memory.fill
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 12:  # table.init
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 13:  # elem.drop
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext == 14:  # table.copy
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                    elif ext in (15, 16, 17):  # table.grow/size/fill
-                        _, pos = _read_varuint(payload, pos)
-                # SIMD prefix (0xFD)
-                elif op == 0xFD:
-                    simd, pos = _read_varuint(payload, pos)
-                    if simd <= 11:  # v128.load variants
-                        _, pos = _read_varuint(payload, pos)  # align
-                        _, pos = _read_varuint(payload, pos)  # offset
-                    elif simd in (12, 13):  # v128.const / i8x16.shuffle
-                        pos += 16
-                    elif 84 <= simd <= 91:  # v128.load_lane/store_lane
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                        pos += 1  # lane index
-                    elif 21 <= simd <= 34:  # extract_lane/replace_lane
-                        pos += 1  # lane index
-                    elif 92 <= simd <= 93:  # v128.load32_zero/load64_zero
-                        _, pos = _read_varuint(payload, pos)
-                        _, pos = _read_varuint(payload, pos)
-                    # Other SIMD ops have no immediates
-                # Atomics prefix (0xFE)
-                elif op == 0xFE:
-                    atom, pos = _read_varuint(payload, pos)
-                    if atom == 0x03:  # atomic.fence
-                        pos += 1
-                    elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
-                        _, pos = _read_varuint(payload, pos)  # alignment
-                        _, pos = _read_varuint(payload, pos)  # offset
-                # All other single-byte opcodes (nop, unreachable, end,
-                # return, drop, numeric ops, etc.) need no immediate
-                # parsing.
-            offset = body_end
-        break
-    return ref_funcs
-
-
-def _scan_code_ref_funcs(data: bytes) -> set[int]:
-    return _scan_code_section_ref_funcs(_parse_sections(data))
-
-
-def _declare_ref_func_elements(data: bytes) -> bytes | None:
-    """Add a declarative element segment for functions referenced by ref.func
-    but not yet declared in any element segment.
-
-    The WebAssembly spec requires every function index used in a ref.func
-    instruction to be *declared* in some element segment.  After wasm-ld
-    links and --gc-sections runs, some element entries may be dropped while
-    the code section still contains ref.func instructions pointing at them.
-    This function patches the binary to add a declarative (flags=0x03)
-    element segment covering the missing declarations.
-    """
-    declared = _collect_element_declared_funcs(data)
-    referenced = _scan_code_ref_funcs(data)
-    undeclared = sorted(referenced - declared)
-    return _declare_ref_func_elements_for_undeclared(data, undeclared)
-
-
-def _declare_ref_func_elements_from_facts(
-    data: bytes, facts: WasmModuleFacts
-) -> bytes | None:
-    undeclared = sorted(set(facts.code_ref_funcs) - set(facts.element_declared_funcs))
-    return _declare_ref_func_elements_for_undeclared(data, undeclared)
-
-
-def _declare_ref_func_elements_for_undeclared(
-    data: bytes, undeclared: list[int]
-) -> bytes | None:
-    if not undeclared:
-        return None
-
-    # Build a declarative element segment (flags = 0x03).
-    # Format: flags(0x03) elemkind(0x00) vec(funcidx...)
-    new_segment = bytearray()
-    new_segment.extend(_write_varuint(0x03))  # declarative
-    new_segment.append(0x00)  # elemkind = funcref
-    new_segment.extend(_write_varuint(len(undeclared)))
-    for func_idx in undeclared:
-        new_segment.extend(_write_varuint(func_idx))
-
-    sections = _parse_sections(data)
-    new_sections: list[tuple[int, bytes]] = []
-    modified = False
-    for section_id, payload in sections:
-        if section_id != 9:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        rest = payload[offset:]
-        updated = bytearray()
-        updated.extend(_write_varuint(count + 1))
-        updated.extend(rest)
-        updated.extend(new_segment)
-        new_sections.append((section_id, bytes(updated)))
-        modified = True
-    if not modified:
-        # No element section yet -- create one.
-        payload = _write_varuint(1) + bytes(new_segment)
-        element_order = _STANDARD_SECTION_ORDER[9]
-        insert_at = len(new_sections)
-        for index, (section_id, _section_payload) in enumerate(new_sections):
-            if (
-                section_id != 0
-                and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order
-            ):
-                insert_at = index
-                break
-        new_sections.insert(insert_at, (9, payload))
-        modified = True
-    if not modified:
-        return None
-    return _build_sections(new_sections)
-
-
 def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     """Return the number of function imports in the import section."""
     for sid, payload in sections:
@@ -1364,16 +1196,10 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
     module_imports: dict[str, set[str]] = {}
     table_import_mins: dict[tuple[str, str], int] = {}
     memory_import_mins: dict[tuple[str, str], int] = {}
-    element_declared_funcs: set[int] = set()
-    code_ref_funcs: set[int] = set()
-    func_import_count = 0
-    defined_func_count = 0
     element_validation_error: str | None = None
     saw_imports = False
     saw_exports = False
-    saw_function_section = False
     saw_elements = False
-    saw_code = False
 
     for section_id, payload in sections:
         if section_id == 0:
@@ -1386,30 +1212,21 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
         if section_id == 2 and not saw_imports:
             (
                 imports,
-                func_import_count,
+                _func_import_count,
                 module_imports,
                 table_import_mins,
                 memory_import_mins,
             ) = _parse_import_payload(payload)
             saw_imports = True
             continue
-        if section_id == 3 and not saw_function_section:
-            defined_func_count, _ = _read_varuint(payload, 0)
-            saw_function_section = True
-            continue
         if section_id == 7 and not saw_exports:
             exports, function_exports, export_kinds = _parse_export_payload(payload)
             saw_exports = True
             continue
         if section_id == 9 and not saw_elements:
-            element_declared_funcs, element_validation_error = _parse_element_payload(
-                payload
-            )
+            _, element_validation_error = _parse_element_payload(payload)
             saw_elements = True
             continue
-        if section_id == 10 and not saw_code:
-            code_ref_funcs = _scan_code_section_ref_funcs([(10, payload)])
-            saw_code = True
 
     frozen_module_imports = {
         module: frozenset(names) for module, names in module_imports.items()
@@ -1423,206 +1240,8 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
         module_imports=MappingProxyType(frozen_module_imports),
         table_import_mins=MappingProxyType(dict(table_import_mins)),
         memory_import_mins=MappingProxyType(dict(memory_import_mins)),
-        element_declared_funcs=frozenset(element_declared_funcs),
-        code_ref_funcs=frozenset(code_ref_funcs),
-        total_func_count=func_import_count + defined_func_count,
         element_validation_error=element_validation_error,
     )
-
-
-def _build_call_graph(code_payload: bytes, import_count: int) -> dict[int, set[int]]:
-    """Build a call graph by decoding WASM instructions in the code section.
-
-    Returns a mapping from function index to the set of function indices it
-    directly calls (via the ``call`` opcode 0x10) or references (via
-    ``ref.func`` opcode 0xD2).  Indirect calls (``call_indirect``) are
-    intentionally excluded since their targets are determined at runtime.
-    """
-    graph: dict[int, set[int]] = {}
-    offset = 0
-    func_count, offset = _read_varuint(code_payload, offset)
-
-    for f_idx in range(func_count):
-        func_index = import_count + f_idx
-        body_size, offset = _read_varuint(code_payload, offset)
-        body_end = offset + body_size
-        calls: set[int] = set()
-
-        if body_size <= 3:
-            offset = body_end
-            graph[func_index] = calls
-            continue
-
-        pos = offset
-        try:
-            lc, pos = _read_varuint(code_payload, pos)
-            for _ in range(lc):
-                _, pos = _read_varuint(code_payload, pos)
-                pos += 1  # valtype
-        except (IndexError, ValueError):
-            offset = body_end
-            graph[func_index] = calls
-            continue
-
-        # Decode instructions, tracking only call/ref.func targets
-        while pos < body_end:
-            op = code_payload[pos]
-            pos += 1
-            if pos > body_end:
-                break
-            # No-immediate opcodes
-            if op in (
-                0x00,
-                0x01,
-                0x05,
-                0x0B,
-                0x0F,
-                0x1A,
-                0x1B,
-                0xD1,  # ref.is_null
-                0xD3,  # ref.as_non_null
-            ):
-                pass
-            # Block-type opcodes
-            elif op in (0x02, 0x03, 0x04):
-                bt = code_payload[pos]
-                if bt in (0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F, 0x7B):
-                    pos += 1
-                else:
-                    while code_payload[pos] & 0x80:
-                        pos += 1
-                    pos += 1
-            # Single-varuint opcodes
-            elif op in (
-                0x0C,
-                0x0D,  # br, br_if
-                0x20,
-                0x21,
-                0x22,
-                0x23,
-                0x24,  # local/global ops
-                0x25,
-                0x26,  # table.get, table.set
-                0x3F,
-                0x40,  # memory.size, memory.grow
-                0xD0,  # ref.null (heaptype)
-                0xD4,
-                0xD5,  # br_on_null, br_on_non_null
-            ):
-                _, pos = _read_varuint(code_payload, pos)
-            # br_table
-            elif op == 0x0E:
-                n, pos = _read_varuint(code_payload, pos)
-                for _ in range(n + 1):
-                    _, pos = _read_varuint(code_payload, pos)
-            # call / return_call
-            elif op in (0x10, 0x12):
-                idx, pos = _read_varuint(code_payload, pos)
-                calls.add(idx)
-            # call_indirect / return_call_indirect
-            elif op in (0x11, 0x13):
-                _, pos = _read_varuint(code_payload, pos)
-                _, pos = _read_varuint(code_payload, pos)
-            # call_ref / return_call_ref (type index immediate)
-            elif op in (0x14, 0x15):
-                _, pos = _read_varuint(code_payload, pos)
-            # ref.func
-            elif op == 0xD2:
-                idx, pos = _read_varuint(code_payload, pos)
-                calls.add(idx)
-            # Memory load/store (2 varuints: align + offset)
-            elif 0x28 <= op <= 0x3E:
-                _, pos = _read_varuint(code_payload, pos)
-                _, pos = _read_varuint(code_payload, pos)
-            # Constants
-            elif op == 0x41:  # i32.const
-                while code_payload[pos] & 0x80:
-                    pos += 1
-                pos += 1
-            elif op == 0x42:  # i64.const
-                while code_payload[pos] & 0x80:
-                    pos += 1
-                pos += 1
-            elif op == 0x43:
-                pos += 4  # f32.const
-            elif op == 0x44:
-                pos += 8  # f64.const
-            # Numeric ops (no immediates)
-            elif 0x45 <= op <= 0xC4:
-                pass
-            # select with types
-            elif op == 0x1C:
-                n, pos = _read_varuint(code_payload, pos)
-                pos += n
-            # Extended opcodes
-            elif op == 0xFC:
-                ext, pos = _read_varuint(code_payload, pos)
-                if ext <= 7:
-                    pass
-                elif ext in (8, 10, 12, 14):
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-                elif ext in (9, 11, 13, 15, 16, 17):
-                    _, pos = _read_varuint(code_payload, pos)
-            # SIMD prefix
-            elif op == 0xFD:
-                simd, pos = _read_varuint(code_payload, pos)
-                if simd <= 11:
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-                elif simd in (12, 13):
-                    pos += 16
-                elif 84 <= simd <= 91:
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-                    pos += 1
-                elif 21 <= simd <= 34:
-                    pos += 1
-                elif 92 <= simd <= 93:
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-            # try_table (exception handling)
-            elif op == 0x1F:
-                # Block type
-                bt = code_payload[pos]
-                if bt == 0x40 or (bt >= 0x7C and bt <= 0x7F):  # void or valtype
-                    pos += 1
-                else:
-                    _, pos = _read_varsint(
-                        code_payload, pos
-                    )  # type index (signed LEB128)
-                # Catch vector
-                n_catches, pos = _read_varuint(code_payload, pos)
-                for _ in range(n_catches):
-                    catch_kind = code_payload[pos]
-                    pos += 1
-                    if catch_kind in (
-                        0x00,
-                        0x01,
-                    ):  # catch / catch_ref: tag_index + label
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                    elif catch_kind in (
-                        0x02,
-                        0x03,
-                    ):  # catch_all / catch_all_ref: label only
-                        _, pos = _read_varuint(code_payload, pos)
-            # Atomics prefix
-            elif op == 0xFE:
-                atom, pos = _read_varuint(code_payload, pos)
-                if atom == 0x03:  # atomic.fence — 1-byte reserved immediate
-                    pos += 1
-                elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
-                    _, pos = _read_varuint(code_payload, pos)  # alignment
-                    _, pos = _read_varuint(code_payload, pos)  # offset
-            else:
-                # Unknown opcode -- stop decoding this function body
-                break
-
-        graph[func_index] = calls
-        offset = body_end
-
-    return graph
 
 
 def _parse_type_section(

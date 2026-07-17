@@ -17,6 +17,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
@@ -54,6 +55,9 @@ from molt.wasm_artifact import (  # noqa: E402
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
     CALL_INDIRECT_RE as CALL_INDIRECT_RE,
+    CALLABLE_TABLE_ATTESTATION_SECTION as CALLABLE_TABLE_ATTESTATION_SECTION,
+    CallableTableEntry as CallableTableEntry,
+    CallableTableLayout as CallableTableLayout,
     FLAG_BINDING_GLOBAL as FLAG_BINDING_GLOBAL,
     FLAG_EXPLICIT_NAME as FLAG_EXPLICIT_NAME,
     FLAG_EXPORTED as FLAG_EXPORTED,
@@ -74,7 +78,6 @@ from wasm_link_format import (  # noqa: E402
     _build_linking_payload as _build_linking_payload,
     _build_sections as _build_sections_raw,
     _collect_custom_names as _collect_custom_names,
-    _collect_element_declared_funcs as _collect_element_declared_funcs,
     _collect_exports as _collect_exports,
     _collect_func_names as _collect_func_names,
     _collect_function_exports as _collect_function_exports,
@@ -82,8 +85,6 @@ from wasm_link_format import (  # noqa: E402
     _collect_linking_function_symbols as _collect_linking_function_symbols,
     _collect_module_imports as _collect_module_imports,
     _count_func_imports as _count_func_imports,
-    _declare_ref_func_elements as _declare_ref_func_elements,
-    _declare_ref_func_elements_from_facts as _declare_ref_func_elements_from_facts,
     _ensure_table_export as _ensure_table_export,
     _find_func_import_index as _find_func_import_index,
     _flatten_rec_groups as _flatten_rec_groups,
@@ -101,50 +102,40 @@ from wasm_link_format import (  # noqa: E402
     _read_varuint as _read_varuint,
     _read_varsint as _read_varsint,
     call_indirect_import_name_for_arity as call_indirect_import_name_for_arity,
-    is_table_ref_export_name as is_table_ref_export_name,
     is_call_indirect_import_name as is_call_indirect_import_name,
-    parse_table_ref_export_name as parse_table_ref_export_name,
-    table_ref_export_name as table_ref_export_name,
     wasm_runtime_export_name as wasm_runtime_export_name,
     _get_total_func_count as _get_total_func_count,
     parse_wasm_module_facts as _parse_wasm_module_facts_raw,
-    _scan_code_ref_funcs as _scan_code_ref_funcs,
     _skip_init_expr as _skip_init_expr,
     _validate_elements as _validate_elements,
     _validate_linked_table_import_contract as _validate_linked_table_import_contract,
+    _validate_split_callable_table_ownership as _validate_split_callable_table_ownership,
     _write_string as _write_string,
     _write_varuint as _write_varuint,
 )
+from wasm_link_facts import callable_table_entry_rows  # noqa: E402
 
 
 from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
-    _append_active_table_slot_elements as _append_active_table_slot_elements,
-    _append_table_ref_elements as _append_table_ref_elements,
     _canonicalize_standard_section_order as _canonicalize_standard_section_order,
-    _collect_import_targeted_table_refs as _collect_import_targeted_table_refs,
     _collect_output_export_symbol_map as _collect_output_export_symbol_map,
     _collect_output_wrapper_specs as _collect_output_wrapper_specs,
     _collect_preserved_output_export_names as _collect_preserved_output_export_names,
     _dominant_output_module_prefix as _dominant_output_module_prefix,
     _ensure_function_exports_by_symbol_names as _ensure_function_exports_by_symbol_names,
     _entry_module_prefix_from_main_init as _entry_module_prefix_from_main_init,
-    _highest_exported_table_ref_index as _highest_exported_table_ref_index,
     _inject_output_export_aliases as _inject_output_export_aliases,
-    _inject_table_ref_export_symbols as _inject_table_ref_export_symbols,
     _is_public_output_export_name as _is_public_output_export_name,
     _memory_import_min as _memory_import_min,
-    _neutralize_linked_table_init as _neutralize_linked_table_init,
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
-    _resolve_import_targeted_table_refs as _resolve_import_targeted_table_refs,
     _restore_output_export_aliases as _restore_output_export_aliases,
     _rewrite_native_runtime_imports as _rewrite_native_runtime_imports,
     _rewrite_memory_min as _rewrite_memory_min,
     _rewrite_output_imports as _rewrite_output_imports,
     _rewrite_runtime_import_module_namespace as _rewrite_runtime_import_module_namespace,
     _rewrite_table_import_min as _rewrite_table_import_min,
-    _split_app_reference_function_exports as _split_app_reference_function_exports,
     _strip_internal_exports as _strip_internal_exports,
     _standard_section_order_error as _standard_section_order_error,
     _table_import_min as _table_import_min,
@@ -153,6 +144,7 @@ from wasm_link_optimize import (  # noqa: E402
     _dedup_data_segments as _dedup_data_segments,
     _neutralize_dead_element_entries as _neutralize_dead_element_entries,
     _post_link_optimize as _post_link_optimize,
+    _reachable_function_indices as _reachable_function_indices,
     _strip_debug_sections as _strip_debug_sections,
     _strip_unused_module_function_imports as _strip_unused_module_function_imports,
     _stub_dead_functions as _stub_dead_functions,
@@ -216,7 +208,9 @@ def _run_external_tool(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = harness_memory_guard.guarded_completed_process(
+    result = cast(
+        subprocess.CompletedProcess[str],
+        harness_memory_guard.guarded_completed_process(
         list(cmd),
         prefix="MOLT_WASM_LINK",
         cwd=cwd,
@@ -224,6 +218,7 @@ def _run_external_tool(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+        ),
     )
     if (
         timeout is not None
@@ -391,7 +386,7 @@ def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
 
 
 def _preflight_relocatable_runtime(
-    wasm_ld: str, runtime: Path, temp_dir: object
+    wasm_ld: str, runtime: Path, temp_dir: Any
 ) -> str | None:
     if not runtime.name.endswith("_reloc.wasm"):
         return None
@@ -420,7 +415,7 @@ def _preflight_relocatable_runtime(
     return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
-def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]]:
+def _dump_symbols(path: Path, wasm_tools: str | None) -> list[tuple[int, int, str, str]]:
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -555,8 +550,12 @@ _SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v1"
 
 
 def _split_app_optimize_cache_key(
-    *, app_data: bytes, reference_data: bytes | None, optimize: bool,
-    optimize_level: str, contract_keep_set: set[str],
+    *,
+    app_data: bytes,
+    reference_data: bytes | None,
+    optimize: bool,
+    optimize_level: str,
+    contract_keep_set: set[str],
 ) -> str:
     hasher = hashlib.sha256()
     hasher.update(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA.encode("ascii"))
@@ -596,7 +595,9 @@ def _read_cached_split_app_optimization(
 
 
 def _write_cached_split_app_optimization(
-    wasm_path: Path, attestation_path: Path, data: bytes,
+    wasm_path: Path,
+    attestation_path: Path,
+    data: bytes,
     attestation: Mapping[str, object],
 ) -> None:
     staged_wasm = artifact_publish.staged_output_path(wasm_path)
@@ -685,7 +686,6 @@ def _wasm_opt_version(executable: str) -> str:
             capture_output=True,
             text=True,
             timeout=10,
-            check=False,
         )
     except Exception:
         return "unknown"
@@ -742,9 +742,7 @@ def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
     return {
         name
         for name in _collect_function_exports(runtime_data)
-        if name not in _ESSENTIAL_EXPORTS
-        and name not in {"molt_exception_pending"}
-        and not is_table_ref_export_name(name)
+        if name not in _ESSENTIAL_EXPORTS and name not in {"molt_exception_pending"}
     }
 
 
@@ -830,9 +828,7 @@ def _split_artifact_contract_keep_set(
     segments install those functions by slot. Keeping the aliases public would
     make every target a Binaryen DCE root without adding cross-module linkage.
     """
-    public_exports = {
-        name for name in (public_export_map or ()) if not is_table_ref_export_name(name)
-    }
+    public_exports = set(public_export_map or ())
     return (
         _split_runtime_contract_export_names(artifact)
         | public_exports
@@ -1621,17 +1617,9 @@ def _public_output_export_symbol_map(
             for name in (
                 "molt_host_init",
                 "molt_main",
-                "molt_table_init",
                 "molt_set_wasm_table_base",
             )
             if name in export_symbol_map
-        }
-    )
-    public_export_map.update(
-        {
-            name: export_symbol_map[name]
-            for name in _collect_function_exports(output_data)
-            if is_table_ref_export_name(name) and name in export_symbol_map
         }
     )
     return public_export_map
@@ -1644,7 +1632,7 @@ def _restore_public_output_exports(
     preserved_symbol_names: Sequence[str] = (),
 ) -> bytes:
     restored = data
-    updated = _ensure_function_exports_by_symbol_names(restored, public_export_map)
+    updated = _ensure_function_exports_by_symbol_names(restored, dict(public_export_map))
     if updated is not None:
         restored = updated
     rename_map = {
@@ -1819,9 +1807,7 @@ def _restore_split_runtime_contract_exports(
     if operation_counts is not None:
         eliminated = max(0, len(contract) - 1)
         operation_counts["wasm_whole_artifact_redundant_parses_eliminated"] = (
-            operation_counts.get(
-                "wasm_whole_artifact_redundant_parses_eliminated", 0
-            )
+            operation_counts.get("wasm_whole_artifact_redundant_parses_eliminated", 0)
             + eliminated
         )
     for entry in contract:
@@ -2101,6 +2087,8 @@ def _compose_split_runtime_native_allowlist(
 def _tree_shake_runtime(
     runtime_data: bytes,
     required_exports: set[str],
+    *,
+    facts_provider: Callable[[bytes], dict[str, object]],
 ) -> bytes:
     """Strip unused exports from the runtime module and eliminate dead code.
 
@@ -2209,6 +2197,7 @@ def _tree_shake_runtime(
     optimized_baseline = _post_link_optimize(
         stripped_data,
         preserve_exports=normalized_required_exports,
+        facts_provider=facts_provider,
     )
     if len(optimized_baseline) != len(stripped_data):
         print(
@@ -2354,6 +2343,7 @@ def _optimize_split_app_module(
     contract_keep_set: set[str],
     attestation: dict[str, object] | None = None,
     operation_counts: dict[str, int] | None = None,
+    facts_provider: Callable[[bytes], dict[str, object]],
 ) -> bytes:
     """Deforest the split-runtime app artifact without collapsing its imports.
 
@@ -2365,8 +2355,11 @@ def _optimize_split_app_module(
     if operation_counts is not None:
         operation_counts["split_app_optimize_requests"] = 1
     cache_key = _split_app_optimize_cache_key(
-        app_data=app_data, reference_data=reference_data, optimize=optimize,
-        optimize_level=optimize_level, contract_keep_set=contract_keep_set,
+        app_data=app_data,
+        reference_data=reference_data,
+        optimize=optimize,
+        optimize_level=optimize_level,
+        contract_keep_set=contract_keep_set,
     )
     cache_root = _split_app_optimize_cache_root()
     cache_wasm = cache_root / f"{cache_key}.wasm"
@@ -2387,11 +2380,12 @@ def _optimize_split_app_module(
         reference_data=reference_data,
         preserve_exports=contract_keep_set,
         preserve_reference_exports=False,
-        preserve_table_refs=False,
+        facts_provider=facts_provider,
     )
     stripped = _strip_unused_module_function_imports(
         optimized,
         module_name="molt_runtime",
+        facts=facts_provider(optimized),
     )
     if stripped is not None:
         optimized = stripped
@@ -2629,11 +2623,6 @@ def _validate_linked(linked: Path) -> bool:
             file=sys.stderr,
         )
         return False
-    if not _validate_ref_func_declarations_from_facts(
-        facts,
-        description="Linked wasm",
-    ):
-        return False
     return _validate_wasm_structural(data, description="Linked wasm")
 
 
@@ -2661,16 +2650,6 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
         rt_facts = parse_wasm_module_facts(rt_data)
     except ValueError as exc:
         print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
-        return False
-    if not _validate_ref_func_declarations_from_facts(
-        app_facts,
-        description="Split-runtime app",
-    ):
-        return False
-    if not _validate_ref_func_declarations_from_facts(
-        rt_facts,
-        description="Split-runtime shared runtime",
-    ):
         return False
     app_imports = app_facts.module_imports.get("molt_runtime", frozenset())
     rt_exports = rt_facts.function_exports
@@ -2759,179 +2738,6 @@ _LEVEL_PASSES: dict[str, list[str]] = {
 }
 
 
-def _append_table_refs_enabled() -> bool:
-    raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
-    return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _output_table_ref_indices(output_data: bytes | None) -> set[int]:
-    if output_data is None:
-        return set()
-    return {
-        ref_index
-        for name in _collect_function_exports(output_data)
-        if (ref_index := parse_table_ref_export_name(name)) is not None
-    }
-
-
-def _materialize_import_targeted_table_refs(
-    data: bytes,
-    *,
-    output_data: bytes | None,
-    description: str,
-) -> tuple[bytes, bool]:
-    """Install callable-table slots whose backend target was a function import.
-
-    The reloc output object publishes ``__molt_table_ref_<slot>`` exports for
-    runtime-initialized callable-table slots. Slots targeting runtime ABI
-    imports cannot carry defined linker symbols through wasm-ld (the object
-    format has no defined alias of an import), so no ``__molt_table_ref_*``
-    name survives the link for them. Re-resolve those targets against the
-    current module â€” the runtime's defined export in a fully linked module,
-    the surviving import in a split app module â€” and install them as active
-    element segments. Must run before export stripping / dead-code passes so
-    the resolved targets stay rooted. Fails closed when a published slot
-    cannot be resolved.
-    """
-    if output_data is None or not _append_table_refs_enabled():
-        return data, False
-    refs = _collect_import_targeted_table_refs(output_data)
-    if not refs:
-        return data, False
-    resolved = _resolve_import_targeted_table_refs(data, refs, description=description)
-    updated = _append_active_table_slot_elements(data, resolved)
-    if updated is None:
-        return data, False
-    return updated, True
-
-
-def _materialize_callable_table_refs_and_ref_func_declarations(
-    data: bytes,
-    *,
-    split_runtime: bool,
-    output_data: bytes | None,
-    description: str,
-) -> tuple[bytes, bool]:
-    """Materialize callable-table declarations for executable output."""
-    changed = False
-    current = data
-    if _append_table_refs_enabled():
-        updated = _append_table_ref_elements(
-            current,
-            allowed_table_indices=(
-                None if split_runtime else _output_table_ref_indices(output_data)
-            ),
-        )
-        if updated is not None:
-            current = updated
-            changed = True
-
-    facts = parse_wasm_module_facts(current)
-    if facts.code_ref_funcs:
-        updated = _declare_ref_func_elements_from_facts(current, facts)
-        if updated is not None:
-            current = updated
-            changed = True
-            declared = set(facts.element_declared_funcs)
-            declared.update(facts.code_ref_funcs)
-            invariant_error = _ref_func_invariant_error_from_sets(
-                facts.code_ref_funcs,
-                declared,
-                facts.total_func_count,
-                description=description,
-            )
-        else:
-            invariant_error = _ref_func_invariant_error_from_facts(
-                facts,
-                description=description,
-            )
-        if invariant_error is not None:
-            raise ValueError(invariant_error)
-
-    return current, changed
-
-
-def _undeclared_ref_func_indices(data: bytes) -> list[int]:
-    return sorted(_scan_code_ref_funcs(data) - _collect_element_declared_funcs(data))
-
-
-def _format_index_preview(indices: list[int]) -> str:
-    preview = ", ".join(str(index) for index in indices[:12])
-    if len(indices) <= 12:
-        return preview
-    return f"{preview}, ... (+{len(indices) - 12} more)"
-
-
-def _ref_func_invariant_error_from_sets(
-    referenced_indices: Iterable[int],
-    declared_indices: Iterable[int],
-    total_funcs: int,
-    *,
-    description: str,
-) -> str | None:
-    referenced = set(referenced_indices)
-    declared = set(declared_indices)
-    missing = sorted(referenced - declared)
-    if missing:
-        return (
-            f"{description} has undeclared ref.func function index(es): "
-            f"{_format_index_preview(missing)}"
-        )
-    out_of_bounds = sorted(
-        index for index in referenced | declared if index >= total_funcs
-    )
-    if out_of_bounds:
-        return (
-            f"{description} has out-of-bounds function reference index(es): "
-            f"{_format_index_preview(out_of_bounds)} "
-            f"(function count: {total_funcs})"
-        )
-    return None
-
-
-def _ref_func_invariant_error_from_facts(
-    facts: WasmModuleFacts, *, description: str
-) -> str | None:
-    return _ref_func_invariant_error_from_sets(
-        facts.code_ref_funcs,
-        facts.element_declared_funcs,
-        facts.total_func_count,
-        description=description,
-    )
-
-
-def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
-    return _ref_func_invariant_error_from_facts(
-        parse_wasm_module_facts(data),
-        description=description,
-    )
-
-
-def _validate_ref_func_declarations_from_facts(
-    facts: WasmModuleFacts, *, description: str
-) -> bool:
-    invariant_error = _ref_func_invariant_error_from_facts(
-        facts,
-        description=description,
-    )
-    if invariant_error is None:
-        return True
-    print(invariant_error, file=sys.stderr)
-    return False
-
-
-def _validate_ref_func_declarations(data: bytes, *, description: str) -> bool:
-    try:
-        facts = parse_wasm_module_facts(data)
-    except ValueError as exc:
-        print(
-            f"Failed to inspect {description} ref.func declarations: {exc}",
-            file=sys.stderr,
-        )
-        return False
-    return _validate_ref_func_declarations_from_facts(facts, description=description)
-
-
 def _run_wasm_opt_via_optimize(
     linked: Path,
     level: str = "Oz",
@@ -3012,6 +2818,173 @@ def _run_wasm_opt_via_optimize(
     return True
 
 
+def _decode_wasm_facts_response(
+    process: subprocess.CompletedProcess[str],
+    *,
+    operation: str,
+) -> dict[str, object]:
+    try:
+        payload = json.loads(process.stdout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{operation} returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 3:
+        raise ValueError(f"{operation} returned an unsupported response schema")
+    if process.returncode != 0 or payload.get("ok") is not True:
+        error = payload.get("error")
+        detail = error if isinstance(error, str) and error else process.stderr.strip()
+        raise ValueError(f"{operation} failed: {detail or 'unknown scanner error'}")
+    facts = payload.get("facts")
+    if not isinstance(facts, dict) or facts.get("schema_version") != 3:
+        raise ValueError(f"{operation} returned an unsupported facts schema")
+    return facts
+
+
+def _make_rust_wasm_facts_provider(
+    scanner: Path,
+    scratch_root: Path,
+) -> Callable[[bytes], dict[str, object]]:
+    if not scanner.is_file():
+        raise ValueError(f"WASM facts scanner is not a file: {scanner}")
+    cache: dict[str, dict[str, object]] = {}
+
+    def provide(data: bytes) -> dict[str, object]:
+        digest = hashlib.sha256(data).hexdigest()
+        cached = cache.get(digest)
+        if cached is not None:
+            return cached
+        artifact = scratch_root / f"wasm-facts-{digest}.wasm"
+        artifact.write_bytes(data)
+        try:
+            process = subprocess.run(
+                [str(scanner), "--scan-wasm-link-facts", str(artifact)],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+            facts = _decode_wasm_facts_response(
+                process,
+                operation=f"Rust WASM facts scan for {artifact.name}",
+            )
+            cache[digest] = facts
+            return facts
+        finally:
+            with contextlib.suppress(OSError):
+                artifact.unlink()
+
+    return provide
+
+
+def _publish_rust_wasm_link_facts(
+    scanner: Path,
+    artifact: Path,
+    *,
+    layout: CallableTableLayout | None = None,
+    role: str = "monolithic",
+) -> dict[str, object]:
+    if not scanner.is_file():
+        raise ValueError(f"WASM facts scanner is not a file: {scanner}")
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{artifact.name}.facts-",
+        suffix=".wasm",
+        dir=artifact.parent,
+        delete=False,
+    ) as output_file:
+        output = Path(output_file.name)
+    command = [
+        str(scanner),
+        "--publish-wasm-link-facts",
+        str(artifact),
+        "--output",
+        str(output),
+    ]
+    if layout is not None:
+        command.extend(
+            [
+                "--callable-table-layout",
+                ",".join(
+                    str(value)
+                    for value in (
+                        layout.fixed_prefix_base,
+                        layout.fixed_prefix_len,
+                        layout.finalized_app_base,
+                        layout.app_entry_count,
+                    )
+                ),
+            ]
+        )
+    if role not in {"monolithic", "app", "runtime"}:
+        raise ValueError(f"unknown callable-table artifact role: {role}")
+    if role != "monolithic" and layout is None:
+        raise ValueError(f"callable-table {role} publication requires a layout")
+    command.extend(["--callable-table-role", role])
+    try:
+        process = subprocess.run(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        facts = _decode_wasm_facts_response(
+            process,
+            operation=f"Rust WASM facts publication for {artifact}",
+        )
+        if facts.get("callable_table_attestation_present") is not True:
+            raise ValueError("Rust WASM facts publication omitted final attestation")
+        os.replace(output, artifact)
+        return facts
+    finally:
+        with contextlib.suppress(OSError):
+            output.unlink()
+
+
+def _callable_entries_from_wasm_facts(
+    facts: Mapping[str, object],
+) -> tuple[CallableTableEntry, ...]:
+    entries: list[CallableTableEntry] = []
+    for slot, function_index, type_index, role in callable_table_entry_rows(facts):
+        entries.append(
+            CallableTableEntry(
+                slot=slot,
+                func_index=function_index,
+                type_index=type_index,
+                params=(),
+                results=(),
+                role=role,
+            )
+        )
+    return tuple(entries)
+
+
+def _callable_layout_from_wasm_facts(
+    facts: Mapping[str, object],
+) -> CallableTableLayout | None:
+    raw_layout = facts.get("callable_table_layout")
+    if raw_layout is None:
+        return None
+    if not isinstance(raw_layout, dict):
+        raise ValueError("WASM facts callable_table_layout must be an object or null")
+    names = (
+        "fixed_prefix_base",
+        "fixed_prefix_len",
+        "finalized_app_base",
+        "app_entry_count",
+    )
+    values = tuple(raw_layout.get(name) for name in names)
+    if not all(
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 0xFFFF_FFFF
+        for value in values
+    ):
+        raise ValueError("WASM facts callable-table layout fields must be u32 integers")
+    layout_values = tuple(cast(int, value) for value in values)
+    return CallableTableLayout(*layout_values)
+
+
 def _run_wasm_ld_with_custodied_inputs(
     wasm_ld: str,
     runtime: Path,
@@ -3028,6 +3001,7 @@ def _run_wasm_ld_with_custodied_inputs(
     native_objects: Sequence[Path] = (),
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
+    wasm_facts_scanner: Path,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
     operation_counts: dict[str, int] = {
@@ -3037,6 +3011,9 @@ def _run_wasm_ld_with_custodied_inputs(
         "wasm_whole_artifact_redundant_parses_eliminated": 0,
     }
     total_start = time.perf_counter()
+    # The finally block records partial-failure timing even when lld rejects an
+    # input before split processing begins.
+    split_runtime_start = total_start
     for native_object in native_objects:
         if not native_object.exists():
             print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
@@ -3046,13 +3023,14 @@ def _run_wasm_ld_with_custodied_inputs(
     except ValueError as exc:
         print(f"Wasm link failed: {exc}", file=sys.stderr)
         return 1
+    runtime_exports: set[str]
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
     except ValueError as exc:
         print(
             f"Failed to parse runtime wasm exports ({runtime}): {exc}", file=sys.stderr
         )
-        runtime_exports = {}
+        runtime_exports = set()
     if not runtime_exports and runtime.name.endswith("_reloc.wasm"):
         fallback = runtime.with_name(runtime.name.replace("_reloc", ""))
         if fallback.exists():
@@ -3063,7 +3041,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     f"Failed to parse fallback runtime wasm exports ({fallback}): {exc}",
                     file=sys.stderr,
                 )
-                runtime_exports = {}
+                runtime_exports = set()
     if not runtime_exports:
         # The runtime might be a relocatable object with no export section.
         # Search sibling directories for a non-relocatable build that has
@@ -3089,8 +3067,42 @@ def _run_wasm_ld_with_custodied_inputs(
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
     output_data = output.read_bytes()
+    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
+    try:
+        facts_provider = _make_rust_wasm_facts_provider(
+            wasm_facts_scanner,
+            Path(temp_dir.name),
+        )
+        output_facts = facts_provider(output_data)
+        output_callable_layout = _callable_layout_from_wasm_facts(output_facts)
+    except ValueError as exc:
+        temp_dir.cleanup()
+        print(f"Wasm link failed: {exc}", file=sys.stderr)
+        return 1
     output_memory_min = _memory_import_min(output_data)
     output_table_min = _table_import_min(output_data)
+    if split_runtime:
+        if output_callable_layout is None:
+            print(
+                "Split app is missing explicit callable-table layout authority.",
+                file=sys.stderr,
+            )
+            temp_dir.cleanup()
+            return 1
+        expected_table_min = output_callable_layout.finalized_app_base + (
+            output_callable_layout.app_entry_count
+        )
+        table_boundary_matches = output_table_min == expected_table_min or (
+            expected_table_min == 0 and output_table_min is None
+        )
+        if expected_table_min > 0xFFFF_FFFF or not table_boundary_matches:
+            print(
+                "Split app table import boundary does not match explicit callable layout: "
+                f"import_min={output_table_min}, expected={expected_table_min}",
+                file=sys.stderr,
+            )
+            temp_dir.cleanup()
+            return 1
     required_native_direct_symbols = tuple(
         sorted(
             set(_required_native_direct_symbols(output_data))
@@ -3101,7 +3113,7 @@ def _run_wasm_ld_with_custodied_inputs(
     preserved_output_exports = list(
         dict.fromkeys(
             [
-                *_collect_preserved_output_export_names(output_data),
+                *_collect_preserved_output_export_names(output_data, output_facts),
                 *(
                     entry.canonical_name
                     for entry in _split_runtime_export_contract("app")
@@ -3115,8 +3127,9 @@ def _run_wasm_ld_with_custodied_inputs(
         for name in preserved_output_exports
         if name in export_symbol_map
     ]
-    rewritten = _rewrite_output_imports(output, runtime_exports)
+    rewritten = _rewrite_output_imports(output, runtime_exports, temp_dir)
     if rewritten is None:
+        temp_dir.cleanup()
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
     try:
@@ -3128,25 +3141,6 @@ def _run_wasm_ld_with_custodied_inputs(
     except ValueError as exc:
         print(f"Failed to rewrite native direct imports: {exc}", file=sys.stderr)
         return 1
-    try:
-        prelinked_data, prelinked_materialized = (
-            _materialize_import_targeted_table_refs(
-                rewritten_path.read_bytes(),
-                output_data=output_data,
-                description="rewritten wasm-ld input",
-            )
-        )
-    except ValueError as exc:
-        print(
-            f"Failed to materialize pre-link import-targeted callable table refs: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-    if prelinked_materialized:
-        prelinked_path = Path(temp_dir.name) / "output_import_table_refs.wasm"
-        prelinked_path.write_bytes(prelinked_data)
-        rewritten_path = prelinked_path
-    rewritten_path = _inject_table_ref_export_symbols(rewritten_path, temp_dir)
     native_link_inputs, native_force_exports = _rewrite_native_runtime_imports(
         tuple(native_objects),
         runtime_exports,
@@ -3241,7 +3235,7 @@ def _run_wasm_ld_with_custodied_inputs(
 
     # The published linked artifact is a runnable Node/WASI artifact, even when
     # the deployment output is split-runtime. Keep split app deforestation in
-    # split_native_app_cmd below; never link output_linked.wasm against an
+    # split_app_cmd below; never link output_linked.wasm against an
     # unreachable runtime stub.
     link_runtime_path = runtime
 
@@ -3300,10 +3294,10 @@ def _run_wasm_ld_with_custodied_inputs(
     ]
     cmd.extend(str(native_object) for native_object in linked_native_inputs)
 
-    split_native_app_path: Path | None = None
-    split_native_app_cmd: list[str] | None = None
+    split_linked_app_path: Path | None = None
+    split_app_cmd: list[str] | None = None
     split_app_got_runtime_addresses: dict[str, int] = {}
-    if split_runtime and native_objects:
+    if split_runtime:
         split_native_inputs = native_link_inputs
         # Keep the active-data-segment alias: it defines each CPython-ABI data
         # symbol (Py_None/Py_False/PyExc_*/Py*_Type/...) so the split app link
@@ -3319,33 +3313,39 @@ def _run_wasm_ld_with_custodied_inputs(
         # linear-memory address (see _rewrite_split_app_got_data_globals). This
         # keeps the split app non-PIC (no import-dynamic, so no GOT.func / no
         # loader change) and does not disturb any statically resolved symbol.
-        try:
-            data_alias_object = _split_runtime_data_alias_object(
-                native_objects=native_link_inputs,
-                deploy_runtime=_resolve_deploy_runtime(
-                    runtime, deploy_runtime_override
-                ),
-                temp_dir=temp_dir,
-                reloc_runtime=link_runtime_path,
-            )
-            split_app_got_runtime_addresses = _runtime_exported_data_symbol_addresses(
-                _resolve_deploy_runtime(runtime, deploy_runtime_override).read_bytes()
-            )
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        if data_alias_object is not None:
-            split_native_inputs = (*native_link_inputs, data_alias_object)
+        if native_objects:
+            try:
+                data_alias_object = _split_runtime_data_alias_object(
+                    native_objects=native_link_inputs,
+                    deploy_runtime=_resolve_deploy_runtime(
+                        runtime, deploy_runtime_override
+                    ),
+                    temp_dir=temp_dir,
+                    reloc_runtime=link_runtime_path,
+                )
+                split_app_got_runtime_addresses = (
+                    _runtime_exported_data_symbol_addresses(
+                        _resolve_deploy_runtime(
+                            runtime, deploy_runtime_override
+                        ).read_bytes()
+                    )
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if data_alias_object is not None:
+                split_native_inputs = (*native_link_inputs, data_alias_object)
         split_native_allowlist = _compose_split_runtime_native_allowlist(
             base_allowlist=base_allowlist,
             native_objects=split_native_inputs,
             runtime_exports=runtime_exports,
             temp_dir=temp_dir,
         )
-        split_native_app_path = Path(temp_dir.name) / "app_native_linked.wasm"
+        split_linked_app_path = Path(temp_dir.name) / "app_split_linked.wasm"
         split_app_global_base = _split_app_global_base(output_data)
-        split_app_table_base = output_table_min if output_table_min is not None else 1
-        split_native_prefix = [
+        assert output_callable_layout is not None
+        split_app_table_base = output_callable_layout.finalized_app_base
+        split_app_prefix = [
             f"--allow-undefined-file={split_native_allowlist}"
             if part.startswith("--allow-undefined-file=")
             else "--no-stack-first"
@@ -3355,25 +3355,23 @@ def _run_wasm_ld_with_custodied_inputs(
             if part != "--export=molt_main"
         ]
         try:
-            split_native_app_args = _split_app_native_link_args(split_native_inputs)
+            split_app_link_args = _split_app_native_link_args(split_native_inputs)
         except ValueError as exc:
             print(f"WASM split app native link failed: {exc}", file=sys.stderr)
             return 1
-        split_native_app_cmd = [
-            *split_native_prefix,
+        split_app_cmd = [
+            *split_app_prefix,
             "--import-memory",
             f"--global-base={split_app_global_base}",
             f"--table-base={split_app_table_base}",
             "-o",
-            str(split_native_app_path),
+            str(split_linked_app_path),
             str(rewritten_path),
-            *split_native_app_args,
+            *split_app_link_args,
         ]
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
-    whole_artifact_counts_token = _WHOLE_ARTIFACT_OPERATION_COUNTS.set(
-        operation_counts
-    )
+    whole_artifact_counts_token = _WHOLE_ARTIFACT_OPERATION_COUNTS.set(operation_counts)
     try:
         if res.returncode != 0:
             err = res.stderr.strip() or res.stdout.strip()
@@ -3443,36 +3441,6 @@ def _run_wasm_ld_with_custodied_inputs(
             print(native_link_error, file=sys.stderr)
             return 1
 
-        if not split_runtime:
-            try:
-                updated = _neutralize_linked_table_init(linked_bytes)
-            except ValueError as exc:
-                print(f"Failed to neutralize linked table init: {exc}", file=sys.stderr)
-                return 1
-            if updated is not None:
-                work_linked.write_bytes(updated)
-                linked_bytes = updated
-
-        # Import-targeted callable-table slots must be re-resolved while the
-        # linked module still carries the full --export-all surface; the
-        # post-link optimizer below strips those export names and stubs
-        # functions that are not yet rooted by element segments.
-        if not split_runtime:
-            try:
-                linked_bytes, materialized = _materialize_import_targeted_table_refs(
-                    linked_bytes,
-                    output_data=output_data,
-                    description="linked wasm",
-                )
-            except ValueError as exc:
-                print(
-                    f"Failed to materialize import-targeted callable table refs: {exc}",
-                    file=sys.stderr,
-                )
-                return 1
-            if materialized:
-                work_linked.write_bytes(linked_bytes)
-
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
         # Pass the original user module as reference_data so the type-index
@@ -3495,7 +3463,7 @@ def _run_wasm_ld_with_custodied_inputs(
             linked_bytes,
             reference_data=output_reference,
             preserve_exports=post_link_preserve_exports,
-            preserve_table_refs=True,
+            facts_provider=facts_provider,
         )
         post_opt_size = len(linked_bytes)
         if post_opt_size < pre_opt_size:
@@ -3522,7 +3490,11 @@ def _run_wasm_ld_with_custodied_inputs(
                 # Re-read after optimization since the file changed on disk
                 linked_bytes = work_linked.read_bytes()
 
-        required_table_min = _required_linked_table_min(linked_bytes, output_table_min)
+        required_table_min = _required_linked_table_min(
+            linked_bytes,
+            output_table_min,
+            facts_provider(linked_bytes),
+        )
         if required_table_min is not None:
             try:
                 updated = _rewrite_table_import_min(linked_bytes, required_table_min)
@@ -3541,24 +3513,6 @@ def _run_wasm_ld_with_custodied_inputs(
             if updated is not None:
                 work_linked.write_bytes(updated)
                 linked_bytes = updated
-        try:
-            updated, materialized = (
-                _materialize_callable_table_refs_and_ref_func_declarations(
-                    linked_bytes,
-                    split_runtime=split_runtime,
-                    output_data=output_data,
-                    description="linked wasm",
-                )
-            )
-        except ValueError as exc:
-            print(
-                f"Failed to materialize linked callable table refs: {exc}",
-                file=sys.stderr,
-            )
-            return 1
-        if materialized:
-            work_linked.write_bytes(updated)
-            linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
         except ValueError as exc:
@@ -3580,7 +3534,6 @@ def _run_wasm_ld_with_custodied_inputs(
             updated = _strip_internal_exports(
                 linked_bytes,
                 preserve_exports=set(preserved_output_exports),
-                preserve_table_refs=False,
             )
             if updated is not None:
                 work_linked.write_bytes(updated)
@@ -3623,51 +3576,48 @@ def _run_wasm_ld_with_custodied_inputs(
             )
             staged_outputs.extend([app_stage, rt_stage, size_attestation_stage])
 
-            if split_native_app_cmd is not None:
-                assert split_native_app_path is not None
-                split_native_res = _run_external_tool(
-                    split_native_app_cmd,
+            if split_app_cmd is not None:
+                assert split_linked_app_path is not None
+                split_app_res = _run_external_tool(
+                    split_app_cmd,
                     capture_output=True,
                     text=True,
                 )
-                if split_native_res.returncode != 0:
-                    err = (
-                        split_native_res.stderr.strip()
-                        or split_native_res.stdout.strip()
-                    )
+                if split_app_res.returncode != 0:
+                    err = split_app_res.stderr.strip() or split_app_res.stdout.strip()
                     if err:
                         print(err, file=sys.stderr)
-                    return split_native_res.returncode
+                    return split_app_res.returncode
                 signature_mismatch = _wasm_ld_signature_mismatch_warning(
-                    split_native_res.stderr
+                    split_app_res.stderr
                 )
                 if signature_mismatch is not None:
                     print(signature_mismatch, file=sys.stderr)
                     return 1
-                if not split_native_app_path.exists():
+                if not split_linked_app_path.exists():
                     print(
                         "wasm-ld exited successfully but produced no split app "
-                        f"native-linked output: {split_native_app_path}",
+                        f"linked output: {split_linked_app_path}",
                         file=sys.stderr,
                     )
                     return 1
-                rewritten_data = _read_wasm_bytes_with_retry(split_native_app_path)
+                rewritten_data = _read_wasm_bytes_with_retry(split_linked_app_path)
                 if not _is_wasm_binary(rewritten_data):
                     print(
-                        "wasm-ld produced non-wasm split app native-linked output "
-                        f"({split_native_app_path}, size={len(rewritten_data)} bytes)",
+                        "wasm-ld produced non-wasm split app linked output "
+                        f"({split_linked_app_path}, size={len(rewritten_data)} bytes)",
                         file=sys.stderr,
                     )
                     return 1
                 try:
                     canonical_rewritten_data = _canonicalize_wasm_ld_output(
-                        rewritten_data, description="split app native-linked"
+                        rewritten_data, description="split app linked"
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
                 if canonical_rewritten_data != rewritten_data:
-                    split_native_app_path.write_bytes(canonical_rewritten_data)
+                    split_linked_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
                 try:
                     restored_rewritten_data = _restore_split_runtime_contract_exports(
@@ -3682,7 +3632,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     print(str(exc), file=sys.stderr)
                     return 1
                 if restored_rewritten_data != rewritten_data:
-                    split_native_app_path.write_bytes(restored_rewritten_data)
+                    split_linked_app_path.write_bytes(restored_rewritten_data)
                 rewritten_data = restored_rewritten_data
                 try:
                     native_link_error = _validate_required_native_direct_symbols(
@@ -3708,7 +3658,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     )
                     print(
                         "Split-runtime native app linker argv: "
-                        + shlex.join(split_native_app_cmd),
+                        + shlex.join(split_app_cmd),
                         file=sys.stderr,
                     )
                     return 1
@@ -3729,52 +3679,13 @@ def _run_wasm_ld_with_custodied_inputs(
                     print(str(exc), file=sys.stderr)
                     return 1
                 if got_retargeted:
-                    split_native_app_path.write_bytes(rewritten_data)
+                    split_linked_app_path.write_bytes(rewritten_data)
                     print(
                         "Split-runtime GOT data bridge: retargeted "
                         f"{got_retargeted} CPython-ABI GOT data global(s) to the "
                         "shared runtime's canonical addresses",
                         file=sys.stderr,
                     )
-            else:
-                # For split-runtime without external native objects, the app
-                # artifact must remain unlinked while preserving the runtime ABI
-                # rewrite performed earlier in the link pipeline. Copying the
-                # fully linked binary here collapses the split contract, while
-                # copying the raw frontend output would leave stale unprefixed
-                # runtime imports that do not match the deploy runtime's export
-                # ABI. The correct artifact is the rewritten, still-unlinked
-                # module.
-                rewritten_data = rewritten_path.read_bytes()
-            try:
-                rewritten_data, _materialized = _materialize_import_targeted_table_refs(
-                    rewritten_data,
-                    output_data=output_data,
-                    description="split-runtime app wasm",
-                )
-            except ValueError as exc:
-                print(
-                    "Failed to materialize split-runtime app import-targeted "
-                    f"callable table refs: {exc}",
-                    file=sys.stderr,
-                )
-                return 1
-            try:
-                rewritten_data, _materialized = (
-                    _materialize_callable_table_refs_and_ref_func_declarations(
-                        rewritten_data,
-                        split_runtime=True,
-                        output_data=output_data,
-                        description="split-runtime app wasm",
-                    )
-                )
-            except ValueError as exc:
-                print(
-                    "Failed to materialize split-runtime app callable table refs: "
-                    f"{exc}",
-                    file=sys.stderr,
-                )
-                return 1
             optimized_app = _optimize_split_app_module(
                 rewritten_data,
                 reference_data=output_data,
@@ -3787,6 +3698,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 ),
                 attestation=size_attestation,
                 operation_counts=operation_counts,
+                facts_provider=facts_provider,
             )
             if output_memory_min is not None:
                 try:
@@ -3799,22 +3711,6 @@ def _run_wasm_ld_with_custodied_inputs(
                     return 1
                 if updated is not None:
                     optimized_app = updated
-            try:
-                optimized_app, _materialized = (
-                    _materialize_callable_table_refs_and_ref_func_declarations(
-                        optimized_app,
-                        split_runtime=True,
-                        output_data=output_data,
-                        description="optimized split-runtime app wasm",
-                    )
-                )
-            except ValueError as exc:
-                print(
-                    "Failed to materialize optimized split-runtime app callable "
-                    f"table refs: {exc}",
-                    file=sys.stderr,
-                )
-                return 1
             try:
                 optimized_app = _restore_split_runtime_contract_exports(
                     optimized_app,
@@ -3858,9 +3754,7 @@ def _run_wasm_ld_with_custodied_inputs(
             # per-app payload.
             full_rt_size = deploy_runtime.stat().st_size
             deploy_runtime_data = deploy_runtime.read_bytes()
-            size_attestation["runtime_before"] = wasm_metrics(
-                deploy_runtime_data
-            )
+            size_attestation["runtime_before"] = wasm_metrics(deploy_runtime_data)
             try:
                 canonical_required_exports = _canonical_split_runtime_required_exports(
                     deploy_runtime_data
@@ -3904,7 +3798,9 @@ def _run_wasm_ld_with_custodied_inputs(
                     file=sys.stderr,
                 )
                 shaken_runtime = _tree_shake_runtime(
-                    deploy_runtime_data, canonical_required_exports
+                    deploy_runtime_data,
+                    canonical_required_exports,
+                    facts_provider=facts_provider,
                 )
                 rt_stage.write_bytes(shaken_runtime)
             except Exception as exc:
@@ -3947,13 +3843,23 @@ def _run_wasm_ld_with_custodied_inputs(
         if canonical_sections is not None:
             work_linked.write_bytes(canonical_sections)
             linked_bytes = canonical_sections
-        work_linked.write_bytes(
-            strip_wasm_publication_sections(
-                work_linked.read_bytes(),
-                final_artifact=True,
-                preserve_debug=preserve_debug_sections,
-            )
+        published_linked = strip_wasm_publication_sections(
+            work_linked.read_bytes(),
+            final_artifact=True,
+            preserve_debug=preserve_debug_sections,
         )
+        work_linked.write_bytes(published_linked)
+        try:
+            _publish_rust_wasm_link_facts(
+                wasm_facts_scanner,
+                work_linked,
+                layout=output_callable_layout,
+            )
+        except ValueError as exc:
+            print(
+                f"Failed to attest final linked callable table: {exc}", file=sys.stderr
+            )
+            return 1
         if split_runtime:
             assert app_stage is not None
             assert rt_stage is not None
@@ -3970,14 +3876,44 @@ def _run_wasm_ld_with_custodied_inputs(
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
-            app_stage.write_bytes(published_app)
-            rt_stage.write_bytes(
-                strip_wasm_publication_sections(
-                    rt_stage.read_bytes(),
-                    final_artifact=True,
-                    preserve_debug=preserve_debug_sections,
-                )
+            published_runtime = strip_wasm_publication_sections(
+                rt_stage.read_bytes(),
+                final_artifact=True,
+                preserve_debug=preserve_debug_sections,
             )
+            app_stage.write_bytes(published_app)
+            rt_stage.write_bytes(published_runtime)
+            try:
+                assert output_callable_layout is not None
+                app_facts = _publish_rust_wasm_link_facts(
+                    wasm_facts_scanner,
+                    app_stage,
+                    layout=output_callable_layout,
+                    role="app",
+                )
+                runtime_facts = _publish_rust_wasm_link_facts(
+                    wasm_facts_scanner,
+                    rt_stage,
+                    layout=output_callable_layout,
+                    role="runtime",
+                )
+            except ValueError as exc:
+                print(
+                    f"Failed to attest final split callable table: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            app_entries = _callable_entries_from_wasm_facts(app_facts)
+            runtime_entries = _callable_entries_from_wasm_facts(runtime_facts)
+            try:
+                _validate_split_callable_table_ownership(
+                    app_entries,
+                    runtime_entries,
+                    output_callable_layout,
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
             assert size_attestation_stage is not None
             size_attestation["published"] = {
                 "app": wasm_metrics(app_stage.read_bytes()),
@@ -4079,6 +4015,7 @@ def _run_wasm_ld(
     native_objects: Sequence[Path] = (),
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
+    wasm_facts_scanner: Path,
 ) -> int:
     for native_object in native_objects:
         if not native_object.exists():
@@ -4182,6 +4119,7 @@ def _run_wasm_ld(
                 native_objects=native_snapshots,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_file=phase_timings_file,
+                wasm_facts_scanner=wasm_facts_scanner,
             )
     except OSError as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
@@ -4245,6 +4183,7 @@ def main() -> int:
         help="Preserve name and DWARF sections while still removing final-link metadata",
     )
     parser.add_argument("--phase-timings-file", type=Path, default=None)
+    parser.add_argument("--wasm-facts-scanner", type=Path, required=True)
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -4282,6 +4221,7 @@ def main() -> int:
         native_objects=tuple(args.native_objects),
         preserve_debug_sections=args.preserve_debug_sections,
         phase_timings_file=args.phase_timings_file,
+        wasm_facts_scanner=args.wasm_facts_scanner,
     )
 
 

@@ -602,6 +602,7 @@ def _prepare_non_native_build_result(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan | None = None,
     artifacts_root: Path | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    wasm_facts_scanner: Path,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -838,6 +839,8 @@ def _prepare_non_native_build_result(
                 str(output_wasm),
                 "--output",
                 str(resolved_linked_output),
+                "--wasm-facts-scanner",
+                str(wasm_facts_scanner),
             ]
             for native_input in wasm_static_link_native_inputs:
                 link_cmd.extend(["--native-object", str(native_input)])

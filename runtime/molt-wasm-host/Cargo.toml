@@ -22,6 +22,8 @@ url = "2.5"
 os_pipe = "1.2"
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-runtime = { path = "../molt-runtime" }
+molt-wasm-facts = { path = "../molt-wasm-facts" }
+memmap2 = "0.9"
 sha2 = "0.11"
 
 [target.'cfg(windows)'.dependencies]
