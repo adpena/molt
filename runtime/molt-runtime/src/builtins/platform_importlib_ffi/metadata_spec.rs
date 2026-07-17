@@ -949,8 +949,6 @@ pub(super) fn importlib_set_module_state_impl(
     let mut module_path_owned = false;
     let mut spec_locations_bits = MoltObject::none().bits();
     let mut spec_locations_owned = false;
-    let mut modules_bits = MoltObject::none().bits();
-    let mut modules_owned = false;
 
     let out = (|| -> Result<(), u64> {
         let spec_name = intern_runtime_static_name(_py, b"__spec__");
@@ -1064,23 +1062,9 @@ pub(super) fn importlib_set_module_state_impl(
             }
         }
 
-        modules_bits = importlib_runtime_modules_bits(_py)?;
-        modules_owned = true;
-        let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
-            return Err(importlib_modules_runtime_error(_py));
-        };
-        unsafe {
-            dict_set_in_place(_py, modules_ptr, module_name_bits, module_bits);
-        }
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
         Ok(())
     })();
 
-    if modules_owned && !obj_from_bits(modules_bits).is_none() {
-        dec_ref_bits(_py, modules_bits);
-    }
     if spec_locations_owned && !obj_from_bits(spec_locations_bits).is_none() {
         dec_ref_bits(_py, spec_locations_bits);
     }

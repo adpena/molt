@@ -13,6 +13,7 @@ cached_seen = __cached__
 loader_seen = __loader__
 argv0_seen = sys.argv[0]
 sys_modules_seen = __name__ in sys.modules
+sys_modules_value_seen = sys.modules.get(__name__)
 if globals().get("capture_globals"):
     globals_seen = globals()
 if globals().get("raise_from_runpy"):
