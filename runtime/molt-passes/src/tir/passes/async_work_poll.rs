@@ -302,6 +302,15 @@ mod tests {
         labeled_op(OpCode::CheckException, label)
     }
 
+    fn exception_pop() -> TirOp {
+        let mut op = op(OpCode::Copy);
+        op.attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("exception_pop".into()),
+        );
+        op
+    }
+
     #[test]
     fn generated_call_returns_and_loop_backedges_share_one_poll_marker() {
         let mut func = TirFunction::new("polls".into(), vec![], TirType::None);
@@ -650,6 +659,70 @@ mod tests {
             .count();
         assert_eq!(polls, 1, "one insertion boundary must have one poll");
         assert_eq!(check_label(&func.blocks[&latch].ops[0]), Some(50));
+    }
+
+    #[test]
+    fn nonlocal_inner_unwinds_preserve_one_outer_handler_at_loop_join() {
+        use crate::tir::values::ValueId;
+
+        let mut func = TirFunction::new("nonlocal_inner_unwinds".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let header = func.fresh_block();
+        let first_try = func.fresh_block();
+        let second_try = func.fresh_block();
+        let cond = ValueId(0);
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![labeled_op(OpCode::TryStart, 22)];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![op(OpCode::Call)],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: first_try,
+                    then_args: vec![],
+                    else_block: second_try,
+                    else_args: vec![],
+                },
+            },
+        );
+        for (block, label) in [(first_try, 23), (second_try, 28)] {
+            func.blocks.insert(
+                block,
+                TirBlock {
+                    id: block,
+                    args: vec![],
+                    ops: vec![labeled_op(OpCode::TryStart, label), exception_pop()],
+                    terminator: Terminator::Branch {
+                        target: header,
+                        args: vec![],
+                    },
+                },
+            );
+        }
+
+        let facts = crate::tir::exception_regions::compute_exception_region_facts(&func);
+        assert_eq!(
+            facts.lexical_handler_before(ExceptionOpPosition {
+                block: header,
+                op_index: 1,
+            }),
+            Ok(ExceptionBoundaryHandler::Labeled(22)),
+            "normal continue/break/return unwinds must not leak an inner try frame into the loop join"
+        );
+        run(&mut func, &mut AnalysisManager::new());
+        let poll = func.blocks[&header]
+            .ops
+            .iter()
+            .find(|op| op.is_async_work_poll())
+            .expect("post-call poll");
+        assert_eq!(check_label(poll), Some(22));
     }
 
     #[test]

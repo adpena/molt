@@ -180,8 +180,18 @@ impl ExceptionPathState {
             return next;
         }
         if is_exception_pop(op) {
-            if next.owners.pop().is_none() {
-                next.normal_closures.pop();
+            // `exception_pop` is the runtime unwind paired with the
+            // frontend's `exception_push`.  On an exceptional path the
+            // matching lexical frame has already moved into `owners`; on a
+            // normal finally path `TryEnd` has moved it into
+            // `normal_closures`.  Non-local normal control flow (continue,
+            // break, and return) cannot execute the lexically following
+            // `TryEnd`, so its explicit pop must close the active frame here.
+            // Keeping that frame alive leaks handler custody around a loop and
+            // makes later, statically depth-zero boundaries appear reachable
+            // under every handler visited by previous iterations.
+            if next.owners.pop().is_none() && next.normal_closures.pop().is_none() {
+                next.frames.pop();
             }
             return next;
         }
