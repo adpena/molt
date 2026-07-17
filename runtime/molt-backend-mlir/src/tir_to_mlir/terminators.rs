@@ -4,8 +4,9 @@ use melior::{
     Context as MlirContext,
     dialect::{arith, cf, func},
     ir::{
-        Block, Location, Type, Value,
-        attribute::{FloatAttribute, IntegerAttribute},
+        Block, BlockLike, Location, Type, Value, ValueLike,
+        attribute::{FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute},
+        operation::OperationBuilder,
         r#type::IntegerType,
     },
 };
@@ -34,11 +35,33 @@ pub(super) fn emit_terminator<'c, 'a>(
 ) -> Result<(), String> {
     match terminator {
         Terminator::Return { values } => {
-            let return_vals: Result<Vec<Value<'c, '_>>, String> = values
-                .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
-            block.append_operation(func::r#return(&return_vals?, location));
+            if values.len() > 1 {
+                return Err(format!(
+                    "MLIR backend supports one Python return value, found {} in '{}'",
+                    values.len(),
+                    tir_func.name
+                ));
+            }
+            let return_values = if let Some(&value_id) = values.first() {
+                let value = resolve_value(value_map, value_id)?;
+                vec![coerce_value_to_tir_type(
+                    ctx,
+                    block,
+                    value,
+                    &tir_func.return_type,
+                    location,
+                )?]
+            } else if matches!(tir_func.return_type, TirType::Never) {
+                vec![]
+            } else {
+                vec![zero_value_for_return_type(
+                    ctx,
+                    block,
+                    &tir_func.return_type,
+                    location,
+                )]
+            };
+            block.append_operation(func::r#return(&return_values, location));
         }
 
         Terminator::Branch { target, args } => {
@@ -46,11 +69,9 @@ pub(super) fn emit_terminator<'c, 'a>(
                 .get(target)
                 .ok_or_else(|| format!("Branch target ^bb{} not found", target.0))?;
             let dest = &mlir_blocks[target_idx];
-            let branch_args: Result<Vec<Value<'c, '_>>, String> = args
-                .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
-            block.append_operation(cf::br(dest, &branch_args?, location));
+            let branch_args =
+                resolve_edge_args(ctx, block, *target, args, value_map, tir_func, location)?;
+            block.append_operation(cf::br(dest, &branch_args, location));
         }
 
         Terminator::CondBranch {
@@ -70,14 +91,24 @@ pub(super) fn emit_terminator<'c, 'a>(
             let true_dest = &mlir_blocks[then_idx];
             let false_dest = &mlir_blocks[else_idx];
 
-            let true_args: Result<Vec<Value<'c, '_>>, String> = then_args
-                .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
-            let false_args: Result<Vec<Value<'c, '_>>, String> = else_args
-                .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
+            let true_args = resolve_edge_args(
+                ctx,
+                block,
+                *then_block,
+                then_args,
+                value_map,
+                tir_func,
+                location,
+            )?;
+            let false_args = resolve_edge_args(
+                ctx,
+                block,
+                *else_block,
+                else_args,
+                value_map,
+                tir_func,
+                location,
+            )?;
 
             // cf.cond_br requires i1 condition. If the condition is i64,
             // emit a cmpi ne 0 to convert.
@@ -88,8 +119,8 @@ pub(super) fn emit_terminator<'c, 'a>(
                 i1_cond,
                 true_dest,
                 false_dest,
-                &true_args?,
-                &false_args?,
+                &true_args,
+                &false_args,
                 location,
             ));
         }
@@ -101,52 +132,66 @@ pub(super) fn emit_terminator<'c, 'a>(
             default_args,
         } => {
             let flag = resolve_value(value_map, *value)?;
-            let &default_idx = block_index
-                .get(default)
-                .ok_or_else(|| format!("Switch default target ^bb{} not found", default.0))?;
-            let default_dest = &mlir_blocks[default_idx];
-            let def_args: Result<Vec<Value<'c, '_>>, String> = default_args
+            emit_switch(
+                ctx,
+                block,
+                flag,
+                cases,
+                *default,
+                default_args,
+                value_map,
+                block_index,
+                mlir_blocks,
+                tir_func,
+                i64_type,
+                location,
+                "Switch",
+            )?;
+        }
+
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => {
+            let self_index = tir_func
+                .param_names
                 .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
-            let def_args = def_args?;
-
-            let mut case_values = Vec::with_capacity(cases.len());
-            let mut case_destinations = Vec::with_capacity(cases.len());
-            let mut case_args_storage: Vec<Vec<Value<'c, '_>>> = Vec::with_capacity(cases.len());
-
-            for (case_val, target, args) in cases {
-                case_values.push(*case_val);
-                let &target_idx = block_index
-                    .get(target)
-                    .ok_or_else(|| format!("Switch case target ^bb{} not found", target.0))?;
-                let resolved: Result<Vec<Value<'c, '_>>, String> = args
-                    .iter()
-                    .map(|&vid| resolve_value(value_map, vid))
-                    .collect();
-                case_args_storage.push(resolved?);
-                case_destinations.push(target_idx);
-            }
-
-            // Build the case_destinations slice for cf::switch.
-            let case_dests: Vec<(&Block<'c>, &[Value<'c, '_>])> = case_destinations
-                .iter()
-                .zip(case_args_storage.iter())
-                .map(|(&idx, args)| (&mlir_blocks[idx], args.as_slice()))
-                .collect();
-
-            block.append_operation(
-                cf::switch(
-                    ctx,
-                    &case_values,
-                    flag,
-                    i64_type,
-                    (default_dest, &def_args),
-                    &case_dests,
-                    location,
-                )
-                .map_err(|e| format!("Failed to build cf.switch: {e}"))?,
-            );
+                .position(|name| name == "self")
+                .unwrap_or(0);
+            let self_value = resolve_value(value_map, molt_backend::tir::values::ValueId(self_index as u32))
+                .map_err(|_| {
+                    format!(
+                        "StateDispatch in '{}' requires the generator frame parameter ('self' or parameter 0)",
+                        tir_func.name
+                    )
+                })?;
+            let state_call = block.append_operation(func::call(
+                ctx,
+                FlatSymbolRefAttribute::new(ctx, "molt_obj_get_state"),
+                &[self_value],
+                &[i64_type],
+                location,
+            ));
+            let state = state_call
+                .result(0)
+                .map_err(|error| format!("molt_obj_get_state returned no state value: {error}"))?
+                .into();
+            emit_switch(
+                ctx,
+                block,
+                state,
+                cases,
+                *default,
+                default_args,
+                value_map,
+                block_index,
+                mlir_blocks,
+                tir_func,
+                i64_type,
+                location,
+                "StateDispatch",
+            )?;
         }
 
         Terminator::Unreachable => {
@@ -161,6 +206,150 @@ pub(super) fn emit_terminator<'c, 'a>(
         }
     }
 
+    Ok(())
+}
+
+fn coerce_value_to_tir_type<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    value: Value<'c, 'a>,
+    expected_type: &TirType,
+    location: Location<'c>,
+) -> Result<Value<'c, 'a>, String> {
+    let expected = mlir_type_for_tir(ctx, expected_type);
+    if value.r#type() == expected {
+        return Ok(value);
+    }
+
+    let operation = match expected_type {
+        TirType::Bool => {
+            return Ok(ensure_i1_condition(
+                ctx,
+                block,
+                value,
+                IntegerType::new(ctx, 64).into(),
+                location,
+            ));
+        }
+        TirType::I64 => {
+            let i1_type: Type<'c> = IntegerType::new(ctx, 1).into();
+            if value.r#type() == i1_type {
+                arith::extui(value, expected, location)
+            } else if value.r#type() == Type::float64(ctx) {
+                arith::bitcast(value, expected, location)
+            } else {
+                return Err(format!(
+                    "cannot coerce MLIR return type {} to i64",
+                    value.r#type()
+                ));
+            }
+        }
+        TirType::F64 => arith::bitcast(value, expected, location),
+        _ => OperationBuilder::new("molt.box", location)
+            .add_operands(&[value])
+            .add_results(&[expected])
+            .build()
+            .map_err(|error| format!("failed to box MLIR return value: {error}"))?,
+    };
+    Ok(block.append_operation(operation).result(0).unwrap().into())
+}
+
+fn resolve_edge_args<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    target: BlockId,
+    args: &[molt_backend::tir::values::ValueId],
+    value_map: &ValueMap<'c, 'a>,
+    tir_func: &TirFunction,
+    location: Location<'c>,
+) -> Result<Vec<Value<'c, 'a>>, String> {
+    let target_block = tir_func
+        .blocks
+        .get(&target)
+        .ok_or_else(|| format!("edge target ^bb{} not found", target.0))?;
+    if args.len() != target_block.args.len() {
+        return Err(format!(
+            "edge to ^bb{} passes {} values for {} block arguments",
+            target.0,
+            args.len(),
+            target_block.args.len()
+        ));
+    }
+    args.iter()
+        .zip(&target_block.args)
+        .map(|(&value_id, target_arg)| {
+            coerce_value_to_tir_type(
+                ctx,
+                block,
+                resolve_value(value_map, value_id)?,
+                &target_arg.ty,
+                location,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_switch<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    flag: Value<'c, '_>,
+    cases: &[(i64, BlockId, Vec<molt_backend::tir::values::ValueId>)],
+    default: BlockId,
+    default_args: &[molt_backend::tir::values::ValueId],
+    value_map: &ValueMap<'c, 'a>,
+    block_index: &HashMap<BlockId, usize>,
+    mlir_blocks: &[Block<'c>],
+    tir_func: &TirFunction,
+    i64_type: Type<'c>,
+    location: Location<'c>,
+    kind: &str,
+) -> Result<(), String> {
+    let &default_idx = block_index
+        .get(&default)
+        .ok_or_else(|| format!("{kind} default target ^bb{} not found", default.0))?;
+    let default_dest = &mlir_blocks[default_idx];
+    let default_values = resolve_edge_args(
+        ctx,
+        block,
+        default,
+        default_args,
+        value_map,
+        tir_func,
+        location,
+    )?;
+
+    let mut case_values = Vec::with_capacity(cases.len());
+    let mut case_destinations = Vec::with_capacity(cases.len());
+    let mut case_args_storage: Vec<Vec<Value<'c, '_>>> = Vec::with_capacity(cases.len());
+    for (case_value, target, args) in cases {
+        case_values.push(*case_value);
+        let &target_idx = block_index
+            .get(target)
+            .ok_or_else(|| format!("{kind} case target ^bb{} not found", target.0))?;
+        case_args_storage.push(resolve_edge_args(
+            ctx, block, *target, args, value_map, tir_func, location,
+        )?);
+        case_destinations.push(target_idx);
+    }
+    let case_destinations: Vec<(&Block<'c>, &[Value<'c, '_>])> = case_destinations
+        .iter()
+        .zip(case_args_storage.iter())
+        .map(|(&index, args)| (&mlir_blocks[index], args.as_slice()))
+        .collect();
+
+    block.append_operation(
+        cf::switch(
+            ctx,
+            &case_values,
+            flag,
+            i64_type,
+            (default_dest, &default_values),
+            &case_destinations,
+            location,
+        )
+        .map_err(|error| format!("Failed to build {kind} cf.switch: {error}"))?,
+    );
     Ok(())
 }
 

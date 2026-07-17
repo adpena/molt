@@ -293,7 +293,9 @@ impl<'a> SsaContext<'a> {
         // Which blocks define which variables.
         let n = self.cfg.blocks.len();
 
-        for var in self.all_vars.clone() {
+        let mut all_vars: Vec<_> = self.all_vars.iter().cloned().collect();
+        all_vars.sort();
+        for var in all_vars {
             let mut def_blocks: HashSet<usize> = HashSet::new();
             for bid in 0..n {
                 // A block is a definition site for `var` when its ops define
@@ -318,7 +320,9 @@ impl<'a> SsaContext<'a> {
 
             // Iterated dominance frontier.
             let mut phi_blocks: HashSet<usize> = HashSet::new();
-            let mut worklist: VecDeque<usize> = def_blocks.iter().copied().collect();
+            let mut ordered_def_blocks: Vec<_> = def_blocks.iter().copied().collect();
+            ordered_def_blocks.sort_unstable();
+            let mut worklist: VecDeque<usize> = ordered_def_blocks.into();
             let mut ever_on_worklist: HashSet<usize> = def_blocks.clone();
 
             while let Some(bid) = worklist.pop_front() {
@@ -333,10 +337,23 @@ impl<'a> SsaContext<'a> {
             }
 
             // Record that these blocks need a block argument for this variable.
-            for &bid in &phi_blocks {
+            let mut ordered_phi_blocks: Vec<_> = phi_blocks.into_iter().collect();
+            ordered_phi_blocks.sort_unstable();
+            for bid in ordered_phi_blocks {
                 if live_in[bid].contains(&var) && !self.block_arg_vars[bid].contains(&var) {
                     self.block_arg_vars[bid].push(var.clone());
                 }
+            }
+        }
+
+        // Block arguments are a serialized ABI between every predecessor edge
+        // and its successor. Their order must not inherit HashSet iteration or
+        // dominance-frontier discovery order. Entry parameters retain source
+        // signature order; every non-entry phi vector is canonical by variable.
+        for (bid, vars) in self.block_arg_vars.iter_mut().enumerate() {
+            if bid != self.cfg.entry {
+                vars.sort();
+                vars.dedup();
             }
         }
     }

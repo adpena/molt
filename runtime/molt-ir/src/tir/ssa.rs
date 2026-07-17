@@ -1499,6 +1499,49 @@ mod tests {
         assert_eq!(arg_ids.len(), 2, "block arg ValueIds should be unique");
     }
 
+    #[test]
+    fn block_argument_and_edge_order_is_deterministic() {
+        fn structural_signature(output: &SsaOutput) -> String {
+            output
+                .blocks
+                .iter()
+                .map(|block| {
+                    let args: Vec<_> = block.args.iter().map(|arg| arg.id).collect();
+                    let ops: Vec<_> = block
+                        .ops
+                        .iter()
+                        .map(|op| (op.opcode, op.operands.clone(), op.results.clone()))
+                        .collect();
+                    format!("{:?}:{args:?}:{ops:?}:{:?}", block.id, block.terminator)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let ops = vec![
+            op_val_out("const", 0, "condition"),
+            op_args("if", &["condition"]),
+            op_val_out("const", 1, "zeta"),
+            op_val_out("const", 2, "alpha"),
+            op_val_out("const", 3, "middle"),
+            op("else"),
+            op_val_out("const", 4, "zeta"),
+            op_val_out("const", 5, "alpha"),
+            op_val_out("const", 6, "middle"),
+            op("end_if"),
+            op_args("ret", &["zeta", "alpha", "middle"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let expected = structural_signature(&convert_to_ssa(&cfg, &ops));
+        for _ in 0..32 {
+            assert_eq!(
+                structural_signature(&convert_to_ssa(&cfg, &ops)),
+                expected,
+                "SSA block argument and predecessor edge order must not inherit HashSet seeds"
+            );
+        }
+    }
+
     // =======================================================================
     // Test 5: Empty CFG
     // =======================================================================

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from dataclasses import asdict, dataclass
@@ -186,6 +190,169 @@ def default_llvm_release(major: int, minor: int = 1) -> str:
     if major == 22 and minor == 1:
         return "22.1.8"
     return f"{major}.{minor}.0"
+
+
+def mlir_sys_prefix_env_var(major: int) -> str:
+    """Return the environment authority consumed by ``mlir-sys``."""
+
+    return f"MLIR_SYS_{major * 10}_PREFIX"
+
+
+def tablegen_prefix_env_var(major: int) -> str:
+    """Return the environment authority consumed by ``tblgen``."""
+
+    return f"TABLEGEN_{major * 10}_PREFIX"
+
+
+def managed_llvm_prefix(root: Path, pin: LlvmBackendPin | None = None) -> Path:
+    """Return Molt's content-versioned managed LLVM/MLIR installation root."""
+
+    resolved_pin = pin if pin is not None else required_llvm_backend_pin(root)
+    if resolved_pin is None:
+        raise LlvmToolchainConfigError(
+            f"could not resolve LLVM backend feature pin under {root}"
+        )
+    return (
+        root.resolve()
+        / "target"
+        / "toolchains"
+        / f"llvm-{resolved_pin.default_release}"
+    )
+
+
+def llvm_config_executable(prefix: Path) -> Path:
+    """Resolve ``llvm-config`` without assuming the host filename convention."""
+
+    bin_dir = prefix / "bin"
+    windows = bin_dir / "llvm-config.exe"
+    return windows if windows.is_file() else bin_dir / "llvm-config"
+
+
+@lru_cache(maxsize=8)
+def _llvm_config_version(executable: str) -> tuple[int, int, str]:
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LlvmToolchainConfigError(
+            f"could not query LLVM/MLIR toolchain version from {executable}: {exc}"
+        ) from exc
+    rendered = result.stdout.strip()
+    match = re.match(r"^(\d+)\.(\d+)(?:\.|$)", rendered)
+    if match is None:
+        raise LlvmToolchainConfigError(
+            f"llvm-config returned an invalid version {rendered!r}: {executable}"
+        )
+    return int(match.group(1)), int(match.group(2)), rendered
+
+
+def _normalized_prefix(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def resolve_llvm_toolchain_prefix(
+    root: Path,
+    *,
+    environ: dict[str, str] | None = None,
+) -> Path | None:
+    """Resolve one LLVM/MLIR prefix and reject split dependency custody.
+
+    Explicit Molt/llvm-sys/mlir-sys/tblgen prefixes are one authority class.
+    If more than one is set they must name the same installation. Otherwise the
+    managed, manifest-versioned prefix wins, followed by ``llvm-config`` on
+    ``PATH`` for system package-manager installations.
+    """
+
+    pin = required_llvm_backend_pin(root)
+    if pin is None:
+        return None
+    env = os.environ if environ is None else environ
+    authority_names = (
+        "MOLT_LLVM_PREFIX",
+        pin.env_var,
+        mlir_sys_prefix_env_var(pin.major),
+        tablegen_prefix_env_var(pin.major),
+    )
+    explicit = {
+        _normalized_prefix(value)
+        for name in authority_names
+        if (value := env.get(name, "").strip())
+    }
+    if len(explicit) > 1:
+        rendered = ", ".join(str(path) for path in sorted(explicit, key=str))
+        raise LlvmToolchainConfigError(
+            "LLVM/MLIR prefix authorities disagree; configure one toolchain family: "
+            f"{rendered}"
+        )
+    if explicit:
+        return next(iter(explicit))
+
+    managed = managed_llvm_prefix(root, pin)
+    if llvm_config_executable(managed).is_file():
+        return managed
+
+    discovered = shutil.which("llvm-config", path=env.get("PATH")) or shutil.which(
+        "llvm-config.exe", path=env.get("PATH")
+    )
+    if discovered is None:
+        return None
+    return Path(discovered).resolve().parent.parent
+
+
+def mlir_toolchain_environment(
+    root: Path,
+    *,
+    environ: dict[str, str] | None = None,
+    require: bool = True,
+) -> dict[str, str]:
+    """Project one resolved LLVM prefix into every Rust binding authority."""
+
+    pin = required_llvm_backend_pin(root)
+    if pin is None:
+        if not require:
+            return dict(os.environ if environ is None else environ)
+        raise LlvmToolchainConfigError(
+            f"could not resolve LLVM backend feature pin under {root}"
+        )
+    result = dict(os.environ if environ is None else environ)
+    prefix = resolve_llvm_toolchain_prefix(root, environ=result)
+    if prefix is None:
+        if require:
+            raise LlvmToolchainConfigError(
+                "LLVM/MLIR toolchain is unavailable; run "
+                f"{sys.executable} tools/bootstrap_llvm.py"
+            )
+        return result
+    llvm_config = llvm_config_executable(prefix)
+    if not llvm_config.is_file():
+        raise LlvmToolchainConfigError(
+            f"LLVM/MLIR prefix does not contain llvm-config: {llvm_config}"
+        )
+    actual_major, actual_minor, actual_version = _llvm_config_version(str(llvm_config))
+    if (actual_major, actual_minor) != (pin.major, pin.minor):
+        raise LlvmToolchainConfigError(
+            "LLVM/MLIR toolchain version does not match the manifest authority: "
+            f"expected {pin.major}.{pin.minor}.x, found {actual_version} at {llvm_config}"
+        )
+
+    prefix_text = str(prefix)
+    result["MOLT_LLVM_PREFIX"] = prefix_text
+    result[pin.env_var] = prefix_text
+    result[mlir_sys_prefix_env_var(pin.major)] = prefix_text
+    result[tablegen_prefix_env_var(pin.major)] = prefix_text
+    result["LLVM_CONFIG_PATH"] = str(llvm_config)
+
+    bin_text = str(prefix / "bin")
+    path_parts = [part for part in result.get("PATH", "").split(os.pathsep) if part]
+    normalized_bin = os.path.normcase(os.path.normpath(bin_text))
+    if all(os.path.normcase(os.path.normpath(part)) != normalized_bin for part in path_parts):
+        result["PATH"] = os.pathsep.join([bin_text, *path_parts])
+    return result
 
 
 def _repo_root() -> Path:

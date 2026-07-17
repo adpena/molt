@@ -16,3 +16,13 @@ path = "src/bin/main.rs"
 melior = { version = "0.27" }
 molt-backend = { path = "../molt-backend" }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
+
+# The MLIR backend is intentionally an excluded standalone workspace because
+# ordinary Molt builds must not require LLVM/MLIR. It therefore cannot inherit
+# root-workspace patches. Keep the two audited Windows build fixes here, at the
+# workspace that actually resolves them, so Linux/macOS/Windows share one
+# deterministic dependency graph.
+[patch.crates-io]
+melior = { path = "../../vendor/melior-0.27.0" }
+mlir-sys = { git = "https://github.com/joa/mlir-sys", rev = "f7dba297b15875a4976315c39c5f2260709c9b2f" }
+tblgen = { git = "https://github.com/mlir-rs/tblgen-rs", rev = "777dc4ec89b3e717ade3a992f9ab30b2f5148c18" }
