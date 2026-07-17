@@ -13,8 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 from wasm_abi_gen.paths import (
-    CPYTHON_ABI_API_ROOT,
-    CPYTHON_ABI_TYPES,
+    CPYTHON_ABI_SOURCE_ROOT,
     CPYTHON_ABI_VARIADIC_SHIM,
     INTRINSIC_CATEGORIES,
     INTRINSICS_MANIFEST,
@@ -154,7 +153,7 @@ class WasmAbiManifestError(ValueError):
 
 
 CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
-CPYTHON_ABI_EXPORT_PREFIXES = ("Py", "_Py", "molt_cpython_abi_")
+CPYTHON_ABI_EXPORT_PREFIXES = ("Py", "_Py", "molt_capi_", "molt_cpython_abi_")
 CPYTHON_ABI_NO_MANGLE_FUNCTION_RE = re.compile(
     r"#\[unsafe\(no_mangle\)\]\s*"
     r"(?:#\[[^\]]+\]\s*)*"
@@ -348,7 +347,7 @@ def generator_cpython_abi_link_import_kinds() -> tuple[tuple[str, str], ...]:
     Pact/browser build failures.
     """
     kinds: dict[str, str] = {}
-    rust_paths = (CPYTHON_ABI_TYPES, *sorted(CPYTHON_ABI_API_ROOT.glob("*.rs")))
+    rust_paths = sorted(CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs"))
     for path in rust_paths:
         text = path.read_text(encoding="utf-8")
         for match in CPYTHON_ABI_NO_MANGLE_FUNCTION_RE.finditer(text):
