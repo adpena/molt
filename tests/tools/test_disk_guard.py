@@ -79,6 +79,21 @@ def _cfg(**over) -> dg.GuardConfig:
     return dg.GuardConfig(**base)
 
 
+def _fake_registered_worktree_scope(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Build the filesystem metadata written by ``git worktree add``."""
+    scope = tmp_path
+    main = scope / "molt-src"
+    linked = scope / "worktrees" / "lane"
+    common = main / ".git"
+    admin = common / "worktrees" / "lane"
+    main.mkdir(parents=True)
+    linked.mkdir(parents=True)
+    admin.mkdir(parents=True)
+    (linked / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    (admin / "gitdir").write_text(str(linked / ".git") + "\n", encoding="utf-8")
+    return scope, main, linked
+
+
 # --- 1. ensure_free reclaims stale dirs and STOPS at the target -------------
 
 
@@ -170,6 +185,187 @@ def test_current_session_dir_never_reclaimed(tmp_path):
     assert not other.exists()
     reasons = {Path(s["path"]): s["reason"] for s in result.skipped}
     assert reasons.get(mine.resolve()) == "protected"
+
+
+def test_explicit_active_target_nested_in_candidate_protects_parent(tmp_path):
+    now = 2_000_000.0
+    lane = tmp_path / "target" / "codex-active-parent"
+    nested_target = lane / "nested-cargo-target"
+    _make_dir(lane, size_bytes=100 * _GB, age_s=100_000, now=now)
+    nested_target.mkdir()
+    os.utime(nested_target, (now - 100_000, now - 100_000))
+    os.utime(lane, (now - 100_000, now - 100_000))
+    result = dg.ensure_free(
+        root=tmp_path,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, {lane: 100 * _GB}),
+        now_fn=lambda: now,
+        env={"CARGO_TARGET_DIR": str(nested_target)},
+    )
+
+    assert lane.exists()
+    reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
+    assert reasons[lane.resolve()] == "protected"
+
+
+def test_shared_target_parent_does_not_protect_independent_session_child(tmp_path):
+    now = 2_000_000.0
+    session = tmp_path / "target" / "sessions" / "old-independent"
+    _make_dir(session, size_bytes=100 * _GB, age_s=100_000, now=now)
+    result = dg.ensure_free(
+        root=tmp_path,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, {session: 100 * _GB}),
+        now_fn=lambda: now,
+        env={"CARGO_TARGET_DIR": str(tmp_path / "target")},
+    )
+
+    assert not session.exists()
+    assert {Path(item["path"]) for item in result.reclaimed} == {session.resolve()}
+
+
+def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(tmp_path):
+    scope, main, linked = _fake_registered_worktree_scope(tmp_path)
+    outside = tmp_path.parent / "outside-worktree"
+    outside.mkdir(exist_ok=True)
+    outside_admin = main / ".git" / "worktrees" / "outside"
+    outside_admin.mkdir()
+    (outside_admin / "gitdir").write_text(
+        str(outside / ".git") + "\n", encoding="utf-8"
+    )
+
+    assert set(dg.registered_worktree_roots(main)) == {
+        main.resolve(),
+        linked.resolve(),
+    }
+    assert set(dg.reclaim_roots(main)) == {
+        scope.resolve(),
+        main.resolve(),
+        linked.resolve(),
+    }
+
+
+def test_ensure_free_reclaims_across_registered_worktrees_only(tmp_path):
+    scope, main, linked = _fake_registered_worktree_scope(tmp_path)
+    now = 2_000_000.0
+    main_session = main / "target" / "sessions" / "main-old"
+    linked_session = linked / "target" / "sessions" / "linked-old"
+    unregistered_session = (
+        scope / "worktrees" / "unregistered" / "target" / "sessions" / "keep"
+    )
+    sized = {
+        main_session: _make_dir(
+            main_session, size_bytes=20 * _GB, age_s=100_000, now=now
+        ),
+        linked_session: _make_dir(
+            linked_session, size_bytes=20 * _GB, age_s=90_000, now=now
+        ),
+        unregistered_session: _make_dir(
+            unregistered_session, size_bytes=100 * _GB, age_s=200_000, now=now
+        ),
+    }
+    # A sibling checkout cannot self-authorize merely by containing its own
+    # repository metadata; only the canonical repo's registration is trusted.
+    (scope / "worktrees" / "unregistered" / ".git").mkdir()
+    result = dg.ensure_free(
+        root=main,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, sized),
+        now_fn=lambda: now,
+        env={},
+    )
+
+    assert not main_session.exists()
+    assert not linked_session.exists()
+    assert unregistered_session.exists()
+    assert linked.resolve() in {Path(path) for path in result.scope_roots}
+
+
+def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path):
+    _, main, linked = _fake_registered_worktree_scope(tmp_path)
+    now = 2_000_000.0
+    main_session = main / "target" / "sessions" / "main-old"
+    linked_session = linked / "target" / "sessions" / "linked-active"
+    sized = {
+        main_session: _make_dir(
+            main_session, size_bytes=5 * _GB, age_s=100_000, now=now
+        ),
+        linked_session: _make_dir(
+            linked_session, size_bytes=100 * _GB, age_s=100_000, now=now
+        ),
+    }
+    markers = linked / "tmp" / "memory_guard" / "active"
+    markers.mkdir(parents=True)
+    marker = markers / "guard-1-token.json"
+    marker.write_text('{"status":"child_running"}\n', encoding="utf-8")
+
+    result = dg.ensure_free(
+        root=main,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, sized),
+        now_fn=lambda: now,
+        env={},
+    )
+    assert not main_session.exists()
+    assert linked_session.exists()
+    reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
+    assert reasons[linked_session.resolve()] == "active-guard"
+
+    marker.write_text('{"status":"completed"}\n', encoding="utf-8")
+    result = dg.ensure_free(
+        root=main,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, {linked_session: 100 * _GB}),
+        now_fn=lambda: now,
+        env={},
+    )
+    assert not linked_session.exists()
+    assert {Path(item["path"]) for item in result.reclaimed} == {
+        linked_session.resolve()
+    }
+
+
+def test_terminal_parent_custody_retires_nested_nonterminal_marker(tmp_path):
+    markers = tmp_path / "tmp" / "memory_guard" / "active"
+    markers.mkdir(parents=True)
+    nested = markers / "guard-7-nested.json"
+    nested.write_text('{"pid":7,"status":"child_running"}\n', encoding="utf-8")
+    os.utime(nested, (100.0, 100.0))
+    parent = markers / "guard-1-parent.json"
+    parent.write_text(
+        '{"pid":1,"status":"completed","termination_reports":[{"watched_pids":[7]}]}\n',
+        encoding="utf-8",
+    )
+    os.utime(parent, (200.0, 200.0))
+
+    assert dg._has_active_guard(tmp_path) is False
+
+
+def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_path):
+    markers = tmp_path / "tmp" / "memory_guard" / "active"
+    markers.mkdir(parents=True)
+    (markers / "manual-death-capsule.json").write_text(
+        '{"status":"starting","command":"cargo test"}\n', encoding="utf-8"
+    )
+
+    assert dg._has_active_guard(tmp_path) is False
+
+
+def test_recent_registry_event_protects_old_target_from_pressure_reclaim(tmp_path):
+    now = 3_000_000.0
+    target = tmp_path / "target" / "codex-live"
+    _make_dir(target, size_bytes=100 * _GB, age_s=100_000, now=now)
+    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 60)
+    result = dg.ensure_free(
+        root=tmp_path,
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(1 * _GB, {target: 100 * _GB}),
+        now_fn=lambda: now,
+        env={},
+    )
+    assert target.exists()
+    reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
+    assert reasons[target.resolve()] == "live-lane"
 
 
 # --- 2c. a lock-held dir is never reclaimed (real held lock) ----------------
@@ -385,6 +581,44 @@ def test_gc_collects_registered_dir_past_ttl(tmp_path):
     assert "codex-live" in remaining
 
 
+def test_gc_compacts_each_registered_worktree_registry(tmp_path):
+    _, main, linked = _fake_registered_worktree_scope(tmp_path)
+    now = 3_000_000.0
+    main_done = main / "target" / "codex-main-done"
+    linked_done = linked / "target" / "codex-linked-done"
+    _make_dir(main_done, size_bytes=1, age_s=100_000, now=now)
+    _make_dir(linked_done, size_bytes=1, age_s=100_000, now=now)
+    dg.register_lane_target(main_done, root=main, env={}, now=now - 100_000)
+    dg.register_lane_target(linked_done, root=linked, env={}, now=now - 100_000)
+
+    result = dg.gc(root=main, config=_cfg(), now_fn=lambda: now, env={})
+
+    assert {Path(item["path"]) for item in result.reclaimed} == {
+        main_done.resolve(),
+        linked_done.resolve(),
+    }
+    assert dg.read_registry(main.resolve()) == {}
+    assert dg.read_registry(linked.resolve()) == {}
+
+
+def test_gc_preserves_registered_target_under_live_guard(tmp_path):
+    now = 3_000_000.0
+    target = tmp_path / "target" / "codex-guarded"
+    _make_dir(target, size_bytes=1, age_s=100_000, now=now)
+    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 100_000)
+    markers = tmp_path / "tmp" / "memory_guard" / "active"
+    markers.mkdir(parents=True)
+    (markers / "guard-42-live.json").write_text(
+        '{"pid":42,"status":"child_running"}\n', encoding="utf-8"
+    )
+
+    result = dg.gc(root=tmp_path, config=_cfg(), now_fn=lambda: now, env={})
+
+    assert result.reclaimed == []
+    assert target.exists()
+    assert dg._norm(target) in dg.read_registry(tmp_path.resolve())
+
+
 def test_register_lane_target_is_latest_wins(tmp_path):
     d = tmp_path / "target" / "codex-x"
     d.mkdir(parents=True)
@@ -431,7 +665,7 @@ def test_selftest_canaries_all_live():
     results = dg.selftest()
     dead = [name for name, ok in results if not ok]
     assert not dead, f"dead disk_guard canaries: {dead}"
-    assert len(results) >= 6
+    assert len(results) >= 8
 
 
 def test_completed_lane_event_reclaims_registered_target(tmp_path):
@@ -452,3 +686,19 @@ def test_completed_lane_event_never_reclaims_active_lane():
         False,
         "lane-active",
     )
+
+
+def test_completed_lane_event_respects_live_guard_marker(tmp_path):
+    target = tmp_path / "target" / "codex-active"
+    target.mkdir(parents=True)
+    markers = tmp_path / "tmp" / "memory_guard" / "active"
+    markers.mkdir(parents=True)
+    (markers / "guard-42-live.json").write_text(
+        '{"pid":42,"status":"child_running"}\n', encoding="utf-8"
+    )
+
+    result = dg.reclaim_completed_lane(target, root=tmp_path, env={})
+
+    assert result.reclaimed == []
+    assert result.skipped == [{"path": str(target.resolve()), "reason": "lane-active"}]
+    assert target.exists()
