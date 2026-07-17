@@ -58,7 +58,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
-    local_inc_ref_obj: FuncRef,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -178,8 +177,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .ins()
                     .call(slow_local, &[obj_ptr, attr_ptr, attr_len, ic_raw]);
                 let slow_result = builder.inst_results(slow_call)[0];
-                // Slow path returns a borrowed reference; inc_ref to own it.
-                emit_inc_ref_obj(&mut *builder, slow_result, local_inc_ref_obj);
                 jump_block(&mut *builder, merge_block, &[slow_result]);
 
                 // --- Merge ---
@@ -199,11 +196,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 let call = builder
                     .ins()
                     .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
-                let slow_res = builder.inst_results(call)[0];
-                // Attribute lookup may return borrowed values from object/class internals.
-                // Normalize to an owned reference so last-use decref remains safe.
-                emit_inc_ref_obj(&mut *builder, slow_res, local_inc_ref_obj);
-                slow_res
+                builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
@@ -279,9 +272,9 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 _ => unreachable!("handler invoked with non-matching op.kind"),
             };
             let res = builder.inst_results(call)[0];
-            // `molt_get_attr_object[_ic]` can hand back borrowed values on fast
-            // paths. Own the result here.
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+            // Every canonical runtime getattr entry point returns one owned
+            // result on success. The IC hit and miss paths normalize to that
+            // same contract; adding another retain here leaks bound receivers.
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -329,8 +322,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .ins()
                 .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
-            // Keep attribute result ownership consistent across all get-attr ops.
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+            // `molt_get_attr_special` returns one owned result on success.
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -369,10 +361,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);
             let res = builder.inst_results(call)[0];
-            // Attribute lookup returns a borrowed reference from object internals/dicts in
-            // some fast paths. Convert it to an owned reference so lifetime tracking can
-            // safely decref at last use without corrupting dict-owned values.
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+            // `molt_get_attr_name` returns one owned result on success.
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -422,8 +411,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
             let res = builder.inst_results(call)[0];
-            // See `get_attr_name` above: ensure the returned value is owned.
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+            // `molt_get_attr_name_default` owns both lookup and default results.
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
