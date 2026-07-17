@@ -52,6 +52,7 @@ from wasm_link_format import (
     _write_varuint,
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+from molt.cli.external_link_providers import wasm_external_link_provider_symbols
 
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
@@ -1009,7 +1010,10 @@ def _runtime_import_rewrite_target(
         if export_name is None:
             return None, False
         return export_name, export_name not in runtime_exports
-    if name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS:
+    if (
+        name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
+        or name in wasm_external_link_provider_symbols()
+    ):
         return None, False
     export_name = wasm_runtime_export_name(name)
     if export_name is None:

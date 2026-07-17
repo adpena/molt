@@ -5729,7 +5729,13 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
 
 def test_external_native_artifact_plan_records_external_link_symbol_board(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda: {"malloc": "wasm_libc_link_import"},
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
@@ -5772,7 +5778,13 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
 
 def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda: {"_ZNSt11logic_errorC2EPKc": "wasm_libcxx_link_import"},
+    )
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,

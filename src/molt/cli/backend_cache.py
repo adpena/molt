@@ -59,6 +59,12 @@ _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
 ] = {}
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
 _NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 1
+_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
+_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 1
+_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: dict[
+    tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+    tuple[frozenset[str], frozenset[str]] | None,
+] = {}
 _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 1
 
 
@@ -314,25 +320,7 @@ def _native_object_global_symbol_sets(
         if cache_key is not None:
             _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = None
         return None
-    defined: set[str] = set()
-    undefined: set[str] = set()
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.lower().endswith(": no symbols") or line.lower() == "no symbols":
-            continue
-        parts = line.split()
-        if len(parts) >= 2:
-            if len(parts) == 2:
-                kind, name = parts
-            else:
-                _, kind, name = parts[0], parts[1], parts[2]
-            symbol = _normalize_native_symbol_name(name)
-            if kind.upper() == "U":
-                undefined.add(symbol)
-            else:
-                defined.add(symbol)
+    defined, undefined = _parse_native_nm_global_symbol_sets(result.stdout)
     if cache_key is not None:
         if (
             len(_NATIVE_OBJECT_SYMBOL_SETS_CACHE)
@@ -352,6 +340,184 @@ def _native_object_global_symbol_sets(
                 undefined=undefined,
             )
     return defined, undefined
+
+
+def _parse_native_nm_global_symbol_sets(
+    output: str,
+) -> _NativeObjectSymbolSets:
+    """Parse global ``nm`` facts for one object or static archive.
+
+    LLVM ``nm`` emits archive-member header lines between ordinary symbol rows.
+    Keeping the parser shared makes archive-backed linker custody use the same
+    symbol semantics as source-extension object closure without creating symbol
+    sidecars inside managed Rust/WASI toolchains.
+    """
+
+    defined: set[str] = set()
+    undefined: set[str] = set()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().endswith(": no symbols") or line.lower() == "no symbols":
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            if len(parts) == 2:
+                kind, name = parts
+            else:
+                _, kind, name = parts[0], parts[1], parts[2]
+            symbol = _normalize_native_symbol_name(name)
+            if kind.upper() == "U":
+                undefined.add(symbol)
+            else:
+                defined.add(symbol)
+    return defined, undefined
+
+
+def _native_archive_global_symbol_sets(
+    path: Path,
+    *,
+    nm_command: Sequence[str] | None = None,
+) -> _NativeObjectSymbolSets | None:
+    """Read one provider archive's globals without mutating the toolchain.
+
+    Provider archives are immutable installation inputs, not build outputs.
+    Their symbol facts therefore use bounded process caching plus one central,
+    stat-keyed cache under Molt's cache root; unlike object facts, this function
+    never writes a ``*.symbols.json`` sibling into Rust or WASI SDK directories.
+    """
+
+    try:
+        resolved = path.resolve(strict=True)
+        stat = resolved.stat()
+    except OSError:
+        return None
+    cache_key = (
+        os.fspath(resolved),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(getattr(stat, "st_ctime_ns", 0)),
+        os.environ.get("MOLT_TARGET_ROOT", ""),
+        os.environ.get("PATH", ""),
+        os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
+        tuple(nm_command or ()),
+    )
+    cached = _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.get(cache_key)
+    if cached is not None:
+        defined_cached, undefined_cached = cached
+        return set(defined_cached), set(undefined_cached)
+    if cache_key in _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE:
+        return None
+    persistent_cache_path = _native_archive_symbol_cache_path(cache_key)
+    persistent_facts = _read_native_archive_symbol_cache(
+        persistent_cache_path,
+        cache_key=cache_key,
+    )
+    if persistent_facts is not None:
+        defined, undefined = persistent_facts
+        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = (
+            frozenset(defined),
+            frozenset(undefined),
+        )
+        return defined, undefined
+    result = _native_object_global_symbols_result(
+        resolved,
+        timeout=120,
+        nm_command=nm_command,
+    )
+    if result is None:
+        facts = None
+    else:
+        defined, undefined = _parse_native_nm_global_symbol_sets(result.stdout)
+        facts = (frozenset(defined), frozenset(undefined))
+    if len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE) >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT:
+        _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = facts
+    if facts is None:
+        return None
+    with contextlib.suppress(OSError):
+        _write_native_archive_symbol_cache(
+            persistent_cache_path,
+            cache_key=cache_key,
+            defined=facts[0],
+            undefined=facts[1],
+        )
+    return set(facts[0]), set(facts[1])
+
+
+def _native_archive_symbol_cache_identity(
+    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+) -> dict[str, object]:
+    return {
+        "path": cache_key[0],
+        "size": cache_key[1],
+        "mtime_ns": cache_key[2],
+        "ctime_ns": cache_key[3],
+        "target_root": cache_key[4],
+        "path_env": cache_key[5],
+        "timeout_env": cache_key[6],
+        "nm_command": list(cache_key[7]),
+    }
+
+
+def _native_archive_symbol_cache_path(
+    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+) -> Path:
+    identity = _native_archive_symbol_cache_identity(cache_key)
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return (
+        _default_molt_cache()
+        / "toolchain_symbol_facts"
+        / f"v{_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION}"
+        / f"{digest}.json"
+    )
+
+
+def _read_native_archive_symbol_cache(
+    path: Path,
+    *,
+    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+) -> _NativeObjectSymbolSets | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION:
+        return None
+    if payload.get("identity") != _native_archive_symbol_cache_identity(cache_key):
+        return None
+    defined = payload.get("defined")
+    undefined = payload.get("undefined")
+    if not isinstance(defined, list) or not isinstance(undefined, list):
+        return None
+    if not all(isinstance(symbol, str) for symbol in (*defined, *undefined)):
+        return None
+    return set(defined), set(undefined)
+
+
+def _write_native_archive_symbol_cache(
+    path: Path,
+    *,
+    cache_key: tuple[str, int, int, int, str, str, str, tuple[str, ...]],
+    defined: Collection[str],
+    undefined: Collection[str],
+) -> None:
+    _atomic_write_json(
+        path,
+        {
+            "schema": _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION,
+            "identity": _native_archive_symbol_cache_identity(cache_key),
+            "defined": sorted(set(defined)),
+            "undefined": sorted(set(undefined)),
+        },
+        indent=None,
+        sort_keys=True,
+    )
 
 
 def _native_object_has_unresolved_module_chunks(
