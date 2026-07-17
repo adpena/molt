@@ -1,0 +1,124 @@
+schema_version = 1
+
+[process]
+schema_version = 3
+kind = "runtime_feedback"
+memory_fields = ["source", "available", "current_rss_bytes", "peak_rss_bytes"]
+
+[epoch]
+schema_version = 2
+kind = "runtime_profile_epoch"
+memory_fields = ["start", "end", "current_rss_delta_bytes"]
+
+[rss_sources]
+linux = "proc-self-status"
+macos = "mach-task-basic-info"
+windows = "windows-process-memory-info"
+wasm = "unsupported-wasm"
+fallback = "unsupported-target"
+
+[[section]]
+name = "profile"
+metrics = [
+  { name = "call_dispatch", semantic = "counter" },
+  { name = "string_count_cache_hit", semantic = "counter" },
+  { name = "string_count_cache_miss", semantic = "counter" },
+  { name = "struct_field_store", semantic = "counter" },
+  { name = "attr_lookup", semantic = "counter" },
+  { name = "handle_resolve", semantic = "counter" },
+  { name = "layout_guard", semantic = "counter" },
+  { name = "layout_guard_fail", semantic = "counter" },
+  { name = "alloc_count", semantic = "counter" },
+  { name = "alloc_object", semantic = "counter" },
+  { name = "alloc_exception", semantic = "counter" },
+  { name = "alloc_dict", semantic = "counter" },
+  { name = "alloc_tuple", semantic = "counter" },
+  { name = "alloc_string", semantic = "counter" },
+  { name = "alloc_callargs", semantic = "counter" },
+  { name = "alloc_bytes_callargs", semantic = "counter" },
+  { name = "tb_builds", semantic = "counter" },
+  { name = "tb_frames", semantic = "counter" },
+  { name = "tb_suppressed", semantic = "counter" },
+  { name = "async_polls", semantic = "counter" },
+  { name = "async_pending", semantic = "counter" },
+  { name = "async_wakeups", semantic = "counter" },
+  { name = "async_sleep_register", semantic = "counter" },
+  { name = "alloc_bytes_total", semantic = "counter" },
+  { name = "alloc_bytes_string", semantic = "counter" },
+  { name = "alloc_bytes_dict", semantic = "counter" },
+  { name = "alloc_bytes_tuple", semantic = "counter" },
+  { name = "alloc_bytes_list", semantic = "counter" },
+  { name = "alloc_bytes_exception", semantic = "counter" },
+  { name = "dealloc_count", semantic = "counter" },
+  { name = "dealloc_bytes_total", semantic = "counter" },
+  { name = "dealloc_object", semantic = "counter" },
+  { name = "dealloc_bigint", semantic = "counter" },
+  { name = "dealloc_string", semantic = "counter" },
+  { name = "dealloc_dict", semantic = "counter" },
+  { name = "dealloc_tuple", semantic = "counter" },
+  { name = "dealloc_exception", semantic = "counter" },
+  { name = "dealloc_bytes_exception", semantic = "counter" },
+  { name = "live_objects", semantic = "gauge" },
+  { name = "live_bytes", semantic = "gauge" },
+  { name = "live_exception", semantic = "gauge" },
+  { name = "live_bytes_exception", semantic = "gauge" },
+  { name = "expected_live", semantic = "gauge" },
+]
+
+[[section]]
+name = "aux"
+metrics = [
+  { name = "aux_class_inline_count", semantic = "counter" },
+  { name = "aux_state_inline_count", semantic = "counter" },
+  { name = "aux_sidecar_alloc_count", semantic = "counter" },
+  { name = "aux_sidecar_free_count", semantic = "counter" },
+  { name = "aux_sidecar_live_count", semantic = "gauge" },
+  { name = "aux_sidecar_alloc_failure_count", semantic = "counter" },
+  { name = "aux_sidecar_alloc_bytes", semantic = "counter" },
+  { name = "aux_sidecar_free_bytes", semantic = "counter" },
+  { name = "aux_sidecar_live_bytes", semantic = "gauge" },
+]
+
+[[section]]
+name = "gc"
+metrics = [
+  { name = "gc_track_count", semantic = "counter" },
+  { name = "gc_untrack_count", semantic = "counter" },
+  { name = "gc_tracked_live", semantic = "gauge" },
+  { name = "gc_tracked_high_water", semantic = "gauge" },
+  { name = "gc_registry_lock_contention_count", semantic = "counter" },
+  { name = "gc_registry_lock_wait_ns", semantic = "counter" },
+  { name = "gc_snapshot_alloc_failure_count", semantic = "counter" },
+]
+
+[[section]]
+name = "hot_paths"
+metrics = [
+  { name = "call_bind_ic_hit", semantic = "counter" },
+  { name = "call_bind_ic_miss", semantic = "counter" },
+  { name = "attr_site_name_hit", semantic = "counter" },
+  { name = "attr_site_name_miss", semantic = "counter" },
+  { name = "split_ws_ascii", semantic = "counter" },
+  { name = "split_ws_unicode", semantic = "counter" },
+  { name = "dict_str_int_prehash_hit", semantic = "counter" },
+  { name = "dict_str_int_prehash_miss", semantic = "counter" },
+  { name = "dict_str_int_prehash_deopt", semantic = "counter" },
+  { name = "taq_ingest_calls", semantic = "counter" },
+  { name = "taq_ingest_skip_marker", semantic = "counter" },
+  { name = "ascii_i64_parse_fail", semantic = "counter" },
+]
+
+[[section]]
+name = "deopt_reasons"
+metrics = [
+  { name = "call_indirect_noncallable", semantic = "counter" },
+  { name = "invoke_ffi_bridge_capability_denied", semantic = "counter" },
+  { name = "guard_tag_type_mismatch", semantic = "counter" },
+  { name = "guard_dict_shape_layout_mismatch", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_null_obj", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_non_object", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_class_mismatch", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_non_type_class", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_expected_version_invalid", semantic = "counter" },
+  { name = "guard_dict_shape_layout_fail_version_mismatch", semantic = "counter" },
+]

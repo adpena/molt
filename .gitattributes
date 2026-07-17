@@ -1,4 +1,5 @@
 runtime/molt-ir/src/tir/op_kinds_generated.rs text eol=lf
 src/molt/frontend/lowering/op_kinds_generated.py text eol=lf
+src/molt/_runtime_profile_schema_generated.py text eol=lf
 *.rs text eol=lf
 *.sh text eol=lf

@@ -174,7 +174,9 @@ mod wasm_stubs {
     }
 
     pub(crate) fn process_memory_snapshot() -> super::ProcessMemorySnapshot {
-        super::ProcessMemorySnapshot::unavailable("unsupported-wasm")
+        super::ProcessMemorySnapshot::unavailable(
+            crate::runtime_profile_schema_generated::RSS_SOURCE_WASM,
+        )
     }
 
     #[unsafe(no_mangle)]
@@ -355,19 +357,19 @@ mod native {
     const fn process_memory_source() -> &'static str {
         #[cfg(target_os = "linux")]
         {
-            "proc-self-status"
+            crate::runtime_profile_schema_generated::RSS_SOURCE_LINUX
         }
         #[cfg(target_os = "macos")]
         {
-            "mach-task-basic-info"
+            crate::runtime_profile_schema_generated::RSS_SOURCE_MACOS
         }
         #[cfg(windows)]
         {
-            "windows-process-memory-info"
+            crate::runtime_profile_schema_generated::RSS_SOURCE_WINDOWS
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
-            "unsupported-target"
+            crate::runtime_profile_schema_generated::RSS_SOURCE_FALLBACK
         }
     }
 
