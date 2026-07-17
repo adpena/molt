@@ -4,6 +4,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,7 +112,11 @@ def test_current_verified_stack_and_cpython_abi_are_aligned() -> None:
 def test_numpy_seal_root_is_version_keyed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(stack_versions, "canonical_molt_root", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        stack_versions,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(custody_root=tmp_path),
+    )
     stack = resolve_scientific_stack()
     assert numpy_witness_seal_root(stack=stack) == (
         tmp_path
@@ -128,7 +133,9 @@ def test_scientific_custody_ignores_scratch_output_roots(
     custody = tmp_path / "custody"
     custody.mkdir()
     monkeypatch.setattr(
-        stack_versions, "canonical_molt_root", lambda _root: custody.resolve()
+        stack_versions,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(custody_root=custody.resolve()),
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", r"D:\Molt")
     monkeypatch.setenv("MOLT_EXTERNAL_ARTIFACT_ROOTS", r"D:\Molt")
@@ -141,7 +148,11 @@ def test_scipy_extension_set_and_seal_root_are_typed_and_version_keyed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(stack_versions, "canonical_molt_root", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        stack_versions,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(custody_root=tmp_path),
+    )
     stack = resolve_scientific_stack()
     extension_set = scientific_extension_set("scipy", "pact-witness", stack=stack)
 

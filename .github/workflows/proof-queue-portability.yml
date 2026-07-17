@@ -6,26 +6,42 @@ on:
     paths:
       - ".github/workflows/proof-queue-portability.yml"
       - "docs/agent/PROOF_QUEUE.md"
+      - "src/molt/dx.py"
+      - "src/molt/scientific_stack_versions.py"
+      - "src/molt/cli/source_build_environment.py"
       - "src/molt/cli/entrypoint_dispatch.py"
       - "src/molt/cli/entrypoint_parser.py"
       - "src/molt/cli/queue_cli.py"
       - "tools/process_spawn.py"
+      - "tools/pytest_memory_guard_bootstrap.py"
       - "tools/proof_queue.py"
       - "tools/proof_queue_pkg/**"
       - "tests/test_molt_queue_cli.py"
+      - "tests/test_dx_run_context.py"
+      - "tests/test_memory_guard_wiring.py"
+      - "tests/cli/test_source_extension_producer.py"
+      - "tests/tools/test_scientific_stack_versions.py"
       - "tests/tools/test_proof_queue.py"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/proof-queue-portability.yml"
       - "docs/agent/PROOF_QUEUE.md"
+      - "src/molt/dx.py"
+      - "src/molt/scientific_stack_versions.py"
+      - "src/molt/cli/source_build_environment.py"
       - "src/molt/cli/entrypoint_dispatch.py"
       - "src/molt/cli/entrypoint_parser.py"
       - "src/molt/cli/queue_cli.py"
       - "tools/process_spawn.py"
+      - "tools/pytest_memory_guard_bootstrap.py"
       - "tools/proof_queue.py"
       - "tools/proof_queue_pkg/**"
       - "tests/test_molt_queue_cli.py"
+      - "tests/test_dx_run_context.py"
+      - "tests/test_memory_guard_wiring.py"
+      - "tests/cli/test_source_extension_producer.py"
+      - "tests/tools/test_scientific_stack_versions.py"
       - "tests/tools/test_proof_queue.py"
 
 concurrency:
@@ -39,6 +55,9 @@ jobs:
   queue-portability:
     name: Queue Portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      MOLT_CI_EPHEMERAL_CUSTODY_ROOT: ${{ runner.temp }}/molt-proof-queue-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/molt-proof-queue-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}/venv
     strategy:
       fail-fast: false
       matrix:
@@ -57,4 +76,4 @@ jobs:
 
       - name: Run proof queue portability tests
         timeout-minutes: 10
-        run: uv run --active --project . --no-sync python -m pytest -q tests/test_molt_queue_cli.py tests/tools/test_proof_queue.py
+        run: uv run --active --project . --no-sync python -m pytest -q tests/test_dx_run_context.py tests/test_molt_queue_cli.py tests/tools/test_proof_queue.py tests/tools/test_scientific_stack_versions.py tests/cli/test_source_extension_producer.py
