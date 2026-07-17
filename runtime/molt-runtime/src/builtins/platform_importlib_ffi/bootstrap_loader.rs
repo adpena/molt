@@ -264,16 +264,16 @@ pub extern "C" fn molt_importlib_sourceless_loader_payload(
     })
 }
 
-pub(super) fn importlib_zip_source_payload_checked(
+pub(super) fn importlib_zip_source_exec_payload_checked(
     _py: &PyToken<'_>,
     module_name: &str,
     archive_path: &str,
     inner_path: &str,
     spec_is_package: bool,
-) -> Result<ImportlibZipSourcePayload, u64> {
+) -> Result<ImportlibZipSourceExecPayload, u64> {
     let allowed = has_capability(_py, "fs.read");
     audit_capability_decision(
-        "importlib.zip.get_source",
+        "importlib.zip.source_exec_payload",
         "fs.read",
         AuditArgs::None,
         allowed,
@@ -285,7 +285,7 @@ pub(super) fn importlib_zip_source_payload_checked(
             "missing fs.read capability",
         ));
     }
-    importlib_zip_source_payload(module_name, archive_path, inner_path, spec_is_package)
+    importlib_zip_source_exec_payload(module_name, archive_path, inner_path, spec_is_package)
         .map_err(|err| raise_importlib_io_error(_py, err))
 }
 
@@ -329,7 +329,7 @@ pub(super) fn importlib_extension_loader_resolution_checked(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_source_payload(
+pub extern "C" fn molt_importlib_zip_source_exec_payload(
     module_name_bits: u64,
     archive_path_bits: u64,
     inner_path_bits: u64,
@@ -349,7 +349,7 @@ pub extern "C" fn molt_importlib_zip_source_payload(
             Err(bits) => return bits,
         };
         let spec_is_package = is_truthy(_py, obj_from_bits(spec_is_package_bits));
-        let payload = match importlib_zip_source_payload_checked(
+        let payload = match importlib_zip_source_exec_payload_checked(
             _py,
             &module_name,
             &archive_path,
@@ -754,12 +754,13 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
             Err(bits) => return bits,
         };
         let out = (|| -> Result<(), u64> {
-            let resolution = zip_source_loader_resolution(
+            let payload = importlib_zip_source_exec_payload_checked(
+                _py,
                 &ctx.module_name,
                 &archive_path,
                 &inner_path,
                 ctx.spec_is_package,
-            );
+            )?;
             importlib_loader_exec_module_apply(
                 _py,
                 loader_bits,
@@ -767,10 +768,10 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
                 module_spec_cls_bits,
                 &ctx,
                 ImportlibLoaderExecState {
-                    origin: resolution.origin,
-                    is_package: resolution.is_package,
-                    module_package: resolution.module_package,
-                    package_root: resolution.package_root,
+                    origin: payload.origin,
+                    is_package: payload.is_package,
+                    module_package: payload.module_package,
+                    package_root: payload.package_root,
                     body: ImportlibLoaderExecBody::CompiledSource,
                 },
             )

@@ -19,10 +19,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_coerce_module_name",
             crate::molt_importlib_coerce_module_name as *const (),
         )),
-        "molt_importlib_zip_source_payload" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_zip_source_payload",
-            crate::molt_importlib_zip_source_payload as *const (),
-        )),
+        "molt_importlib_zip_source_exec_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_zip_source_exec_payload",
+                crate::molt_importlib_zip_source_exec_payload as *const (),
+            ))
+        }
         "molt_importlib_zip_read_entry" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_zip_read_entry",
             crate::molt_importlib_zip_read_entry as *const (),

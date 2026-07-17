@@ -1097,7 +1097,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_importlib_extension_loader_payload": "molt_importlib_extension_loader_payload",
     "molt_importlib_sourceless_loader_payload": "molt_importlib_sourceless_loader_payload",
     "molt_importlib_coerce_module_name": "molt_importlib_coerce_module_name",
-    "molt_importlib_zip_source_payload": "molt_importlib_zip_source_payload",
+    "molt_importlib_zip_source_exec_payload": "molt_importlib_zip_source_exec_payload",
     "molt_importlib_zip_read_entry": "molt_importlib_zip_read_entry",
     "molt_importlib_read_file": "molt_importlib_read_file",
     "molt_importlib_sourcefileloader_exec_module": "molt_importlib_sourcefileloader_exec_module",
