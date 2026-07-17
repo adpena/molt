@@ -55,6 +55,12 @@ DESIGN (deterministic + idempotent + fail-open):
     Cargo build lock, OR is the current ``MOLT_SESSION_ID`` target, OR is a
     live-lane dir registered within the GC TTL.
 
+  * One invocation covers the canonical artifact root and every Git-registered
+    worktree inside that scope. Registration is read directly from Git metadata
+    without spawning a process. Nonterminal memory-guard markers protect the
+    owning worktree, while unregistered sibling directories confer no deletion
+    authority.
+
   * ``gc()`` / ``--gc`` -- per-lane target-dir garbage collection at the SOURCE
     of the accumulation. A lane registers its isolated ``CARGO_TARGET_DIR`` on
     creation; the GC reclaims a registered dir once it is older than a TTL and
@@ -224,6 +230,8 @@ class Candidate:
     size: int = -1  # -1 == not measured
     lock_held: bool = False
     registered_at: float | None = None
+    owner_root: Path | None = None
+    guard_active: bool = False
 
     def age_s(self, now: float) -> float:
         return max(0.0, now - self.mtime)
@@ -248,6 +256,20 @@ def _order_key(c: Candidate) -> tuple[float, int]:
     return (c.mtime, -max(0, c.size))
 
 
+def _deletion_contains(path: Path, protected: Path) -> bool:
+    """Whether deleting ``path`` would remove the protected path."""
+    try:
+        path = path.resolve(strict=False)
+        protected = protected.resolve(strict=False)
+    except OSError:
+        return _norm(path) == _norm(protected)
+    return path == protected or path in protected.parents
+
+
+def _is_protected(path: Path, protected: Sequence[Path]) -> bool:
+    return any(_deletion_contains(path, protected_path) for protected_path in protected)
+
+
 def plan_reclaim(
     candidates: Iterable[Candidate],
     *,
@@ -268,7 +290,7 @@ def plan_reclaim(
     The orchestrator re-reads REAL free space between deletes, so an inexact
     ``size`` only affects how many candidates are pre-selected, never safety.
     """
-    protected_set = {_norm(p) for p in protected}
+    protected_paths = tuple(Path(p) for p in protected)
     live_set = {_norm(p) for p in live_lanes}
     plan = ReclaimPlan(
         triggered=free_bytes < high_water_bytes,
@@ -281,7 +303,7 @@ def plan_reclaim(
     running_free = free_bytes
     for c in sorted(candidates, key=_order_key):
         norm = _norm(c.path)
-        if norm in protected_set:
+        if _is_protected(c.path, protected_paths):
             plan.skipped.append((c, "protected"))
             continue
         if norm in live_set:
@@ -289,6 +311,9 @@ def plan_reclaim(
             continue
         if c.lock_held:
             plan.skipped.append((c, "lock-held"))
+            continue
+        if c.guard_active:
+            plan.skipped.append((c, "active-guard"))
             continue
         if c.age_s(now) < min_idle_s:
             plan.skipped.append((c, f"modified <{min_idle_s / 60:.0f}min ago"))
@@ -315,7 +340,7 @@ def decide_completed_lane_reclaim(
         return False, "lane-active"
     if candidate.lock_held:
         return False, "lock-held"
-    if _norm(candidate.path) in {_norm(path) for path in protected}:
+    if _is_protected(candidate.path, tuple(Path(path) for path in protected)):
         return False, "protected"
     return True, "completed-lane"
 
@@ -335,12 +360,14 @@ def gc_plan(
     ``min_idle_s``. Age is measured from ``registered_at`` when known, else from
     ``mtime`` -- so an un-timestamped legacy entry still ages out by activity.
     """
-    protected_set = {_norm(p) for p in protected}
+    protected_paths = tuple(Path(p) for p in protected)
     out: list[Candidate] = []
     for c in sorted(candidates, key=_order_key):
-        if _norm(c.path) in protected_set:
+        if _is_protected(c.path, protected_paths):
             continue
         if c.lock_held:
+            continue
+        if c.guard_active:
             continue
         if c.age_s(now) < min_idle_s:
             continue
@@ -390,6 +417,119 @@ def resolve_root(
     if root.parent == root or len(root.parts) <= 1:
         raise SystemExit(f"disk_guard: refusing drive/filesystem root {root}")
     return root
+
+
+def _artifact_scope_root(root: Path) -> Path:
+    """Return the common artifact parent for a Molt checkout/worktree.
+
+    Canonical layouts use ``<scope>/molt-src`` for the main checkout and
+    ``<scope>/worktrees/<lane>`` for linked worktrees. Unknown layouts remain
+    scoped to the explicit root instead of widening discovery speculatively.
+    """
+    root = root.resolve()
+    if root.parent.name == "worktrees":
+        return root.parent.parent.resolve()
+    if root.name == "molt-src" and (root.parent / "worktrees").is_dir():
+        return root.parent.resolve()
+    if (root / "molt-src" / ".git").exists() and (root / "worktrees").is_dir():
+        return root
+    return root
+
+
+def _path_within(path: Path, parent: Path) -> bool:
+    try:
+        return path == parent or parent in path.parents
+    except OSError:
+        return False
+
+
+def _gitdir_pointer(checkout: Path) -> Path | None:
+    dotgit = checkout / ".git"
+    if dotgit.is_dir():
+        return dotgit.resolve()
+    try:
+        text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not text.lower().startswith(prefix):
+        return None
+    raw = text[len(prefix) :].strip()
+    if not raw:
+        return None
+    gitdir = Path(raw)
+    if not gitdir.is_absolute():
+        gitdir = checkout / gitdir
+    return gitdir.resolve(strict=False)
+
+
+def _git_common_dir(checkout: Path) -> Path | None:
+    """Resolve Git's common metadata directory using filesystem state only."""
+    gitdir = _gitdir_pointer(checkout)
+    if gitdir is None:
+        return None
+    if gitdir.parent.name == "worktrees":
+        return gitdir.parent.parent
+    return gitdir
+
+
+def _registered_worktrees_from_common(common: Path) -> set[Path]:
+    roots: set[Path] = set()
+    main = common.parent.resolve(strict=False)
+    if main.is_dir():
+        roots.add(main)
+    for admin in _iter_dir(common / "worktrees"):
+        if not admin.is_dir():
+            continue
+        try:
+            raw = (
+                (admin / "gitdir").read_text(encoding="utf-8", errors="replace").strip()
+            )
+        except OSError:
+            continue
+        if not raw:
+            continue
+        gitfile = Path(raw)
+        if not gitfile.is_absolute():
+            gitfile = admin / gitfile
+        checkout = gitfile.resolve(strict=False).parent
+        if checkout.is_dir() and _gitdir_pointer(checkout) == admin.resolve(
+            strict=False
+        ):
+            roots.add(checkout)
+    return roots
+
+
+def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
+    """Enumerate registered worktrees without spawning Git or any process.
+
+    Only registrations inside the canonical artifact scope are returned. This
+    prevents a stale registration outside ``C:\\Molt`` (or the corresponding
+    cross-platform scope) from widening deletion authority.
+    """
+    root = root.resolve()
+    scope = _artifact_scope_root(root)
+    probes: list[Path] = [root, scope, scope / "molt-src"]
+    common_dirs = {
+        common for probe in probes if (common := _git_common_dir(probe)) is not None
+    }
+    registered: set[Path] = set()
+    for common in common_dirs:
+        registered.update(_registered_worktrees_from_common(common))
+    return tuple(
+        sorted(
+            (path for path in registered if _path_within(path, scope)),
+            key=_norm,
+        )
+    )
+
+
+def reclaim_roots(root: Path) -> tuple[Path, ...]:
+    """All artifact roots governed by one canonical disk-guard invocation."""
+    resolved = root.resolve()
+    scope = _artifact_scope_root(resolved)
+    roots = {resolved, scope, *registered_worktree_roots(resolved)}
+    return tuple(sorted((path for path in roots if path.is_dir()), key=_norm))
 
 
 def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | None:
@@ -683,67 +823,159 @@ def _rewrite_registry(root: Path, keep: Mapping[str, dict]) -> None:
 # --- discovery --------------------------------------------------------------
 
 
+_TERMINAL_GUARD_STATUSES = frozenset({"completed", "finalizer_completed"})
+
+
+def _has_active_guard(root: Path) -> bool:
+    """Conservatively detect a nonterminal memory-guard marker.
+
+    The disk guard deliberately has no process-inspection capability. Marker
+    status is therefore the custody boundary: terminal markers do not protect
+    artifacts, while an unreadable or nonterminal marker fails closed and
+    protects every reclaimable target in that worktree.
+    """
+    active_dir = root / "tmp" / "memory_guard" / "active"
+    records: list[tuple[float, dict | None]] = []
+    for marker in _iter_dir(active_dir):
+        if (
+            not marker.is_file()
+            or marker.suffix.lower() != ".json"
+            or not marker.name.startswith("guard-")
+        ):
+            continue
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        try:
+            marker_mtime = marker.stat().st_mtime
+        except OSError:
+            marker_mtime = 0.0
+        records.append((marker_mtime, payload if isinstance(payload, dict) else None))
+
+    # A terminal outer guard can reap a nested guard before that nested marker
+    # gets its own terminal write. Its watched-pid report is durable custody
+    # evidence; use it to retire only older nonterminal markers for those exact
+    # PIDs. PID reuse cannot suppress a newer marker because timestamps gate the
+    # relation.
+    retired_at: dict[int, float] = {}
+    for marker_mtime, payload in records:
+        if payload is None or payload.get("status") not in _TERMINAL_GUARD_STATUSES:
+            continue
+        reports = payload.get("termination_reports")
+        if isinstance(reports, dict):
+            reports = [reports]
+        if not isinstance(reports, list):
+            continue
+        for report in reports:
+            if not isinstance(report, dict):
+                continue
+            watched = report.get("watched_pids")
+            if not isinstance(watched, list):
+                continue
+            for pid in watched:
+                if isinstance(pid, int) and pid > 0:
+                    retired_at[pid] = max(retired_at.get(pid, 0.0), marker_mtime)
+
+    for marker_mtime, payload in records:
+        if payload is None:
+            return True
+        status = payload.get("status")
+        if isinstance(status, str) and status in _TERMINAL_GUARD_STATUSES:
+            continue
+        pid = payload.get("pid")
+        if isinstance(pid, int) and retired_at.get(pid, 0.0) >= marker_mtime:
+            continue
+        return True
+    return False
+
+
 def discover_candidates(
     root: Path,
     config: GuardConfig,
     *,
+    roots: Sequence[Path] | None = None,
     measure_sizes: bool = True,
     size_budget_s: float = 30.0,
 ) -> list[Candidate]:
-    """Scan the RECLAIMABLE allow-set into Candidates. Pure disk reads only."""
+    """Scan every registered worktree's allow-set into one candidate family."""
     root = root.resolve()
-    registry = read_registry(root)
+    scan_roots = tuple(path.resolve() for path in (roots or reclaim_roots(root)))
     seen: set[str] = set()
+    by_norm: dict[str, Candidate] = {}
     candidates: list[Candidate] = []
     size_deadline = time.monotonic() + size_budget_s
 
-    def add(path: Path, kind: str, registered_at: float | None = None) -> None:
+    def add(
+        path: Path,
+        kind: str,
+        owner_root: Path,
+        *,
+        registered_at: float | None = None,
+        guard_active: bool = False,
+    ) -> None:
         norm = _norm(path)
         if norm in seen:
+            existing = by_norm[norm]
+            if registered_at is not None:
+                existing.registered_at = registered_at
+            existing.guard_active = existing.guard_active or guard_active
             return
         if not path.is_dir():
             return
-        if _is_reclaimable(path, root, config.lane_globs) is None:
+        if _is_reclaimable(path, owner_root, config.lane_globs) is None:
             return
         seen.add(norm)
         size = -1
         if measure_sizes:
             size = _dir_size(path, min(time.monotonic() + 20.0, size_deadline))
-        candidates.append(
-            Candidate(
-                path=path,
-                kind=kind,
-                mtime=_newest_activity_mtime(path),
-                size=size,
-                lock_held=_cargo_lock_held(path),
-                registered_at=registered_at,
-            )
+        candidate = Candidate(
+            path=path,
+            kind=kind,
+            mtime=_newest_activity_mtime(path),
+            size=size,
+            lock_held=_cargo_lock_held(path),
+            registered_at=registered_at,
+            owner_root=owner_root,
+            guard_active=guard_active,
         )
+        candidates.append(candidate)
+        by_norm[norm] = candidate
 
-    # sessions/<child>
-    for child in _iter_dir(root / "target" / "sessions"):
-        if child.is_dir():
-            add(child, "sessions")
-    # per-lane target dirs under target/
-    for child in _iter_dir(root / "target"):
-        if child.is_dir() and _is_reclaimable(child, root, config.lane_globs) == "lane":
-            add(child, "lane")
-    # cargo-incremental quarantine dirs (under any target subtree we can see)
-    for qdir in _iter_quarantine_dirs(root):
-        add(qdir, "quarantine")
-    # flat legacy cargo-target-*
-    for child in _iter_dir(root):
-        if child.is_dir() and child.name.startswith("cargo-target-"):
-            add(child, "cargo-target")
-    # registry-registered lane targets (may be anywhere, incl. already covered)
-    for rec in registry.values():
-        p = Path(str(rec.get("path", "")))
-        reg_at = rec.get("registered_at")
-        add(
-            p,
-            "registered",
-            registered_at=float(reg_at) if isinstance(reg_at, (int, float)) else None,
-        )
+    for owner_root in scan_roots:
+        registry = read_registry(owner_root)
+        guard_active = _has_active_guard(owner_root)
+        # sessions/<child>
+        for child in _iter_dir(owner_root / "target" / "sessions"):
+            if child.is_dir():
+                add(child, "sessions", owner_root, guard_active=guard_active)
+        # per-lane target dirs under target/
+        for child in _iter_dir(owner_root / "target"):
+            if (
+                child.is_dir()
+                and _is_reclaimable(child, owner_root, config.lane_globs) == "lane"
+            ):
+                add(child, "lane", owner_root, guard_active=guard_active)
+        # cargo-incremental quarantine dirs
+        for qdir in _iter_quarantine_dirs(owner_root):
+            add(qdir, "quarantine", owner_root, guard_active=guard_active)
+        # flat legacy cargo-target-*
+        for child in _iter_dir(owner_root):
+            if child.is_dir() and child.name.startswith("cargo-target-"):
+                add(child, "cargo-target", owner_root, guard_active=guard_active)
+        # Registry targets may already have been discovered by a static class.
+        for rec in registry.values():
+            p = Path(str(rec.get("path", "")))
+            reg_at = rec.get("registered_at")
+            add(
+                p,
+                "registered",
+                owner_root,
+                registered_at=(
+                    float(reg_at) if isinstance(reg_at, (int, float)) else None
+                ),
+                guard_active=guard_active,
+            )
     return candidates
 
 
@@ -775,6 +1007,7 @@ class ReclaimResult:
     triggered: bool
     free_before: int
     free_after: int
+    scope_roots: list[str] = field(default_factory=list)
     reclaimed: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -789,6 +1022,7 @@ class ReclaimResult:
             "schema_version": 1,
             "tool": "disk_guard",
             "root": self.root,
+            "scope_roots": self.scope_roots,
             "mode": self.mode,
             "triggered": self.triggered,
             "free_before": self.free_before,
@@ -831,6 +1065,7 @@ def ensure_free(
     """
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
+    scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     high_water = cfg.high_water_bytes
     target = cfg.target_bytes
@@ -847,6 +1082,7 @@ def ensure_free(
         triggered=free_before < high_water,
         free_before=free_before,
         free_after=free_before,
+        scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
     if not result.triggered:
@@ -854,8 +1090,14 @@ def ensure_free(
             _write_log(resolved_root, result)
         return result
 
-    protected = _protected_paths(resolved_root, env)
-    candidates = discover_candidates(resolved_root, cfg)
+    protected = _protected_paths(scope_roots, env)
+    candidates = discover_candidates(resolved_root, cfg, roots=scope_roots)
+    live_lanes = [
+        candidate.path
+        for candidate in candidates
+        if candidate.registered_at is not None
+        and (now - candidate.registered_at) < cfg.gc_ttl_s
+    ]
     plan = plan_reclaim(
         candidates,
         free_bytes=free_before,
@@ -864,6 +1106,7 @@ def ensure_free(
         now=now,
         min_idle_s=cfg.min_idle_s,
         protected=protected,
+        live_lanes=live_lanes,
     )
     for cand, why in plan.skipped:
         result.skipped.append(
@@ -879,8 +1122,9 @@ def ensure_free(
             result.errors.append(f"time budget {budget_s}s exceeded; stopping")
             break
         if apply:
+            owner_root = cand.owner_root or resolved_root
             try:
-                assert_safe_to_delete(cand.path, resolved_root, cfg.lane_globs)
+                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
@@ -935,6 +1179,7 @@ def gc(
     """
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
+    scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     now = now_fn()
     free_fn = _default_free_fn(resolved_root)
@@ -944,32 +1189,37 @@ def gc(
         triggered=True,
         free_before=free_before,
         free_after=free_before,
+        scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
-    registry = read_registry(resolved_root)
-    protected = _protected_paths(resolved_root, env)
+    registries = {owner_root: read_registry(owner_root) for owner_root in scope_roots}
+    protected = _protected_paths(scope_roots, env)
 
     cands: list[Candidate] = []
-    for rec in registry.values():
-        p = Path(str(rec.get("path", "")))
-        if not p.is_dir():
-            continue
-        if _is_reclaimable(p, resolved_root, cfg.lane_globs) is None:
-            # A registered path that is not (any longer) in the allow-set: drop
-            # its stale registry entry but never delete it.
-            continue
-        reg_at = rec.get("registered_at")
-        cands.append(
-            Candidate(
-                path=p,
-                kind="registered",
-                mtime=_newest_activity_mtime(p),
-                lock_held=_cargo_lock_held(p),
-                registered_at=float(reg_at)
-                if isinstance(reg_at, (int, float))
-                else None,
+    for owner_root, registry in registries.items():
+        guard_active = _has_active_guard(owner_root)
+        for rec in registry.values():
+            p = Path(str(rec.get("path", "")))
+            if not p.is_dir():
+                continue
+            if _is_reclaimable(p, owner_root, cfg.lane_globs) is None:
+                # A registered path outside its owner's allow-set is forgotten
+                # during compaction but never deleted.
+                continue
+            reg_at = rec.get("registered_at")
+            cands.append(
+                Candidate(
+                    path=p,
+                    kind="registered",
+                    mtime=_newest_activity_mtime(p),
+                    lock_held=_cargo_lock_held(p),
+                    registered_at=(
+                        float(reg_at) if isinstance(reg_at, (int, float)) else None
+                    ),
+                    owner_root=owner_root,
+                    guard_active=guard_active,
+                )
             )
-        )
 
     collectable = gc_plan(
         cands,
@@ -981,8 +1231,9 @@ def gc(
     collected_norms: set[str] = set()
     for cand in collectable:
         if apply:
+            owner_root = cand.owner_root or resolved_root
             try:
-                assert_safe_to_delete(cand.path, resolved_root, cfg.lane_globs)
+                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
@@ -994,15 +1245,17 @@ def gc(
         result.reclaimed.append({"path": str(cand.path), "kind": "registered"})
 
     if apply:
-        # Compact the registry: drop collected entries and entries whose dir is
-        # gone (a lane whose target was already removed by ensure_free).
-        keep = {
-            norm: rec
-            for norm, rec in registry.items()
-            if norm not in collected_norms and Path(str(rec.get("path", ""))).is_dir()
-        }
-        if len(keep) != len(registry):
-            _rewrite_registry(resolved_root, keep)
+        # Compact every owner registry independently. Cross-worktree discovery
+        # must not collapse their append-only custody records into one file.
+        for owner_root, registry in registries.items():
+            keep = {
+                norm: rec
+                for norm, rec in registry.items()
+                if norm not in collected_norms
+                and Path(str(rec.get("path", ""))).is_dir()
+            }
+            if len(keep) != len(registry):
+                _rewrite_registry(owner_root, keep)
     result.free_after = free_fn()
     if log:
         _write_log(resolved_root, result)
@@ -1024,12 +1277,14 @@ def reclaim_completed_lane(
         else None
     )
     resolved_root = resolve_root(inferred_root, env=env)
+    scope_roots = reclaim_roots(resolved_root)
     cfg = GuardConfig.from_env(env)
     result = ReclaimResult(
         root=str(resolved_root),
         triggered=True,
         free_before=0,
         free_after=0,
+        scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
     target = target.resolve()
@@ -1038,12 +1293,14 @@ def reclaim_completed_lane(
         kind="registered",
         mtime=_newest_activity_mtime(target) if target.is_dir() else 0.0,
         lock_held=_cargo_lock_held(target) if target.is_dir() else False,
+        owner_root=resolved_root,
+        guard_active=_has_active_guard(resolved_root),
     )
     allowed, reason = decide_completed_lane_reclaim(
         candidate,
         completed=True,
-        active=False,
-        protected=_protected_paths(resolved_root, env),
+        active=candidate.guard_active,
+        protected=_protected_paths(scope_roots, env),
     )
     if not allowed:
         result.skipped.append({"path": str(target), "reason": reason})
@@ -1083,16 +1340,27 @@ def reclaim_completed_lane_fail_open(
         return None
 
 
-def _protected_paths(root: Path, env: Mapping[str, str]) -> list[Path]:
+def _protected_paths(
+    roots: Path | Sequence[Path], env: Mapping[str, str]
+) -> list[Path]:
     """Paths that must never be reclaimed even if they match the allow-set.
 
     Currently the current session's target dir (``target/sessions/<id>`` and any
     registered dir under it), protecting an in-flight build of THIS process.
     """
+    scan_roots = (roots,) if isinstance(roots, Path) else tuple(roots)
     protected: list[Path] = []
     session = str(env.get("MOLT_SESSION_ID", "")).strip()
     if session:
-        protected.append(root / "target" / "sessions" / session)
+        protected.extend(root / "target" / "sessions" / session for root in scan_roots)
+    for name in (
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_WASM_TEST_CARGO_TARGET_DIR",
+    ):
+        raw = str(env.get(name, "")).strip()
+        if raw:
+            protected.append(Path(raw).expanduser().resolve(strict=False))
     return protected
 
 
@@ -1222,6 +1490,43 @@ def selftest() -> list[tuple[str, bool]]:
     )
     collect = gc_plan([old_reg, new_reg], now=now, ttl_s=6 * 3600, min_idle_s=min_idle)
     results.append(("gc-collects-past-ttl-only", collect == [old_reg]))
+
+    # 7) a nonterminal memory guard is stronger than age or free-space pressure.
+    guarded = Candidate(
+        Path("/x/target/sessions/guarded"),
+        "sessions",
+        mtime=now - 100_000,
+        size=100 * _GB,
+        guard_active=True,
+    )
+    p7 = plan_reclaim(
+        [guarded],
+        free_bytes=1 * _GB,
+        high_water_bytes=25 * _GB,
+        target_bytes=40 * _GB,
+        now=now,
+        min_idle_s=min_idle,
+    )
+    results.append(("active-guard-never-reclaimed", guarded not in p7.selected))
+
+    # 8) a recently registered lane is protected by the shared live-lane set.
+    recent = Candidate(
+        Path("/x/target/codex-recent"),
+        "registered",
+        mtime=now - 100_000,
+        size=100 * _GB,
+        registered_at=now - 60,
+    )
+    p8 = plan_reclaim(
+        [recent],
+        free_bytes=1 * _GB,
+        high_water_bytes=25 * _GB,
+        target_bytes=40 * _GB,
+        now=now,
+        min_idle_s=min_idle,
+        live_lanes=[recent.path],
+    )
+    results.append(("recent-registration-never-reclaimed", recent not in p8.selected))
 
     return results
 
