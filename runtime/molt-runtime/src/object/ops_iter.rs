@@ -986,6 +986,19 @@ unsafe fn cached_pair_return(
     }
 }
 
+/// Release the iterator's sole cache owner and every Python edge reachable
+/// through it. Terminal and exceptional control flow must pass through this
+/// authority before propagating outward; normal value production instead goes
+/// through `cached_pair_return`, which replaces the prior pair transactionally.
+unsafe fn cached_pair_clear(_py: &PyToken<'_>, slot_ptr: *mut *mut u8) {
+    unsafe {
+        let cached = std::ptr::replace(slot_ptr, std::ptr::null_mut());
+        if !cached.is_null() {
+            dec_ref_ptr(_py, cached);
+        }
+    }
+}
+
 /// Build or reuse a (value, done) 2-tuple from the iterator's cached slot.
 ///
 /// Thin wrapper around `cached_pair_return` for TYPE_ID_ITER objects.
@@ -1008,6 +1021,14 @@ unsafe fn iter_return_cached(
         let done_bits = MoltObject::from_bool(done).bits();
         let slot_ptr =
             iter_ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<usize>()) as *mut *mut u8;
+        if done {
+            cached_pair_clear(_py, slot_ptr);
+            let result = generator_done_tuple(_py, val_bits);
+            if owns_val {
+                dec_ref_bits(_py, val_bits);
+            }
+            return result;
+        }
         cached_pair_return(_py, slot_ptr, val_bits, done_bits, owns_val, false)
     }
 }
@@ -1118,39 +1139,54 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     return MoltObject::from_ptr(tuple_ptr).bits();
                 }
                 if object_type_id(ptr) == TYPE_ID_ENUMERATE {
+                    let inner_slot = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
+                    let outer_slot = ptr
+                        .add(2 * std::mem::size_of::<u64>() + std::mem::size_of::<*mut u8>())
+                        as *mut *mut u8;
                     let iter_bits = enumerate_target_bits(ptr);
                     let pair_bits = molt_iter_next(iter_bits);
                     let pair_obj = obj_from_bits(pair_bits);
                     let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
                         return MoltObject::none().bits();
                     };
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
+                        dec_ref_bits(_py, pair_bits);
                         return MoltObject::none().bits();
                     }
                     let Some((val_bits, done_bits)) =
                         crate::object::seq_access::tuple_pair(pair_ptr)
                     else {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
+                        dec_ref_bits(_py, pair_bits);
                         return MoltObject::none().bits();
                     };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
                         return pair_bits;
                     }
                     let idx_bits = enumerate_index_bits(ptr);
                     // Build (or reuse) the inner (idx, val) user-visible tuple.
-                    let inner_slot = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let item_bits =
                         cached_pair_return(_py, inner_slot, idx_bits, val_bits, false, false);
+                    dec_ref_bits(_py, pair_bits);
                     if obj_from_bits(item_bits).is_none() {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
                         return MoltObject::none().bits();
                     }
                     let done_false = MoltObject::from_bool(false).bits();
                     // Build (or reuse) the outer (item, done_false) wrapper.
-                    let outer_slot = ptr
-                        .add(2 * std::mem::size_of::<u64>() + std::mem::size_of::<*mut u8>())
-                        as *mut *mut u8;
                     let out_bits =
                         cached_pair_return(_py, outer_slot, item_bits, done_false, true, false);
                     if obj_from_bits(out_bits).is_none() {
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
                         return MoltObject::none().bits();
                     }
                     // Integer increment — enumerate counter is always int.
@@ -1161,6 +1197,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         molt_add(idx_bits, MoltObject::from_int(1).bits())
                     };
                     if obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(_py, out_bits);
+                        cached_pair_clear(_py, inner_slot);
+                        cached_pair_clear(_py, outer_slot);
                         return MoltObject::none().bits();
                     }
                     dec_ref_bits(_py, idx_bits);
@@ -1168,19 +1207,21 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     return out_bits;
                 }
                 if object_type_id(ptr) == TYPE_ID_CALL_ITER {
+                    let slot_ptr = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let call_bits = call_iter_callable_bits(ptr);
                     let sentinel_bits = call_iter_sentinel_bits(ptr);
                     let val_bits = call_callable0(_py, call_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, val_bits);
+                        cached_pair_clear(_py, slot_ptr);
                         return MoltObject::none().bits();
                     }
                     if obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(sentinel_bits)) {
                         dec_ref_bits(_py, val_bits);
+                        cached_pair_clear(_py, slot_ptr);
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let slot_ptr = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let out_bits =
                         cached_pair_return(_py, slot_ptr, val_bits, done_bits, true, false);
                     return out_bits;
@@ -1188,21 +1229,35 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_MAP {
                     let func_bits = map_func_bits(ptr);
                     let iters_ptr = map_iters_ptr(ptr);
+                    let slot_ptr = ptr
+                        .add(std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>())
+                        as *mut *mut u8;
                     if iters_ptr.is_null() {
+                        cached_pair_clear(_py, slot_ptr);
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
                     let iters = &mut *iters_ptr;
                     if iters.is_empty() {
+                        cached_pair_clear(_py, slot_ptr);
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
-                    let mut vals = Vec::with_capacity(iters.len());
+                    let mut inputs = Vec::with_capacity(iters.len());
                     for &iter_bits in iters.iter() {
                         let pair_bits = molt_iter_next(iter_bits);
                         let pair_obj = obj_from_bits(pair_bits);
                         let Some(pair_ptr) = pair_obj.as_ptr() else {
+                            for &(_, owner) in &inputs {
+                                dec_ref_bits(_py, owner);
+                            }
+                            cached_pair_clear(_py, slot_ptr);
                             return MoltObject::none().bits();
                         };
                         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                            dec_ref_bits(_py, pair_bits);
+                            for &(_, owner) in &inputs {
+                                dec_ref_bits(_py, owner);
+                            }
+                            cached_pair_clear(_py, slot_ptr);
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
@@ -1212,6 +1267,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         let Some((val_bits, done_bits)) =
                             crate::object::seq_access::tuple_pair(pair_ptr)
                         else {
+                            dec_ref_bits(_py, pair_bits);
+                            for &(_, owner) in &inputs {
+                                dec_ref_bits(_py, owner);
+                            }
+                            cached_pair_clear(_py, slot_ptr);
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
@@ -1219,28 +1279,38 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             );
                         };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
+                            dec_ref_bits(_py, pair_bits);
+                            for &(_, owner) in &inputs {
+                                dec_ref_bits(_py, owner);
+                            }
+                            cached_pair_clear(_py, slot_ptr);
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
-                        vals.push(val_bits);
+                        inputs.push((val_bits, pair_bits));
                     }
                     // Route map callable invocation through bind so Python
                     // function defaults are honored (e.g. def f(x, y=...)).
-                    let builder_bits = molt_callargs_new(vals.len() as u64, 0);
+                    let builder_bits = molt_callargs_new(inputs.len() as u64, 0);
                     if builder_bits == 0 {
+                        for &(_, owner) in &inputs {
+                            dec_ref_bits(_py, owner);
+                        }
+                        cached_pair_clear(_py, slot_ptr);
                         return MoltObject::none().bits();
                     }
-                    for &val_bits in &vals {
+                    for &(val_bits, _) in &inputs {
                         let _ = molt_callargs_push_pos(builder_bits, val_bits);
+                    }
+                    for &(_, owner) in &inputs {
+                        dec_ref_bits(_py, owner);
                     }
                     let res_bits = molt_call_bind(func_bits, builder_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, res_bits);
+                        cached_pair_clear(_py, slot_ptr);
                         return MoltObject::none().bits();
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let slot_ptr = ptr
-                        .add(std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>())
-                        as *mut *mut u8;
                     let out_bits =
                         cached_pair_return(_py, slot_ptr, res_bits, done_bits, true, false);
                     return out_bits;
@@ -1985,7 +2055,16 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
         let no_value = MoltObject::none().bits();
-        let value_out = value_out_bits as usize as *mut u64;
+        let Some(value_out) = crate::provenance::abi::mut_ptr::<u64>(value_out_bits) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "iterator output address exceeds the active address space",
+            );
+        };
+        if value_out.is_null() {
+            return raise_exception::<u64>(_py, "RuntimeError", "iterator output pointer is null");
+        }
 
         unsafe {
             *value_out = no_value;
