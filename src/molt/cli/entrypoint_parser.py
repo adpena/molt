@@ -634,6 +634,22 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Extension-set ABI tier (default: cpython-abi).",
     )
     extension_produce_set_parser.add_argument(
+        "--expected-identity-sha256",
+        help=(
+            "Reproduce an existing canonical seal transactionally and publish "
+            "nothing unless both incumbent and candidate match this canonical "
+            "target/content identity."
+        ),
+    )
+    extension_produce_set_parser.add_argument(
+        "--expected-candidate-identity-sha256",
+        help=(
+            "Require the transactionally built candidate to match this declared "
+            "canonical identity; equal incumbent/candidate identities are a no-op, "
+            "different identities use crash-recoverable compare-and-swap publication."
+        ),
+    )
+    extension_produce_set_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
 

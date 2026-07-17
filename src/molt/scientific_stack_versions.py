@@ -39,6 +39,7 @@ class ScientificExtensionSet:
     package: str
     name: str
     seal_name: str
+    expected_identity_sha256: str
     build_dependency_group: str
     meson_setup_args: tuple[str, ...]
     use_pkg_config: bool
@@ -119,6 +120,13 @@ def _boolean(value: Any, *, field: str, path: Path) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{path}: {field} must be a boolean")
     return value
+
+
+def _sha256(value: Any, *, field: str, path: Path) -> str:
+    text = _string(value, field=field, path=path)
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise ValueError(f"{path}: {field} must be a lowercase SHA-256 digest")
+    return text
 
 
 def _extension_sets(
@@ -212,6 +220,11 @@ def _extension_sets(
                 seal_name=_string(
                     raw_set.get("seal_name"),
                     field=f"{set_field}.seal_name",
+                    path=path,
+                ),
+                expected_identity_sha256=_sha256(
+                    raw_set.get("expected_identity_sha256"),
+                    field=f"{set_field}.expected_identity_sha256",
                     path=path,
                 ),
                 build_dependency_group=_string(
