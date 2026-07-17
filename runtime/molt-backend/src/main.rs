@@ -93,24 +93,40 @@ fn parse_callable_table_layout(
 }
 
 #[cfg(feature = "wasm-backend")]
-fn publish_wasm_atomically<T>(
+fn publish_wasm_link_facts_atomically(
+    input: &Path,
     output: &Path,
-    publish: impl FnOnce(&mut io::BufWriter<std::fs::File>) -> Result<T, String>,
-) -> Result<T, String> {
+    layout: Option<molt_wasm_facts::CallableTableLayout>,
+    role: molt_wasm_facts::CallableTableArtifactRole,
+) -> Result<molt_wasm_facts::WasmLinkFacts, String> {
+    let file = std::fs::File::open(input)
+        .map_err(|error| format!("cannot open wasm facts input {}: {error}", input.display()))?;
+    let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
+        .map_err(|error| format!("cannot map wasm facts input {}: {error}", input.display()))?;
     let mut publication = AtomicFilePublication::new(output).map_err(|error| {
         format!(
             "cannot reserve atomic attested wasm output {}: {error}",
             output.display()
         )
     })?;
-    let value = publish(publication.writer())?;
+    let result = molt_wasm_facts::scan_and_write_callable_table_attestation(
+        &bytes,
+        layout,
+        role,
+        publication.writer(),
+    );
+    // Windows cannot replace a mapped input. End the read lease before the
+    // single durable commit so input == output is a supported, atomic update.
+    drop(bytes);
+    drop(file);
+    let facts = result?;
     publication.commit().map_err(|error| {
         format!(
             "cannot commit atomic attested wasm output {}: {error}",
             output.display()
         )
     })?;
-    Ok(value)
+    Ok(facts)
 }
 
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
@@ -202,16 +218,12 @@ fn main() -> io::Result<()> {
                     index += 1;
                 }
                 let output = output.ok_or("--publish-wasm-link-facts requires --output")?;
-                let file = std::fs::File::open(input)
-                    .map_err(|error| format!("cannot open wasm facts input {input}: {error}"))?;
-                let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
-                    .map_err(|error| format!("cannot map wasm facts input {input}: {error}"))?;
-                let facts = publish_wasm_atomically(Path::new(output), |writer| {
-                    molt_wasm_facts::scan_and_write_callable_table_attestation(
-                        &bytes, layout, role, writer,
-                    )
-                })?;
-                Ok(facts)
+                publish_wasm_link_facts_atomically(
+                    Path::new(input),
+                    Path::new(output),
+                    layout,
+                    role,
+                )
             })();
             emit_wasm_link_facts_result(result)?;
             return Ok(());

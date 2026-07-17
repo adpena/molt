@@ -143,6 +143,34 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
 }
 
 #[test]
+fn cli_publishes_in_place_through_one_atomic_commit() {
+    let fixture = temp_wasm("publish-in-place", &clean_module());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .arg("--publish-wasm-link-facts")
+        .arg(&fixture.0)
+        .arg("--output")
+        .arg(&fixture.0)
+        .output()
+        .expect("publish facts in place");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .arg("--scan-wasm-link-facts")
+        .arg(&fixture.0)
+        .output()
+        .expect("rescan in-place publication");
+    assert!(rescanned.status.success());
+    let payload: Value =
+        serde_json::from_slice(&rescanned.stdout).expect("parse in-place publication JSON");
+    assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
+}
+
+#[test]
 fn failed_publication_never_exposes_partial_destination() {
     let mut malformed = clean_module();
     malformed.pop();
