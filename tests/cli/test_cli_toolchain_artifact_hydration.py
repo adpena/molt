@@ -49,6 +49,21 @@ def _cargo_runtime_artifact_stdout(path: Path) -> bytes:
     ).encode("utf-8")
 
 
+def _cargo_cpython_abi_artifact_stdout(path: Path) -> bytes:
+    return (
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "package_id": "path+file:///repo/runtime/molt-lang-cpython-abi#0.0.1",
+                "target": {"name": "molt_cpython_abi"},
+                "filenames": [str(path)],
+                "fresh": True,
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,6 +318,85 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     assert src == reported
     assert primary.read_bytes() == b"old-staticlib"
     assert reported.read_bytes() == b"new-staticlib"
+
+
+@pytest.mark.parametrize("report_artifact", [True, False])
+def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    report_artifact: bool,
+) -> None:
+    target_root = tmp_path / "target"
+    profile_dir = cli._cargo_profile_dir("dev-fast")
+    primary = RUNTIME_BUILD._wasm_cpython_abi_staticlib_path(target_root, profile_dir)
+    reported = (
+        RUNTIME_BUILD._wasm_runtime_deps_dir(target_root, profile_dir)
+        / "libmolt_cpython_abi-feedface.a"
+    )
+    for path, payload in (
+        (primary, b"stale-primary"),
+        (reported, b"reported-staticlib"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        stdout = (
+            _cargo_cpython_abi_artifact_stdout(reported)
+            if report_artifact
+            else b'{"reason":"build-finished","success":true}\n'
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout, b"")
+
+    fingerprint = {
+        "hash": "ab" * 32,
+        "rustc": "rustc",
+        "inputs_digest": "cd" * 32,
+        "meta_digest": "ef" * 32,
+    }
+    state_root = target_root / ".molt_state"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_runtime_fingerprint", lambda *a, **k: dict(fingerprint)
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_build_slot", lambda: contextlib.nullcontext(None)
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_run_subprocess_captured_to_tempfiles", fake_run
+    )
+
+    provider = RUNTIME_BUILD._ensure_wasm_cpython_abi_staticlib(
+        project_root=tmp_path,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+    )
+    assert provider == (reported if report_artifact else None)
+    assert primary.read_bytes() == b"stale-primary"
+    reported_fp = cli._runtime_target_fingerprint_path(
+        state_root,
+        reported,
+        cargo_profile="dev-fast",
+        target_label="wasm32-wasip1.cpython-abi",
+    )
+    primary_fp = cli._runtime_target_fingerprint_path(
+        state_root,
+        primary,
+        cargo_profile="dev-fast",
+        target_label="wasm32-wasip1.cpython-abi",
+    )
+    assert reported_fp.exists() is report_artifact
+    assert primary_fp.exists() is report_artifact
+    if report_artifact:
+        # The canonical requested-output sidecar may be named for the primary,
+        # but its artifact identity must attest the exact Cargo-reported path.
+        stored = cli._read_runtime_fingerprint(primary_fp)
+        assert stored["artifact_identity"]["path"] == str(reported)
+        assert stored["artifact_sha256"] == cli._sha256_file(reported)
 
 
 def test_ensure_backend_binary_hydrates_from_canonical_target(
