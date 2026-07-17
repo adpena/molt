@@ -55,15 +55,21 @@ jobs:
   queue-portability:
     name: Queue Portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    env:
-      MOLT_CI_EPHEMERAL_CUSTODY_ROOT: ${{ runner.temp }}/molt-proof-queue-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/molt-proof-queue-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}/venv
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14, windows-2022]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Configure verified ephemeral custody
+        shell: pwsh
+        run: |
+          $name = "molt-proof-queue-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:RUNNER_OS-$env:RUNNER_ARCH"
+          $custodyRoot = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $custodyRoot | Out-Null
+          "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - uses: actions/setup-python@v6.3.0
         with:

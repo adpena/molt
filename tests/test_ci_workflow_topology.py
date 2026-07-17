@@ -300,8 +300,11 @@ def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> Non
     assert "name: Proof Queue Portability" in workflow_text
     assert "os: [ubuntu-latest, macos-14, windows-2022]" in workflow_text
     assert "fail-fast: false" in workflow_text
-    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT: ${{ runner.temp }}/" in workflow_text
-    assert "UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/" in workflow_text
+    assert "Configure verified ephemeral custody" in workflow_text
+    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in workflow_text
+    assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in workflow_text
+    assert "$env:RUNNER_TEMP" in workflow_text
+    assert "${{ runner.temp }}" not in workflow_text
     assert 'python-version-file: ".python-version"' in workflow_text
     assert "uv sync --frozen --group dev" in workflow_text
     assert "timeout-minutes: 10" in workflow_text
