@@ -6,7 +6,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shlex
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.file_hashing import _sha256_file
@@ -54,7 +54,7 @@ def _strict_string_list(value: object, *, field: str) -> tuple[str, ...]:
         raise NativeLinkDependencyManifestError(f"{field} must be a string array")
     if any(not item for item in value):
         raise NativeLinkDependencyManifestError(f"{field} contains an empty value")
-    return tuple(value)
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _is_absolute_path(raw: str) -> bool:
@@ -128,9 +128,10 @@ def _validated_source_fingerprint(value: object) -> dict[str, str | None]:
         raise NativeLinkDependencyManifestError(
             "source fingerprint must contain hash, inputs_digest, meta_digest, and rustc"
         )
+    fingerprint = cast(Mapping[str, object], value)
     result: dict[str, str | None] = {}
     for field in sorted(_FINGERPRINT_FIELDS):
-        raw = value[field]
+        raw = fingerprint[field]
         if field == "inputs_digest" and raw is None:
             result[field] = None
             continue
@@ -340,29 +341,37 @@ def _validated_build_scripts(value: object) -> tuple[Mapping[str, object], ...]:
             raise NativeLinkDependencyManifestError(
                 f"build_scripts[{index}] has an invalid object shape"
             )
-        if not isinstance(script["package_id"], str) or not script["package_id"]:
+        script = cast(dict[str, object], script)
+        package_id = script["package_id"]
+        out_dir = script["out_dir"]
+        if not isinstance(package_id, str) or not package_id:
             raise NativeLinkDependencyManifestError(
                 f"build_scripts[{index}].package_id is invalid"
             )
-        if not isinstance(script["out_dir"], str) or not script["out_dir"]:
+        if not isinstance(out_dir, str) or not out_dir:
             raise NativeLinkDependencyManifestError(
                 f"build_scripts[{index}].out_dir is invalid"
             )
-        if not _is_absolute_path(str(script["out_dir"])):
+        if not _is_absolute_path(out_dir):
             raise NativeLinkDependencyManifestError(
                 f"build_scripts[{index}].out_dir must be absolute"
             )
-        _existing_directory(
-            str(script["out_dir"]), field=f"build_scripts[{index}].out_dir"
-        )
+        _existing_directory(out_dir, field=f"build_scripts[{index}].out_dir")
         linked_paths = _strict_string_list(script["linked_paths"], field="linked_paths")
         for linked_path in linked_paths:
             _existing_directory(
                 _linked_path_value(linked_path),
                 field=f"build_scripts[{index}].linked_paths entry",
             )
-        _strict_string_list(script["linked_libs"], field="linked_libs")
-        scripts.append(script)
+        linked_libs = _strict_string_list(script["linked_libs"], field="linked_libs")
+        scripts.append(
+            {
+                "package_id": package_id,
+                "out_dir": out_dir,
+                "linked_paths": list(linked_paths),
+                "linked_libs": list(linked_libs),
+            }
+        )
     identities = [
         (str(script["package_id"]), str(script["out_dir"])) for script in scripts
     ]
@@ -386,17 +395,18 @@ def _validated_native_static_libs(
         raise NativeLinkDependencyManifestError("invalid native_static_libs shape")
     raw = value.get("raw")
     arguments = value.get("arguments")
-    if (
-        not isinstance(raw, str)
-        or not isinstance(arguments, list)
-        or any(not isinstance(argument, str) or not argument for argument in arguments)
-    ):
+    if not isinstance(raw, str):
         raise NativeLinkDependencyManifestError("invalid native_static_libs payload")
-    if arguments != _native_static_lib_arguments(raw, target_triple=target_triple):
+    validated_arguments = _strict_string_list(
+        arguments, field="native_static_libs.arguments"
+    )
+    if validated_arguments != tuple(
+        _native_static_lib_arguments(raw, target_triple=target_triple)
+    ):
         raise NativeLinkDependencyManifestError(
             "native_static_libs arguments do not match the rustc note"
         )
-    return tuple(arguments)
+    return validated_arguments
 
 
 def _read_native_link_dependency_manifest(
