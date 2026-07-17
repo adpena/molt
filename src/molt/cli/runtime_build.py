@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Collection, Literal, Mapping, NamedTuple, Sequence
 
+from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
@@ -2170,6 +2171,19 @@ def _compute_runtime_wasm_build_spec(
     required_exports: set[str] | frozenset[str] | None,
 ) -> _RuntimeWasmBuildSpec:
     """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
+    # The emitted app import ABI is the final link-time requirement authority.
+    # Reachability-derived features normally predict this set, but external
+    # native objects and runtime-support module initializers can add imports
+    # after that earlier scan.  Project every required export through the same
+    # generated symbol->feature authority and close the feature plan here, so
+    # Cargo can never build an artifact that the immediately following export
+    # validator proves insufficient.
+    export_link_features = frozenset(
+        feature
+        for symbol in required_exports or ()
+        if (feature := link_affecting_feature_gate_for_symbol(symbol)) is not None
+    )
+    required_link_features = frozenset(required_link_features) | export_link_features
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
@@ -2467,14 +2481,6 @@ def _ensure_runtime_wasm(
             and (target_runtime_wasm := target_runtime_wasm_current[0])
             and _inspect_wasm_binary(target_runtime_wasm) == "valid"
             and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
-            and (
-                not validate_exports
-                or _runtime_exports_satisfy_for_mode(
-                    target_runtime_wasm,
-                    required_exports,
-                    reloc=reloc,
-                )
-            )
         ):
             assert fingerprint is not None
             _record_runtime_wasm_build_phase(
@@ -2494,12 +2500,13 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            # The target-dir cdylib holds rustc's raw #[no_mangle] export names;
-            # the shipped shared artifact renames the CPython-ABI subset to their
-            # public split-runtime names (e.g. `PyBool_Check` -> `molt_PyBool_Check`).
-            # The full-build path applies this; the reuse path MUST too, or the
-            # split-runtime app link fails to resolve the renamed imports. (This
-            # also fixed a latent reuse-path defect independent of single-compile.)
+            # Validate only AFTER materialization.  The target-dir cdylib holds
+            # rustc's raw #[no_mangle] names while the shipped shared artifact
+            # renames the CPython-ABI subset (for example `PyBool_Check` to
+            # `molt_PyBool_Check`).  Rejecting the raw target before this step
+            # made every combined compile fall through to a redundant second
+            # cargo compile even though it had already produced the canonical
+            # crate-type pair.
             if not _materialize_split_runtime_public_exports(
                 runtime_wasm,
                 required_exports,
