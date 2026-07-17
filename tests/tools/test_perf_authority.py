@@ -110,6 +110,26 @@ def test_non_canonical_stamp_resolves_rev_when_omitted() -> None:
     assert isinstance(prov["git_rev"], str) and prov["git_rev"]
 
 
+def test_non_canonical_stamp_validation_is_fail_closed() -> None:
+    prov = pa.non_canonical_provenance(
+        profile="manifest-defined", source="tools/bench_friends.py", git_rev="deadbeef"
+    )
+    assert pa.is_non_canonical_provenance(prov)
+
+    for key in (
+        "authoritative",
+        "authoritative_reason",
+        "source",
+        "lane",
+        "profile",
+        "git_rev",
+        "canonical_gate",
+    ):
+        malformed = dict(prov)
+        malformed.pop(key)
+        assert not pa.is_non_canonical_provenance(malformed)
+
+
 def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
     gate = pa.CANONICAL_GATE
 
@@ -176,8 +196,7 @@ def _canonical_scoreboard_doc(
         "summary": {"classify_active": classify_active},
         "provenance": {
             "backend_binary_identity": {
-                f"{backend}/{profile}": f"{backend}-sha|1|2"
-                for backend in backends
+                f"{backend}/{profile}": f"{backend}-sha|1|2" for backend in backends
             }
         },
         "benchmarks_run": list(suite),
@@ -215,12 +234,10 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
         _canonical_scoreboard_doc(backends=("native",))
     )
     assert any(
-        "missing backend binary identities: llvm/release-fast" in p
-        for p in native_only
+        "missing backend binary identities: llvm/release-fast" in p for p in native_only
     )
     assert any(
-        "must include both native and llvm release-fast cells" in p
-        for p in native_only
+        "must include both native and llvm release-fast cells" in p for p in native_only
     )
 
     wrong_profile = pa.canonical_scoreboard_shape_problems(
@@ -228,8 +245,7 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
     )
     assert any("must be generated with --classify" in p for p in wrong_profile)
     assert any(
-        "may only contain native+llvm release-fast cells" in p
-        for p in wrong_profile
+        "may only contain native+llvm release-fast cells" in p for p in wrong_profile
     )
 
     partial_suite = pa.canonical_scoreboard_shape_problems(
@@ -237,20 +253,17 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
     )
     assert any("missing canonical core benchmarks" in p for p in partial_suite)
     assert any(
-        "must include both native and llvm release-fast cells for every benchmark"
-        in p
+        "must include both native and llvm release-fast cells for every benchmark" in p
         for p in partial_suite
     )
 
     empty_board = pa.canonical_scoreboard_shape_problems({"scoreboard": {}})
     assert any(
-        "benchmarks_run must list the canonical core suite" in p
-        for p in empty_board
+        "benchmarks_run must list the canonical core suite" in p for p in empty_board
     )
     assert any("lacks backend binary identities" in p for p in empty_board)
     assert any(
-        "contains no native+llvm release-fast benchmark cells" in p
-        for p in empty_board
+        "contains no native+llvm release-fast benchmark cells" in p for p in empty_board
     )
 
 
@@ -333,20 +346,21 @@ def test_current_scoreboard_problems_can_require_canonical_release_shape(
     monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: [])
 
     problems = pa.current_scoreboard_problems(
-        _current_scoreboard_doc(provenance={
-            "backend_binary_identity": {"native/release-fast": "native-sha|1|2"},
-            "local_head_sha": "a" * 40,
-            "authoritative": True,
-            "authoritative_reason": "unit-test",
-        }),
+        _current_scoreboard_doc(
+            provenance={
+                "backend_binary_identity": {"native/release-fast": "native-sha|1|2"},
+                "local_head_sha": "a" * 40,
+                "authoritative": True,
+                "authoritative_reason": "unit-test",
+            }
+        ),
         now=now,
         require_canonical_shape=True,
         shape_label="canonical scoreboard",
     )
 
     assert any(
-        "canonical scoreboard missing backend binary identities: llvm/release-fast"
-        in p
+        "canonical scoreboard missing backend binary identities: llvm/release-fast" in p
         for p in problems
     )
 
@@ -590,6 +604,27 @@ def test_freshness_stale_json_metadata_clears_json_hazard(tmp_path: Path) -> Non
     assert rec["verdict"] == "stale-stamped"
 
 
+def test_freshness_non_canonical_json_never_ages_into_hazard(tmp_path: Path) -> None:
+    rec = _eval_json(
+        tmp_path,
+        "bench.json",
+        {
+            "generated_at": "2026-01-01",
+            "git_rev": "unknown",
+            "provenance": pa.non_canonical_provenance(
+                profile="manifest-defined",
+                source="tools/bench_friends.py",
+                git_rev="unknown",
+            ),
+            "benchmarks": {"bench_fib.py": {"molt_speedup": 0.01}},
+        },
+    )
+    assert rec["has_perf_numbers"] is True
+    assert rec["non_canonical"] is True
+    assert rec["hazard"] is False
+    assert rec["verdict"] == "non-canonical"
+
+
 def test_freshness_markdown_stamp_does_not_clear_json_hazard(tmp_path: Path) -> None:
     markdown = (
         pa.STALE_BANNER(generated_at="2026-01-01", git_rev="unknown")
@@ -652,7 +687,9 @@ def test_freshness_schema_invalid_scoreboard_is_hazard(
         tmp_path,
         monkeypatch,
         _scoreboard_payload(),
-        schema_problems=["cell bench.py is BUILD_FAILED without a molt_failure payload"],
+        schema_problems=[
+            "cell bench.py is BUILD_FAILED without a molt_failure payload"
+        ],
     )
 
     assert rec["hazard"] is True

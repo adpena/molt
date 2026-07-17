@@ -402,6 +402,9 @@ def test_bench_friends_local_suite_runs(tmp_path: Path) -> None:
     assert results_json.exists()
     payload = json.loads(results_json.read_text(encoding="utf-8"))
     assert payload["suites"]
+    assert perf_authority.is_non_canonical_provenance(payload["provenance"])
+    assert payload["provenance"]["lane"] == "tools/bench_friends.py"
+    assert payload["provenance"]["profile"] == "manifest-defined"
     suite = payload["suites"][0]
     assert suite["id"] == "local_smoke"
     assert suite["status"] == "ok"
