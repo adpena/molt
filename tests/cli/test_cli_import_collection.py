@@ -5824,7 +5824,7 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
         artifact_name="_multiarray_umath.molt.wasm",
         artifact_bytes=_wasm_exporting_i64_unary_symbol(
             "molt_nativepkg_placeholder",
-            imports=("molt_cpython_abi_date_from_date",),
+            imports=("molt_capi_semantic_type", "molt_cpython_abi_date_from_date"),
         ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -5832,8 +5832,14 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
-                "runtime_symbols": ["molt_cpython_abi_date_from_date"],
-                "undefined_symbols": ["molt_cpython_abi_date_from_date"],
+                "runtime_symbols": [
+                    "molt_capi_semantic_type",
+                    "molt_cpython_abi_date_from_date",
+                ],
+                "undefined_symbols": [
+                    "molt_capi_semantic_type",
+                    "molt_cpython_abi_date_from_date",
+                ],
             },
         },
     )
@@ -5847,6 +5853,12 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     assert errors == []
     assert plan is not None
     assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "molt_capi_semantic_type",
+            "status": "external_link",
+            "primitive_class": "molt_cpython_abi_link_import",
+            "source": "runtime_symbols+undefined_symbols",
+        },
         {
             "symbol": "molt_cpython_abi_date_from_date",
             "status": "external_link",
