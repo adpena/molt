@@ -67,6 +67,7 @@ fn reachable_lexical_handler(
         Ok(ExceptionBoundaryHandler::Unreachable) => None,
         Ok(ExceptionBoundaryHandler::DepthZero) => Some(None),
         Ok(ExceptionBoundaryHandler::Labeled(label)) => Some(Some(label)),
+        Ok(ExceptionBoundaryHandler::Anonymous { destination, .. }) => Some(Some(destination)),
         Err(error) => {
             panic!(
                 "async-work poll boundary in function {function_name:?} has invalid lexical custody: {error:?}"
@@ -448,6 +449,128 @@ mod tests {
         assert_eq!(polls.len(), 2);
         assert_eq!(polls[0], 30);
         assert_ne!(polls[1], 30, "depth-zero call must use the function exit");
+    }
+
+    #[test]
+    fn anonymous_try_call_uses_its_recovered_handler_destination() {
+        let mut func = TirFunction::new("anonymous_try_call".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 73);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            op(OpCode::TryStart),
+            op(OpCode::Call),
+            check(73),
+            op(OpCode::TryEnd),
+        ];
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![op(OpCode::TryEnd)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        run(&mut func, &mut AnalysisManager::new());
+        let poll = func.blocks[&entry]
+            .ops
+            .iter()
+            .find(|op| op.is_async_work_poll())
+            .expect("anonymous-region call poll");
+        assert_eq!(check_label(poll), Some(73));
+        let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
+        assert!(crate::tir::lower_to_simple::validate_labels(&simple));
+        assert!(
+            simple
+                .iter()
+                .any(|op| { op.kind == "async_work_poll" && op.value == Some(73) })
+        );
+    }
+
+    #[test]
+    fn anonymous_try_loop_latch_uses_its_recovered_handler_destination() {
+        let mut func = TirFunction::new("anonymous_try_loop".into(), vec![], TirType::None);
+        let header = func.entry_block;
+        let latch = func.fresh_block();
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 74);
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.get_mut(&header).unwrap().ops = vec![op(OpCode::TryStart), check(74)];
+        func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
+            target: latch,
+            args: vec![],
+        };
+        func.blocks.insert(
+            latch,
+            TirBlock {
+                id: latch,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![op(OpCode::TryEnd)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(
+            func.blocks[&latch].ops.last().and_then(check_label),
+            Some(74)
+        );
+        assert!(func.blocks[&latch].ops.last().unwrap().is_async_work_poll());
+    }
+
+    #[test]
+    fn nested_anonymous_try_calls_keep_inner_and_outer_destinations() {
+        let mut func = TirFunction::new("nested_anonymous_try".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let outer_handler = func.fresh_block();
+        let inner_handler = func.fresh_block();
+        func.label_id_map.insert(outer_handler.0, 80);
+        func.label_id_map.insert(inner_handler.0, 81);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            op(OpCode::TryStart),
+            check(80),
+            op(OpCode::Call),
+            op(OpCode::TryStart),
+            check(81),
+            op(OpCode::Call),
+            op(OpCode::TryEnd),
+            op(OpCode::Call),
+            op(OpCode::TryEnd),
+        ];
+        for (handler, label) in [(outer_handler, 80), (inner_handler, 81)] {
+            func.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![labeled_op(OpCode::TryEnd, label)],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+        }
+
+        run(&mut func, &mut AnalysisManager::new());
+        let polls: Vec<_> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.is_async_work_poll())
+            .filter_map(check_label)
+            .collect();
+        assert_eq!(polls, [80, 81, 80]);
     }
 
     #[test]

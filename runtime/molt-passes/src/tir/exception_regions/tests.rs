@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::path_state::{ExceptionPathState, compute_state_resume_stacks};
+use super::path_state::{
+    AnonymousHandlerDestinations, ExceptionPathState, compute_state_resume_stacks,
+};
 use super::*;
 use crate::tir::analysis::AnalysisId;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -1378,7 +1380,8 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(&func)
         .into_iter()
         .collect();
-    let stacks = compute_state_resume_stacks(&func, &label_to_block);
+    let stacks =
+        compute_state_resume_stacks(&func, &label_to_block, &AnonymousHandlerDestinations::new());
 
     assert_eq!(
         stacks.get(&7).cloned().unwrap_or_default(),
@@ -1450,7 +1453,21 @@ fn lexical_handler_query_is_total_and_fail_closed() {
     );
     assert_eq!(
         facts.lexical_handler_before(position),
-        Err(ExceptionBoundaryHandlerError::Anonymous { position, owner })
+        Err(ExceptionBoundaryHandlerError::AnonymousDestination {
+            position,
+            owner,
+            destinations: BTreeSet::new(),
+        })
+    );
+    facts
+        .anonymous_handler_destinations
+        .insert(owner, BTreeSet::from([73]));
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Ok(ExceptionBoundaryHandler::Anonymous {
+            owner,
+            destination: 73,
+        })
     );
 
     let states = BTreeSet::from([None, Some(ExceptionRegionToken::Labeled(41))]);
@@ -1461,4 +1478,89 @@ fn lexical_handler_query_is_total_and_fail_closed() {
         facts.lexical_handler_before(position),
         Err(ExceptionBoundaryHandlerError::Ambiguous { position, states })
     );
+}
+
+#[test]
+fn anonymous_try_region_resolves_destination_and_closes_at_unlabeled_end() {
+    let mut func = TirFunction::new("anonymous_region".into(), vec![], TirType::None);
+    let entry = func.entry_block;
+    let handler = func.fresh_block();
+    func.label_id_map.insert(handler.0, 73);
+    func.blocks.get_mut(&entry).unwrap().ops = vec![
+        op(OpCode::TryStart),
+        check_exception(73),
+        op(OpCode::TryEnd),
+    ];
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![op(OpCode::TryEnd)],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let facts = compute_exception_region_facts(&func);
+    let owner = ExceptionOpPosition {
+        block: entry,
+        op_index: 0,
+    };
+    assert_eq!(
+        facts.lexical_handler_before(ExceptionOpPosition {
+            block: entry,
+            op_index: 1,
+        }),
+        Ok(ExceptionBoundaryHandler::Anonymous {
+            owner,
+            destination: 73,
+        })
+    );
+    assert_eq!(
+        facts.lexical_handler_before(ExceptionOpPosition {
+            block: entry,
+            op_index: 3,
+        }),
+        Ok(ExceptionBoundaryHandler::DepthZero)
+    );
+}
+
+#[test]
+fn anonymous_try_exception_edge_enters_owner_and_releases_match_ref() {
+    let mut func = TirFunction::new("anonymous_handler_owner".into(), vec![], TirType::None);
+    let entry = func.entry_block;
+    let handler = func.fresh_block();
+    let matched = func.fresh_value();
+    func.label_id_map.insert(handler.0, 79);
+    func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::TryStart), check_exception(79)];
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![
+                op(OpCode::TryEnd),
+                original("exception_last_pending", vec![matched]),
+                original("exception_pop", vec![]),
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let facts = compute_exception_region_facts(&func);
+    let owner = ExceptionRegionToken::Anonymous(ExceptionOpPosition {
+        block: entry,
+        op_index: 0,
+    });
+    let fact = facts.match_refs.get(&matched).expect("anonymous match ref");
+    assert_eq!(fact.release_facts.len(), 1);
+    assert_eq!(fact.release_facts[0].owner, owner);
+    assert_eq!(
+        fact.release_facts[0].release,
+        ExceptionOpPosition {
+            block: handler,
+            op_index: 2,
+        }
+    );
+    assert!(facts.diagnostics.is_empty());
 }

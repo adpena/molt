@@ -11,6 +11,7 @@ from molt.frontend._types import (
     MoltValue,
     build_cfg,
 )
+from molt.frontend.lowering.try_regions import try_region_id
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -1087,16 +1088,6 @@ class MidendCFGMixin(_MixinBase):
         control_stack: list[tuple[str, Any]] = []
         rewritten: list[MoltOp] = []
         rewrites = 0
-
-        def try_region_id(op: MoltOp) -> Any:
-            # The region id is the try's handler label. `visit_Try`/finally carry
-            # it in `args[0]`; `with`/`async with` carry it in
-            # `metadata["try_region_id"]` (their TRY_START/TRY_END have empty args).
-            if op.metadata is not None and "try_region_id" in op.metadata:
-                return op.metadata["try_region_id"]
-            if op.args:
-                return op.args[0]
-            return None
 
         def fail(message: str) -> NoReturn:
             self.midend_stats["cfg_structural_failures"] += 1

@@ -37,6 +37,7 @@ from molt.frontend.lowering.serialization_loop_string_async_ops import (
 from molt.frontend.lowering.serialization_object_attr_ops import (
     SerializationObjectAttrOpsMixin,
 )
+from molt.frontend.lowering.try_regions import try_region_id
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -72,7 +73,7 @@ class SerializationMixin(
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int:
-        raw = op.args[0]
+        raw = try_region_id(op) if op.kind in {"TRY_START", "TRY_END"} else op.args[0]
         if isinstance(raw, bool):
             return int(raw)
         if isinstance(raw, int):
