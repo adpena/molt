@@ -74,10 +74,13 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
 def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     root = _compiler_root()
     required_exports = {
-        "molt_ast_parse",
-        "molt_ctypes_sizeof",
-        "molt_math_sqrt",
-        "molt_re_compile",
+        # Actual field names imported from module ``molt_runtime`` by the app.
+        # The runtime export authority canonicalizes them to ``molt_*`` symbols
+        # before the generated symbol-to-feature projection.
+        "ast_parse",
+        "ctypes_sizeof",
+        "math_sqrt",
+        "re_compile",
     }
     shared = rb._compute_runtime_wasm_build_spec(
         root,
