@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from molt import wasm_artifact
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
 
 
@@ -20,6 +21,88 @@ def _load_wasm_link():
 
 
 wasm_link = _load_wasm_link()
+
+
+def _rust_facts_fixture(data: bytes) -> dict[str, object]:
+    sections = wasm_link._parse_sections(data)
+    import_count = wasm_link._count_func_imports(sections)
+    defined_count = 0
+    for section_id, payload in sections:
+        if section_id == 3:
+            defined_count, _ = wasm_link._read_varuint(payload, 0)
+            break
+    module_facts = wasm_link.parse_wasm_module_facts(data)
+    total_functions = import_count + defined_count
+    exported_tables = sorted(
+        index
+        for kind, index in module_facts.export_kinds.values()
+        if kind == 1
+    )
+    table_min = wasm_link._table_import_min(data)
+    app_base = table_min or 0
+    return {
+        "schema_version": 3,
+        "function_import_count": import_count,
+        "defined_function_count": defined_count,
+        "function_references": [],
+        "root_function_indices": list(range(total_functions)),
+        "element_function_indices": [],
+        "declared_function_indices": [],
+        "active_function_elements": [],
+        "callable_table_entries": [],
+        "callable_table_attestation_present": True,
+        "callable_table_layout": {
+            "fixed_prefix_base": 0,
+            "fixed_prefix_len": 0,
+            "finalized_app_base": app_base,
+            "app_entry_count": 0,
+        },
+        "table_mutations": [],
+        "reachable_table_mutations": [],
+        "dynamic_table_dispatch": False,
+        "dynamic_dispatch_functions": [],
+        "reachable_dynamic_dispatch": False,
+        "indirect_call_tables": [],
+        "reachable_indirect_call_tables": [],
+        "indirect_calls": [],
+        "exported_table_indices": exported_tables,
+        "tables": [],
+    }
+
+
+@pytest.fixture(autouse=True)
+def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        wasm_link,
+        "_make_rust_wasm_facts_provider",
+        lambda _scanner, _scratch_root: _rust_facts_fixture,
+    )
+
+    def publish(_scanner, artifact: Path, *, layout=None, role="monolithic"):
+        del role
+        facts = _rust_facts_fixture(artifact.read_bytes())
+        if layout is not None:
+            facts["callable_table_layout"] = {
+                "fixed_prefix_base": layout.fixed_prefix_base,
+                "fixed_prefix_len": layout.fixed_prefix_len,
+                "finalized_app_base": layout.finalized_app_base,
+                "app_entry_count": layout.app_entry_count,
+            }
+        return facts
+
+    monkeypatch.setattr(wasm_link, "_publish_rust_wasm_link_facts", publish)
+
+
+_REAL_RUN_WASM_LD = wasm_link._run_wasm_ld
+
+
+def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-def]
+    kwargs.setdefault("wasm_facts_scanner", Path("rust-facts-fixture"))
+    return _REAL_RUN_WASM_LD(*args, **kwargs)
+
+
+def _facts_provider(data: bytes) -> dict[str, object]:
+    return _rust_facts_fixture(data)
 
 
 def test_snapshot_link_input_retries_until_source_is_stable(
@@ -1415,9 +1498,6 @@ def test_wasm_module_facts_capture_link_validation_surface() -> None:
     assert facts.imports == (("env", "memory", 2, b"\x00\x01"),)
     assert facts.module_imports["env"] == frozenset({"memory"})
     assert facts.memory_import_mins[("env", "memory")] == 1
-    assert facts.code_ref_funcs == frozenset({0})
-    assert facts.element_declared_funcs == frozenset()
-    assert facts.total_func_count == 1
 
 
 def test_validate_linked_parses_module_facts_once(
@@ -1538,12 +1618,14 @@ def test_validate_wasm_structural_falls_back_when_debug_strip_fails(
 
 def test_stub_dead_functions_preserves_start_root_reachability() -> None:
     module = _build_start_root_module()
-    assert wasm_link._stub_dead_functions(module) is None
+    assert wasm_link._stub_dead_functions(module, _rust_facts_fixture(module)) is None
 
 
 def test_tree_shake_runtime_preserves_required_function_exports() -> None:
     module = _build_exported_runtime_module("molt_exception_pending")
-    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    shaken = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_exception_pending" in exports
 
@@ -1568,7 +1650,9 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
             "molt_dec_ref_obj",
         ]
     )
-    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    shaken = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_alloc" in exports
     assert "molt_handle_resolve" in exports
@@ -1643,9 +1727,7 @@ def test_restore_split_runtime_contract_exports_parses_contract_once(
     )
 
     assert parse_calls == 1
-    assert operation_counts == {
-        "wasm_whole_artifact_redundant_parses_eliminated": 2
-    }
+    assert operation_counts == {"wasm_whole_artifact_redundant_parses_eliminated": 2}
     assert raw_parse(restored).export_kinds == {
         "molt_main": (0, 0),
         "molt_memory": (2, 0),
@@ -1696,6 +1778,7 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
         reference_data=_build_exported_runtime_module_many(["reference_only"]),
         preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
         preserve_reference_exports=False,
+        facts_provider=_facts_provider,
     )
 
     assert wasm_link.parse_wasm_module_facts(optimized).export_kinds == {
@@ -1721,126 +1804,6 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     }
 
 
-def test_split_publication_pipeline_preserves_complete_contract_after_every_stage(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    required_native = ("PyInit__demo",)
-    public_export_map = {
-        "molt_main": "molt_main",
-        "user_export": "user_export",
-    }
-    app = _build_split_runtime_app_module([])
-    main_index = wasm_link._collect_function_exports(app)["molt_main"]
-    table_ref = wasm_link.table_ref_export_name(7)
-    public_export_map[table_ref] = table_ref
-    for name in (*required_native, "user_export", table_ref):
-        updated = wasm_link._ensure_export_by_index(
-            app,
-            name=name,
-            kind=0,
-            index=main_index,
-        )
-        assert updated is not None
-        app = updated
-    function_exports = wasm_link._collect_function_exports(app)
-    app = wasm_link._append_linking_function_symbols(
-        app,
-        [
-            (
-                name,
-                index,
-                wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
-            )
-            for name, index in function_exports.items()
-        ],
-    )
-    assert app is not None
-    app_with_table_slot = wasm_link._append_active_table_slot_elements(
-        app,
-        {7: main_index},
-    )
-    assert app_with_table_slot is not None
-    app = app_with_table_slot
-    keep_set = wasm_link._split_artifact_contract_keep_set(
-        "app",
-        public_export_map=public_export_map,
-        required_native_direct_symbols=required_native,
-    )
-
-    def assert_external_contract(stage: str, data: bytes) -> None:
-        facts = wasm_link.parse_wasm_module_facts(data)
-        assert facts.export_kinds["molt_main"][0] == 0, stage
-        assert facts.export_kinds["molt_memory"][0] == 2, stage
-        assert facts.export_kinds["molt_table"][0] == 1, stage
-        assert facts.export_kinds["PyInit__demo"][0] == 0, stage
-        assert facts.export_kinds["user_export"][0] == 0, stage
-        assert (
-            wasm_link._validate_required_native_direct_symbols(
-                data,
-                required_native,
-                description=stage,
-            )
-            is None
-        )
-
-    def assert_shared_table_contract(stage: str, data: bytes) -> None:
-        assert table_ref not in wasm_link._collect_function_exports(data), stage
-        assert main_index in wasm_link._collect_element_declared_funcs(data), stage
-
-    native_masked = app
-    for name in ("molt_main", "molt_memory", "molt_table", *required_native):
-        native_masked = _strip_export(native_masked, name)
-    native_restored = wasm_link._restore_split_runtime_contract_exports(
-        native_masked,
-        artifact="app",
-        stage="native-link",
-        public_export_map=public_export_map,
-        required_native_direct_symbols=required_native,
-    )
-    assert table_ref in wasm_link._collect_function_exports(native_restored)
-
-    seen_required_exports: set[str] = set()
-
-    def fake_optimize(path: Path, **kwargs) -> bool:
-        del path
-        seen_required_exports.update(kwargs["required_exports"])
-        return True
-
-    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_optimize)
-    optimized = wasm_link._optimize_split_app_module(
-        native_restored,
-        reference_data=app,
-        optimize=True,
-        optimize_level="Oz",
-        contract_keep_set=keep_set,
-    )
-    optimized_restored = wasm_link._restore_split_runtime_contract_exports(
-        optimized,
-        artifact="app",
-        stage="optimized-app",
-        public_export_map=public_export_map,
-        required_native_direct_symbols=required_native,
-    )
-    assert seen_required_exports == {
-        "molt_main",
-        "PyInit__demo",
-        "user_export",
-    }
-    assert_external_contract("optimized-app", optimized_restored)
-    assert_shared_table_contract("optimized-app", optimized_restored)
-
-    published = wasm_link._strip_and_restore_split_artifact(
-        optimized_restored,
-        artifact="app",
-        stage="publication-strip",
-        preserve_debug=False,
-        public_export_map=public_export_map,
-        required_native_direct_symbols=required_native,
-    )
-    assert_external_contract("publication-strip", published)
-    assert_shared_table_contract("publication-strip", published)
-
-
 def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1853,7 +1816,9 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "test")
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
     monkeypatch.setattr(
-        wasm_link, "_strip_unused_module_function_imports", lambda *_args, **_kwargs: None
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
     )
 
     def fake_optimize(path: Path, **kwargs) -> bool:  # type: ignore[no-untyped-def]
@@ -1876,6 +1841,7 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
         contract_keep_set={"molt_main"},
         attestation=cold_attestation,
         operation_counts=cold_counts,
+        facts_provider=_facts_provider,
     )
     warm = wasm_link._optimize_split_app_module(
         app,
@@ -1885,6 +1851,7 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
         contract_keep_set={"molt_main"},
         attestation=warm_attestation,
         operation_counts=warm_counts,
+        facts_provider=_facts_provider,
     )
 
     assert warm == cold
@@ -1902,40 +1869,18 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     assert warm_attestation["cache_hit"] is True
 
 
-def test_publication_strip_drops_table_ref_alias_but_keeps_shared_table_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = _build_split_runtime_app_module([])
-    table_ref = wasm_link.table_ref_export_name(7)
-    main_index = wasm_link._collect_function_exports(app)["molt_main"]
-    updated = wasm_link._ensure_export_by_index(
-        app,
-        name=table_ref,
-        kind=0,
-        index=main_index,
-    )
-    assert updated is not None
-    with_table_slot = wasm_link._append_active_table_slot_elements(
-        updated,
-        {7: main_index},
-    )
-    assert with_table_slot is not None
+def test_python_callable_table_consumer_rejects_dynamic_active_offset() -> None:
+    write_varuint = wasm_link._write_varuint
+    element_payload = bytearray()
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    element_payload.extend(b"\x23\x00\x0b")  # global.get 0; end
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    module = _build_minimal_module(bytes(element_payload))
 
-    monkeypatch.setattr(
-        wasm_link,
-        "strip_wasm_publication_sections",
-        lambda data, **_kwargs: _strip_export(data, table_ref),
-    )
-
-    published = wasm_link._strip_and_restore_split_artifact(
-        with_table_slot,
-        artifact="app",
-        stage="publication-strip",
-        preserve_debug=False,
-    )
-
-    assert table_ref not in wasm_link._collect_function_exports(published)
-    assert main_index in wasm_link._collect_element_declared_funcs(published)
+    with pytest.raises(ValueError, match="Dynamic active wasm element offsets"):
+        wasm_artifact._collect_wasm_active_table_function_slots(module)
 
 
 def test_split_contract_restoration_keeps_function_exports_when_adding_memory_and_table() -> (
@@ -1978,6 +1923,7 @@ def test_split_combined_post_link_preserves_linker_memory_and_table_aliases() ->
         linked,
         preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
         preserve_reference_exports=False,
+        facts_provider=_facts_provider,
     )
 
     assert wasm_link.parse_wasm_module_facts(optimized).export_kinds == {
@@ -1992,6 +1938,7 @@ def test_split_combined_post_link_restores_real_defined_memory_export() -> None:
         linked,
         preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
         preserve_reference_exports=False,
+        facts_provider=_facts_provider,
     )
 
     restored = wasm_link._ensure_defined_memory_export(optimized)
@@ -2081,100 +2028,6 @@ def test_validate_split_runtime_outputs_rejects_structurally_invalid_runtime(
     assert seen == ["Split-runtime app", "Split-runtime shared runtime"]
 
 
-def test_validate_split_runtime_outputs_rejects_undeclared_app_ref_func(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    runtime = tmp_path / "molt_runtime.wasm"
-    app = tmp_path / "app.wasm"
-    runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_memory_import_ref_func_app_module(func_index=0))
-    structural_calls: list[str] = []
-
-    def validate_structural(_data: bytes, *, description: str) -> bool:
-        structural_calls.append(description)
-        return True
-
-    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", validate_structural)
-
-    assert not wasm_link._validate_split_runtime_outputs(app, runtime)
-    captured = capsys.readouterr()
-    assert (
-        "Split-runtime app has undeclared ref.func function index(es): 0"
-        in captured.err
-    )
-    assert structural_calls == []
-
-
-def test_validate_linked_rejects_undeclared_ref_func_without_wasm_tools(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    linked = tmp_path / "linked.wasm"
-    linked.write_bytes(_build_linked_ref_func_module(func_index=0))
-    structural_calls: list[str] = []
-
-    def validate_structural(_data: bytes, *, description: str) -> bool:
-        structural_calls.append(description)
-        return True
-
-    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", validate_structural)
-
-    assert not wasm_link._validate_linked(linked)
-    captured = capsys.readouterr()
-    assert "Linked wasm has undeclared ref.func function index(es): 0" in captured.err
-    assert structural_calls == []
-
-
-def test_validate_linked_rejects_out_of_bounds_ref_func_without_repair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    linked = tmp_path / "linked.wasm"
-    declared = wasm_link._declare_ref_func_elements(
-        _build_linked_ref_func_module(func_index=999)
-    )
-    assert declared is not None
-    linked.write_bytes(declared)
-    structural_calls: list[str] = []
-
-    def validate_structural(_data: bytes, *, description: str) -> bool:
-        structural_calls.append(description)
-        return True
-
-    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", validate_structural)
-
-    assert not wasm_link._validate_linked(linked)
-    captured = capsys.readouterr()
-    assert (
-        "Linked wasm has out-of-bounds function reference index(es): 999 "
-        "(function count: 1)" in captured.err
-    )
-    assert structural_calls == []
-
-
-def test_declare_ref_func_elements_places_element_after_tag_section() -> None:
-    data = _build_linked_ref_func_module(func_index=0)
-    sections = wasm_link._parse_sections(data)
-    code_index = next(
-        index
-        for index, (section_id, _payload) in enumerate(sections)
-        if section_id == 10
-    )
-    sections.insert(code_index, (13, bytes([1, 0, 0])))
-
-    declared = wasm_link._declare_ref_func_elements(wasm_link._build_sections(sections))
-
-    assert declared is not None
-    section_ids = [
-        section_id for section_id, _payload in wasm_link._parse_sections(declared)
-    ]
-    assert section_ids.index(13) < section_ids.index(9) < section_ids.index(10)
-
-
 def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> None:
     module = _build_exported_runtime_module_many(
         [
@@ -2188,7 +2041,9 @@ def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> N
         "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
         "molt_gpu_linear_contiguous,molt_gpu_tensor__tensor_scaled_dot_product_attention,molt_gpu_turboquant_attention_packed",
     )
-    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    shaken = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_gpu_linear_contiguous" in exports
     assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in exports
@@ -2211,7 +2066,7 @@ def test_tree_shake_runtime_reuses_cached_result(
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00shaken")
         return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
 
-    def fake_final_optimize(path: Path, level: str = "Oz") -> bool:
+    def fake_final_optimize(path: Path, level: str = "Oz", **_kwargs) -> bool:
         assert level == "Oz"
         path.write_bytes(final_runtime)
         return True
@@ -2222,7 +2077,9 @@ def test_tree_shake_runtime_reuses_cached_result(
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_final_optimize)
 
-    first = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    first = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
 
     assert first == final_runtime
     assert calls["count"] == 1
@@ -2235,7 +2092,9 @@ def test_tree_shake_runtime_reuses_cached_result(
         ),
     )
 
-    second = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    second = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
 
     assert second == final_runtime
 
@@ -2257,8 +2116,12 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
+    wasm_ld_commands: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            wasm_ld_commands.append(list(cmd))
         _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
@@ -2271,9 +2134,6 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(stale_runtime))
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
     monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
@@ -2281,7 +2141,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
     )
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2290,7 +2150,8 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         split_output_dir=split_dir,
         phase_timings_file=timings_path,
     )
-    control_rc = wasm_link._run_wasm_ld(
+    first_link_commands = list(wasm_ld_commands)
+    control_rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2301,7 +2162,20 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
 
     assert rc == 0
     assert control_rc == 0
-    assert (split_dir / "molt_runtime.wasm").read_bytes() == runtime.read_bytes()
+    assert len(first_link_commands) == 2, (
+        "split-runtime builds without native objects must run wasm-ld for both "
+        "the monolithic artifact and the split app"
+    )
+    assert all("--no-entry" in cmd for cmd in first_link_commands)
+    expected_runtime = wasm_link.strip_wasm_publication_sections(
+        runtime.read_bytes(), final_artifact=True, preserve_debug=False
+    )
+    actual_runtime = wasm_link.strip_wasm_publication_sections(
+        (split_dir / "molt_runtime.wasm").read_bytes(),
+        final_artifact=True,
+        preserve_debug=False,
+    )
+    assert actual_runtime == expected_runtime
     assert linked.read_bytes() == control_linked.read_bytes()
     assert (split_dir / "app.wasm").read_bytes() == (
         control_split_dir / "app.wasm"
@@ -2359,7 +2233,7 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
 
     assert rc == 0
     assert any(Path(part).name == reloc_runtime.name for part in wasm_ld_inputs)
@@ -2403,7 +2277,7 @@ def test_run_wasm_ld_links_staged_native_objects(
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2444,7 +2318,7 @@ def test_run_wasm_ld_rejects_signature_mismatch_warning(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
 
     assert rc == 1
     assert (
@@ -2496,7 +2370,7 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2534,7 +2408,7 @@ def test_run_wasm_ld_rejects_missing_native_object(
         ),
     )
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2596,7 +2470,7 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
     assert (
-        wasm_link._run_wasm_ld(
+        _run_wasm_ld_with_rust_facts(
             "wasm-ld",
             runtime,
             output,
@@ -2657,10 +2531,6 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         "_restore_split_runtime_contract_exports",
         lambda data, **_kwargs: data,
     )
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
@@ -2676,7 +2546,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2769,10 +2639,6 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
         "_restore_split_runtime_contract_exports",
         lambda data, **_kwargs: data,
     )
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
@@ -2781,7 +2647,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -2837,7 +2703,7 @@ def test_public_export_restoration_recovers_sealed_init_symbol_from_linking_name
         [(symbol, 0, wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME)],
     )
     assert linked is not None
-    stripped = wasm_link._strip_internal_exports(linked, preserve_table_refs=False)
+    stripped = wasm_link._strip_internal_exports(linked)
     assert stripped is not None
     assert symbol not in wasm_link._collect_function_exports(stripped)
 
@@ -2869,7 +2735,7 @@ def test_native_direct_contract_restoration_recovers_stripped_real_body_by_name(
     )
     assert linked is not None
     function_index = wasm_link._collect_function_exports(linked)[symbol]
-    stripped = wasm_link._strip_internal_exports(linked, preserve_table_refs=False)
+    stripped = wasm_link._strip_internal_exports(linked)
     assert stripped is not None
 
     restored = wasm_link._restore_public_output_exports(
@@ -3029,10 +2895,6 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         "_restore_split_runtime_contract_exports",
         lambda data, **_kwargs: data,
     )
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
@@ -3046,9 +2908,13 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         lambda: compiler_rt_provider,
         raising=True,
     )
+
     def provider_symbols(*, primitive_classes=None, **_kwargs):
         symbols: set[str] = set()
-        if primitive_classes is None or wasm_link.WASM_LIBC_LINK_IMPORT_CLASS in primitive_classes:
+        if (
+            primitive_classes is None
+            or wasm_link.WASM_LIBC_LINK_IMPORT_CLASS in primitive_classes
+        ):
             symbols.add("malloc")
         if (
             primitive_classes is None
@@ -3064,7 +2930,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         raising=True,
     )
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -3163,7 +3029,9 @@ def test_tree_shake_runtime_uses_converge_flag(
         wasm_link, "_run_wasm_opt_via_optimize", lambda *_a, **_k: False
     )
 
-    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    shaken = wasm_link._tree_shake_runtime(
+        module, {"exception_pending"}, facts_provider=_facts_provider
+    )
 
     assert shaken.startswith(b"\x00asm\x01\x00\x00\x00")
     assert calls, "expected wasm-opt tree-shake invocation"
@@ -3242,8 +3110,86 @@ def test_oz_publication_pipeline_is_bounded_and_size_focused() -> None:
 
 
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
-    module = _build_host_call_indirect_module()
-    assert wasm_link._neutralize_dead_element_entries(module) is None
+    facts = {
+        "root_function_indices": [],
+        "element_function_indices": [],
+        "declared_function_indices": [],
+        "function_references": [],
+        "active_function_elements": [],
+        "reachable_dynamic_dispatch": True,
+        "exported_table_indices": [],
+        "table_mutations": [],
+    }
+    assert (
+        wasm_link._neutralize_dead_element_entries(
+            _build_host_call_indirect_module(), facts
+        )
+        is None
+    )
+
+
+def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_controls() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = [
+        (1, write_varuint(1) + b"\x60\x00\x00"),
+        (3, write_varuint(2) + write_varuint(0) + write_varuint(0)),
+        (4, write_varuint(1) + b"\x70\x00" + write_varuint(1)),
+        (
+            9,
+            write_varuint(1)
+            + b"\x00\x41\x00\x0b"
+            + write_varuint(1)
+            + write_varuint(1),
+        ),
+        (10, write_varuint(2) + b"\x02\x00\x0b\x02\x00\x0b"),
+    ]
+    module = wasm_link._build_sections(sections)
+    facts = {
+        "root_function_indices": [0],
+        "element_function_indices": [1],
+        "declared_function_indices": [],
+        "function_references": [],
+        "active_function_elements": [[0, 0, 1]],
+        "reachable_dynamic_dispatch": False,
+        "exported_table_indices": [],
+        "table_mutations": [],
+    }
+
+    neutralized = wasm_link._neutralize_dead_element_entries(module, facts)
+    assert neutralized is not None
+    element_payload = next(
+        payload for section_id, payload in wasm_link._parse_sections(neutralized)
+        if section_id == 9
+    )
+    assert element_payload.endswith(b"\x00")
+    assert wasm_link._reachable_function_indices(facts) == {0}
+
+    observable = dict(facts)
+    observable["exported_table_indices"] = [0]
+    assert wasm_link._reachable_function_indices(observable) == {0, 1}
+    nonzero_observable = dict(facts)
+    nonzero_observable["exported_table_indices"] = [1]
+    assert wasm_link._reachable_function_indices(nonzero_observable) == {0}
+    dynamic = dict(facts)
+    dynamic["reachable_dynamic_dispatch"] = True
+    assert wasm_link._reachable_function_indices(dynamic) == {0, 1}
+    reachable_ref = dict(facts)
+    reachable_ref["function_references"] = [[0, [], [1]], [2, [], [1]]]
+    assert wasm_link._reachable_function_indices(reachable_ref) == {0, 1}
+    table_init = dict(facts)
+    table_init["table_mutations"] = [[0, "table.init", 0, None]]
+    assert wasm_link._reachable_function_indices(table_init) == {0, 1}
+
+    for override in (
+        {"reachable_dynamic_dispatch": True},
+        {"exported_table_indices": [0]},
+        {
+            "table_mutations": [[0, "table.init", 0, None]]
+        },
+    ):
+        controlled = dict(facts)
+        controlled.update(override)
+        assert wasm_link._neutralize_dead_element_entries(module, controlled) is None
 
 
 def test_import_walkers_handle_tag_imports_before_host_call_indirect() -> None:
@@ -3251,15 +3197,18 @@ def test_import_walkers_handle_tag_imports_before_host_call_indirect() -> None:
     sections = wasm_link._parse_sections(module)
 
     assert wasm_link._count_func_imports(sections) == 1
-    assert wasm_link._neutralize_dead_element_entries(module) is None
 
 
 def test_strip_unused_module_function_imports_remaps_indices() -> None:
     module = _build_runtime_import_strip_module()
+    facts = _rust_facts_fixture(module)
+    facts["root_function_indices"] = [2]
+    facts["function_references"] = [[2, [1], []]]
 
     stripped = wasm_link._strip_unused_module_function_imports(
         module,
         module_name="molt_runtime",
+        facts=facts,
     )
 
     imports_after = _function_import_pairs(stripped)
@@ -3278,9 +3227,11 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_runtime_import_module(["socket_drop", "molt_alloc"]))
 
+    owned_temp_dir = tempfile.TemporaryDirectory()
     rewritten = wasm_link._rewrite_output_imports(
         output,
         {"molt_socket_drop", "molt_alloc"},
+        owned_temp_dir,
     )
 
     assert rewritten is not None
@@ -3645,8 +3596,8 @@ def test_split_runtime_validation_uses_generated_runtime_export_names(
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
 
-def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() -> None:
-    table_ref = wasm_link.table_ref_export_name(7)
+def test_post_link_optimize_split_app_drops_numeric_table_aliases() -> None:
+    table_ref = "__molt_table_ref_7"
     module = _build_exported_runtime_module_many(
         ["dead_user_export", "molt_main", table_ref]
     )
@@ -3654,19 +3605,21 @@ def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() 
     default_optimized = wasm_link._post_link_optimize(
         module,
         reference_data=module,
+        facts_provider=_facts_provider,
     )
     assert "dead_user_export" in wasm_link._collect_exports(default_optimized)
 
     split_app_optimized = wasm_link._post_link_optimize(
         module,
         reference_data=module,
-        preserve_exports=wasm_link._split_app_reference_function_exports(module),
+        preserve_exports={"molt_main"},
         preserve_reference_exports=False,
+        facts_provider=_facts_provider,
     )
     split_exports = wasm_link._collect_exports(split_app_optimized)
     assert "dead_user_export" not in split_exports
     assert "molt_main" in split_exports
-    assert table_ref in split_exports
+    assert table_ref not in split_exports
 
 
 def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> (
@@ -3765,7 +3718,9 @@ def test_inject_output_export_aliases_preserves_export_flag_for_user_exports(
 
     with tempfile.TemporaryDirectory() as tmp:
         temp_dir = tempfile.TemporaryDirectory(dir=tmp)
-        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        updated = wasm_link._inject_output_export_aliases(
+            output, temp_dir, _rust_facts_fixture(output.read_bytes())
+        )
         symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
         assert any(
             name == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
@@ -3877,7 +3832,9 @@ def test_inject_output_export_aliases_adds_runtime_entrypoint_symbols(
 
     with tempfile.TemporaryDirectory() as tmp:
         temp_dir = tempfile.TemporaryDirectory(dir=tmp)
-        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        updated = wasm_link._inject_output_export_aliases(
+            output, temp_dir, _rust_facts_fixture(output.read_bytes())
+        )
         symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
         assert any(
             name == "molt_isolate_import" and (flags & wasm_link.FLAG_BINDING_GLOBAL)
@@ -3970,14 +3927,11 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
     monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
 
     assert rc == 0
     cmd = next(cmd for cmd in captured_cmds if cmd and cmd[0] == "wasm-ld")
@@ -4073,7 +4027,9 @@ def test_inject_output_export_aliases_skips_void_user_exports(
 
     with tempfile.TemporaryDirectory() as tmp:
         temp_dir = tempfile.TemporaryDirectory(dir=tmp)
-        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        updated = wasm_link._inject_output_export_aliases(
+            output, temp_dir, _rust_facts_fixture(output.read_bytes())
+        )
         assert updated == output
         temp_dir.cleanup()
 
@@ -4117,67 +4073,15 @@ def test_collect_output_wrapper_specs_skips_internal_module_helpers() -> None:
         code_payload.append(0x0B)
     sections.append((10, bytes(code_payload)))
 
-    specs = wasm_link._collect_output_wrapper_specs(wasm_link._build_sections(sections))
+    specs = wasm_link._collect_output_wrapper_specs(
+        wasm_link._build_sections(sections),
+        _rust_facts_fixture(wasm_link._build_sections(sections)),
+    )
     kept = {name for name, _alias, _type_idx, _func_idx in specs}
     assert "main_molt__init" in kept
     assert "molt_isolate_import" in kept
     assert "main_molt__molt_module_chunk_1" not in kept
     assert "__future_____Feature___init__" not in kept
-
-
-def test_split_app_reference_function_exports_preserves_public_and_isolate_exports() -> (
-    None
-):
-    write_varuint = wasm_link._write_varuint
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = bytearray()
-    func_payload.extend(write_varuint(6))
-    for _ in range(6):
-        func_payload.extend(write_varuint(0))
-    sections.append((3, bytes(func_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(6))
-    for name, index in (
-        ("main_molt__init", 0),
-        ("main_molt__ocr_tokens", 1),
-        ("molt_isolate_import", 2),
-        ("molt_isolate_bootstrap", 3),
-        ("molt_main", 4),
-        ("molt_set_wasm_table_base", 5),
-    ):
-        export_payload.extend(wasm_link._write_string(name))
-        export_payload.append(0x00)
-        export_payload.extend(write_varuint(index))
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(6))
-    for _ in range(6):
-        code_payload.extend(write_varuint(2))
-        code_payload.append(0x42)
-        code_payload.append(0x00)
-        code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    keep = wasm_link._split_app_reference_function_exports(
-        wasm_link._build_sections(sections)
-    )
-    assert "main_molt__init" in keep
-    assert "main_molt__ocr_tokens" in keep
-    assert "molt_isolate_import" in keep
-    assert "molt_isolate_bootstrap" in keep
-    assert "molt_main" in keep
-    assert "molt_set_wasm_table_base" in keep
 
 
 def test_restore_public_output_exports_renames_native_split_alias_exports() -> None:
@@ -4238,7 +4142,11 @@ def test_entry_module_prefix_from_main_init_prefers_main_module() -> None:
 
     module = wasm_link._build_sections(sections)
     exports = wasm_link._collect_function_exports(module)
-    assert wasm_link._entry_module_prefix_from_main_init(module, exports) == "main_molt"
+    facts = _rust_facts_fixture(module)
+    facts["function_references"] = [[1, [0], []]]
+    assert wasm_link._entry_module_prefix_from_main_init(
+        exports, facts
+    ) == "main_molt"
 
 
 def test_collect_output_wrapper_specs_prefers_main_module_prefix_over_dominant_stdlib() -> (
@@ -4299,7 +4207,9 @@ def test_collect_output_wrapper_specs_prefers_main_module_prefix_over_dominant_s
     sections.append((10, bytes(code_payload)))
 
     module = wasm_link._build_sections(sections)
-    specs = wasm_link._collect_output_wrapper_specs(module)
+    facts = _rust_facts_fixture(module)
+    facts["function_references"] = [[5, [0], []]]
+    specs = wasm_link._collect_output_wrapper_specs(module, facts)
     kept = {name for name, _alias, _type_idx, _func_idx in specs}
     assert "main_molt__init" in kept
     assert "main_molt__ocr_tokens" in kept
@@ -4520,12 +4430,9 @@ def test_run_wasm_ld_force_exports_user_module_exports(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -4626,14 +4533,10 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
 
     assert rc == 0
     exports = wasm_link._collect_function_exports(linked.read_bytes())
@@ -4728,10 +4631,6 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: False)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
@@ -4748,7 +4647,7 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -4788,10 +4687,6 @@ def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
 
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: False)
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
@@ -4801,7 +4696,7 @@ def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
 
     assert rc == 1
     assert linked.read_bytes() == b"old-linked"
@@ -4862,10 +4757,6 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
         "_restore_split_runtime_contract_exports",
         lambda data, **_kwargs: data,
     )
-    monkeypatch.setattr(
-        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
@@ -4882,7 +4773,7 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    rc = wasm_link._run_wasm_ld(
+    rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
@@ -4905,270 +4796,18 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
         final_artifact=True,
         preserve_debug=False,
     )
-    assert app_wasm.read_bytes() == expected_app
-    assert rt_wasm.read_bytes() == expected_runtime
-
-
-def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime_bytes = _module_with_linking_symbols([])
-    output_bytes = _module_with_linking_symbols([])
-    runtime = tmp_path / "molt_runtime_reloc.wasm"
-    output = tmp_path / "output.wasm"
-    linked = tmp_path / "output_linked.wasm"
-    split_dir = tmp_path / "split"
-    runtime.write_bytes(runtime_bytes)
-    output.write_bytes(output_bytes)
-    split_dir.mkdir()
-
-    materialize_calls: list[str] = []
-
-    def fake_run(cmd, **kwargs):
-        del kwargs
-        _write_wasm_ld_output(cmd, output_bytes)
-
-        class Result:
-            returncode = 0
-            stderr = ""
-            stdout = ""
-
-        return Result()
-
-    def materialize(
-        data: bytes,
-        *,
-        split_runtime: bool,
-        output_data: bytes | None,
-        description: str,
-    ) -> tuple[bytes, bool]:
-        materialize_calls.append(description)
-        assert output_data == output_bytes
-        if description == "split-runtime app wasm":
-            assert split_runtime
-            return data + b":pre-materialized", True
-        if description == "optimized split-runtime app wasm":
-            assert split_runtime
-            assert data.endswith(b":pre-materialized:optimized")
-            return data + b":final-materialized", True
-        assert description == "linked wasm"
-        return data, False
-
-    def optimize(data: bytes, **_kwargs) -> bytes:
-        assert data.endswith(b":pre-materialized")
-        return data + b":optimized"
-
-    def validate_split(app_stage: Path, rt_stage: Path) -> bool:
-        del rt_stage
-        assert app_stage.read_bytes().endswith(
-            b":pre-materialized:optimized:final-materialized"
-        )
-        return True
-
-    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
-    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
-    monkeypatch.setattr(
-        wasm_link,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link,
-        "_materialize_callable_table_refs_and_ref_func_declarations",
-        materialize,
-    )
-    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", optimize)
-    monkeypatch.setattr(
-        wasm_link, "_collect_module_imports", lambda *_args, **_kwargs: set()
-    )
-    monkeypatch.setattr(
-        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
-    )
-    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
-    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
-    monkeypatch.setattr(
-        wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
-    )
-    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
-    monkeypatch.setattr(
-        wasm_link,
-        "strip_wasm_publication_sections",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link,
-        "_strip_and_restore_split_artifact",
-        lambda data, **_kwargs: data,
-    )
-
-    rc = wasm_link._run_wasm_ld(
-        "wasm-ld",
-        runtime,
-        output,
-        linked,
-        split_runtime=True,
-        split_output_dir=split_dir,
-    )
-
-    assert rc == 0
-    assert materialize_calls == [
-        "linked wasm",
-        "split-runtime app wasm",
-        "optimized split-runtime app wasm",
-    ]
     assert (
-        (split_dir / "app.wasm")
-        .read_bytes()
-        .endswith(b":pre-materialized:optimized:final-materialized")
-    )
-
-
-def test_run_wasm_ld_rematerializes_split_app_ref_funcs_after_optimization(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_main")
-    output_bytes = _build_linked_ref_func_module(func_index=0)
-    optimized_app_bytes = _build_memory_import_ref_func_app_module(func_index=0)
-    assert wasm_link._undeclared_ref_func_indices(optimized_app_bytes) == [0]
-
-    runtime = tmp_path / "molt_runtime_reloc.wasm"
-    output = tmp_path / "output.wasm"
-    linked = tmp_path / "output_linked.wasm"
-    split_dir = tmp_path / "split"
-    runtime.write_bytes(runtime_bytes)
-    output.write_bytes(output_bytes)
-
-    def fake_run(cmd, **_kwargs):
-        _write_wasm_ld_output(cmd, output_bytes)
-
-        class Result:
-            returncode = 0
-            stderr = ""
-            stdout = ""
-
-        return Result()
-
-    def validate_split(app_stage: Path, _rt_stage: Path) -> bool:
-        app_data = app_stage.read_bytes()
-        assert wasm_link._scan_code_ref_funcs(app_data) == {0}
-        assert wasm_link._undeclared_ref_func_indices(app_data) == []
-        assert wasm_link._collect_element_declared_funcs(app_data) == {0}
-        return True
-
-    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
-    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
-    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
-    monkeypatch.setattr(
-        wasm_link,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
-    monkeypatch.setattr(
-        wasm_link,
-        "_optimize_split_app_module",
-        lambda _data, **_kwargs: optimized_app_bytes,
-    )
-    monkeypatch.setattr(
-        wasm_link, "_collect_module_imports", lambda *_args, **_kwargs: set()
-    )
-    monkeypatch.setattr(
-        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
-    )
-    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
-    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
-    monkeypatch.setattr(
-        wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
-    )
-    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
-
-    rc = wasm_link._run_wasm_ld(
-        "wasm-ld",
-        runtime,
-        output,
-        linked,
-        split_runtime=True,
-        split_output_dir=split_dir,
-    )
-
-    assert rc == 0
-
-
-def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = _build_linked_ref_func_module(func_index=0)
-    monkeypatch.setattr(
-        wasm_link,
-        "_declare_ref_func_elements_from_facts",
-        lambda _data, _facts: (_ for _ in ()).throw(ValueError("boom")),
-    )
-
-    with pytest.raises(ValueError, match="boom"):
-        wasm_link._materialize_callable_table_refs_and_ref_func_declarations(
-            data,
-            split_runtime=False,
-            output_data=data,
-            description="linked callable table refs",
+        wasm_link.strip_wasm_publication_sections(
+            app_wasm.read_bytes(), final_artifact=True, preserve_debug=False
         )
-
-
-def test_split_runtime_app_materialization_declares_code_ref_funcs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_varuint = wasm_link._write_varuint
-    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    sections.append((3, write_varuint(1) + write_varuint(0)))
-
-    body = bytearray()
-    body.extend(write_varuint(0))
-    body.append(0xD2)
-    body.extend(write_varuint(0))
-    body.append(0x1A)
-    body.append(0x0B)
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(len(body)))
-    code_payload.extend(body)
-    sections.append((10, bytes(code_payload)))
-
-    data = wasm_link._build_sections(sections)
-    assert wasm_link._scan_code_ref_funcs(data) == {0}
-    assert wasm_link._collect_element_declared_funcs(data) == set()
-    monkeypatch.setattr(
-        wasm_link,
-        "_scan_code_ref_funcs",
-        lambda _data: (_ for _ in ()).throw(AssertionError("unexpected rescan")),
+        == expected_app
     )
-
-    updated, changed = (
-        wasm_link._materialize_callable_table_refs_and_ref_func_declarations(
-            data,
-            split_runtime=True,
-            output_data=data,
-            description="split-runtime app test",
+    assert (
+        wasm_link.strip_wasm_publication_sections(
+            rt_wasm.read_bytes(), final_artifact=True, preserve_debug=False
         )
+        == expected_runtime
     )
-
-    assert changed
-    facts = wasm_link.parse_wasm_module_facts(updated)
-    assert facts.code_ref_funcs == frozenset({0})
-    assert facts.element_declared_funcs == frozenset({0})
 
 
 def test_wasm_link_allows_ref_null_element_expr() -> None:
@@ -5185,483 +4824,6 @@ def test_wasm_link_allows_ref_null_element_expr() -> None:
     data = _build_minimal_module(bytes(payload))
     ok, err = wasm_link._validate_elements(data)
     assert ok, err
-
-
-def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
-    write_varuint = wasm_link._write_varuint
-    data = _build_minimal_module(write_varuint(0))
-    sections = wasm_link._parse_sections(data)
-
-    func_name_subsection = bytearray()
-    func_name_subsection.extend(write_varuint(1))  # one function-name mapping
-    func_name_subsection.extend(write_varuint(0))  # func index
-    func_name_subsection.extend(write_varuint(1))  # name length
-    func_name_subsection.extend(b"\x97")  # invalid UTF-8 byte
-
-    custom_name_payload = bytearray()
-    custom_name_payload.extend(wasm_link._write_string("name"))
-    custom_name_payload.append(1)  # function names subsection
-    custom_name_payload.extend(write_varuint(len(func_name_subsection)))
-    custom_name_payload.extend(func_name_subsection)
-
-    sections.insert(0, (0, bytes(custom_name_payload)))
-    malformed = wasm_link._build_sections(sections)
-
-    # Malformed name entries should be ignored, not crash wasm linking.
-    result = wasm_link._append_table_ref_elements(malformed)
-    assert result is None or isinstance(result, bytes)
-
-
-def test_append_table_ref_elements_uses_export_names_without_name_section() -> None:
-    write_varuint = wasm_link._write_varuint
-
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = write_varuint(1) + write_varuint(0)
-    sections.append((3, bytes(func_payload)))
-
-    table_payload = bytearray()
-    table_payload.extend(write_varuint(1))
-    table_payload.append(0x70)
-    table_payload.extend(write_varuint(0))
-    table_payload.extend(write_varuint(8))
-    sections.append((4, bytes(table_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(7)))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(2))
-    code_payload.append(0x00)
-    code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    data = wasm_link._build_sections(sections)
-    updated = wasm_link._append_table_ref_elements(data)
-    assert updated is not None
-    ok, err = wasm_link._validate_elements(updated)
-    assert ok, err
-    section_ids = [
-        section_id for section_id, _payload in wasm_link._parse_sections(updated)
-    ]
-    assert section_ids.index(9) < section_ids.index(10)
-
-    element_section = next(
-        payload
-        for section_id, payload in wasm_link._parse_sections(updated)
-        if section_id == 9
-    )
-    count, offset = wasm_link._read_varuint(element_section, 0)
-    assert count == 1
-    assert element_section[offset] == 0x00
-    offset += 1
-    assert element_section[offset] == 0x41
-    table_offset, offset = wasm_link._read_varuint(element_section, offset + 1)
-    assert table_offset == 7
-    assert element_section[offset] == 0x0B
-
-
-def test_append_table_ref_elements_filters_to_allowed_output_refs() -> None:
-    write_varuint = wasm_link._write_varuint
-
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
-    sections.append((3, bytes(func_payload)))
-
-    table_payload = bytearray()
-    table_payload.extend(write_varuint(1))
-    table_payload.append(0x70)
-    table_payload.extend(write_varuint(0))
-    table_payload.extend(write_varuint(16))
-    sections.append((4, bytes(table_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(2))
-    ref_3 = wasm_link.table_ref_export_name(3)
-    ref_9 = wasm_link.table_ref_export_name(9)
-    export_payload.extend(wasm_link._write_string(ref_3))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string(ref_9))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(1))
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(2))
-    for _ in range(2):
-        code_payload.extend(write_varuint(2))
-        code_payload.append(0x00)
-        code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    updated = wasm_link._append_table_ref_elements(
-        wasm_link._build_sections(sections),
-        allowed_table_indices={9},
-    )
-    assert updated is not None
-    text_refs = wasm_link._collect_function_exports(updated)
-    assert ref_3 in text_refs
-
-    element_section = next(
-        payload
-        for section_id, payload in wasm_link._parse_sections(updated)
-        if section_id == 9
-    )
-    _count, offset = wasm_link._read_varuint(element_section, 0)
-    assert element_section[offset] == 0x00
-    offset += 1
-    assert element_section[offset] == 0x41
-    table_offset, _offset = wasm_link._read_varuint(element_section, offset + 1)
-    assert table_offset == 9
-
-
-def _build_import_targeted_table_ref_module() -> bytes:
-    """Reloc-shaped output object: one runtime function import, one defined
-    function, table-ref exports targeting each, and a linking symbol table
-    mirroring what the Rust reloc lane emits (undefined import symbol +
-    defined function symbol)."""
-    write_varuint = wasm_link._write_varuint
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    import_payload = bytearray()
-    import_payload.extend(write_varuint(1))
-    import_payload.extend(wasm_link._write_string("molt_runtime"))
-    import_payload.extend(wasm_link._write_string("socket_drop"))
-    import_payload.append(0x00)
-    import_payload.extend(write_varuint(0))
-    sections.append((2, bytes(import_payload)))
-
-    sections.append((3, wasm_link._write_varuint(1) + wasm_link._write_varuint(0)))
-
-    table_payload = bytearray()
-    table_payload.extend(write_varuint(1))
-    table_payload.append(0x70)
-    table_payload.extend(write_varuint(0))
-    table_payload.extend(write_varuint(16))
-    sections.append((4, bytes(table_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(2))
-    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(3)))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))  # import-targeted slot
-    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(9)))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(1))  # defined-targeted slot
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(2))
-    code_payload.append(0x00)
-    code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    symtab = bytearray()
-    symtab.extend(write_varuint(2))
-    # Undefined import symbol (name comes from the import entry).
-    symtab.append(wasm_link.SYMBOL_KIND_FUNCTION)
-    symtab.extend(write_varuint(wasm_link.FLAG_UNDEFINED))
-    symtab.extend(write_varuint(0))
-    # Defined function symbol.
-    symtab.append(wasm_link.SYMBOL_KIND_FUNCTION)
-    symtab.extend(write_varuint(0))
-    symtab.extend(write_varuint(1))
-    symtab.extend(wasm_link._write_string("__molt_output_export_1"))
-    linking_payload = bytearray()
-    linking_payload.extend(write_varuint(2))  # linking section version
-    linking_payload.append(wasm_link.SYMTAB_SUBSECTION_ID)
-    linking_payload.extend(write_varuint(len(symtab)))
-    linking_payload.extend(symtab)
-    custom_payload = wasm_link._write_string("linking") + bytes(linking_payload)
-    sections.append((0, custom_payload))
-
-    return wasm_link._build_sections(sections)
-
-
-def _single_active_element_entries(data: bytes) -> list[tuple[int, list[int]]]:
-    element_section = next(
-        payload
-        for section_id, payload in wasm_link._parse_sections(data)
-        if section_id == 9
-    )
-    count, offset = wasm_link._read_varuint(element_section, 0)
-    entries: list[tuple[int, list[int]]] = []
-    for _ in range(count):
-        assert element_section[offset] == 0x00
-        offset += 1
-        assert element_section[offset] == 0x41
-        table_offset, offset = wasm_link._read_varuint(element_section, offset + 1)
-        assert element_section[offset] == 0x0B
-        offset += 1
-        func_count, offset = wasm_link._read_varuint(element_section, offset)
-        funcs = []
-        for _ in range(func_count):
-            func_idx, offset = wasm_link._read_varuint(element_section, offset)
-            funcs.append(func_idx)
-        entries.append((table_offset, funcs))
-    return entries
-
-
-def test_inject_table_ref_export_symbols_skips_import_targeted_refs(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "output.wasm"
-    output.write_bytes(_build_import_targeted_table_ref_module())
-
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
-        injected = wasm_link._inject_table_ref_export_symbols(output, temp_dir)
-        assert injected != output
-        data = injected.read_bytes()
-
-    symbols = wasm_link._collect_linking_function_symbols(data)
-    names = {name for _flags, _index, name, _ in symbols}
-    assert wasm_link.table_ref_export_name(9) in names
-    assert wasm_link.table_ref_export_name(3) not in names
-
-    # Every function symbol must satisfy the LLVM object invariant that
-    # wasm-ld enforces as "invalid function symbol index".
-    import_count = wasm_link._count_func_imports(wasm_link._parse_sections(data))
-    total_funcs = wasm_link._get_total_func_count(data)
-    for flags, index, name, _ in symbols:
-        assert index < total_funcs, name
-        defined = (flags & wasm_link.FLAG_UNDEFINED) == 0
-        assert defined == (index >= import_count), (name, flags, index)
-
-
-def test_append_linking_function_symbols_fails_closed_on_flag_index_mismatch() -> None:
-    module = _build_import_targeted_table_ref_module()
-    defined_flags = (
-        wasm_link.FLAG_BINDING_GLOBAL
-        | wasm_link.FLAG_EXPLICIT_NAME
-        | wasm_link.FLAG_EXPORTED
-        | wasm_link.FLAG_NO_STRIP
-    )
-
-    with pytest.raises(ValueError, match="cannot alias an imported function"):
-        wasm_link._append_linking_function_symbols(
-            module, [("bogus_defined_at_import", 0, defined_flags)]
-        )
-
-    with pytest.raises(ValueError, match="flagged undefined but references"):
-        wasm_link._append_linking_function_symbols(
-            module,
-            [
-                (
-                    "bogus_undefined_at_defined",
-                    1,
-                    wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
-                )
-            ],
-        )
-
-    with pytest.raises(ValueError, match="outside the module function index space"):
-        wasm_link._append_linking_function_symbols(
-            module, [("bogus_out_of_range", 7, defined_flags)]
-        )
-
-
-def test_materialize_import_targeted_table_refs_resolves_linked_export(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
-    output_data = _build_import_targeted_table_ref_module()
-    assert wasm_link.wasm_runtime_export_name("socket_drop") == "molt_socket_drop"
-
-    write_varuint = wasm_link._write_varuint
-    sections: list[tuple[int, bytes]] = []
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-    sections.append((3, write_varuint(1) + write_varuint(0)))
-    table_payload = bytearray()
-    table_payload.extend(write_varuint(1))
-    table_payload.append(0x70)
-    table_payload.extend(write_varuint(0))
-    table_payload.extend(write_varuint(16))
-    sections.append((4, bytes(table_payload)))
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link._write_string("molt_socket_drop"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    sections.append((7, bytes(export_payload)))
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(2))
-    code_payload.append(0x00)
-    code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-    linked = wasm_link._build_sections(sections)
-
-    updated, changed = wasm_link._materialize_import_targeted_table_refs(
-        linked,
-        output_data=output_data,
-        description="test linked wasm",
-    )
-
-    assert changed
-    ok, err = wasm_link._validate_elements(updated)
-    assert ok, err
-    # Only the import-targeted slot is installed by this pass; the
-    # defined-targeted slot keeps its surviving __molt_table_ref_* symbol.
-    assert _single_active_element_entries(updated) == [(3, [0])]
-
-
-def test_materialize_import_targeted_table_refs_resolves_linker_function_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
-    output_data = _build_import_targeted_table_ref_module()
-
-    write_varuint = wasm_link._write_varuint
-    sections: list[tuple[int, bytes]] = []
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-    sections.append((3, write_varuint(1) + write_varuint(0)))
-    table_payload = bytearray()
-    table_payload.extend(write_varuint(1))
-    table_payload.append(0x70)
-    table_payload.extend(write_varuint(0))
-    table_payload.extend(write_varuint(16))
-    sections.append((4, bytes(table_payload)))
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(2))
-    code_payload.append(0x00)
-    code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-    name_map = bytearray()
-    name_map.extend(write_varuint(1))
-    name_map.extend(write_varuint(0))
-    name_map.extend(wasm_link._write_string("molt_socket_drop"))
-    name_subsection = bytes([1]) + write_varuint(len(name_map)) + bytes(name_map)
-    sections.append((0, wasm_link._build_custom_section("name", name_subsection)))
-    linked_without_runtime_exports = wasm_link._build_sections(sections)
-
-    updated, changed = wasm_link._materialize_import_targeted_table_refs(
-        linked_without_runtime_exports,
-        output_data=output_data,
-        description="test linked wasm after export restoration",
-    )
-
-    assert changed
-    ok, err = wasm_link._validate_elements(updated)
-    assert ok, err
-    assert _single_active_element_entries(updated) == [(3, [0])]
-
-
-def test_materialize_import_targeted_table_refs_resolves_surviving_import(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
-    output_data = _build_import_targeted_table_ref_module()
-    # Split app module after the import rewrite: the runtime import survives
-    # under its generated export name.
-    app = _build_runtime_import_module(["molt_socket_drop"])
-
-    updated, changed = wasm_link._materialize_import_targeted_table_refs(
-        app,
-        output_data=output_data,
-        description="test split app wasm",
-    )
-
-    assert changed
-    assert _single_active_element_entries(updated) == [(3, [0])]
-
-
-def test_materialize_import_targeted_table_refs_fails_closed_when_unresolved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
-    output_data = _build_import_targeted_table_ref_module()
-    unrelated = _build_runtime_import_module(["molt_alloc"])
-
-    with pytest.raises(
-        ValueError,
-        match=r"__molt_table_ref_3 -> molt_runtime::socket_drop",
-    ):
-        wasm_link._materialize_import_targeted_table_refs(
-            unrelated,
-            output_data=output_data,
-            description="test split app wasm",
-        )
-
-
-def test_strip_internal_exports_keeps_table_ref_exports() -> None:
-    write_varuint = wasm_link._write_varuint
-
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = write_varuint(1) + write_varuint(0)
-    sections.append((3, bytes(func_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(2))
-    table_ref = wasm_link.table_ref_export_name(7)
-    export_payload.extend(wasm_link._write_string(table_ref))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string("molt_main"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(1))
-    code_payload.extend(write_varuint(2))
-    code_payload.append(0x00)
-    code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    data = wasm_link._build_sections(sections)
-    updated = wasm_link._strip_internal_exports(data)
-    exports = wasm_link._collect_function_exports(updated or data)
-    assert table_ref in exports
-    assert "molt_main" in exports
 
 
 def test_strip_internal_exports_preserves_user_module_exports() -> None:
@@ -5681,7 +4843,7 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(3))
-    table_ref = wasm_link.table_ref_export_name(7)
+    table_ref = "__molt_table_ref_7"
     export_payload.extend(wasm_link._write_string(table_ref))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
@@ -5706,54 +4868,6 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
         data, preserve_exports={"main_molt__ocr_tokens"}
     )
     exports = wasm_link._collect_function_exports(updated or data)
-    assert table_ref in exports
-    assert "molt_main" in exports
-    assert "main_molt__ocr_tokens" in exports
-
-
-def test_strip_internal_exports_can_remove_linked_table_refs() -> None:
-    write_varuint = wasm_link._write_varuint
-
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
-    sections.append((3, bytes(func_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(3))
-    table_ref = wasm_link.table_ref_export_name(7)
-    export_payload.extend(wasm_link._write_string(table_ref))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string("molt_main"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string("main_molt__ocr_tokens"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(1))
-    sections.append((7, bytes(export_payload)))
-
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(2))
-    for _ in range(2):
-        code_payload.extend(write_varuint(2))
-        code_payload.append(0x00)
-        code_payload.append(0x0B)
-    sections.append((10, bytes(code_payload)))
-
-    updated = wasm_link._strip_internal_exports(
-        wasm_link._build_sections(sections),
-        preserve_exports={"main_molt__ocr_tokens"},
-        preserve_table_refs=False,
-    )
-    exports = wasm_link._collect_function_exports(updated or b"")
     assert table_ref not in exports
     assert "molt_main" in exports
     assert "main_molt__ocr_tokens" in exports
@@ -5804,7 +4918,7 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(4))
-    table_ref = wasm_link.table_ref_export_name(7)
+    table_ref = "__molt_table_ref_7"
     for name, index in (
         (table_ref, 0),
         (table_ref, 1),
@@ -5827,63 +4941,11 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     data = wasm_link._build_sections(sections)
     updated = wasm_link._strip_internal_exports(data)
     exports = wasm_link._collect_function_exports(updated or data)
-    assert list(name for name in exports if name == table_ref) == [table_ref]
+    assert table_ref not in exports
     assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
-def test_neutralize_linked_table_init_replaces_body_with_noop() -> None:
-    write_varuint = wasm_link._write_varuint
-
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
-    sections.append((3, bytes(func_payload)))
-
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(2))
-    export_payload.extend(wasm_link._write_string("molt_table_init"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string("molt_main"))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(1))
-    sections.append((7, bytes(export_payload)))
-
-    table_init_body = bytes([0x00, 0x41, 0x01, 0x1A, 0x0B])
-    main_body = bytes([0x00, 0x10, 0x00, 0x0B])
-    code_payload = bytearray()
-    code_payload.extend(write_varuint(2))
-    code_payload.extend(write_varuint(len(table_init_body)))
-    code_payload.extend(table_init_body)
-    code_payload.extend(write_varuint(len(main_body)))
-    code_payload.extend(main_body)
-    sections.append((10, bytes(code_payload)))
-
-    updated = wasm_link._neutralize_linked_table_init(
-        wasm_link._build_sections(sections)
-    )
-    assert updated is not None
-
-    code_section = next(
-        payload
-        for section_id, payload in wasm_link._parse_sections(updated)
-        if section_id == 10
-    )
-    count, offset = wasm_link._read_varuint(code_section, 0)
-    assert count == 2
-    table_body_size, offset = wasm_link._read_varuint(code_section, offset)
-    table_body = code_section[offset : offset + table_body_size]
-    assert table_body == bytes([0x00, 0x0B])
-
-
-def test_required_linked_table_min_respects_exported_table_refs() -> None:
+def test_required_linked_table_min_respects_final_active_elements() -> None:
     write_varuint = wasm_link._write_varuint
 
     sections: list[tuple[int, bytes]] = []
@@ -5908,12 +4970,15 @@ def test_required_linked_table_min_respects_exported_table_refs() -> None:
     func_payload = write_varuint(1) + write_varuint(0)
     sections.append((3, bytes(func_payload)))
 
-    export_payload = bytearray()
-    export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(20)))
-    export_payload.append(0x00)
-    export_payload.extend(write_varuint(0))
-    sections.append((7, bytes(export_payload)))
+    element_payload = (
+        write_varuint(1)
+        + b"\x00\x41"
+        + write_varuint(20)
+        + b"\x0b"
+        + write_varuint(1)
+        + write_varuint(0)
+    )
+    sections.append((9, element_payload))
 
     code_payload = bytearray()
     code_payload.extend(write_varuint(1))
@@ -5924,10 +4989,13 @@ def test_required_linked_table_min_respects_exported_table_refs() -> None:
 
     data = wasm_link._build_sections(sections)
 
+    facts = {
+        "callable_table_entries": [[20, 0, 0, 0]]
+    }
     assert wasm_link._table_import_min(data) == 10
-    assert wasm_link._required_linked_table_min(data, 5) == 21
+    assert wasm_link._required_linked_table_min(data, 5, facts) == 21
     updated = wasm_link._rewrite_table_import_min(
-        data, wasm_link._required_linked_table_min(data, 5)
+        data, wasm_link._required_linked_table_min(data, 5, facts)
     )
     assert updated is not None
     assert wasm_link._table_import_min(updated) == 21
@@ -5974,7 +5042,17 @@ def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> N
     sections.append((10, bytes(code_payload)))
 
     data = wasm_link._build_sections(sections)
-    assert wasm_link._neutralize_dead_element_entries(data) is None
+    facts = {
+        "root_function_indices": [],
+        "element_function_indices": [0],
+        "declared_function_indices": [],
+        "function_references": [],
+        "active_function_elements": [[0, 0, 0]],
+        "reachable_dynamic_dispatch": True,
+        "exported_table_indices": [],
+        "table_mutations": [],
+    }
+    assert wasm_link._neutralize_dead_element_entries(data, facts) is None
 
 
 def test_dedup_data_segments_stops_scrub_at_path_extension_boundary() -> None:
@@ -6308,11 +5386,9 @@ def test_split_runtime_data_alias_points_at_deploy_runtime_addresses(
     tmp_path: Path,
 ) -> None:
     # A real CPython-ABI data-symbol subset numpy references undefined.
-    names = ["Py_None", "Py_True", "Py_False", "PyExc_ValueError", "PyList_Type"]
+    names = ["Py_None", "PyExc_ValueError", "PyList_Type"]
     deploy_addresses = {
         "Py_None": 0x2E1680,
-        "Py_True": 0x2E1688,
-        "Py_False": 0x2E1690,
         "PyExc_ValueError": 0x2E1400,
         "PyList_Type": 0x2E0000,
     }
@@ -6352,23 +5428,113 @@ def test_split_runtime_data_alias_points_at_deploy_runtime_addresses(
 def test_split_runtime_data_alias_fails_loud_on_missing_deploy_export(
     tmp_path: Path,
 ) -> None:
-    # Deploy runtime is missing an address global for Py_False -> must raise
+    # Deploy runtime is missing an address global for PyExc_ValueError -> must raise
     # rather than silently emit a wrong/zero address (M34: degrade loudly).
     deploy_runtime = tmp_path / "molt_runtime.wasm"
     deploy_runtime.write_bytes(
         _build_data_address_export_runtime({"Py_None": 0x2E1680})
     )
     native = tmp_path / "ext.molt.wasm"
-    native.write_bytes(_build_undefined_data_symbol_object(["Py_None", "Py_False"]))
+    native.write_bytes(
+        _build_undefined_data_symbol_object(["Py_None", "PyExc_ValueError"])
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         temp_dir = type("_TD", (), {"name": tmp})()
-        with pytest.raises(ValueError, match="Py_False"):
+        with pytest.raises(ValueError, match="PyExc_ValueError"):
             wasm_link._split_runtime_data_alias_object(
                 native_objects=[native],
                 deploy_runtime=deploy_runtime,
                 temp_dir=temp_dir,
             )
+
+
+# --- Final callable-table attestation -------------------------------------
+
+
+def _callable_entry(slot: int) -> wasm_link.CallableTableEntry:
+    return wasm_link.CallableTableEntry(
+        slot=slot,
+        func_index=slot,
+        type_index=0,
+        params=(),
+        results=(),
+    )
+
+
+def test_split_callable_table_ownership_accepts_disjoint_contiguous_publication() -> (
+    None
+):
+    layout = wasm_link.CallableTableLayout(10, 2, 20, 2)
+    wasm_link._validate_split_callable_table_ownership(
+        (_callable_entry(20), _callable_entry(21)),
+        (_callable_entry(10), _callable_entry(11), _callable_entry(15)),
+        layout,
+    )
+
+
+@pytest.mark.parametrize(
+    ("app_slots", "runtime_slots", "message"),
+    [
+        ((20,), (10, 11), "not contiguous"),
+        ((20, 21), (10, 20), "overlaps at slot 20"),
+        ((20, 21), (10, 11, 22), "reaches finalized app base"),
+        ((20, 21), (10,), "fixed prefix is incomplete"),
+        ((20, 21), (9, 10, 11), "fixed prefix base is not the runtime base"),
+    ],
+)
+def test_split_callable_table_ownership_rejects_drift(
+    app_slots: tuple[int, ...],
+    runtime_slots: tuple[int, ...],
+    message: str,
+) -> None:
+    layout = wasm_link.CallableTableLayout(10, 2, 20, 2)
+    with pytest.raises(ValueError, match=message):
+        wasm_link._validate_split_callable_table_ownership(
+            tuple(_callable_entry(slot) for slot in app_slots),
+            tuple(_callable_entry(slot) for slot in runtime_slots),
+            layout,
+        )
+
+
+def test_split_callable_table_ownership_rejects_huge_app_span_in_bounded_space() -> (
+    None
+):
+    import tracemalloc
+
+    layout = wasm_link.CallableTableLayout(0, 0, 0, 0xFFFF_FFFF)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="missing app slot 1"):
+            wasm_link._validate_split_callable_table_ownership(
+                (_callable_entry(0),),
+                (),
+                layout,
+            )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1_000_000
+
+
+def test_split_callable_table_ownership_rejects_huge_fixed_span_in_bounded_space() -> (
+    None
+):
+    import tracemalloc
+
+    layout = wasm_link.CallableTableLayout(0, 0xFFFF_FFFE, 0xFFFF_FFFE, 1)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="missing slot 1"):
+            wasm_link._validate_split_callable_table_ownership(
+                (_callable_entry(0xFFFF_FFFE),),
+                (_callable_entry(0),),
+                layout,
+            )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1_000_000
 
 
 def test_shared_runtime_exports_cpython_abi_data_symbols_as_globals() -> None:
@@ -6380,7 +5546,7 @@ def test_shared_runtime_exports_cpython_abi_data_symbols_as_globals() -> None:
     )
 
     data_symbols = wasm_cpython_abi_data_symbol_names()
-    assert {"Py_None", "Py_True", "Py_False"}.issubset(data_symbols)
+    assert {"Py_None", "PyExc_ValueError", "PyList_Type"}.issubset(data_symbols)
     args = wasm_runtime_shared_export_link_args()
-    for name in ("Py_None", "Py_False", "PyExc_ValueError", "PyList_Type"):
+    for name in ("Py_None", "PyBool_Type", "PyExc_ValueError", "PyList_Type"):
         assert f"--export-if-defined={name}" in args, name
