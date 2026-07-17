@@ -1407,9 +1407,9 @@ tests/differential/stdlib/importlib_resources_zip_namespace_multipath_intrinsic.
 tests/differential/stdlib/importlib_resources_zip_reader_resource_path_intrinsic.py
 tests/differential/stdlib/importlib_root_intrinsics.py
 tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py
+tests/differential/stdlib/importlib_sourcefileloader_compiled_exec.py
 tests/differential/stdlib/importlib_sourcefileloader_get_data_intrinsic.py
 tests/differential/stdlib/importlib_sourcefileloader_resolution.py
-tests/differential/stdlib/importlib_sourcefileloader_compiled_exec.py
 tests/differential/stdlib/importlib_sourceless_exec_capability_intrinsic.py
 tests/differential/stdlib/importlib_sourceless_exec_container_shim_intrinsic.py
 tests/differential/stdlib/importlib_sourceless_exec_fallback_second_shim_intrinsic.py
@@ -1734,6 +1734,11 @@ tests/differential/stdlib/re_unicode_flags.py
 tests/differential/stdlib/re_verbose_flag.py
 tests/differential/stdlib/removed_stdlib_modules_version_gate.py
 tests/differential/stdlib/res_pkg/__init__.py
+tests/differential/stdlib/runpy_compiled_fixture.py
+tests/differential/stdlib/runpy_compiled_namespace/__main__.py
+tests/differential/stdlib/runpy_compiled_package/__init__.py
+tests/differential/stdlib/runpy_compiled_package/__main__.py
+tests/differential/stdlib/runpy_compiled_package_no_main/__init__.py
 tests/differential/stdlib/runpy_path_resolution_errors.py
 tests/differential/stdlib/runpy_run_module_alter_sys_intrinsic.py
 tests/differential/stdlib/runpy_run_module_basic.py
