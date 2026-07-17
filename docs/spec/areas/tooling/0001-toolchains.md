@@ -32,7 +32,8 @@ Rust via rustup:
   installers include `clang`/`wasm-ld` but omit `llvm-config`. Those installs
   are useful for native/WASM linking but are not a complete Rust LLVM backend
   toolchain. Build a matching MSVC LLVM/Clang/MLIR developer prefix with:
-  `python tools/bootstrap_llvm.py` (the exact patch release, URL, size, checksum,
+  `python -m tools.bootstrap_llvm` (or the equivalent direct-script entry
+  `python tools/bootstrap_llvm.py`; the exact patch release, URL, size, checksum,
   and provenance come from `config/llvm_toolchain_releases.toml`).
   The bootstrap command prints `MOLT_LLVM_PREFIX`, `LLVM_SYS_<ver>_PREFIX`,
   `MLIR_SYS_<ver>_PREFIX`, `TABLEGEN_<ver>_PREFIX`, and `LLVM_CONFIG_PATH`; all

@@ -629,7 +629,7 @@ def managed_llvm_paths(
 def llvm_bootstrap_command(pin: LlvmBackendPin, *, python: str = "python") -> str:
     """Render the single user-facing bootstrap command authority."""
 
-    return f"{python} tools/bootstrap_llvm.py --version {pin.default_release}"
+    return f"{python} -m tools.bootstrap_llvm --version {pin.default_release}"
 
 
 def llvm_config_executable(prefix: Path) -> Path:
@@ -1654,7 +1654,7 @@ def mlir_toolchain_environment(
         if require:
             raise LlvmToolchainConfigError(
                 "LLVM/MLIR toolchain is unavailable; run "
-                f"{sys.executable} tools/bootstrap_llvm.py"
+                f"{sys.executable} -m tools.bootstrap_llvm"
             )
         return result
     managed = managed_llvm_prefix(root, pin).resolve()

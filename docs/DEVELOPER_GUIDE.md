@@ -122,7 +122,8 @@ and a metric-correction or retirement plan.
   LLVM/Clang (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
   The LLVM and MLIR backends require one matching prefix with `llvm-config`,
   MLIR libraries, and TableGen, not just `clang`; use
-  `python tools/bootstrap_llvm.py`
+  `python -m tools.bootstrap_llvm` (the direct-script form
+  `python tools/bootstrap_llvm.py` is equivalent)
   when package-manager LLVM omits it.
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms; packaging/demo flows also use `wasm-pack`.
 

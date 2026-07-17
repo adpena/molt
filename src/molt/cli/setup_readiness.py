@@ -210,7 +210,7 @@ def _llvm_backend_advice(
     if system == "Windows":
         release = release or _default_llvm_release_for_major(major)
         return [
-            f"python tools/bootstrap_llvm.py --version {release}",
+            f"python -m tools.bootstrap_llvm --version {release}",
             f"Set {env_var}=<LLVM prefix containing bin\\llvm-config.exe>",
             (
                 "Do not use winget/Chocolatey LLVM for the LLVM backend unless "

@@ -1169,7 +1169,7 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
     names = {step.name for step in steps}
     assert "cargo-install-wasm-pack" in names
     assert "cargo-install-wasm-tools" not in names
-    assert any("tools/bootstrap_llvm.py" in warning for warning in warnings)
+    assert any("-m tools.bootstrap_llvm" in warning for warning in warnings)
 
 
 def test_llvm_backend_advice_names_exact_prefix_and_config(
@@ -1182,7 +1182,7 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
     joined = "\n".join(advice)
     assert "LLVM_SYS_221_PREFIX" in joined
     assert "llvm-config.exe" in joined
-    assert "tools/bootstrap_llvm.py" in joined
+    assert "-m tools.bootstrap_llvm" in joined
 
 
 def test_llvm_report_distinguishes_windows_clang_without_config(
