@@ -2293,6 +2293,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "metal"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2412,6 +2421,7 @@ dependencies = [
  "cudarc",
  "egg",
  "libc",
+ "memmap2",
  "metal",
  "mlx-rs",
  "molt-backend-luau",
@@ -2421,6 +2431,7 @@ dependencies = [
  "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
+ "molt-wasm-facts",
  "objc",
  "object",
  "pollster",
@@ -2945,6 +2956,15 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "molt-wasm-facts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wasm-encoder 0.252.0",
+ "wasmparser 0.252.0",
 ]
 
 [[package]]
