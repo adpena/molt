@@ -10,7 +10,7 @@ from pathlib import Path
 try:
     from tools import harness_memory_guard
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    import harness_memory_guard  # type: ignore
+    import harness_memory_guard
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +18,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-try:
-    from molt.cli.setup_readiness import _llvm_backend_unavailable_message
-except ModuleNotFoundError:  # pragma: no cover - source tree corruption
-    _llvm_backend_unavailable_message = None  # type: ignore[assignment]
+from molt.cli.setup_readiness import _llvm_backend_unavailable_message  # noqa: E402
+from molt.llvm_toolchain import (  # noqa: E402
+    LlvmToolchainConfigError,
+    mlir_toolchain_environment,
+)
 
 
 def _timeout_from_env(name: str | None, env: Mapping[str, str]) -> float | None:
@@ -107,12 +108,17 @@ def _cargo_requests_backend_llvm(command: list[str]) -> bool:
     return "*" in features or "llvm" in features
 
 
-def _toolchain_preflight_error(command: list[str]) -> str | None:
+def _project_toolchain_environment(
+    command: list[str], env: Mapping[str, str]
+) -> tuple[dict[str, str], str | None]:
     if not _cargo_requests_backend_llvm(command):
-        return None
-    if _llvm_backend_unavailable_message is None:
-        return "Unable to load Molt LLVM toolchain detector from src/molt/cli."
-    return _llvm_backend_unavailable_message(ROOT)
+        return dict(env), None
+    try:
+        return mlir_toolchain_environment(ROOT, environ=dict(env)), None
+    except LlvmToolchainConfigError as exc:
+        detail = str(exc)
+        detail = _llvm_backend_unavailable_message(ROOT) or detail
+        return dict(env), detail
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("command is required after --")
 
-    preflight_error = _toolchain_preflight_error(command)
+    env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
+    env, preflight_error = _project_toolchain_environment(command, env)
     if preflight_error is not None:
         print(
             "guarded_exec preflight: backend LLVM toolchain is not ready.",
@@ -140,7 +147,6 @@ def main(argv: list[str] | None = None) -> int:
         print(preflight_error, file=sys.stderr)
         return 2
 
-    env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
     context = harness_memory_guard.HarnessExecutionContext.from_env(
         args.prefix,
         env,
@@ -160,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=timeout,
     )
     if result.stderr:
-        sys.stderr.write(result.stderr)
+        sys.stderr.write(str(result.stderr))
     profile_path = harness_memory_guard.command_profile_log_path(env)
     elapsed_s = getattr(result, "elapsed_s", None)
     elapsed = "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"

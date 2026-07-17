@@ -74,6 +74,22 @@ class LlvmManagedPaths:
 
 
 @dataclass(frozen=True)
+class LlvmToolchainDiscovery:
+    """The executable and prefix identity reported by one LLVM installation.
+
+    Package managers are allowed to install a versioned ``llvm-config`` outside
+    the SDK prefix (Debian/Ubuntu use ``/usr/bin/llvm-config-<major>`` for an
+    SDK rooted at ``/usr/lib/llvm-<major>``).  Keeping both paths is therefore
+    part of the toolchain identity; deriving one from the other is incorrect.
+    """
+
+    prefix: Path
+    llvm_config: Path
+    version: str
+    source: str
+
+
+@dataclass(frozen=True)
 class LlvmRelease:
     version: str
     url: str
@@ -84,10 +100,17 @@ class LlvmRelease:
 
 
 @dataclass(frozen=True)
+class LlvmDebianInstaller:
+    url: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class LlvmReleaseManifest:
     schema_version: int
     default_release: str
     canonical_build_type: str
+    debian_installer: LlvmDebianInstaller
     releases: tuple[LlvmRelease, ...]
     digest: str
 
@@ -183,13 +206,26 @@ def _load_llvm_releases_cached(
         )
     default = payload.get("default_release")
     canonical_build_type = payload.get("canonical_build_type")
+    debian_installer = payload.get("debian_installer")
     rows = payload.get("releases")
     if (
         not isinstance(default, str)
         or canonical_build_type not in {"Release", "RelWithDebInfo", "Debug"}
+        or not isinstance(debian_installer, dict)
         or not isinstance(rows, dict)
     ):
         raise LlvmToolchainConfigError(f"incomplete LLVM release manifest: {path}")
+    installer_url = debian_installer.get("url")
+    installer_sha256 = debian_installer.get("sha256")
+    if (
+        not isinstance(installer_url, str)
+        or not installer_url.startswith("https://")
+        or not isinstance(installer_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", installer_sha256) is None
+    ):
+        raise LlvmToolchainConfigError(
+            f"invalid Debian LLVM installer identity in {path}"
+        )
     releases: list[LlvmRelease] = []
     for version, row in rows.items():
         if not isinstance(version, str) or not isinstance(row, dict):
@@ -245,6 +281,10 @@ def _load_llvm_releases_cached(
         schema_version=1,
         default_release=default,
         canonical_build_type=str(canonical_build_type),
+        debian_installer=LlvmDebianInstaller(
+            url=installer_url,
+            sha256=installer_sha256,
+        ),
         releases=tuple(sorted(releases, key=lambda release: release.version)),
         digest=hashlib.sha256(raw).hexdigest(),
     )
@@ -632,12 +672,207 @@ def llvm_bootstrap_command(pin: LlvmBackendPin, *, python: str = "python") -> st
     return f"{python} -m tools.bootstrap_llvm --version {pin.default_release}"
 
 
+def llvm_debian_dev_packages(root: Path, major: int) -> tuple[str, ...]:
+    """Project the manifest-owned SDK components into apt.llvm.org package names."""
+
+    projects = set(load_llvm_architecture_contract(root).required_projects)
+    packages = {f"llvm-{major}-dev"}
+    if "clang" in projects:
+        packages.update((f"clang-{major}", f"libclang-{major}-dev"))
+    if "lld" in projects:
+        packages.update((f"lld-{major}", f"liblld-{major}-dev"))
+    if "mlir" in projects:
+        packages.update((f"libmlir-{major}-dev", f"mlir-{major}-tools"))
+    if "polly" in projects:
+        packages.add(f"libpolly-{major}-dev")
+    return tuple(sorted(packages))
+
+
 def llvm_config_executable(prefix: Path) -> Path:
-    """Resolve ``llvm-config`` without assuming the host filename convention."""
+    """Return the conventional in-prefix ``llvm-config`` location.
+
+    Discovery of system/package-manager layouts belongs to
+    :func:`discover_llvm_toolchain`; this helper intentionally remains useful
+    for managed prefixes whose tools are always self-contained.
+    """
 
     bin_dir = prefix / "bin"
     windows = bin_dir / "llvm-config.exe"
     return windows if windows.is_file() else bin_dir / "llvm-config"
+
+
+def llvm_config_names(pin: LlvmBackendPin) -> tuple[str, ...]:
+    """Return the complete cross-platform executable-name family in priority order."""
+
+    stems = (f"llvm-config-{pin.major}", f"llvm-config{pin.major}", "llvm-config")
+    if os.name != "nt":
+        return stems
+    return tuple(f"{stem}.exe" for stem in stems) + stems
+
+
+def _llvm_config_prefix(executable: Path) -> Path:
+    rendered = _run_llvm_config(executable, "--prefix")
+    if not rendered:
+        raise LlvmToolchainConfigError(
+            f"llvm-config returned an empty SDK prefix: {executable}"
+        )
+    reject_poison_toolchain_path(rendered, authority=f"{executable} --prefix")
+    return Path(rendered).expanduser().resolve(strict=False)
+
+
+def _path_identity(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve(strict=False))))
+
+
+def _dedupe_paths(paths: list[tuple[Path, str]]) -> tuple[tuple[Path, str], ...]:
+    seen: set[str] = set()
+    result: list[tuple[Path, str]] = []
+    for path, source in paths:
+        identity = _path_identity(path)
+        if identity not in seen:
+            seen.add(identity)
+            result.append((path, source))
+    return tuple(result)
+
+
+def _llvm_config_candidates(
+    root: Path,
+    pin: LlvmBackendPin,
+    env: dict[str, str],
+    explicit_prefix: Path | None,
+    llvm_sys_search_prefix: Path | None,
+) -> tuple[tuple[Path, str], ...]:
+    candidates: list[tuple[Path, str]] = []
+    if configured := env.get("LLVM_CONFIG_PATH", "").strip():
+        candidates.append((Path(configured).expanduser(), "LLVM_CONFIG_PATH"))
+
+    prefixes = [explicit_prefix] if explicit_prefix is not None else []
+    if llvm_sys_search_prefix is not None:
+        prefixes.append(llvm_sys_search_prefix)
+    if explicit_prefix is None:
+        prefixes.append(managed_llvm_prefix(root, pin))
+    for prefix in prefixes:
+        assert prefix is not None
+        for name in llvm_config_names(pin):
+            candidates.append((prefix / "bin" / name, f"prefix:{prefix}"))
+
+    path_value = env.get("PATH", "")
+    for name in llvm_config_names(pin):
+        if discovered := shutil.which(name, path=path_value):
+            candidates.append((Path(discovered), "PATH"))
+
+    if platform.system() == "Darwin":
+        for homebrew_root in (Path("/opt/homebrew"), Path("/usr/local")):
+            prefix = homebrew_root / "opt" / f"llvm@{pin.major}"
+            for name in llvm_config_names(pin):
+                candidates.append((prefix / "bin" / name, "Homebrew"))
+    return _dedupe_paths(candidates)
+
+
+def discover_llvm_toolchain(
+    root: Path,
+    *,
+    environ: dict[str, str] | None = None,
+) -> LlvmToolchainDiscovery | None:
+    """Discover one version-correct LLVM executable/prefix identity.
+
+    Molt/MLIR/TableGen prefixes identify the SDK. ``LLVM_SYS_*_PREFIX`` is the
+    llvm-sys executable-search root (the directory containing ``bin``), which
+    may differ for a package-manager split layout. Candidate executables are
+    accepted only when their exact version and reported ``--prefix`` bind both
+    path shapes to one SDK identity.
+    """
+
+    pin = required_llvm_backend_pin(root)
+    if pin is None:
+        return None
+    env = dict(os.environ if environ is None else environ)
+    sdk_authority_names = (
+        "MOLT_LLVM_PREFIX",
+        mlir_sys_prefix_env_var(pin.major),
+        tablegen_prefix_env_var(pin.major),
+    )
+    for name in (*sdk_authority_names, pin.env_var):
+        if value := env.get(name, "").strip():
+            reject_poison_toolchain_path(value, authority=name)
+    if llvm_config_path := env.get("LLVM_CONFIG_PATH", "").strip():
+        reject_poison_toolchain_path(llvm_config_path, authority="LLVM_CONFIG_PATH")
+    if target_root := env.get("MOLT_TARGET_ROOT", "").strip():
+        reject_poison_toolchain_path(target_root, authority="MOLT_TARGET_ROOT")
+
+    explicit = {
+        _normalized_prefix(value)
+        for name in sdk_authority_names
+        if (value := env.get(name, "").strip())
+    }
+    if len(explicit) > 1:
+        rendered = ", ".join(str(path) for path in sorted(explicit, key=str))
+        raise LlvmToolchainConfigError(
+            "LLVM/MLIR prefix authorities disagree; configure one toolchain family: "
+            f"{rendered}"
+        )
+    explicit_prefix = next(iter(explicit), None)
+    llvm_sys_search_prefix = (
+        _normalized_prefix(value)
+        if (value := env.get(pin.env_var, "").strip())
+        else None
+    )
+    rejected: list[str] = []
+    for candidate, source in _llvm_config_candidates(
+        root, pin, env, explicit_prefix, llvm_sys_search_prefix
+    ):
+        reject_poison_toolchain_path(candidate, authority=f"{source} llvm-config")
+        if not candidate.is_file():
+            continue
+        try:
+            resolved_candidate = candidate.resolve()
+            _major, _minor, version = _llvm_config_version(str(resolved_candidate))
+            reported_prefix = _llvm_config_prefix(resolved_candidate)
+        except LlvmToolchainConfigError as exc:
+            rejected.append(str(exc))
+            continue
+        if version != pin.default_release:
+            rejected.append(
+                f"{resolved_candidate} reports LLVM {version}; expected exactly {pin.default_release}"
+            )
+            continue
+        if explicit_prefix is not None and _path_identity(
+            reported_prefix
+        ) != _path_identity(explicit_prefix):
+            rejected.append(
+                f"{resolved_candidate} reports prefix {reported_prefix}, not configured prefix {explicit_prefix}"
+            )
+            continue
+        if llvm_sys_search_prefix is not None and _path_identity(
+            llvm_sys_search_prefix
+        ) not in {
+            _path_identity(reported_prefix),
+            _path_identity(resolved_candidate.parent.parent),
+        }:
+            rejected.append(
+                f"{pin.env_var}={llvm_sys_search_prefix} is neither the SDK prefix "
+                f"{reported_prefix} nor the llvm-config search prefix "
+                f"{resolved_candidate.parent.parent}"
+            )
+            continue
+        return LlvmToolchainDiscovery(
+            prefix=reported_prefix,
+            llvm_config=resolved_candidate,
+            version=version,
+            source=source,
+        )
+
+    if (
+        explicit_prefix is not None
+        or llvm_sys_search_prefix is not None
+        or env.get("LLVM_CONFIG_PATH", "").strip()
+        or rejected
+    ):
+        detail = "; ".join(rejected[-4:]) or "no candidate executable exists"
+        raise LlvmToolchainConfigError(
+            "LLVM/MLIR authority has no matching llvm-config: " + detail
+        )
+    return None
 
 
 def _run_llvm_config(executable: Path, *args: str) -> str:
@@ -1066,9 +1301,13 @@ def _tool_version_fact(
         )
     stat = path.stat()
     sha256 = _sha256_file(path)
+    try:
+        identity = str(path.relative_to(prefix)).replace("\\", "/")
+    except ValueError:
+        identity = f"external:{path}"
     return LlvmToolVersionFact(
         role=role,
-        path=str(path.relative_to(prefix)).replace("\\", "/"),
+        path=identity,
         version=version,
         size=stat.st_size,
         sha256=sha256,
@@ -1132,25 +1371,17 @@ def verify_llvm_toolchain_prefix(
         )
     actual_version = _run_llvm_config(llvm_config, "--version")
     expected_version = version or pin.default_release
-    expected_major_minor = ".".join(expected_version.split(".")[:2])
     release = llvm_release(expected_version, root)
     managed = managed_llvm_paths(root, pin, version=expected_version).prefix.resolve()
     canonical_contract = resolved == managed or require_attestation
-    version_matches = (
-        actual_version == expected_version
-        if canonical_contract
-        else actual_version == expected_major_minor
-        or actual_version.startswith(expected_major_minor + ".")
-    )
     if canonical_contract and release is None:
         raise LlvmToolchainConfigError(
             f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
         )
-    if not version_matches:
+    if actual_version != expected_version:
         raise LlvmToolchainConfigError(
             "LLVM/MLIR toolchain version does not match the manifest authority: "
-            f"expected {'exactly ' + expected_version if canonical_contract else expected_major_minor + '.x'}, "
-            f"found {actual_version} at {llvm_config}"
+            f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
         )
     built_targets = tuple(
         sorted(_run_llvm_config(llvm_config, "--targets-built").split())
@@ -1216,17 +1447,24 @@ def verify_llvm_toolchain_prefix(
             link_closure,
         )
     lib_dir = resolved / "lib"
-    llvm_libraries = tuple(
-        sorted(path for path in lib_dir.glob("*LLVM*") if path.is_file())
+    library_files = tuple(path for path in lib_dir.iterdir() if path.is_file())
+
+    def library_family(name: str) -> tuple[Path, ...]:
+        family = tuple(
+            sorted(path for path in library_files if name in path.name.lower())
+        )
+        if not family:
+            raise LlvmToolchainConfigError(
+                f"{name.upper()} libraries are missing from {lib_dir}"
+            )
+        return family
+
+    library_families = tuple(
+        library_family(name) for name in ("llvm", "mlir", "polly", "lld")
     )
-    mlir_libraries = tuple(
-        sorted(path for path in lib_dir.glob("*MLIR*") if path.is_file())
+    required_libraries = tuple(
+        sorted({path for family in library_families for path in family})
     )
-    if not llvm_libraries:
-        raise LlvmToolchainConfigError(f"LLVM libraries are missing from {lib_dir}")
-    if not mlir_libraries:
-        raise LlvmToolchainConfigError(f"MLIR libraries are missing from {lib_dir}")
-    required_libraries = tuple(sorted(set(llvm_libraries).union(mlir_libraries)))
     library_facts = tuple(
         LlvmLibraryFact(
             path=str(path.relative_to(resolved)).replace("\\", "/"),
@@ -1248,18 +1486,22 @@ def verify_llvm_toolchain_prefix(
             resolved,
             role,
             path,
-            expected_version=(
-                expected_version if canonical_contract else expected_major_minor
-            ),
-            exact_version=canonical_contract,
+            expected_version=expected_version,
+            exact_version=True,
         )
 
     with ThreadPoolExecutor(max_workers=len(tools)) as executor:
         tool_versions = tuple(executor.map(inspect_tool, tools))
 
+    def asset_identity(path: Path) -> str:
+        try:
+            return str(path.relative_to(resolved)).replace("\\", "/")
+        except ValueError:
+            return f"external:{path}"
+
     assets = tuple(
         sorted(
-            str(path.relative_to(resolved)).replace("\\", "/")
+            asset_identity(path)
             for path in (
                 *(path for _role, path in tools),
                 *directories,
@@ -1549,7 +1791,6 @@ def write_llvm_toolchain_attestation(
     return path
 
 
-@lru_cache(maxsize=8)
 def _llvm_config_version(executable: str) -> tuple[int, int, str]:
     try:
         result = subprocess.run(
@@ -1581,56 +1822,35 @@ def resolve_llvm_toolchain_prefix(
     *,
     environ: dict[str, str] | None = None,
 ) -> Path | None:
-    """Resolve one LLVM/MLIR prefix and reject split dependency custody.
+    """Resolve the prefix reported by the canonical discovery authority."""
 
-    Explicit Molt/llvm-sys/mlir-sys/tblgen prefixes are one authority class.
-    If more than one is set they must name the same installation. Otherwise the
-    managed, manifest-versioned prefix wins, followed by ``llvm-config`` on
-    ``PATH`` for system package-manager installations.
-    """
+    discovery = discover_llvm_toolchain(root, environ=environ)
+    return None if discovery is None else discovery.prefix
 
+
+def verify_available_llvm_toolchain(
+    root: Path,
+    *,
+    environ: dict[str, str] | None = None,
+    content_policy: Literal["cached", "full"] = "cached",
+) -> LlvmPrefixVerification | None:
+    """Discover and verify the complete host LLVM/MLIR/LLD/Polly SDK."""
+
+    discovery = discover_llvm_toolchain(root, environ=environ)
+    if discovery is None:
+        return None
     pin = required_llvm_backend_pin(root)
-    if pin is None:
-        return None
-    env = os.environ if environ is None else environ
-    authority_names = (
-        "MOLT_LLVM_PREFIX",
-        pin.env_var,
-        mlir_sys_prefix_env_var(pin.major),
-        tablegen_prefix_env_var(pin.major),
+    assert pin is not None
+    managed = managed_llvm_prefix(root, pin).resolve()
+    return verify_llvm_toolchain_prefix(
+        root,
+        discovery.prefix,
+        version=pin.default_release,
+        expected_targets=required_llvm_targets_for_host(root),
+        require_attestation=discovery.prefix.resolve() == managed,
+        llvm_config_override=discovery.llvm_config,
+        content_policy=content_policy,
     )
-    for name in authority_names:
-        if value := env.get(name, "").strip():
-            reject_poison_toolchain_path(value, authority=name)
-    if llvm_config_path := env.get("LLVM_CONFIG_PATH", "").strip():
-        reject_poison_toolchain_path(llvm_config_path, authority="LLVM_CONFIG_PATH")
-    if target_root := env.get("MOLT_TARGET_ROOT", "").strip():
-        reject_poison_toolchain_path(target_root, authority="MOLT_TARGET_ROOT")
-    explicit = {
-        _normalized_prefix(value)
-        for name in authority_names
-        if (value := env.get(name, "").strip())
-    }
-    if len(explicit) > 1:
-        rendered = ", ".join(str(path) for path in sorted(explicit, key=str))
-        raise LlvmToolchainConfigError(
-            "LLVM/MLIR prefix authorities disagree; configure one toolchain family: "
-            f"{rendered}"
-        )
-    if explicit:
-        return next(iter(explicit))
-
-    managed = managed_llvm_prefix(root, pin)
-    if llvm_config_executable(managed).is_file():
-        return managed
-
-    discovered = shutil.which("llvm-config", path=env.get("PATH")) or shutil.which(
-        "llvm-config.exe", path=env.get("PATH")
-    )
-    if discovered is None:
-        return None
-    reject_poison_toolchain_path(discovered, authority="PATH llvm-config")
-    return Path(discovered).resolve().parent.parent
 
 
 def mlir_toolchain_environment(
@@ -1639,7 +1859,7 @@ def mlir_toolchain_environment(
     environ: dict[str, str] | None = None,
     require: bool = True,
 ) -> dict[str, str]:
-    """Project one resolved LLVM prefix into every Rust binding authority."""
+    """Verify one SDK identity and project each binding's required path shape."""
 
     pin = required_llvm_backend_pin(root)
     if pin is None:
@@ -1649,22 +1869,14 @@ def mlir_toolchain_environment(
             f"could not resolve LLVM backend feature pin under {root}"
         )
     result = dict(os.environ if environ is None else environ)
-    prefix = resolve_llvm_toolchain_prefix(root, environ=result)
-    if prefix is None:
+    verification = verify_available_llvm_toolchain(root, environ=result)
+    if verification is None:
         if require:
             raise LlvmToolchainConfigError(
                 "LLVM/MLIR toolchain is unavailable; run "
                 f"{sys.executable} -m tools.bootstrap_llvm"
             )
         return result
-    managed = managed_llvm_prefix(root, pin).resolve()
-    verification = verify_llvm_toolchain_prefix(
-        root,
-        prefix,
-        version=pin.default_release,
-        expected_targets=required_llvm_targets_for_host(root),
-        require_attestation=prefix.resolve() == managed,
-    )
     return project_llvm_toolchain_environment(root, verification, environ=result)
 
 
@@ -1674,29 +1886,32 @@ def project_llvm_toolchain_environment(
     *,
     environ: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Project an already verified result without rescanning the SDK."""
+    """Project an already verified result without rescanning the SDK.
+
+    llvm-sys names its executable-search root ``PREFIX`` and searches only its
+    ``bin`` child. Split package layouts therefore receive
+    ``llvm_config.parent.parent`` there, while MLIR/TableGen receive the actual
+    SDK prefix reported by ``llvm-config --prefix``.
+    """
 
     pin = required_llvm_backend_pin(root)
     if pin is None:
         raise LlvmToolchainConfigError(
             f"could not resolve LLVM backend feature pin under {root}"
         )
-    expected_major_minor = f"{pin.major}.{pin.minor}"
-    if not (
-        verification.version == expected_major_minor
-        or verification.version.startswith(expected_major_minor + ".")
-    ):
+    if verification.version != pin.default_release:
         raise LlvmToolchainConfigError(
             "cannot project an LLVM verification from the wrong release family: "
-            f"expected {expected_major_minor}.x, found {verification.version}"
+            f"expected exactly {pin.default_release}, found {verification.version}"
         )
     result = dict(os.environ if environ is None else environ)
     prefix = verification.prefix
     llvm_config = verification.llvm_config
 
     prefix_text = str(prefix)
+    llvm_sys_search_prefix = llvm_config.parent.parent
     result["MOLT_LLVM_PREFIX"] = prefix_text
-    result[pin.env_var] = prefix_text
+    result[pin.env_var] = str(llvm_sys_search_prefix)
     result[mlir_sys_prefix_env_var(pin.major)] = prefix_text
     result[tablegen_prefix_env_var(pin.major)] = prefix_text
     result["LLVM_CONFIG_PATH"] = str(llvm_config)
@@ -1733,6 +1948,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Append major/minor/env_var metadata to a GitHub Actions output file.",
     )
+    parser.add_argument(
+        "--github-env",
+        type=Path,
+        default=None,
+        help="Verify the installed SDK and append its canonical environment to GITHUB_ENV.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Discover and verify the complete LLVM/MLIR/LLD/Polly developer SDK.",
+    )
     args = parser.parse_args(argv)
 
     pin = required_llvm_backend_pin(args.root)
@@ -1744,13 +1970,67 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.github_output is not None:
+        release_manifest = load_llvm_releases(args.root)
         with args.github_output.open("a", encoding="utf-8") as fh:
             fh.write(f"major={pin.major}\n")
             fh.write(f"minor={pin.minor}\n")
             fh.write(f"env_var={pin.env_var}\n")
             fh.write(f"feature={pin.inkwell_feature}\n")
+            fh.write(f"release={pin.default_release}\n")
+            fh.write(
+                f"apt_packages={' '.join(llvm_debian_dev_packages(args.root, pin.major))}\n"
+            )
+            fh.write(f"apt_installer_url={release_manifest.debian_installer.url}\n")
+            fh.write(
+                f"apt_installer_sha256={release_manifest.debian_installer.sha256}\n"
+            )
 
-    if args.format == "major":
+    verification: LlvmPrefixVerification | None = None
+    if args.verify or args.github_env is not None:
+        try:
+            verification = verify_available_llvm_toolchain(args.root)
+        except LlvmToolchainConfigError as exc:
+            print(f"LLVM/MLIR toolchain verification failed: {exc}", file=sys.stderr)
+            return 2
+        if verification is None:
+            print(
+                "LLVM/MLIR toolchain is unavailable; run "
+                f"{llvm_bootstrap_command(pin, python=sys.executable)}",
+                file=sys.stderr,
+            )
+            return 2
+        if args.github_env is not None:
+            projected = project_llvm_toolchain_environment(
+                args.root, verification, environ=dict(os.environ)
+            )
+            keys = (
+                "MOLT_LLVM_PREFIX",
+                pin.env_var,
+                mlir_sys_prefix_env_var(pin.major),
+                tablegen_prefix_env_var(pin.major),
+                "LLVM_CONFIG_PATH",
+                "PATH",
+            )
+            with args.github_env.open("a", encoding="utf-8") as fh:
+                for key in keys:
+                    fh.write(f"{key}={projected[key]}\n")
+
+    if verification is not None and args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "prefix": str(verification.prefix),
+                    "llvm_config": str(verification.llvm_config),
+                    "version": verification.version,
+                    "targets": list(verification.targets),
+                    "tools": [asdict(fact) for fact in verification.tool_versions],
+                    "library_count": len(verification.library_facts),
+                    "content_digest": verification.content_digest,
+                },
+                sort_keys=True,
+            )
+        )
+    elif args.format == "major":
         print(pin.major)
     elif args.format == "env":
         print(pin.env_var)

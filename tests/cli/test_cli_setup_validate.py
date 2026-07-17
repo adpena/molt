@@ -696,9 +696,7 @@ def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
     assert "reuse is disabled" in error
     assert (
         "wasm-tools is required"
-        in RUNTIME_WASM_VALIDATION._reusable_wasm_artifact_validation_error(
-            wasm_path
-        )
+        in RUNTIME_WASM_VALIDATION._reusable_wasm_artifact_validation_error(wasm_path)
     )
 
 
@@ -1228,6 +1226,12 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
         lambda name: present.get(name),
         raising=True,
     )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "verify_available_llvm_toolchain",
+        lambda _root: None,
+        raising=True,
+    )
 
     def fake_run(cmd, **_kwargs):
         if cmd == ["C:/Program Files/LLVM/bin/clang.exe", "--version"]:
@@ -1349,20 +1353,11 @@ def test_llvm_detection_rejects_mismatched_config_major(
         raising=True,
     )
     monkeypatch.setattr(
-        SETUP_READINESS.shutil,
-        "which",
-        lambda name: (
-            "C:/LLVM/bin/llvm-config.exe"
-            if name in {"llvm-config", "llvm-config.exe"}
-            else None
-        ),
+        SETUP_READINESS,
+        "verify_available_llvm_toolchain",
+        lambda _root: None,
         raising=True,
     )
-
-    def fake_run(_cmd, **_kwargs):
-        return subprocess.CompletedProcess(_cmd, 0, "21.1.0\n", "")
-
-    monkeypatch.setattr(SETUP_READINESS.subprocess, "run", fake_run, raising=True)
 
     assert SETUP_READINESS._detect_llvm_backend_toolchain(ROOT) == (22, None)
 

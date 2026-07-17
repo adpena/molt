@@ -89,6 +89,14 @@ def test_mlir_environment_projects_one_prefix_to_every_binding(
     llvm_config = prefix / "bin" / "llvm-config.exe"
     _write(llvm_config, "")
     monkeypatch.setattr(
+        "molt.llvm_toolchain.discover_llvm_toolchain",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            llvm_config=llvm_config.resolve(),
+            prefix=prefix.resolve(),
+            version="22.1.8",
+        ),
+    )
+    monkeypatch.setattr(
         "molt.llvm_toolchain.verify_llvm_toolchain_prefix",
         lambda *_args, **_kwargs: SimpleNamespace(
             llvm_config=llvm_config,
@@ -121,7 +129,16 @@ def test_mlir_environment_rejects_wrong_llvm_version(
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     prefix = tmp_path / "llvm 21"
-    _write(prefix / "bin" / "llvm-config.exe", "")
+    llvm_config = prefix / "bin" / "llvm-config.exe"
+    _write(llvm_config, "")
+    monkeypatch.setattr(
+        "molt.llvm_toolchain.discover_llvm_toolchain",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            llvm_config=llvm_config.resolve(),
+            prefix=prefix.resolve(),
+            version="21.1.8",
+        ),
+    )
 
     def reject_version(*_args, **_kwargs):
         raise LlvmToolchainConfigError("does not match")
@@ -152,8 +169,85 @@ def test_llvm_prefix_resolution_rejects_split_binding_families(
         resolve_llvm_toolchain_prefix(
             tmp_path,
             environ={
-                "LLVM_SYS_221_PREFIX": str(tmp_path / "llvm-a"),
+                "MOLT_LLVM_PREFIX": str(tmp_path / "llvm-a"),
                 "MLIR_SYS_220_PREFIX": str(tmp_path / "llvm-b"),
+            },
+        )
+
+
+def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_facade(tmp_path, '"molt-backend-native/llvm"')
+    _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    prefix = tmp_path / "usr" / "lib" / "llvm-22"
+    external_config = tmp_path / "usr" / "bin" / "llvm-config-22"
+    _write(external_config, "")
+    monkeypatch.setattr(
+        llvm_toolchain.shutil,
+        "which",
+        lambda name, **_kwargs: (
+            str(external_config) if name == "llvm-config-22" else None
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_llvm_config_version",
+        lambda _path: (22, 1, "22.1.8"),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_llvm_config_prefix",
+        lambda _path: prefix.resolve(),
+    )
+
+    discovery = llvm_toolchain.discover_llvm_toolchain(
+        tmp_path,
+        environ={
+            "LLVM_SYS_221_PREFIX": str(prefix),
+            "PATH": str(external_config.parent),
+        },
+    )
+
+    assert discovery is not None
+    assert discovery.prefix == prefix.resolve()
+    assert discovery.llvm_config == external_config.resolve()
+    assert discovery.source == "PATH"
+
+
+def test_discovery_rejects_unrelated_llvm_sys_search_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_facade(tmp_path, '"molt-backend-native/llvm"')
+    _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    configured = tmp_path / "configured"
+    other = tmp_path / "other"
+    external_config = tmp_path / "bin" / "llvm-config-22"
+    _write(external_config, "")
+    monkeypatch.setattr(
+        llvm_toolchain.shutil,
+        "which",
+        lambda name, **_kwargs: (
+            str(external_config) if name == "llvm-config-22" else None
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_llvm_config_version",
+        lambda _path: (22, 1, "22.1.8"),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_llvm_config_prefix",
+        lambda _path: other.resolve(),
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="is neither the SDK prefix"):
+        llvm_toolchain.discover_llvm_toolchain(
+            tmp_path,
+            environ={
+                "LLVM_SYS_221_PREFIX": str(configured),
+                "PATH": str(external_config.parent),
             },
         )
 
@@ -233,6 +327,8 @@ def _write_complete_llvm_prefix(prefix: Path) -> None:
     )
     _write(prefix / "lib" / "LLVMCore.lib", "library-a")
     _write(prefix / "lib" / "MLIR-C.lib", "mlir-lib-a")
+    _write(prefix / "lib" / "Polly.lib", "polly-lib-a")
+    _write(prefix / "lib" / "lldCommon.lib", "lld-lib-a")
 
 
 def _mock_tool_process_versions(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,14 +387,14 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
     attestation = write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
 
     assert attestation.is_file()
     payload = json.loads(attestation.read_text(encoding="utf-8"))
     assert payload["custody"] == "manifest-release-noncanonical-prefix"
     assert payload["build_config"] == {
-        "projects": ["clang", "lld", "mlir"],
+        "projects": ["clang", "lld", "mlir", "polly"],
         "targets": ["WebAssembly", "X86"],
         "build_type": "Release",
     }
@@ -345,6 +441,118 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
     assert all(fact.sha256 for fact in full_verification.content_facts)
 
 
+def test_prefix_verifier_preserves_external_llvm_config_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "usr" / "lib" / "llvm-22"
+    llvm_config = tmp_path / "usr" / "bin" / "llvm-config-22"
+    _write_complete_llvm_prefix(prefix)
+    _write(llvm_config, "external-config")
+    _mock_tool_process_versions(monkeypatch)
+    _mock_llvm_config(prefix, monkeypatch)
+
+    verification = verify_llvm_toolchain_prefix(
+        ROOT,
+        prefix,
+        expected_targets=("X86", "WebAssembly"),
+        llvm_config_override=llvm_config,
+    )
+
+    fact = next(
+        item for item in verification.tool_versions if item.role == "llvm-config"
+    )
+    assert verification.llvm_config == llvm_config.resolve()
+    assert fact.path == f"external:{llvm_config.resolve()}"
+    assert f"external:{llvm_config.resolve()}" in verification.assets
+    projected = llvm_toolchain.project_llvm_toolchain_environment(
+        ROOT, verification, environ={"PATH": str(llvm_config.parent)}
+    )
+    assert projected["LLVM_SYS_221_PREFIX"] == str(llvm_config.parent.parent)
+    assert projected["MLIR_SYS_220_PREFIX"] == str(prefix)
+
+
+def test_debian_packages_cover_manifest_owned_sdk_components() -> None:
+    assert llvm_toolchain.llvm_debian_dev_packages(ROOT, 22) == (
+        "clang-22",
+        "libclang-22-dev",
+        "liblld-22-dev",
+        "libmlir-22-dev",
+        "libpolly-22-dev",
+        "lld-22",
+        "llvm-22-dev",
+        "mlir-22-tools",
+    )
+
+
+def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
+    installer = llvm_toolchain.load_llvm_releases(ROOT).debian_installer
+
+    assert installer.url == "https://apt.llvm.org/llvm.sh"
+    assert installer.sha256 == (
+        "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+    )
+    github_output = tmp_path / "github-output"
+    assert (
+        llvm_toolchain.main(
+            ["--root", str(ROOT), "--github-output", str(github_output)]
+        )
+        == 0
+    )
+    projected = github_output.read_text(encoding="utf-8")
+    assert f"apt_installer_url={installer.url}\n" in projected
+    assert f"apt_installer_sha256={installer.sha256}\n" in projected
+
+
+def test_cli_projects_verified_sdk_identity_to_github_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prefix = tmp_path / "llvm-22"
+    llvm_config = tmp_path / "bin" / "llvm-config-22"
+    verification = llvm_toolchain.LlvmPrefixVerification(
+        prefix=prefix,
+        llvm_config=llvm_config,
+        version="22.1.8",
+        targets=("WebAssembly", "X86"),
+        assets=(),
+        tool_versions=(),
+        library_facts=(),
+        content_facts=(),
+        content_digest=None,
+        link_closure=(),
+        link_probe=(),
+        release=None,
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "verify_available_llvm_toolchain",
+        lambda _root: verification,
+    )
+    github_env = tmp_path / "github-env"
+
+    assert (
+        llvm_toolchain.main(
+            [
+                "--root",
+                str(ROOT),
+                "--verify",
+                "--format",
+                "json",
+                "--github-env",
+                str(github_env),
+            ]
+        )
+        == 0
+    )
+
+    projected = github_env.read_text(encoding="utf-8")
+    assert f"MOLT_LLVM_PREFIX={prefix}" in projected
+    assert f"LLVM_SYS_221_PREFIX={llvm_config.parent.parent}" in projected
+    assert f"LLVM_CONFIG_PATH={llvm_config}" in projected
+    assert json.loads(capsys.readouterr().out)["llvm_config"] == str(llvm_config)
+
+
 def test_cached_attestation_projects_compile_link_proof_without_rerunning_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -361,7 +569,7 @@ def test_cached_attestation_projects_compile_link_proof_without_rerunning_it(
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
     monkeypatch.setattr(
         "molt.llvm_toolchain._compile_link_probe",
@@ -402,7 +610,7 @@ def test_attestation_projects_one_full_content_verification_without_rehashing(
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
 
     assert calls.count(True) == 1
@@ -428,7 +636,7 @@ def test_attestation_publication_rejects_tool_drift_after_verification(
         write_llvm_toolchain_attestation(
             ROOT,
             verification,
-            projects=("clang", "lld", "mlir"),
+            projects=("clang", "lld", "mlir", "polly"),
         )
 
 
@@ -454,11 +662,11 @@ def test_attestation_publication_rejects_header_drift_after_full_verification(
         write_llvm_toolchain_attestation(
             ROOT,
             verification,
-            projects=("clang", "lld", "mlir"),
+            projects=("clang", "lld", "mlir", "polly"),
         )
 
 
-def test_attestation_refuses_manifest_release_with_mixed_patch_tools(
+def test_verifier_refuses_manifest_release_with_mixed_patch_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prefix = tmp_path / "llvm"
@@ -481,17 +689,12 @@ def test_attestation_refuses_manifest_release_with_mixed_patch_tools(
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
     monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
-    verification = verify_llvm_toolchain_prefix(
-        ROOT,
-        prefix,
-        expected_targets=("X86", "WebAssembly"),
-        content_policy="full",
-    )
-    with pytest.raises(LlvmToolchainConfigError, match="mixed patch versions"):
-        write_llvm_toolchain_attestation(
+    with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
+        verify_llvm_toolchain_prefix(
             ROOT,
-            verification,
-            projects=("clang", "lld", "mlir"),
+            prefix,
+            expected_targets=("X86", "WebAssembly"),
+            content_policy="full",
         )
 
 
@@ -513,7 +716,7 @@ def test_staged_attestation_targets_published_prefix(
     attestation = write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
         published_prefix=published,
     )
     payload = json.loads(attestation.read_text(encoding="utf-8"))
@@ -810,6 +1013,30 @@ def test_all_explicit_prefix_authorities_reject_retired_d_drive() -> None:
                 resolve_llvm_toolchain_prefix(ROOT, environ={name: poisoned})
 
 
+def test_path_discovery_rejects_retired_d_drive_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_facade(tmp_path, '"molt-backend-native/llvm"')
+    _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "managed_llvm_prefix",
+        lambda *_args, **_kwargs: tmp_path / "missing",
+    )
+    monkeypatch.setattr(
+        llvm_toolchain.shutil,
+        "which",
+        lambda name, **_kwargs: (
+            r"D:\poison\llvm-config-22.exe"
+            if name.startswith("llvm-config-22")
+            else None
+        ),
+    )
+    with pytest.raises(LlvmToolchainConfigError, match="retired D: canonical custody"):
+        llvm_toolchain.discover_llvm_toolchain(tmp_path, environ={"PATH": r"D:\poison"})
+
+
 def test_managed_attestation_rejects_live_asset_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -825,7 +1052,7 @@ def test_managed_attestation_rejects_live_asset_drift(
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
     _write(prefix / "lib" / "MLIRDrift.lib", "drift")
 
@@ -886,7 +1113,7 @@ def test_managed_attestation_rejects_substituted_tool(
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
     suffix = ".exe" if os.name == "nt" else ""
     _write(prefix / "bin" / f"clang{suffix}", "substituted")
@@ -927,7 +1154,7 @@ def test_managed_attestation_rejects_same_size_content_substitution_with_restore
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
     target = prefix / relative_path
     original = target.stat()
@@ -958,7 +1185,7 @@ def test_unavailable_ntfs_change_time_forces_content_hashing(
     write_llvm_toolchain_attestation(
         ROOT,
         verification,
-        projects=("clang", "lld", "mlir"),
+        projects=("clang", "lld", "mlir", "polly"),
     )
     target = prefix / "include" / "llvm" / "Test.h"
     original = target.stat()

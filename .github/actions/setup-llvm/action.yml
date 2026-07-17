@@ -1,0 +1,49 @@
+name: Setup canonical LLVM SDK
+description: Install and verify Molt's manifest-owned LLVM, MLIR, LLD, and Polly SDK
+
+outputs:
+  major:
+    description: Required LLVM major version
+    value: ${{ steps.contract.outputs.major }}
+  env_var:
+    description: llvm-sys prefix environment variable
+    value: ${{ steps.contract.outputs.env_var }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve SDK contract
+      id: contract
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+          --github-output "$GITHUB_OUTPUT"
+
+    - name: Provision SDK components
+      shell: bash
+      env:
+        LLVM_MAJOR: ${{ steps.contract.outputs.major }}
+        LLVM_APT_PACKAGES: ${{ steps.contract.outputs.apt_packages }}
+        LLVM_APT_INSTALLER_URL: ${{ steps.contract.outputs.apt_installer_url }}
+        LLVM_APT_INSTALLER_SHA256: ${{ steps.contract.outputs.apt_installer_sha256 }}
+      run: |
+        set -euo pipefail
+        installer="$RUNNER_TEMP/molt-llvm-apt.sh"
+        curl --fail --location --proto '=https' --tlsv1.2 \
+          --output "$installer" "$LLVM_APT_INSTALLER_URL"
+        printf '%s  %s\n' "$LLVM_APT_INSTALLER_SHA256" "$installer" \
+          | sha256sum --check --strict
+        chmod +x "$installer"
+        sudo "$installer" "$LLVM_MAJOR"
+        read -r -a packages <<< "$LLVM_APT_PACKAGES"
+        sudo apt-get install -y "${packages[@]}"
+
+    - name: Verify and project SDK identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+          --verify \
+          --format json \
+          --github-env "$GITHUB_ENV"

@@ -426,28 +426,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The LLVM backend is gated behind the `llvm` cargo feature and links
-      # against inkwell/llvm-sys, which require the matching LLVM toolchain.
-      # The required major version is derived from the inkwell feature pin in
-      # the Cargo feature graph (e.g. `llvm22-1` -> LLVM 22).
-      - name: Resolve required LLVM major version
-        id: llvmver
-        run: |
-          MAJOR=$(PYTHONPATH=src python3 -m molt.llvm_toolchain --github-output "$GITHUB_OUTPUT")
-          if [ -z "$MAJOR" ]; then echo "::error::could not resolve LLVM major"; exit 1; fi
-          echo "Required LLVM major: $MAJOR"
-
-      - name: Install LLVM toolchain
-        run: |
-          MAJOR="${{ steps.llvmver.outputs.major }}"
-          # Upstream LLVM apt installer (apt.llvm.org) provides per-major builds.
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh "$MAJOR"
-          sudo apt-get install -y "llvm-$MAJOR-dev" "libpolly-$MAJOR-dev" lld
-          # llvm-sys discovers the install via the exact manifest-derived env var.
-          echo "${{ steps.llvmver.outputs.env_var }}=$(llvm-config-$MAJOR --prefix)" >> "$GITHUB_ENV"
-          "llvm-config-$MAJOR" --version
+      # One local action owns package projection, versioned llvm-config
+      # discovery, complete SDK verification, and environment projection.
+      - name: Setup LLVM backend SDK
+        uses: ./.github/actions/setup-llvm
 
       # Deterministic regression gate for the integer-overflow miscompile.
       # The LLVM backend used to emit raw machine add/sub/mul on any TirType::I64

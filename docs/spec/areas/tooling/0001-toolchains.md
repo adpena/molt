@@ -2,13 +2,22 @@
 
 ## Recommended baseline
 - CMake + Ninja
-- LLVM/Clang/MLIR (for LLVM and MLIR backend development)
+- LLVM/Clang/LLD/MLIR/Polly (for LLVM and MLIR backend development)
 - A complete LLVM distribution with `llvm-config` matching the Rust
   `inkwell` feature pinned through `molt.llvm_toolchain` from
   `runtime/molt-backend-native/Cargo.toml`.
-- One prefix owns LLVM, MLIR, and TableGen. Molt projects it to every binding
-  environment and rejects split prefixes or a mismatched major/minor before a
-  build starts.
+- One SDK prefix owns LLVM, Clang, LLD, MLIR, Polly, and TableGen. Molt projects
+  that SDK identity into each binding's required path shape and rejects split
+  identities or a mismatched major/minor before a build starts. `llvm-config`
+  may live outside that prefix
+  only when its own `--prefix` result proves the same SDK identity, as in
+  Debian/Ubuntu's versioned `/usr/bin/llvm-config-<major>` layout. In that
+  layout `LLVM_SYS_<ver>_PREFIX=/usr` is the llvm-sys executable-search root,
+  while `MOLT_LLVM_PREFIX` and the MLIR/TableGen prefixes remain
+  `/usr/lib/llvm-<major>`.
+- Every companion executable must report the exact patch release owned by
+  `config/llvm_toolchain_releases.toml`; matching only the major/minor is not
+  sufficient for an accepted SDK.
 - Rust (for runtime components + WASM + package implementations)
 - Python 3.12+ for tooling and tests (Molt targets 3.12+ semantics only; do not support <=3.11).
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
@@ -52,7 +61,7 @@ Rust via rustup:
   project, target, and build-type sets are exact (no extras) and are bound into
   the published attestation with the release-manifest digest. Publication
   occurs only after the host linker,
-  LLVM-C, Clang, LLD, Clang resource headers, LLVM/MLIR libraries, and a real
+  LLVM-C, Clang, LLD, Clang resource headers, LLVM/MLIR/LLD/Polly libraries, and a real
   C++ compile-link probe all pass. Cached validation projects that attested
   proof and forces full hashing whenever NTFS ChangeTime is unavailable.
   `D:\` is retired and rejected for every source, build, download, prefix, and

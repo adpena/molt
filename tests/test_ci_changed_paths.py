@@ -56,6 +56,17 @@ def test_midend_change_runs_llvm_stack() -> None:
     assert classes["llvm"] is True
 
 
+def test_llvm_control_plane_changes_run_the_llvm_stack() -> None:
+    for path in (
+        "src/molt/llvm_toolchain.py",
+        "config/llvm_toolchain_arches.toml",
+        ".github/actions/setup-llvm/action.yml",
+        "tools/bootstrap_llvm.py",
+    ):
+        classes = _classes(path)
+        assert classes["llvm"] is True, path
+
+
 def test_lockfiles_select_security_and_build_classes() -> None:
     cargo = _classes("Cargo.lock")
     uv = _classes("uv.lock")

@@ -117,11 +117,15 @@ and a metric-correction or retirement plan.
 ## Cross-Platform Notes
 - **macOS**: install Xcode CLT (`xcode-select --install`) and a complete
   LLVM/MLIR developer distribution via Homebrew.
-- **Linux**: install LLVM/Clang/MLIR, CMake, and Ninja via your package manager.
+- **Linux**: install the matching LLVM, Clang, LLD, MLIR, and Polly developer
+  packages plus CMake and Ninja. Debian-family packages commonly place
+  `llvm-config-<major>` in `/usr/bin` while its SDK prefix is
+  `/usr/lib/llvm-<major>`; Molt verifies that reported pairing directly instead
+  of assuming the executable is under the prefix.
 - **Windows**: install Visual Studio Build Tools (MSVC), CMake, Ninja, and
   LLVM/Clang (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
-  The LLVM and MLIR backends require one matching prefix with `llvm-config`,
-  MLIR libraries, and TableGen, not just `clang`; use
+  The LLVM and MLIR backends require one matching SDK with `llvm-config`, LLVM,
+  Clang, LLD, MLIR, Polly, and TableGen, not just `clang`; use
   `python -m tools.bootstrap_llvm` (the direct-script form
   `python tools/bootstrap_llvm.py` is equivalent)
   when package-manager LLVM omits it.
@@ -147,12 +151,20 @@ molt update --check
 ```
 
 - `molt setup` is the canonical bootstrap/readiness command. It reports exact
-  toolchain actions plus the canonical Molt env layout. A single resolved
-  prefix is projected to `LLVM_SYS_<ver>_PREFIX`, `MLIR_SYS_<ver>_PREFIX`, and
-  `TABLEGEN_<ver>_PREFIX`; disagreement fails closed instead of mixing ABIs.
+  toolchain actions plus the canonical Molt env layout. The SDK prefix is
+  projected to `MOLT_LLVM_PREFIX`, `MLIR_SYS_<ver>_PREFIX`, and
+  `TABLEGEN_<ver>_PREFIX`. `LLVM_CONFIG_PATH` preserves the verified executable
+  identity when a package manager installs it outside that prefix, and
+  `LLVM_SYS_<ver>_PREFIX` receives the executable-search root required by
+  llvm-sys (`<value>/bin/llvm-config*`). The executable's own `--prefix` binds
+  both path shapes to one SDK identity. Disagreement
+  or any patch-version drift from `config/llvm_toolchain_releases.toml` fails
+  closed instead of mixing ABIs. CI calls the same resolver and verifier
+  through `.github/actions/setup-llvm` after installing the manifest-derived
+  component package set.
 - `tools/bootstrap_llvm.py` is the source-build escape hatch for platforms whose
   LLVM packages omit a complete developer surface. It builds LLVM, Clang, LLD,
-  and MLIR into the checkout-family canonical toolchain root, verifies the
+  MLIR, and Polly into the checkout-family canonical toolchain root, verifies the
   manifest-pinned source checksum, exact canonical build configuration,
   version, targets, tools, all installed project/resource headers, and
   libraries. Source extraction and prefix installation use the same journaled,
@@ -160,7 +172,8 @@ molt update --check
   tool-owned marker fail closed even at the canonical path. The command then
   prints the complete environment projection.
 - Developers and source-install users need this toolchain to build the optional
-  MLIR backend. End users of a shipped Molt distribution do not: release
+  LLVM-dependent native or MLIR paths. End users of a shipped Molt distribution
+  do not: release
   packaging owns the backend executable and its redistributable runtime
   libraries. Molt never asks a binary-only installation to fetch a compiler
   toolchain at runtime.
