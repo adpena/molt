@@ -1,10 +1,13 @@
 use super::super::{process_task_state, wake_await_waiters};
-use super::PROCESS_EXIT_PENDING;
 use super::stdio::{PROCESS_STDIO_PIPE, process_stdio_mode};
+use super::{
+    PROCESS_EXIT_PENDING, ProcessCompletionState, ProcessTaskState, ProcessWaitFutureInstall,
+    ProcessWaiterId,
+};
 use crate::libc_compat as libc;
 use crate::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, String> {
@@ -374,9 +377,8 @@ pub unsafe extern "C" fn molt_process_spawn(
 
         let state = Arc::new(ProcessState {
             handle,
-            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            completion: ProcessCompletionState::pending(),
             streams_released: AtomicBool::new(false),
-            wait_future: Mutex::new(None),
             stdin_stream,
             stdout_stream,
             stderr_stream,
@@ -404,7 +406,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
             let state = Arc::clone(&handle.state);
-            if let Some(existing) = *state.wait_future.lock().unwrap() {
+            if let Some(existing) = state.wait_future() {
                 let bits = MoltObject::from_ptr(existing.0).bits();
                 inc_ref_bits(_py, bits);
                 return bits;
@@ -415,6 +417,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
             };
             let task_state = Arc::new(ProcessTaskState {
                 process: state,
+                waiter_id: ProcessWaiterId::from_slot(PtrSlot(future_ptr)),
                 cancelled: AtomicBool::new(false),
             });
             runtime_state(_py)
@@ -422,8 +425,24 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
                 .lock()
                 .unwrap()
                 .insert(PtrSlot(future_ptr), Arc::clone(&task_state));
-            *task_state.process.wait_future.lock().unwrap() = Some(PtrSlot(future_ptr));
-            future_bits
+            match task_state.process.install_wait_future(PtrSlot(future_ptr)) {
+                ProcessWaitFutureInstall::Installed => future_bits,
+                ProcessWaitFutureInstall::Terminal(exit_code) => {
+                    debug_assert_eq!(task_state.process.exit_code(), exit_code);
+                    future_bits
+                }
+                ProcessWaitFutureInstall::AlreadyInstalled(existing) => {
+                    runtime_state(_py)
+                        .process_tasks
+                        .lock()
+                        .unwrap()
+                        .remove(&PtrSlot(future_ptr));
+                    dec_ref_bits(_py, future_bits);
+                    let bits = MoltObject::from_ptr(existing.0).bits();
+                    inc_ref_bits(_py, bits);
+                    bits
+                }
+            }
         })
     }
 }
@@ -440,25 +459,22 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
         let Some(state) = process_task_state(_py, obj_ptr) else {
             return raise_exception::<i64>(_py, "RuntimeError", "process task missing");
         };
-        if state.process.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !state.process.is_pending() {
             task_take_cancel_pending(obj_ptr);
         } else if task_cancel_pending(obj_ptr) {
             task_take_cancel_pending(obj_ptr);
-            state.cancelled.store(true, AtomicOrdering::Release);
+            state.cancel_wait();
             return raise_cancelled_with_message::<i64>(_py, obj_ptr);
         }
-        let code = state.process.exit_code.load(AtomicOrdering::Acquire);
+        let code = state.process.exit_code();
         if code != PROCESS_EXIT_PENDING {
             return MoltObject::from_int(code as i64).bits() as i64;
         }
         let mut out_code: i32 = 0;
         let rc = unsafe { crate::molt_process_wait_host(state.process.handle, 0, &mut out_code) };
         if rc == 0 {
-            state
-                .process
-                .exit_code
-                .store(out_code, AtomicOrdering::Release);
-            return MoltObject::from_int(out_code as i64).bits() as i64;
+            let _ = state.process.publish_exit(out_code);
+            return MoltObject::from_int(state.process.exit_code() as i64).bits() as i64;
         }
         if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
             return pending_bits_i64();
@@ -494,7 +510,7 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            let code = handle.state.exit_code.load(AtomicOrdering::Acquire);
+            let code = handle.state.exit_code();
             if code == PROCESS_EXIT_PENDING {
                 MoltObject::none().bits()
             } else {
@@ -515,7 +531,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if !handle.state.is_pending() {
                 return MoltObject::none().bits();
             }
             let rc = unsafe { crate::molt_process_kill_host(handle.state.handle) };
@@ -538,7 +554,7 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if !handle.state.is_pending() {
                 return MoltObject::none().bits();
             }
             let rc = unsafe { crate::molt_process_terminate_host(handle.state.handle) };
@@ -642,14 +658,9 @@ pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
                 return;
             }
             let handle_obj = &*(proc_ptr as *mut MoltProcessHandle);
-            if handle_obj.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
-                return;
-            }
-            handle_obj
-                .state
-                .exit_code
-                .store(exit_code, AtomicOrdering::Release);
-            if let Some(future) = handle_obj.state.wait_future.lock().unwrap().take() {
+            if let Some(publication) = handle_obj.state.publish_exit(exit_code)
+                && let Some(future) = publication.wait_future
+            {
                 let _ = wake_await_waiters(_py, future.0);
             }
         })
@@ -658,21 +669,12 @@ pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
 
 pub(crate) struct ProcessState {
     handle: i64,
-    pub(crate) exit_code: AtomicI32,
+    pub(super) completion: ProcessCompletionState,
     streams_released: AtomicBool,
-    pub(crate) wait_future: Mutex<Option<PtrSlot>>,
     stdin_stream: u64,
     stdout_stream: u64,
     stderr_stream: u64,
 }
-
-pub(crate) struct ProcessTaskState {
-    pub(crate) process: Arc<ProcessState>,
-    pub(crate) cancelled: AtomicBool,
-}
-
-unsafe impl Send for ProcessTaskState {}
-unsafe impl Sync for ProcessTaskState {}
 
 struct MoltProcessHandle {
     state: Arc<ProcessState>,
@@ -687,7 +689,7 @@ impl Drop for ProcessState {
 
 impl ProcessState {
     fn request_terminate_for_teardown(&self) {
-        if self.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING {
+        if self.is_pending() {
             let _ = unsafe { crate::molt_process_terminate_host(self.handle) };
         }
     }
@@ -753,5 +755,37 @@ impl ProcessRegistry {
             handle_obj.state.request_terminate_for_teardown();
             handle_obj.state.release_owned_streams();
         }
+    }
+}
+
+#[cfg(test)]
+mod process_state_tests {
+    use super::*;
+
+    #[test]
+    fn wasm_process_wait_cancellation_uses_shared_completion_state() {
+        let state = Arc::new(ProcessState {
+            handle: -1,
+            completion: ProcessCompletionState::pending(),
+            streams_released: AtomicBool::new(false),
+            stdin_stream: 0,
+            stdout_stream: 0,
+            stderr_stream: 0,
+        });
+        let waiter = PtrSlot(1usize as *mut u8);
+        assert!(matches!(
+            state.install_wait_future(waiter),
+            ProcessWaitFutureInstall::Installed
+        ));
+        let task = ProcessTaskState {
+            process: Arc::clone(&state),
+            waiter_id: ProcessWaiterId::from_slot(waiter),
+            cancelled: AtomicBool::new(false),
+        };
+
+        assert!(task.cancel_wait());
+        assert!(!task.cancel_wait());
+        assert_eq!(state.wait_future(), None);
+        assert!(state.publish_exit(0).is_some());
     }
 }

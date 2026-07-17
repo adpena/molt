@@ -567,7 +567,7 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     #[cfg(feature = "stdlib_asyncio")]
     asyncio_core_clear_state(_py);
     clear_await_graph_state(_py, state);
-    clear_native_task_states(_py, state);
+    clear_async_task_states(_py, state);
     let stacks = {
         let mut guard = state.task_exception_stacks.lock().unwrap();
         let old = std::mem::take(&mut *guard);
@@ -719,7 +719,7 @@ fn clear_await_graph_state(_py: &PyToken<'_>, state: &RuntimeState) {
     }
 }
 
-fn clear_native_task_states(_py: &PyToken<'_>, state: &RuntimeState) {
+fn clear_async_task_states(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -743,15 +743,8 @@ fn clear_native_task_states(_py: &PyToken<'_>, state: &RuntimeState) {
         let mut guard = state.process_tasks.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    for (future, task) in process_tasks {
-        task.cancelled.store(true, AtomicOrdering::Release);
-        let mut wait_future = task.process.wait_future.lock().unwrap();
-        if wait_future.map(|slot| slot.0) == Some(future.0) {
-            *wait_future = None;
-        }
-        drop(wait_future);
-        #[cfg(not(target_arch = "wasm32"))]
-        task.process.condvar.notify_all();
+    for task in process_tasks.into_values() {
+        task.cancel_wait();
     }
 }
 
