@@ -14630,6 +14630,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ProfileEpochReset,
+        name: "profile_epoch_reset",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ProfileEpochDump,
+        name: "profile_epoch_dump",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::XmlElementNew,
         name: "xml_element_new",
         type_idx: 3,
@@ -20887,6 +20897,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_list_getitem_borrowed" => Some(WasmRuntimeImport::ListGetitemBorrowed),
         "tuple_getitem_borrowed" => Some(WasmRuntimeImport::TupleGetitemBorrowed),
         "molt_tuple_getitem_borrowed" => Some(WasmRuntimeImport::TupleGetitemBorrowed),
+        "profile_epoch_reset" => Some(WasmRuntimeImport::ProfileEpochReset),
+        "molt_profile_epoch_reset" => Some(WasmRuntimeImport::ProfileEpochReset),
+        "profile_epoch_dump" => Some(WasmRuntimeImport::ProfileEpochDump),
+        "molt_profile_epoch_dump" => Some(WasmRuntimeImport::ProfileEpochDump),
         "xml_element_new" => Some(WasmRuntimeImport::XmlElementNew),
         "molt_xml_element_new" => Some(WasmRuntimeImport::XmlElementNew),
         "xml_element_tag" => Some(WasmRuntimeImport::XmlElementTag),

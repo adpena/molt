@@ -1133,11 +1133,7 @@ mod tests {
     use std::sync::atomic::Ordering as AtomicOrdering;
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*crate::object::header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Acquire)
-        }
+        unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

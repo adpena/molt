@@ -426,12 +426,7 @@ pub(crate) unsafe fn replace_unique_item(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe {
-        (*header)
-            .ref_count
-            .load(std::sync::atomic::Ordering::Acquire)
-    } != 1
-    {
+    if unsafe { (*header).ref_count_snapshot() } != 1 {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -454,12 +449,7 @@ pub(crate) unsafe fn replace_unique_item_owned(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe {
-        (*header)
-            .ref_count
-            .load(std::sync::atomic::Ordering::Acquire)
-    } != 1
-    {
+    if unsafe { (*header).ref_count_snapshot() } != 1 {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -480,11 +470,7 @@ pub(crate) unsafe fn replace_unique_pair(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe {
-        (*header)
-            .ref_count
-            .load(std::sync::atomic::Ordering::Acquire)
-    } != 1
+    if unsafe { (*header).ref_count_snapshot() } != 1
         || unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
     {
         return None;
@@ -501,17 +487,6 @@ pub(crate) unsafe fn replace_unique_pair(
         adjust_tuple_contains_refs(ptr, &[old_first, old_second], &[first_bits, second_bits])
     };
     Some((old_first, old_second))
-}
-
-/// Release the tuple-owned edges at final deallocation. The inline slot memory
-/// belongs to the object allocation and needs no separate free.
-pub(crate) unsafe fn release_tuple_edges(py: &PyToken<'_>, ptr: *mut u8, flags: u32) {
-    if flags & HEADER_FLAG_CONTAINS_REFS == 0 {
-        return;
-    }
-    for &bits in unsafe { tuple_slice(ptr) } {
-        dec_ref_bits(py, bits);
-    }
 }
 
 pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {

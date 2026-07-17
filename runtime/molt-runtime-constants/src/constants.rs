@@ -108,6 +108,8 @@ pub static ASYNC_SLEEP_REGISTER_COUNT: AtomicU64 = AtomicU64::new(0);
 // Week 1 perf observability counters (Codon/general workload attribution).
 pub static CALL_BIND_IC_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static CALL_BIND_IC_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static STRING_COUNT_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static STRING_COUNT_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ATTR_SITE_NAME_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ATTR_SITE_NAME_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ATTR_IC_RESULT_HIT_COUNT: AtomicU64 = AtomicU64::new(0);

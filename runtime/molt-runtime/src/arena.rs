@@ -1,6 +1,5 @@
 use std::alloc::Layout;
 use std::mem::size_of;
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::object::{HEADER_FLAG_ARENA, HEADER_FLAG_RAW_ALLOC};
 use crate::{MoltHeader, MoltObject, TYPE_ID_OBJECT, usize_from_bits};
@@ -216,14 +215,14 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             return MoltObject::none().bits();
         }
         // Zero header + payload so subsequent stores see a clean slate, just
-        // like `alloc_object_zeroed` does for allocator-backed objects.
+        // like the canonical zeroed allocator does for allocator-backed objects.
         // SAFETY: `arena.alloc` returned a chunk of `total` bytes belonging
         // to a live `Vec<u8>` inside the arena.
         unsafe {
             std::ptr::write_bytes(header_ptr, 0, total);
             let header = header_ptr as *mut MoltHeader;
             (*header).type_id = TYPE_ID_OBJECT;
-            (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+            MoltHeader::initialize_refcount_before_publication(header, 1);
             MoltHeader::initialize_flags_gc_unpublished(
                 header,
                 HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC,
@@ -289,7 +288,7 @@ mod tests {
                 let header = crate::object::header_from_obj_ptr(ptr);
                 assert_eq!((*header).type_id, TYPE_ID_OBJECT);
                 assert_eq!(
-                    (*header).ref_count.load(AtomicOrdering::Relaxed),
+                    (*header).owned_ref_count_snapshot(),
                     1,
                     "fresh arena alloc should have refcount 1"
                 );

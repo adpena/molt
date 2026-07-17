@@ -154,7 +154,7 @@ def _write_pgo_profile(tmp_path: Path, entrypoint: str = "script.py") -> Path:
 def _write_runtime_feedback(tmp_path: Path) -> Path:
     feedback_path = tmp_path / "molt_runtime_feedback.json"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "runtime_feedback",
         "profile": {
             "call_dispatch": 0,
@@ -164,6 +164,9 @@ def _write_runtime_feedback(tmp_path: Path) -> Path:
             "alloc_count": 0,
             "async_polls": 0,
         },
+        "aux": {},
+        "gc": {},
+        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
         "hot_paths": {
             "call_bind_ic_hit": 0,
             "call_bind_ic_miss": 0,
@@ -184,10 +187,6 @@ def _write_runtime_feedback(tmp_path: Path) -> Path:
             "guard_dict_shape_layout_fail_expected_version_invalid": 0,
             "guard_dict_shape_layout_fail_version_mismatch": 0,
         },
-        "hot_functions": [
-            {"symbol": "molt_init___main__", "count": 11},
-            {"symbol": "helper", "count": 3},
-        ],
     }
     feedback_path.write_text(json.dumps(payload))
     return feedback_path
@@ -1590,8 +1589,8 @@ def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
     assert payload["status"] == "ok"
     assert payload["data"]["sysroot"] == str(sysroot)
     assert payload["data"]["runtime_feedback"]["path"] == str(feedback_path)
-    assert payload["data"]["runtime_feedback"]["schema_version"] == 1
-    assert "molt_init___main__" in payload["data"]["runtime_feedback"]["hot_functions"]
+    assert payload["data"]["runtime_feedback"]["schema_version"] == 2
+    assert payload["data"]["runtime_feedback"]["hot_functions"] == []
     assert Path(payload["data"]["output"]).exists()
 
 

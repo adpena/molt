@@ -2121,19 +2121,6 @@ pub(crate) unsafe fn weakcontainer_traverse(ptr: *mut u8, visit: &mut dyn FnMut(
     }
 }
 
-pub(crate) unsafe fn weakcontainer_clear_state(_py: &PyToken<'_>, ptr: *mut u8) {
-    let Some(state) = (unsafe { state_from_ptr(ptr) }) else {
-        return;
-    };
-    // GC/deallocation is terminal for these edges; no live iterator can rely
-    // on a new structural identity after its state edge is cleared.
-    let entries = state
-        .write()
-        .detach_all(false)
-        .unwrap_or_else(|_| Vec::new());
-    entry_slots_release(_py, state.kind, entries);
-}
-
 pub(crate) unsafe fn weakcontainer_detach_state(
     _py: &PyToken<'_>,
     ptr: *mut u8,
@@ -2147,11 +2134,6 @@ pub(crate) unsafe fn weakcontainer_detach_state(
         .detach_all(false)
         .unwrap_or_else(|_| std::process::abort());
     entry_slots_detach_owned_edges(_py, state.kind, entries, sink);
-}
-
-pub(crate) unsafe fn weakcontainer_drop_state(_py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe { weakcontainer_clear_state(_py, ptr) };
-    unsafe { std::ptr::drop_in_place(ptr.cast::<WeakContainerState>()) };
 }
 
 pub(crate) unsafe fn weakcontainer_drop_detached_state(ptr: *mut u8) {

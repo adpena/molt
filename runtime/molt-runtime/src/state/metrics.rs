@@ -7,10 +7,20 @@
 /// without `MOLT_PROFILE`), and a process-exit assertion fires if more than
 /// `EXPECTED_LIVE_OBJECTS` objects survive. The single source of truth consulted
 /// by both the wasm and native `profile_env_enabled`.
-pub(crate) fn leak_assertion_enabled() -> bool {
-    std::env::var("MOLT_ASSERT_NO_LEAK")
+fn profile_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
         .map(|val| !val.is_empty() && val != "0")
         .unwrap_or(false)
+}
+
+pub(crate) fn leak_assertion_enabled() -> bool {
+    profile_flag_enabled("MOLT_ASSERT_NO_LEAK")
+}
+
+/// Sole target-independent authority for enabling runtime counters. WASM and
+/// native must not grow separate environment interpretations.
+fn profile_env_enabled() -> bool {
+    profile_flag_enabled("MOLT_PROFILE") || leak_assertion_enabled()
 }
 
 /// Phase-0 exact-survivor leak gauge (doc 55 §2.5 / ownership_lattice_phase0.md
@@ -74,16 +84,11 @@ mod wasm_stubs {
     const PROFILE_UNKNOWN: u8 = 2;
     static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
 
-    fn profile_env_enabled() -> bool {
-        let direct = std::env::var("MOLT_PROFILE")
-            .map(|val| !val.is_empty() && val != "0")
-            .unwrap_or(false);
-        // MOLT_ASSERT_NO_LEAK force-enables counting so the leak gauge is live.
-        direct || super::leak_assertion_enabled()
-    }
-
     pub(crate) fn init_profile_enabled_from_env() {
-        PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
+        PROFILE_ENABLED.store(
+            u8::from(super::profile_env_enabled()),
+            AtomicOrdering::Relaxed,
+        );
     }
 
     pub(crate) fn profile_enabled_unchecked() -> bool {
@@ -91,7 +96,7 @@ mod wasm_stubs {
             0 => false,
             1 => true,
             _ => {
-                let enabled = u8::from(profile_env_enabled());
+                let enabled = u8::from(super::profile_env_enabled());
                 let _ = PROFILE_ENABLED.compare_exchange(
                     PROFILE_UNKNOWN,
                     enabled,
@@ -184,16 +189,11 @@ mod native {
     const PROFILE_UNKNOWN: u8 = 2;
     static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
 
-    fn profile_env_enabled() -> bool {
-        let direct = std::env::var("MOLT_PROFILE")
-            .map(|val| !val.is_empty() && val != "0")
-            .unwrap_or(false);
-        // MOLT_ASSERT_NO_LEAK force-enables counting so the leak gauge is live.
-        direct || super::leak_assertion_enabled()
-    }
-
     pub(crate) fn init_profile_enabled_from_env() {
-        PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
+        PROFILE_ENABLED.store(
+            u8::from(super::profile_env_enabled()),
+            AtomicOrdering::Relaxed,
+        );
     }
 
     pub(crate) fn profile_enabled_unchecked() -> bool {
@@ -201,7 +201,7 @@ mod native {
             0 => false,
             1 => true,
             _ => {
-                let enabled = u8::from(profile_env_enabled());
+                let enabled = u8::from(super::profile_env_enabled());
                 let _ = PROFILE_ENABLED.compare_exchange(
                     PROFILE_UNKNOWN,
                     enabled,

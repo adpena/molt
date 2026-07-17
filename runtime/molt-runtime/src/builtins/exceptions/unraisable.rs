@@ -1203,11 +1203,7 @@ mod tests {
 
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Acquire)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     fn pending_exception(_py: &PyToken<'_>, message: &str) -> u64 {
@@ -1283,25 +1279,15 @@ mod tests {
                 unsafe { crate::object::class_is_immutable(_py, class_ptr) },
                 "the hidden structured type must use generic immutable-type metadata"
             );
-            let class_refs_before = unsafe {
-                (*header_from_obj_ptr(class_ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Acquire)
-            };
+            let class_refs_before =
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
             let second_args_bits = alloc_unraisable_hook_args(_py, &fields);
-            let class_refs_with_second = unsafe {
-                (*header_from_obj_ptr(class_ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Acquire)
-            };
+            let class_refs_with_second =
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
             assert_eq!(class_refs_with_second, class_refs_before + 1);
             dec_ref_bits(_py, second_args_bits);
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(AtomicOrdering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 class_refs_before,
                 "each structured tuple owns and releases exactly one class edge"
             );

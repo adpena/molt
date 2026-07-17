@@ -85,6 +85,8 @@ def test_msgpack_full_stdlib_args_reach_wasm_and_profile_tools() -> None:
     assert bench_wasm.molt_args_for_benchmark(script) == expected
     assert profile.molt_args_for_benchmark("bench_parse_msgpack.py") == expected
     assert bench_wasm.MOLT_ARGS_BY_BENCH[script] == expected
+
+
 def test_heap_lifecycle_benchmarks_use_canonical_profile_epochs() -> None:
     expected_labels = {
         "bench_heap_canonical_cache.py": {"canonical_cache_hits"},

@@ -40,7 +40,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                     .unwrap_or_else(|| "<unknown>".to_string());
                 let rc = unsafe {
                     let header = header_from_obj_ptr(ptr.0);
-                    (*header).ref_count.load(AtomicOrdering::Acquire)
+                    (*header).ref_count_snapshot()
                 };
                 eprintln!(
                     "molt exc last task=0x{:x} kind={} ptr=0x{:x} rc={}",
@@ -72,7 +72,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                 .unwrap_or_else(|| "<unknown>".to_string());
             let rc = unsafe {
                 let header = header_from_obj_ptr(ptr.0);
-                (*header).ref_count.load(AtomicOrdering::Acquire)
+                (*header).ref_count_snapshot()
             };
             eprintln!(
                 "molt exc last task=0x0 kind={} ptr=0x{:x} rc={}",

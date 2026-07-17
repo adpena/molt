@@ -1,5 +1,4 @@
 use super::class_support::{attrgetter_class, itemgetter_class, methodcaller_class};
-use std::sync::atomic::Ordering;
 
 use molt_obj_model::MoltObject;
 
@@ -7,7 +6,7 @@ use crate::object::ObjectShapeId;
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
     exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, string_obj_to_owned,
+    object_type_id, raise_exception, string_obj_to_owned,
 };
 
 pub(crate) unsafe fn operator_visit_owned_edges(
@@ -612,45 +611,4 @@ pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64)
         }
         crate::molt_call_bind(method_bits, builder_bits)
     })
-}
-
-pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    let class_bits = unsafe { object_class_bits(ptr) };
-    if class_bits == 0 {
-        return false;
-    }
-    let operator = &crate::runtime_state(_py).operator;
-    let item_class = operator.itemgetter_class.load(Ordering::Acquire);
-    if class_bits == item_class {
-        let items_bits = unsafe { itemgetter_items_bits(ptr) };
-        if items_bits != 0 && !obj_from_bits(items_bits).is_none() {
-            dec_ref_bits(_py, items_bits);
-        }
-        return true;
-    }
-    let attr_class = operator.attrgetter_class.load(Ordering::Acquire);
-    if class_bits == attr_class {
-        let attrs_bits = unsafe { attrgetter_attrs_bits(ptr) };
-        if attrs_bits != 0 && !obj_from_bits(attrs_bits).is_none() {
-            dec_ref_bits(_py, attrs_bits);
-        }
-        return true;
-    }
-    let method_class = operator.methodcaller_class.load(Ordering::Acquire);
-    if class_bits == method_class {
-        let name_bits = unsafe { methodcaller_name_bits(ptr) };
-        let args_bits = unsafe { methodcaller_args_bits(ptr) };
-        let kwargs_bits = unsafe { methodcaller_kwargs_bits(ptr) };
-        if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
-            dec_ref_bits(_py, name_bits);
-        }
-        if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-            dec_ref_bits(_py, args_bits);
-        }
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            dec_ref_bits(_py, kwargs_bits);
-        }
-        return true;
-    }
-    false
 }

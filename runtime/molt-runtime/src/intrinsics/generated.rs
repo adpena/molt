@@ -14891,6 +14891,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_profile_epoch_reset",
+        symbol: "molt_profile_epoch_reset",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_profile_epoch_dump",
+        symbol: "molt_profile_epoch_dump",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_xml_element_new",
         symbol: "molt_xml_element_new",
         arity: 2,

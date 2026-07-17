@@ -153,7 +153,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             // module_import may return a borrowed reference from sys.modules —
             // inc_ref to ensure the caller owns it and dec_ref at last_use
             // doesn't free a module still in sys.modules.
-            emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }

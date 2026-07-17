@@ -73,7 +73,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
         // The element came from a non-escaping tuple; inc_ref
         // to keep refcount correct since the tuple itself was
         // never heap-allocated.
-        emit_inc_ref_obj(&mut *builder, elem_val, local_inc_ref_obj, nbc);
+        emit_inc_ref_obj(&mut *builder, elem_val, local_inc_ref_obj);
         if let Some(out__) = op.out.as_ref() {
             def_var_named(&mut *builder, vars, out__, elem_val);
         }
@@ -557,7 +557,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         builder
                             .ins()
                             .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
-                    emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                    emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj);
                     if let Some(out__) = op.out.as_ref() {
                         def_var_named(&mut *builder, vars, out__, elem);
                     }
@@ -623,7 +623,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             builder
                                 .ins()
                                 .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
-                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj);
                         jump_block(&mut *builder, merge_block, &[elem]);
                     } else {
                         // Unknown element type — branch on cached is_bool flag.
@@ -671,7 +671,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             builder
                                 .ins()
                                 .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
-                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj);
                         if has_raw_bool_carrier {
                             // Non-bool path: shadow = NaN-boxed element (not a raw bool).
                             jump_block(&mut *builder, merge_block, &[elem, elem]);

@@ -58,10 +58,6 @@ pub(crate) struct DetachedEdgeSink {
 }
 
 impl DetachedEdgeSink {
-    pub(crate) fn try_with_capacity(capacity: usize) -> Option<Self> {
-        Self::try_with_capacities(capacity, 0)
-    }
-
     pub(crate) fn try_with_capacities(
         edge_capacity: usize,
         resource_capacity: usize,
@@ -81,10 +77,6 @@ impl DetachedEdgeSink {
     /// process-fatal memory condition: unwinding or partially clearing a
     /// refcount-zero object would violate memory safety. The steady-state path
     /// performs no allocation once the per-thread high-water mark is learned.
-    pub(crate) fn terminal_with_capacity(capacity: usize) -> Self {
-        Self::terminal_with_capacities(capacity, 0)
-    }
-
     pub(crate) fn terminal_with_capacities(edge_capacity: usize, resource_capacity: usize) -> Self {
         let mut edges = TERMINAL_EDGE_SINK_POOL.with(|pool| {
             let mut slots = pool.borrow_mut();
@@ -252,8 +244,12 @@ impl DetachedEdgeSink {
 
 impl Drop for DetachedEdgeSink {
     fn drop(&mut self) {
-        if !self.resources.is_empty() {
-            eprintln!("molt fatal: detached resources dropped without release");
+        if !self.edges.is_empty() || !self.resources.is_empty() {
+            eprintln!(
+                "molt fatal: detached lifecycle custody dropped without release (edges={}, resources={})",
+                self.edges.len(),
+                self.resources.len()
+            );
             std::process::abort();
         }
         if self.recycle {
@@ -650,10 +646,10 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
             | HeapLifecycleHandler::FileHandle => 1,
             HeapLifecycleHandler::Object | HeapLifecycleHandler::Weakref => {
                 usize::from(
-                    super::object_shape_resource_slot(unsafe { super::object_shape_id(ptr) })
+                    super::object_shape_resource_slot(super::object_shape_id(ptr))
                         != super::ObjectShapeResourceSlot::None,
                 ) + usize::from(matches!(
-                    super::object_shape_lifecycle_family(unsafe { super::object_shape_id(ptr) }),
+                    super::object_shape_lifecycle_family(super::object_shape_id(ptr)),
                     super::ObjectShapeLifecycleFamily::Functools
                         | super::ObjectShapeLifecycleFamily::Itertools
                 ))
@@ -730,7 +726,13 @@ pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut Detac
 #[cfg(test)]
 pub(crate) unsafe fn clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) {
     let mut count = 0usize;
-    unsafe { visit_owned_edges(py, ptr, &mut |_| count = count.saturating_add(1)) };
+    unsafe {
+        visit_owned_edges(py, ptr, &mut |_| {
+            count = count
+                .checked_add(1)
+                .unwrap_or_else(|| std::process::abort())
+        })
+    };
     let resources = unsafe { detached_resource_count(ptr) };
     let mut sink = DetachedEdgeSink::try_with_capacities(count, resources)
         .expect("single-object clear edge reservation failed");
@@ -846,7 +848,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                         ptr,
                         class_ptr,
                         &mut |slot, bits| {
-                            unsafe { *slot = 0 };
+                            *slot = 0;
                             sink.detach_if_heap(bits);
                         },
                     );
@@ -1181,22 +1183,26 @@ mod detach_sink_tests {
 
     #[test]
     fn terminal_sink_reuses_learned_high_water_without_allocation() {
-        let first = DetachedEdgeSink::terminal_with_capacity(64);
+        let first = DetachedEdgeSink::terminal_with_capacities(64, 0);
         drop(first);
         let learned = terminal_edge_sink_allocation_count();
 
-        let second = DetachedEdgeSink::terminal_with_capacity(64);
+        let second = DetachedEdgeSink::terminal_with_capacities(64, 0);
         drop(second);
         assert_eq!(terminal_edge_sink_allocation_count(), learned);
     }
 
     #[test]
     fn nested_terminal_sinks_never_alias_live_storage() {
-        let mut outer = DetachedEdgeSink::terminal_with_capacity(1);
+        let mut outer = DetachedEdgeSink::terminal_with_capacities(1, 0);
         outer.detach(MoltObject::from_ptr(std::ptr::dangling_mut::<u8>()).bits());
-        let inner = DetachedEdgeSink::terminal_with_capacity(1);
+        let inner = DetachedEdgeSink::terminal_with_capacities(1, 0);
         assert!(inner.edges.is_empty());
         assert_eq!(outer.edges.len(), 1);
+        // This test uses a deliberately dangling non-owning marker only to
+        // prove storage separation; remove it before the sink's fail-closed
+        // ownership guard runs.
+        outer.edges.clear();
         drop(inner);
         drop(outer);
     }

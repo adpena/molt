@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import subprocess
 import tempfile
 from pathlib import Path
 
 import tools.bench_wasm as bench_wasm
+from molt.cli import atomic_io, wasm_link_args
 
 
 def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
@@ -13,6 +16,15 @@ def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
     src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+
+def _runtime_link_response(cmd: list[str]) -> tuple[Path, str]:
+    separator = cmd.index("--")
+    assert cmd[separator + 1] == "-C"
+    link_arg = cmd[separator + 2]
+    assert link_arg.startswith("link-arg=@")
+    response_path = Path(link_arg.removeprefix("link-arg=@"))
+    return response_path, response_path.read_text(encoding="utf-8")
 
 
 def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
@@ -55,18 +67,25 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     assert output.exists()
     assert output.read_bytes().startswith(b"\x00asm")
     cmd, env = captured[0]
-    assert cmd[:3] == ["cargo", "build", "--release"]
+    assert cmd[:3] == ["cargo", "rustc", "--release"]
     assert "--no-default-features" in cmd
     features = set(cmd[cmd.index("--features") + 1].split(","))
     assert "stdlib_micro" in features
     assert "molt_gpu_primitives" not in features
     assert "stdlib_full" not in features
     assert "sqlite" not in features
-    # Non-relocatable builds use standard import/export link flags
+    # Link-only flags stay out of global RUSTFLAGS so Cargo build scripts do
+    # not inherit the thousands of exports on Windows.
     rustflags = env.get("RUSTFLAGS", "")
-    assert "--import-memory" in rustflags
-    assert "--export-if-defined=molt_frozenset_add" in rustflags
+    assert len(rustflags) < 1024
+    assert "--import-memory" not in rustflags
+    assert "--export-if-defined=molt_frozenset_add" not in rustflags
     assert "--export-dynamic" not in rustflags
+    response_path, response_text = _runtime_link_response(cmd)
+    assert response_path.is_absolute()
+    assert "--import-memory\n" in response_text
+    assert "--export-if-defined=molt_frozenset_add\n" in response_text
+    assert "--export-dynamic" not in response_text
 
 
 def test_build_runtime_wasm_gpu_primitives_are_explicit_opt_in(
@@ -143,13 +162,62 @@ def test_build_runtime_wasm_uses_explicit_shared_link_flags(
         log=None,
     )
     cmd, env = captured[0]
-    assert cmd[:3] == ["cargo", "build", "--release"]
+    assert cmd[:3] == ["cargo", "rustc", "--release"]
     assert "--no-default-features" in cmd
     rustflags = env.get("RUSTFLAGS", "")
-    assert "--import-memory" in rustflags
-    assert "--growable-table" in rustflags
-    assert "--export-if-defined=molt_frozenset_add" in rustflags
+    assert len(rustflags) < 1024
+    assert "--import-memory" not in rustflags
+    assert "--growable-table" not in rustflags
+    assert "--export-if-defined=molt_frozenset_add" not in rustflags
     assert "--export-dynamic" not in rustflags
+    _, response_text = _runtime_link_response(cmd)
+    assert "--import-memory\n" in response_text
+    assert "--growable-table\n" in response_text
+    assert "--export-if-defined=molt_frozenset_add\n" in response_text
+    assert "--export-dynamic" not in response_text
+
+
+def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "repo with spaces"
+    project_root.mkdir()
+    link_args = [
+        "--import-memory",
+        "--export-if-defined=molt_beta",
+        "--export-if-defined=molt_alpha",
+    ]
+    link_flags = " ".join(f"-C link-arg={arg}" for arg in link_args)
+    writes: list[Path] = []
+    atomic_write = atomic_io._atomic_write_bytes
+
+    def record_atomic_write(path: Path, payload: bytes) -> None:
+        writes.append(path)
+        atomic_write(path, payload)
+
+    monkeypatch.setattr(atomic_io, "_atomic_write_bytes", record_atomic_write)
+    first = wasm_link_args.wasm_link_args_response_file(
+        project_root,
+        label="runtime shared",
+        link_flags=link_flags,
+    )
+    second = wasm_link_args.wasm_link_args_response_file(
+        project_root,
+        label="runtime shared",
+        link_flags=link_flags,
+    )
+
+    assert first is not None
+    assert second == first
+    assert writes == [first]
+    digest = hashlib.sha256("\0".join(link_args).encode("utf-8")).hexdigest()
+    assert first.name == f"runtime_shared.{digest}.rsp"
+    assert first.read_bytes() == ("\n".join(link_args) + "\n").encode()
+    assert " " in str(first)
+    rustc_args = ["-C", f"link-arg=@{first}"]
+    rendered = subprocess.list2cmdline(rustc_args)
+    assert f'"link-arg=@{first}"' in rendered
 
 
 def test_build_runtime_wasm_full_profile_uses_wasm_safe_full_feature_set(
@@ -226,6 +294,7 @@ def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) 
                 error="runtime failed",
                 error_class="runtime_error",
             ),
+            [],
         ),
     )
 
@@ -363,6 +432,7 @@ def test_partial_wasm_sample_failure_has_null_time(monkeypatch, tmp_path: Path) 
                 error="second sample failed",
                 error_class="runtime_error",
             ),
+            [],
         ),
     )
 
@@ -409,7 +479,7 @@ def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
         bench_wasm, "measure_wasm_run", lambda *args, **kwargs: next(results)
     )
 
-    samples, ok, failure = bench_wasm.collect_samples(
+    samples, ok, failure, profiles = bench_wasm.collect_samples(
         wasm,
         samples=2,
         warmup=0,
@@ -422,6 +492,55 @@ def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
     assert ok is False
     assert failure is not None
     assert failure.error_class == "runtime_error"
+    assert profiles == [{"sample_index": 0, "profile": None, "epochs": []}]
+
+
+def test_wasm_profile_parsers_require_current_schemas_and_preserve_epochs() -> None:
+    process = {
+        "schema_version": 2,
+        "kind": "runtime_feedback",
+        "profile": {"alloc_count": 1},
+        "aux": {},
+        "gc": {},
+        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
+        "hot_paths": {},
+        "deopt_reasons": {},
+    }
+    epochs = [
+        {
+            "schema_version": 1,
+            "kind": "runtime_profile_epoch",
+            "generation": generation,
+            "label": label,
+            "delta": {"profile": {"alloc_count": 0}},
+            "counter_regressions": {},
+            "gauges": {},
+            "memory": {
+                "current_rss_start_bytes": 0,
+                "current_rss_end_bytes": 0,
+                "current_rss_delta_bytes": 0,
+                "process_peak_start_bytes": 0,
+                "process_peak_end_bytes": 0,
+            },
+        }
+        for generation, label in ((1, "cache_hits"), (2, "weakref_calls"))
+    ]
+    log = "\n".join(
+        [
+            'molt_profile_json {"profile":{"alloc_count":99}}',
+            "molt_profile_json " + json.dumps(process),
+            *("molt_profile_epoch_json " + json.dumps(epoch) for epoch in epochs),
+        ]
+    )
+
+    assert bench_wasm._extract_profile_json(log) == process
+    assert bench_wasm._extract_profile_epoch_json(log) == epochs
+    assert (
+        bench_wasm._extract_profile_json(
+            'molt_profile_json {"profile":{"alloc_count":99}}'
+        )
+        is None
+    )
 
 
 def test_zero_duration_wasm_run_is_invalid_sample(monkeypatch) -> None:

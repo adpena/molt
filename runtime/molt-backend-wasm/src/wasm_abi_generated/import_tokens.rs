@@ -2928,6 +2928,8 @@ pub(crate) enum WasmRuntimeImport {
     DictGetitemBorrowed,
     ListGetitemBorrowed,
     TupleGetitemBorrowed,
+    ProfileEpochReset,
+    ProfileEpochDump,
     XmlElementNew,
     XmlElementTag,
     XmlElementSetTag,

@@ -729,12 +729,7 @@ pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> 
                         if let Some(p) = ptr {
                             let header = p.sub(std::mem::size_of::<super::MoltHeader>())
                                 as *mut super::MoltHeader;
-                            if ((*header).load_metadata_flags() & super::HEADER_FLAG_IMMORTAL) == 0
-                            {
-                                (*header)
-                                    .ref_count
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
+                            (*header).retain_owned(1, "molt_ic_probe_fast");
                         }
                         return bits as i64;
                     }

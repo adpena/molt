@@ -241,7 +241,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     builder
                         .ins()
                         .store(MemFlagsData::trusted(), *arg_val, obj_ptr, offset);
-                    emit_maybe_ref_adjust_v2(&mut *builder, *arg_val, local_inc_ref_obj, nbc);
+                    emit_inc_ref_obj(&mut *builder, *arg_val, local_inc_ref_obj);
                 }
             }
             if matches!(task_kind, "future" | "coroutine") {

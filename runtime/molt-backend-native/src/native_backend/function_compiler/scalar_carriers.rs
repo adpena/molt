@@ -506,7 +506,7 @@ pub(in crate::native_backend::function_compiler) fn emit_protect_borrowed_args_a
     result: Value,
     args: &[Value],
     local_inc_ref_obj: FuncRef,
-    nbc: &crate::NanBoxConsts,
+    _nbc: &crate::NanBoxConsts,
 ) {
     let Some((first, rest)) = args.split_first() else {
         return;
@@ -523,7 +523,7 @@ pub(in crate::native_backend::function_compiler) fn emit_protect_borrowed_args_a
 
     switch_to_block_materialized(builder, retain_block);
     seal_block_once(builder, sealed_blocks, retain_block);
-    emit_inc_ref_obj(builder, result, local_inc_ref_obj, nbc);
+    emit_inc_ref_obj(builder, result, local_inc_ref_obj);
     jump_block(builder, cont_block, &[]);
 
     switch_to_block_materialized(builder, cont_block);

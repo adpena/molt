@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from molt._runtime_profile_schema import is_process_profile
 from molt.cli.models import PgoProfileSummary, RuntimeFeedbackSummary
 from molt.cli.output import fail as _fail
 
@@ -72,30 +73,6 @@ def _extract_hot_functions(profile: dict[str, Any], warnings: list[str]) -> list
             entries,
             key=lambda item: (-(item[1] or 0.0), item[0]),
         )
-    else:
-        entries = sorted(entries, key=lambda item: item[0])
-    seen: set[str] = set()
-    hot: list[str] = []
-    for name, _score in entries:
-        if name in seen:
-            continue
-        seen.add(name)
-        hot.append(name)
-    return hot
-
-
-def _extract_runtime_feedback_hot_functions(
-    payload: dict[str, Any], warnings: list[str]
-) -> list[str]:
-    raw = payload.get("hot_functions")
-    if raw is None:
-        return []
-    entries = _pgo_hotspot_entries(raw, warnings)
-    if not entries:
-        return []
-    has_score = any(score is not None for _, score in entries)
-    if has_score:
-        entries = sorted(entries, key=lambda item: (-(item[1] or 0.0), item[0]))
     else:
         entries = sorted(entries, key=lambda item: item[0])
     seen: set[str] = set()
@@ -308,11 +285,12 @@ def _load_runtime_feedback(
             ),
         )
     errors: list[str] = []
-    schema_version = payload.get("schema_version")
-    if not isinstance(schema_version, int):
-        errors.append("missing schema_version")
-    if payload.get("kind") != "runtime_feedback":
-        errors.append(f"unexpected kind {payload.get('kind')!r}")
+    if not is_process_profile(payload):
+        errors.append(
+            "expected runtime_feedback process schema v2, got "
+            f"kind={payload.get('kind')!r} "
+            f"schema_version={payload.get('schema_version')!r}"
+        )
     if not isinstance(payload.get("profile"), dict):
         errors.append("missing profile")
     if not isinstance(payload.get("hot_paths"), dict):
@@ -329,11 +307,11 @@ def _load_runtime_feedback(
                 command=command,
             ),
         )
-    hot_functions = _extract_runtime_feedback_hot_functions(payload, warnings)
+    schema_version = payload["schema_version"]
     digest = hashlib.sha256(raw).hexdigest()
     summary = RuntimeFeedbackSummary(
         schema_version=schema_version,
         hash=digest,
-        hot_functions=hot_functions,
+        hot_functions=[],
     )
     return summary, path, None

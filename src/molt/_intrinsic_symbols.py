@@ -2480,6 +2480,8 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_dict_getitem_borrowed": "molt_dict_getitem_borrowed",
     "molt_list_getitem_borrowed": "molt_list_getitem_borrowed",
     "molt_tuple_getitem_borrowed": "molt_tuple_getitem_borrowed",
+    "molt_profile_epoch_reset": "molt_profile_epoch_reset",
+    "molt_profile_epoch_dump": "molt_profile_epoch_dump",
     "molt_xml_element_new": "molt_xml_element_new",
     "molt_xml_element_tag": "molt_xml_element_tag",
     "molt_xml_element_set_tag": "molt_xml_element_set_tag",

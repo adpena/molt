@@ -175,7 +175,7 @@ def test_gc_reentrancy_is_runtime_owned_and_free_thread_fails_before_snapshot() 
     assert "static GC_RUNNING" not in gc
     assert "pub(crate) gc_running: AtomicBool" in state
     assert "runtime_state(py).gc_running" in gc
-    free_thread = gc.split('#[cfg(feature = "free-threaded")]', 1)[1].split(
+    free_thread = gc.split('if cfg!(feature = "free-threaded")', 1)[1].split(
         "// Reentrancy guard", 1
     )[0]
     assert "GcCollectStatus::UnsupportedConcurrency" in free_thread
@@ -394,7 +394,7 @@ def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     foreign = (ROOT / "runtime/molt-runtime/src/object/foreign.rs").read_text(
         encoding="utf-8"
     )
-    bridge = (ROOT / "runtime/molt-cpython-abi/src/bridge/identity/ffi_exports.rs").read_text(
+    bridge = (ROOT / "runtime/molt-cpython-abi/src/bridge.rs").read_text(
         encoding="utf-8"
     )
     assert "molt_foreign_object_is_gc_capable(c_ptr)" in foreign
@@ -513,10 +513,12 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     unpublished_allocator = allocator.split(
         "fn alloc_object_zeroed_with_aux_policy", 1
     )[1].split("pub(crate) fn alloc_object(", 1)[0]
-    assert unpublished_allocator.index("gc_mark_unpublished()") < unpublished_allocator.index(
-        "gc_track_if_cyclic"
-    )
-    assert "gc_mark_unpublished()" in arena
+    assert unpublished_allocator.index(
+        "initialize_flags_gc_unpublished(header, 0)"
+    ) < unpublished_allocator.index("gc_track_if_cyclic")
+    assert "gc_mark_unpublished" not in allocator
+    assert "initialize_flags_gc_unpublished" in arena
+    assert "gc_mark_unpublished" not in arena
     assert cranelift.count('"molt_object_publish_initialized"') >= 2
     assert 'get_function("molt_object_publish_initialized")' in llvm
     assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
@@ -524,5 +526,5 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert 'runtime_name = "molt_object_publish_initialized"' in wasm_manifest
     # Rust and Luau allocate their own fully initialized value/table
     # representations; they never observe the native unpublished pointer ABI.
-    assert '"build_list" | "alloc" => self.emit_op_build_list(op)' in rust
+    assert '"build_list" | "list_new" | "alloc" => self.emit_op_build_list(op)' in rust
     assert '"alloc" | "alloc_task" =>' in luau

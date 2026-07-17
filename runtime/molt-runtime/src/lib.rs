@@ -28,6 +28,10 @@ const _: () = assert!(
     cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_FLAGS_ATOMIC,
     "molt-runtime/free-threaded must exactly match molt-codegen-abi/free-threaded",
 );
+const _: () = assert!(
+    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
+    "molt-runtime refcount storage must match the generated-object concurrency ABI",
+);
 
 #[cfg(feature = "free-threaded")]
 #[used]
@@ -496,14 +500,10 @@ pub use crate::builtins::containers_alloc::{
 };
 pub use crate::builtins::context::*;
 pub(crate) use crate::builtins::context::{
-    context_payload_bits, context_stack_store, context_stack_take, context_stack_unwind,
-    generator_context_stack_drop, generator_context_stack_store, generator_context_stack_take,
+    context_stack_store, context_stack_take, context_stack_unwind, generator_context_stack_store,
+    generator_context_stack_take,
 };
 pub use crate::builtins::contextlib::*;
-pub(crate) use crate::builtins::contextlib::{
-    contextlib_async_exitstack_enter_context_task_drop, contextlib_async_exitstack_exit_task_drop,
-    contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
-};
 pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
@@ -514,31 +514,29 @@ pub(crate) use crate::builtins::exceptions::{
     clear_thread_exception_for_teardown, exception_args_bits, exception_args_from_iterable,
     exception_args_is_lazy_single, exception_args_payload_bits, exception_cause_bits,
     exception_clear_reason_set, exception_context_align_depth, exception_context_bits,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_detach_owned_edges,
-    exception_dict_bits, exception_group_method_bits, exception_handler_active,
-    exception_kind_bits, exception_last_bits_noinc, exception_matches_type,
-    exception_materialized_args_bits, exception_materialized_message_bits,
-    exception_message_for_storage, exception_message_is_lazy, exception_method_bits,
-    exception_msg_bits, exception_notes_bits, exception_pending, exception_release_detached_edges,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_dict_bits,
+    exception_group_method_bits, exception_handler_active, exception_kind_bits,
+    exception_last_bits_noinc, exception_matches_type, exception_materialized_args_bits,
+    exception_materialized_message_bits, exception_message_for_storage, exception_message_is_lazy,
+    exception_method_bits, exception_msg_bits, exception_notes_bits, exception_pending,
     exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_depth,
     exception_stack_pop, exception_stack_pop_restore_last, exception_stack_push,
     exception_stack_set_depth, exception_store_args_and_message, exception_suppress_bits,
     exception_trace_bits, exception_type_bits_from_name, exception_value_bits,
     exceptions_clear_runtime_state, format_exception, format_exception_message,
-    format_exception_with_traceback, generator_exception_stack_drop,
-    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
-    handle_system_exit, molt_async_work_poll_and_exception_pending, molt_exception_active,
-    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_pending,
-    molt_exception_set_last, molt_raise, molt_unraisable_hook_args_is_exact, raise_exception,
-    raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
-    raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
-    set_task_raise_active, sync_current_exception_pending, task_exception_baseline_drop,
-    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_drop,
-    task_exception_depth_store, task_exception_depth_take, task_exception_detach_owned_edges,
-    task_exception_handler_stack_drop, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
-    task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
-    task_raise_active,
+    format_exception_with_traceback, generator_exception_stack_store,
+    generator_exception_stack_take, generator_raise_active, handle_system_exit,
+    molt_async_work_poll_and_exception_pending, molt_exception_active, molt_exception_clear,
+    molt_exception_kind, molt_exception_last, molt_exception_pending, molt_exception_set_last,
+    molt_raise, molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
+    raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
+    raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
+    sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
+    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_drop,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
+    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
@@ -623,8 +621,8 @@ pub use crate::builtins::weakref_type::{
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
-    callargs_dec_ref_all, callargs_ptr, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos,
+    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_class_no_pool,
@@ -742,10 +740,10 @@ pub(crate) use crate::object::{
     HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat,
     MemoryViewFormatKind, MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot,
-    alloc_object, alloc_object_with_aux, alloc_object_zeroed, alloc_object_zeroed_with_aux,
-    bits_from_ptr, buffer2d_ptr, bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits,
-    dataclass_fields_mut, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
-    file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    alloc_object, alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr,
+    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut,
+    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr,
+    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
     instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
     memoryview_base_bits, memoryview_data, memoryview_format_bits, memoryview_itemsize,
     memoryview_len, memoryview_mark_released, memoryview_ndim, memoryview_offset,

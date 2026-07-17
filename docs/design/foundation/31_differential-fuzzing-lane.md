@@ -1,6 +1,7 @@
-<!-- Foundation design 31. Architect: read-only research-granted agent, 2026-06-06.
-Saved verbatim. Key audit finding: tools/fuzz_compiler.py (2,855 lines, 3 modes) +
-libFuzzer targets + 62 Kani harnesses ALREADY EXIST — this design extends that
+<!-- Foundation design 31. Architect: read-only research-granted agent, 2026-06-06;
+live authority audit refreshed 2026-07-16. Key audit finding:
+tools/fuzz_compiler.py (2,855 lines, 3 modes) + libFuzzer targets + 90 Kani
+harnesses ALREADY EXIST — this design extends that
 substrate (generator feature families, 5-oracle stack incl. the CPython-free
 backend-divergence oracle, AST-aware reducer, corpus ratchet, CI tiers) rather than
 duplicating it. The would-have-caught table (Part 1.5) is the acceptance calibration:
@@ -63,7 +64,7 @@ boundaries, nonlocal-augassign, membership variants). -->
 
 ### 1.3 Kani proofs
 
-62 harnesses across 4 files (kani_nanbox.rs, kani_refcount.rs, kani_object.rs, kani_string_ops.rs) covering NaN-box algebra, refcount arithmetic, header layout, and string slice safety. These are correct and comprehensive for what they cover. **Not yet covered**: `dec_ref_ptr` full deallocation path, concurrent refcount, wasm32 Cell<u32> path, pointer round-trip through registry. These are documented as known gaps in `runtime/molt-obj-model/KANI.md`.
+90 harnesses across 4 files (kani_nanbox.rs, kani_refcount.rs, kani_object.rs, kani_string_ops.rs) cover NaN-box algebra, the runtime-consumed refcount transition state machine, header layout/publication, and string slice safety. Refcount proofs no longer model public `fetch_add`/`fetch_sub`: Kani calls the same pure transition authority used by GIL/default native and wasm `Cell` storage plus native free-threaded atomic storage; a free-threaded concurrent stress test exercises that adapter. **Still not exhaustively covered**: the full `dec_ref_ptr` destructor/weakref/bridge cascade, all concurrent schedules, target storage under a model checker, and pointer-registry round trips. The live gaps are tracked in `runtime/molt-obj-model/KANI.md`.
 
 ### 1.4 SIGURG and harness hazards
 
@@ -229,8 +230,7 @@ The `xfail=molt` annotation means the file is a known-failing regression until t
 - `bigint_boundary_not_inline_int`: proves that `MoltObject::from_int(1i64 << 46)` is NOT inline-int-tagged (it is a heap bigint). This is the 2^46 boundary that the S6/ValueRange substrate handles.
 - `inline_int_range_exhaustive`: proves `from_int(i).as_int() == Some(i)` for all i in the complete 47-bit signed range via Kani's unbounded integer symbolic execution.
 
-`runtime/molt-runtime/tests/kani_refcount.rs` additions:
-- `dec_ref_ptr_immortal_skips_dealloc`: the IMMORTAL flag must cause `dec_ref_ptr` to return without calling the finalizer. This is a bounded proof of the early-return invariant.
+`runtime/molt-obj-model/tests/kani_refcount.rs` is the canonical refcount proof lane. New proofs must call `molt_obj_model::refcount_semantics` directly; a second runtime-local arithmetic model is forbidden because it can drift from native/wasm storage behavior. Full `dec_ref_ptr` orchestration requires a separately isolated integration harness rather than another toy counter.
 
 ### 3.6 CI jobs: `.github/workflows/fuzzer.yml` (new)
 
@@ -285,7 +285,7 @@ Two tiers:
 | `/Users/adpena/Projects/molt/fuzz/src/lib.rs` (new) | `pub mod ir_gen;` — shared TirFunction generator | Shared code extraction |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs` | Expand `OPCODES` palette with exception-edge opcodes; add a comment on the catch_unwind invariant | Close the exception-CFG coverage gap |
 | `/Users/adpena/Projects/molt/runtime/molt-obj-model/tests/kani_nanbox.rs` | Add `bigint_boundary_not_inline_int` and `inline_int_range_exhaustive` harnesses | Close 2^46 boundary gap in formal verification |
-| `/Users/adpena/Projects/molt/runtime/molt-runtime/tests/kani_refcount.rs` | Add `dec_ref_ptr_immortal_skips_dealloc` harness | Close immortal-dealloc invariant gap |
+| `runtime/molt-obj-model/src/refcount_semantics.rs` and `tests/kani_refcount.rs` | Extend the runtime-consumed transition kernel and prove it directly | Prevent formal/runtime refcount authority drift |
 | `/Users/adpena/Projects/molt/runtime/molt-obj-model/KANI.md` | Update "What is NOT yet verified" section with new harnesses; update total count | Documentation accuracy |
 | `/Users/adpena/Projects/molt/.github/workflows/nightly.yml` | Add reference to `fuzzer.yml` ratchet check in the nightly job matrix | Connect ratchet to nightly gate |
 | `/Users/adpena/Projects/molt/tools/check_fuzz_ratchet.py` (new) | Read `tests/differential/fuzzing/ratchet.jsonl`; assert current failure count <= last committed count | Ratchet enforcement |
@@ -390,8 +390,10 @@ After batch of 40 programs:
 - [ ] Create `fuzz/fuzz_targets/fuzz_frontend_parse.rs`
 - [ ] Update `fuzz/Cargo.toml` with new binary entries and native-backend feature dependency
 - [ ] Verify all new targets compile: `cargo fuzz build --fuzz-dir fuzz fuzz_tir_exception_ops` (requires nightly)
-- [ ] Add new Kani harnesses to `kani_nanbox.rs` and `kani_refcount.rs`
-- [ ] Update `KANI.md` total count and "not yet verified" section
+- [ ] Add the planned boundary harnesses to `kani_nanbox.rs`
+- [x] Replace the toy counter proofs in `kani_refcount.rs` with proofs over the
+  runtime-consumed transition authority
+- [x] Update `KANI.md` total count and "not yet verified" section
 
 ### Phase 5 — CI integration and coverage feedback loop
 

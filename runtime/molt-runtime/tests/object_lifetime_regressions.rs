@@ -62,7 +62,7 @@ fn object_ptr(bits: u64) -> *mut u8 {
 }
 
 fn refcount(bits: u64) -> u32 {
-    header_ref(bits).ref_count.load(Ordering::Acquire)
+    header_ref(bits).ref_count_snapshot()
 }
 
 fn assert_string_eq(lhs: u64, rhs: u64) {

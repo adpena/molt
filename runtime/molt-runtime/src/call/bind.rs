@@ -1279,24 +1279,6 @@ unsafe fn require_callargs_ptr(
     }
 }
 
-pub(crate) unsafe fn callargs_dec_ref_all(_py: &PyToken<'_>, args_ptr: *mut CallArgs) {
-    unsafe {
-        if args_ptr.is_null() {
-            return;
-        }
-        let args = &*args_ptr;
-        for &bits in args.pos.iter() {
-            dec_ref_bits(_py, bits);
-        }
-        for &bits in args.kw_names.iter() {
-            dec_ref_bits(_py, bits);
-        }
-        for &bits in args.kw_values.iter() {
-            dec_ref_bits(_py, bits);
-        }
-    }
-}
-
 pub(crate) unsafe fn callargs_visit_owned(args_ptr: *mut CallArgs, mut visit: impl FnMut(u64)) {
     unsafe {
         if args_ptr.is_null() {
@@ -2899,7 +2881,6 @@ mod tests {
         TYPE_ID_OBJECT, dec_ref_bits, obj_from_bits, object_type_id, ptr_from_bits, runtime_state,
     };
     use molt_obj_model::MoltObject;
-    use std::sync::atomic::Ordering;
 
     extern "C" fn compiled_init_borrows_self_for_type_call_ic(self_bits: u64) -> i64 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -2930,11 +2911,8 @@ mod tests {
             let list_ptr = alloc_list(_py, &[MoltObject::from_int(1).bits()]);
             assert!(!list_ptr.is_null());
             let list_bits = MoltObject::from_ptr(list_ptr).bits();
-            let before = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let before =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             let protected = unsafe {
                 protect_callargs_aliased_return_with_extra(
                     _py,
@@ -2944,11 +2922,8 @@ mod tests {
                 )
             };
             assert_eq!(protected, list_bits);
-            let after = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let after =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             assert_eq!(after, before + 1);
             crate::dec_ref_bits(_py, list_bits);
             crate::dec_ref_bits(_py, list_bits);
@@ -2981,11 +2956,8 @@ mod tests {
             );
             let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live result");
             assert_eq!(result_ptr, list_ptr);
-            let rc = unsafe {
-                (*crate::object::header_from_obj_ptr(result_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let rc =
+                unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
             assert_eq!(
                 rc, 1,
                 "call_bind must promote argument aliases before dropping CallArgs"
@@ -3025,11 +2997,8 @@ mod tests {
             dec_ref_bits(_py, defaults_bits);
             dec_ref_bits(_py, default_bits);
 
-            let before_call = unsafe {
-                (*crate::object::header_from_obj_ptr(default_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let before_call =
+                unsafe { (*crate::object::header_from_obj_ptr(default_ptr)).ref_count_snapshot() };
             assert_eq!(
                 before_call, 1,
                 "function __defaults__ tuple should be the only default owner before call"
@@ -3047,11 +3016,8 @@ mod tests {
                 .as_ptr()
                 .expect("live default result");
             assert_eq!(result_ptr, default_ptr);
-            let after_call = unsafe {
-                (*crate::object::header_from_obj_ptr(result_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let after_call =
+                unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
             assert_eq!(
                 after_call, 2,
                 "call_bind must promote returns aliasing default-padded argv"
@@ -3082,21 +3048,15 @@ mod tests {
             let list_ptr = alloc_list(_py, &[MoltObject::from_int(7).bits()]);
             assert!(!list_ptr.is_null());
             let inst_bits = MoltObject::from_ptr(list_ptr).bits();
-            let before = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let before =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             assert_eq!(crate::molt_exception_pending(), 0, "no exception expected");
             // No pending exception: the owning reference is handed back as-is.
             let out =
                 unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
             assert_eq!(out, inst_bits, "must return the constructed instance");
-            let after = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let after =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             assert_eq!(after, before, "success path must not perturb the refcount");
             dec_ref_bits(_py, inst_bits);
         });
@@ -3111,11 +3071,8 @@ mod tests {
             assert!(!list_ptr.is_null());
             let inst_bits = MoltObject::from_ptr(list_ptr).bits();
             super::inc_ref_bits(_py, inst_bits);
-            let before = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let before =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
 
             // Simulate `__init__` having raised: set a pending exception, then
             // resolve. The helper must drop the instance's owning reference and
@@ -3142,11 +3099,8 @@ mod tests {
                 1,
                 "the helper must not clear the pending exception — the caller propagates it"
             );
-            let after = unsafe {
-                (*crate::object::header_from_obj_ptr(list_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let after =
+                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             assert_eq!(
                 after,
                 before - 1,
@@ -3215,11 +3169,8 @@ mod tests {
             };
             let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live instance");
             assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_OBJECT);
-            let ref_count = unsafe {
-                (*crate::object::header_from_obj_ptr(result_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let ref_count =
+                unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
             assert_eq!(
                 ref_count, 1,
                 "type-call IC must return exactly the constructor result owner; borrowed __init__ self must not leave a hidden retain"

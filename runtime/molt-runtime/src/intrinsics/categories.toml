@@ -58,6 +58,7 @@ prefixes = [
     "context_", "code_", "trace_", "frame_locals_set",
     "runtime_init", "runtime_shutdown", "sys_set_version_info",
     "print_obj", "print_newline",
+    "profile_",
     "gen_locals", "task_new", "task_register_token_owned",
     "stdlib_probe", "import_smoke", "types_bootstrap",
     "abc_bootstrap", "collections_abc_runtime", "builtin_class_lookup",

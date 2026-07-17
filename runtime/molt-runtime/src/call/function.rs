@@ -2974,7 +2974,6 @@ mod tests {
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
-    use std::sync::atomic::Ordering;
 
     static INIT: Once = Once::new();
 
@@ -3035,11 +3034,7 @@ mod tests {
 
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     struct EnvGuard(&'static str);

@@ -478,13 +478,17 @@ impl CollectStats {
 unsafe fn header_refcount(ptr: *mut u8) -> u32 {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        (*header).ref_count.load(AtomicOrdering::Acquire)
+        (*header).ref_count_snapshot()
     }
 }
 
 #[inline]
-unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
-    let mut raw = unsafe { header_refcount(ptr) } as isize;
+unsafe fn effective_gc_refcount(ptr: *mut u8) -> i64 {
+    // Use a target-independent signed lane. On wasm32, `u32 as isize` turns
+    // every count above i32::MAX negative and could classify a live object as
+    // unreachable. The runtime permits every non-immortal u32 count, so GC
+    // scratch must represent that complete domain on every architecture.
+    let mut raw = i64::from(unsafe { header_refcount(ptr) });
     let header = unsafe { header_from_obj_ptr(ptr) };
     if unsafe { (*header).has_flag(HEADER_FLAG_GC_PINNED) } {
         raw -= 1;
@@ -493,7 +497,9 @@ unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
         return raw;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
-    let adjusted = raw + molt_cpython_abi::bridge::GLOBAL_BRIDGE.gc_ref_adjustment(bits);
+    let adjusted = raw
+        + i64::try_from(molt_cpython_abi::bridge::GLOBAL_BRIDGE.gc_ref_adjustment(bits))
+            .unwrap_or_else(|_| std::process::abort());
     if molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(bits) {
         adjusted.max(1)
     } else {
@@ -504,10 +510,7 @@ unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
 unsafe fn pin_unreachable(ptrs: &[*mut u8]) {
     for &ptr in ptrs {
         let header = unsafe { header_from_obj_ptr(ptr) };
-        unsafe {
-            (*header).ref_count.fetch_add(1, AtomicOrdering::Relaxed);
-            (*header).fetch_or_flags(HEADER_FLAG_GC_PINNED);
-        }
+        unsafe { (*header).pin_for_gc() };
     }
 }
 
@@ -588,7 +591,7 @@ fn addr_key(ptr: *mut u8) -> u64 {
 struct GcScratch {
     candidates: Vec<*mut u8>,
     index: HashMap<u64, usize>,
-    refs: Vec<isize>,
+    refs: Vec<i64>,
     marks: Vec<u8>,
     queue: Vec<usize>,
     first_unreachable: Vec<usize>,
@@ -644,7 +647,7 @@ unsafe fn deduce_subset(
     py: &PyToken<'_>,
     candidates: &[*mut u8],
     index: &HashMap<u64, usize>,
-    refs: &mut [isize],
+    refs: &mut [i64],
     marks: &mut [u8],
     queue: &mut Vec<usize>,
     subset: Option<&[usize]>,
@@ -802,8 +805,7 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
     unsafe {
         crate::gil_assert();
 
-        #[cfg(feature = "free-threaded")]
-        {
+        if cfg!(feature = "free-threaded") {
             // Raw candidate traversal requires a runtime-owned stop-the-world
             // epoch. Until the free-threaded scheduler exposes that guard, fail
             // before snapshot/mutation instead of treating a GIL token as STW.

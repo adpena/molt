@@ -70,15 +70,10 @@ mod tests {
         descriptor_cache_store,
     };
     use crate::{MoltObject, alloc_string, dec_ref_bits, obj_from_bits};
-    use std::sync::atomic::Ordering;
 
     fn heap_refcount(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("expected heap bits");
-        unsafe {
-            (*crate::object::header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Acquire)
-        }
+        unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]
@@ -1362,39 +1357,6 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
                 }
             }
         }
-    }
-}
-
-/// Design A (#86 — single field-ownership authority): release every inline typed
-/// attribute field of a heap `TYPE_ID_OBJECT` instance when it is freed.
-///
-/// An object's inline field slots are the SOLE owner of their pointer references:
-/// `object_field_set_ptr_raw` / `object_field_init_ptr_raw` `inc_ref` the value on
-/// store (and `dec_ref` the displaced old value). The runtime free path is the one
-/// authority that releases them. Folded objects that release their fields via the
-/// compiler drop pass are stack-promoted / immortal and NEVER reach the runtime
-/// free path, so there is no double-free with this release.
-///
-/// Safety facts that make a blind per-slot `dec_ref` correct:
-/// - inline fields are NaN-boxed (`object_field_set_ptr_raw` stores `val_bits`), so
-///   a primitive field (`int`/`float`/`bool`/`None`) `dec_ref`s to a no-op;
-/// - the payload is zero-initialised at alloc, so an unset field reads `0` (no-op);
-/// - only POINTER slots (`as_ptr().is_some()`) are released, and each released slot
-///   is cleared to `0` first so a resurrecting `__del__` re-entry cannot double-dec.
-///
-/// Primitive-only objects still pay only the offset-table walk and skip every slot
-/// after the actual pointer-bit check; `HEADER_FLAG_HAS_PTRS` is a hint, not the
-/// ownership authority.
-pub(crate) unsafe fn dec_ref_object_inline_fields(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    class_ptr: *mut u8,
-) {
-    unsafe {
-        for_each_object_inline_field_ptr(_py, obj_ptr, class_ptr, &mut |slot, val| {
-            *slot = 0;
-            dec_ref_bits(_py, val);
-        });
     }
 }
 

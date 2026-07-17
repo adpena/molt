@@ -121,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 // Inc-ref each element so the builder owns its own
                 // reference.  The tracking system will dec-ref the
                 // caller's variable independently at its last use.
-                emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
                 builder.ins().call(append_local, &[builder_ptr, *val]);
             }
 

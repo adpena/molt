@@ -1,7 +1,7 @@
 use super::*;
 
 #[inline(always)]
-unsafe fn dict_commit_projection(_py: &PyToken<'_>, ptr: *mut u8) {
+pub(crate) unsafe fn dict_commit_projection(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe { crate::object::gc::gc_reproject_dict(_py, ptr) };
 }
 

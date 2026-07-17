@@ -664,7 +664,7 @@ fn handle_call_direct_op(
         return_alias_summaries.get(target_name)
         && *param_idx < args.len()
     {
-        emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj, nbc);
+        emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
     }
 
     // Tracked-value cleanup (stays inline — varies per site).
@@ -914,7 +914,7 @@ fn handle_call_internal_op(
             return_alias_summaries.get(target_name)
             && *param_idx < args.len()
         {
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
         }
         if let Some(out__) = op.out.as_ref() {
             def_var_named(&mut *builder, vars, out__, res);

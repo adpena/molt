@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from molt._runtime_profile_schema import is_process_profile, is_profile_epoch
+
 
 HOT_COUNTER_KEYS = (
     "call_bind_ic_hit",
@@ -29,35 +31,67 @@ ALLOC_COUNTER_KEYS = (
 )
 
 
-def extract_profile_from_log(text: str) -> dict[str, Any] | None:
+def extract_profile_epochs_from_log(text: str) -> list[dict[str, Any]]:
+    epochs: list[dict[str, Any]] = []
     for line in text.splitlines():
-        if line.startswith("molt_profile_json "):
-            payload = line[len("molt_profile_json ") :].strip()
-            try:
-                return json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-    return None
+        if not line.startswith("molt_profile_epoch_json "):
+            continue
+        payload = line[len("molt_profile_epoch_json ") :].strip()
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if is_profile_epoch(parsed):
+            epochs.append(parsed)
+    return epochs
+
+
+def extract_profile_from_log(text: str) -> dict[str, Any] | None:
+    profile: dict[str, Any] | None = None
+    for line in text.splitlines():
+        if not line.startswith("molt_profile_json "):
+            continue
+        payload = line[len("molt_profile_json ") :].strip()
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if is_process_profile(parsed):
+            profile = parsed
+    epochs = extract_profile_epochs_from_log(text)
+    if profile is None and not epochs:
+        return None
+    result = dict(profile) if profile is not None else {}
+    if epochs:
+        result["profile_epochs"] = epochs
+    return result
 
 
 def load_profile(path: Path) -> dict[str, Any] | None:
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.suffix == ".json":
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError:
             return extract_profile_from_log(text)
+        if not isinstance(parsed, dict):
+            return None
+        if is_profile_epoch(parsed):
+            return {"profile_epochs": [parsed]}
+        if is_process_profile(parsed):
+            return parsed
+        return None
     return extract_profile_from_log(text)
 
 
 def flatten_counters(profile: dict[str, Any]) -> dict[str, int]:
     flat: dict[str, int] = {}
-    for section in ("profile", "hot_paths", "deopt_reasons", "aux", "gc", "memory"):
-        sub = profile.get(section, {})
-        if isinstance(sub, dict):
-            for key, value in sub.items():
-                if isinstance(value, (int, float)):
-                    flat[key] = int(value)
+    for sub in profile.values():
+        if not isinstance(sub, dict):
+            continue
+        for key, value in sub.items():
+            if isinstance(value, (int, float)):
+                flat[key] = int(value)
     return flat
 
 
@@ -67,6 +101,11 @@ def build_perf_summary_payload(profiles: dict[str, dict[str, Any]]) -> dict[str,
     }
     aggregate_hot: dict[str, int] = {}
     aggregate_alloc: dict[str, int] = {}
+    epochs_by_profile = {
+        name: epochs
+        for name, profile in sorted(profiles.items())
+        if isinstance(epochs := profile.get("profile_epochs"), list)
+    }
     for counters in counters_by_profile.values():
         for key in HOT_COUNTER_KEYS:
             aggregate_hot[key] = aggregate_hot.get(key, 0) + counters.get(key, 0)
@@ -94,6 +133,7 @@ def build_perf_summary_payload(profiles: dict[str, dict[str, Any]]) -> dict[str,
     return {
         "profile_count": len(profiles),
         "profiles": counters_by_profile,
+        "profile_epochs": epochs_by_profile,
         "aggregate": {
             "hot_paths": {k: v for k, v in aggregate_hot.items() if v > 0},
             "allocations": {k: v for k, v in aggregate_alloc.items() if v > 0},
@@ -112,6 +152,15 @@ def render_perf_text(summary: dict[str, Any]) -> str:
         "Molt Debug Perf",
         f"Profiles: {summary.get('profile_count', 0)}",
     ]
+    profile_epochs = summary.get("profile_epochs", {})
+    if isinstance(profile_epochs, dict):
+        epoch_count = sum(
+            len(epochs)
+            for epochs in profile_epochs.values()
+            if isinstance(epochs, list)
+        )
+        if epoch_count:
+            lines.append(f"Profile Epochs: {epoch_count}")
     if isinstance(hot_paths, dict) and hot_paths:
         hot_bits = [f"{key}={hot_paths[key]}" for key in sorted(hot_paths)]
         lines.append("Hot Paths: " + ", ".join(hot_bits))

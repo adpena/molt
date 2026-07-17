@@ -179,7 +179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .call(slow_local, &[obj_ptr, attr_ptr, attr_len, ic_raw]);
                 let slow_result = builder.inst_results(slow_call)[0];
                 // Slow path returns a borrowed reference; inc_ref to own it.
-                emit_maybe_ref_adjust_v2(&mut *builder, slow_result, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, slow_result, local_inc_ref_obj);
                 jump_block(&mut *builder, merge_block, &[slow_result]);
 
                 // --- Merge ---
@@ -202,7 +202,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 let slow_res = builder.inst_results(call)[0];
                 // Attribute lookup may return borrowed values from object/class internals.
                 // Normalize to an owned reference so last-use decref remains safe.
-                emit_maybe_ref_adjust_v2(&mut *builder, slow_res, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, slow_res, local_inc_ref_obj);
                 slow_res
             };
             if let Some(out__) = op.out.as_ref() {
@@ -281,7 +281,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let res = builder.inst_results(call)[0];
             // `molt_get_attr_object[_ic]` can hand back borrowed values on fast
             // paths. Own the result here.
-            emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -330,7 +330,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
             // Keep attribute result ownership consistent across all get-attr ops.
-            emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -372,7 +372,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             // Attribute lookup returns a borrowed reference from object internals/dicts in
             // some fast paths. Convert it to an owned reference so lifetime tracking can
             // safely decref at last use without corrupting dict-owned values.
-            emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
@@ -423,7 +423,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
             let res = builder.inst_results(call)[0];
             // See `get_attr_name` above: ensure the returned value is owned.
-            emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
+            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
