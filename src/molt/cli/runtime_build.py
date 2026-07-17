@@ -1251,15 +1251,6 @@ def _wasm_cpython_abi_staticlib_candidates(
     return candidates
 
 
-def _resolve_built_runtime_staticlib_artifact(
-    target_root: Path, profile_dir: str
-) -> Path:
-    candidates = _wasm_runtime_staticlib_candidates(target_root, profile_dir)
-    if candidates:
-        return candidates[0]
-    return _wasm_runtime_staticlib_path(target_root, profile_dir)
-
-
 def _wasm_runtime_staticlib_candidates(
     target_root: Path,
     profile_dir: str,
@@ -1430,15 +1421,18 @@ def _ensure_wasm_cpython_abi_staticlib(
                 msg = f"{msg}: {detail}"
             print(msg, file=sys.stderr)
             return None
-        candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
-        if not candidates:
+        provider = _reported_cpython_abi_staticlib_from_cargo_stdout(
+            build.stdout,
+            target_root=target_root,
+        )
+        if provider is None or not provider.exists():
             if not json_output:
                 print(
-                    "CPython ABI wasm build succeeded but staticlib artifact is missing.",
+                    "CPython ABI wasm build succeeded but Cargo did not report "
+                    "the staticlib artifact.",
                     file=sys.stderr,
                 )
             return None
-        provider = candidates[0]
         try:
             fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
             _write_runtime_fingerprint(
@@ -1466,13 +1460,6 @@ def _ensure_wasm_cpython_abi_staticlib(
                 )
             return None
         return provider
-
-
-def _resolve_built_runtime_wasm_artifact(target_root: Path, profile_dir: str) -> Path:
-    candidates = _wasm_runtime_wasm_candidates(target_root, profile_dir)
-    if candidates:
-        return candidates[0]
-    return _wasm_runtime_artifact_path(target_root, profile_dir)
 
 
 def _wasm_runtime_wasm_candidates(
@@ -1594,24 +1581,40 @@ def _reported_runtime_artifact_from_cargo_stdout(
     target_root: Path,
     artifact_kind: Literal["cdylib", "staticlib"],
 ) -> Path | None:
-    reported: Path | None = None
+    return _reported_runtime_artifacts_from_cargo_stdout(
+        stdout,
+        target_root=target_root,
+    ).get(artifact_kind)
+
+
+def _reported_cargo_artifact_paths_from_stdout(
+    stdout: str,
+    *,
+    target_root: Path,
+    package_marker: str,
+    target_names: frozenset[str],
+) -> tuple[Path, ...]:
+    """Return in-target artifact paths from the matching Cargo package report."""
+    reported: list[Path] = []
+    try:
+        resolved_root = target_root.resolve(strict=False)
+    except OSError:
+        return ()
     for line in stdout.splitlines():
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(message, dict):
-            continue
-        if message.get("reason") != "compiler-artifact":
+        if (
+            not isinstance(message, dict)
+            or message.get("reason") != "compiler-artifact"
+        ):
             continue
         target = message.get("target")
         target_name = target.get("name") if isinstance(target, dict) else None
         package_id = message.get("package_id")
         package_text = package_id if isinstance(package_id, str) else ""
-        if (
-            target_name not in {"molt_runtime", "molt-runtime"}
-            and "molt-runtime" not in package_text
-        ):
+        if target_name not in target_names or package_marker not in package_text:
             continue
         filenames = message.get("filenames")
         if not isinstance(filenames, list):
@@ -1622,12 +1625,59 @@ def _reported_runtime_artifact_from_cargo_stdout(
             path = Path(filename)
             if not path.is_absolute():
                 path = target_root / path
+            try:
+                resolved_path = path.resolve(strict=False)
+            except OSError:
+                continue
+            if resolved_path == resolved_root or resolved_path.is_relative_to(
+                resolved_root
+            ):
+                reported.append(path)
+    return tuple(reported)
+
+
+def _reported_runtime_artifacts_from_cargo_stdout(
+    stdout: str,
+    *,
+    target_root: Path,
+) -> dict[Literal["cdylib", "staticlib"], Path]:
+    """Return the exact runtime crate-type artifacts reported by this Cargo run."""
+    reported: dict[Literal["cdylib", "staticlib"], Path] = {}
+    paths = _reported_cargo_artifact_paths_from_stdout(
+        stdout,
+        target_root=target_root,
+        package_marker="molt-runtime",
+        target_names=frozenset({"molt_runtime", "molt-runtime"}),
+    )
+    for path in paths:
+        for kind in ("cdylib", "staticlib"):
             if _reported_runtime_artifact_matches(
                 path,
                 target_root=target_root,
-                artifact_kind=artifact_kind,
+                artifact_kind=kind,
             ):
-                reported = path
+                reported[kind] = path
+    return reported
+
+
+def _reported_cpython_abi_staticlib_from_cargo_stdout(
+    stdout: str,
+    *,
+    target_root: Path,
+) -> Path | None:
+    paths = _reported_cargo_artifact_paths_from_stdout(
+        stdout,
+        target_root=target_root,
+        package_marker="molt-lang-cpython-abi",
+        target_names=frozenset({"molt_cpython_abi", "molt-lang-cpython-abi"}),
+    )
+    reported: Path | None = None
+    for path in paths:
+        name = path.name
+        if name == "libmolt_cpython_abi.a" or (
+            name.startswith("libmolt_cpython_abi-") and name.endswith(".a")
+        ):
+            reported = path
     return reported
 
 
@@ -3265,7 +3315,7 @@ def _prepopulate_combined_runtime_wasm_target(
         )
     started = time.perf_counter()
     try:
-        build, _reported = _run_runtime_wasm_cargo_build(
+        build, reported_cdylib = _run_runtime_wasm_cargo_build(
             cmd=cmd,
             root=root,
             env=env,
@@ -3299,18 +3349,27 @@ def _prepopulate_combined_runtime_wasm_target(
         ),
     )
 
-    cdylib_candidates = _wasm_runtime_wasm_candidates(target_root, profile_dir)
-    staticlib_candidates = _wasm_runtime_staticlib_candidates(target_root, profile_dir)
-    if not cdylib_candidates or not staticlib_candidates:
+    # Cargo's compiler-artifact message is the only authority for what this
+    # invocation produced.  Candidate position and mtime are discovery aids for
+    # previously fingerprinted artifacts, never proof that a path belongs to
+    # the just-completed feature plan.  Choosing candidates[0] here could select
+    # a pre-existing primary, then stamp the requested fingerprint onto stale
+    # feature-incomplete bytes.  Resolve both crate types from the one Cargo
+    # report and publish metadata only for those exact paths.
+    reported_artifacts = _reported_runtime_artifacts_from_cargo_stdout(
+        build.stdout,
+        target_root=target_root,
+    )
+    cdylib = reported_artifacts.get("cdylib", reported_cdylib)
+    staticlib = reported_artifacts.get("staticlib")
+    if not cdylib.exists() or staticlib is None or not staticlib.exists():
         if not json_output:
             print(
-                "Runtime wasm combined build succeeded but a crate-type artifact "
-                "is missing (expected both cdylib and staticlib).",
+                "Runtime wasm combined build succeeded but Cargo did not report "
+                "both runtime crate-type artifacts (expected cdylib and staticlib).",
                 file=sys.stderr,
             )
         return False
-    cdylib = cdylib_candidates[0]
-    staticlib = staticlib_candidates[0]
     if _inspect_wasm_binary(
         cdylib
     ) != "valid" or not _is_valid_shared_runtime_wasm_artifact(cdylib):
