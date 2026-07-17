@@ -28,7 +28,7 @@ from molt.cli.source_package_seal import (
     verify_source_package_seal,
 )
 from molt.cli.source_build_environment import source_build_environment_problems
-from molt.dx import canonical_molt_root
+from molt.dx import checkout_custody
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
@@ -1056,7 +1056,7 @@ def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
     # Named seals are immutable inputs, not build capacity. Their identity is
     # anchored directly to durable Molt custody; volume labels, ambient output
     # variables, free-space thresholds, and fallback selection are irrelevant.
-    canonical_artifact_root = str(canonical_molt_root(root))
+    canonical_artifact_root = str(checkout_custody(root, os.environ).custody_root)
     return {
         SCIENTIFIC_STACK_CONFIG_ENV: str(config_path.resolve()),
         "MOLT_EXT_ROOT": canonical_artifact_root,

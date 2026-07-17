@@ -66,6 +66,19 @@ flag or volume-label fallback. `MOLT_EXT_ROOT` may be explicitly configured for
 non-custodial output on approved volumes, but named inputs, package seals,
 worktrees, and `MOLT_TARGET_ROOT` remain rooted at `C:\Molt`.
 
+Hosted CI is a typed exception to checkout *location*, never to canonical local
+custody. A GitHub-hosted source checkout may physically live under runner
+storage such as `D:\a\...`, but it is source-only. The workflow issues a
+per-run `MOLT_CI_EPHEMERAL_CUSTODY_ROOT` under `RUNNER_TEMP`; Molt accepts it
+only when the reserved GitHub repository, workspace, workflow, event, commit,
+run, OS, and architecture facts agree. A lone `CI`, `GITHUB_ACTIONS`, or Molt
+environment switch cannot self-attest. Package seals, build environments,
+proof state, caches, and test scratch then resolve beneath that disjoint per-run
+root rather than the source checkout. On hosted Windows, managed toolchains use
+the separately verified `RUNNER_TOOL_CACHE` and still reject `D:`; other hosted
+platforms use the per-run custody root. Outside that verified contract, a `D:`
+checkout still fails closed exactly as local policy requires.
+
 `C:\Molt` is the artifact and warm-checkout tier, not a disposable cold-clone or
 backup treadmill. Create a new `C:\Molt\worktrees\...` checkout only for real
 isolation from dirty WIP or branch surgery; for read-only doc/status checks
@@ -266,7 +279,10 @@ are not a second queue authority. The portability tests intentionally include
 spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
 detached-runner assertions; update those tests with any queue launch change.
 The path-filtered `Proof Queue Portability` workflow runs those queue tests on
-Ubuntu, macOS, and Windows whenever queue launch surfaces change.
+Ubuntu, macOS, and Windows whenever queue launch or checkout-custody surfaces
+change. Its shard includes the DX provenance contract, scientific/source-build
+custody, and the queue suite so the hosted checkout is exercised before test
+collection as well as through the product wrapper.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on
@@ -561,7 +577,8 @@ default; use `--max-issues 0`, `--json`, or `--output` for the full
 machine-readable handoff.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
-`logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
+`logs/proof_queue/notebooks/RUN_ID.py` by default. Verified hosted CI redirects
+that whole proof-state tree to its per-run custody root. The notebook is a generated
 projection of queue evidence and log tail, not the source of truth. Do not hand
 edit it; regenerate it instead:
 

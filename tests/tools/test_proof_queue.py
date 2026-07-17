@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -41,6 +42,50 @@ _REAL_GIT_SNAPSHOT_TESTS = {
     "test_proof_queue_git_snapshot_ignores_generated_wasm_checksums",
     "test_proof_queue_git_snapshot_expands_untracked_directories",
 }
+
+
+def test_proof_queue_default_state_is_owned_by_checkout_custody(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    custody_root = tmp_path / "custody"
+    monkeypatch.setattr(
+        state,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(
+            custody_root=custody_root,
+            source_root=tmp_path / "ephemeral-source",
+            ephemeral=True,
+        ),
+    )
+    args = argparse.Namespace(db=None, logs_root=None)
+
+    assert state._db_path(args) == (
+        custody_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
+    )
+    assert state._logs_root(args) == (
+        custody_root / "logs" / "proof_queue" / "runs"
+    )
+
+
+def test_proof_queue_durable_state_remains_with_its_source_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source_root = tmp_path / "durable-source"
+    monkeypatch.setattr(
+        state,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(
+            custody_root=tmp_path / "family-custody",
+            source_root=source_root,
+            ephemeral=False,
+        ),
+    )
+    args = argparse.Namespace(db=None, logs_root=None)
+
+    assert state._db_path(args) == (
+        source_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
+    )
+    assert state._logs_root(args) == source_root / "logs" / "proof_queue" / "runs"
 
 
 def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
@@ -9095,7 +9140,11 @@ def test_pact_canonical_input_root_is_independent_of_build_free_space(
         observed.append(repo_root)
         return selected
 
-    monkeypatch.setattr(pact, "canonical_molt_root", custody)
+    monkeypatch.setattr(
+        pact,
+        "checkout_custody",
+        lambda repo_root, _env: SimpleNamespace(custody_root=custody(repo_root)),
+    )
 
     canonical = pact._pact_canonical_input_environment(state.ROOT)
 

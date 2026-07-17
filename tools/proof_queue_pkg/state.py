@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from molt.dx import checkout_custody
 from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
@@ -839,20 +840,20 @@ def _log_path_for_run(conn: sqlite3.Connection, run_id: str) -> Path:
 
 
 def _db_path(args: argparse.Namespace) -> Path:
-    return (
-        Path(args.db)
-        if args.db
-        else ROOT / "logs" / "proof_queue" / "proof_queue.sqlite3"
-    )
+    if args.db:
+        return Path(args.db)
+    custody = checkout_custody(ROOT, os.environ)
+    state_root = custody.custody_root if custody.ephemeral else custody.source_root
+    return state_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
 
 
 
 def _logs_root(args: argparse.Namespace) -> Path:
-    return (
-        Path(args.logs_root)
-        if args.logs_root
-        else ROOT / "logs" / "proof_queue" / "runs"
-    )
+    if args.logs_root:
+        return Path(args.logs_root)
+    custody = checkout_custody(ROOT, os.environ)
+    state_root = custody.custody_root if custody.ephemeral else custody.source_root
+    return state_root / "logs" / "proof_queue" / "runs"
 
 
 

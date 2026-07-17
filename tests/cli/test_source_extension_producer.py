@@ -10,6 +10,7 @@ import threading
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -727,7 +728,9 @@ def test_source_build_environment_address_is_worktree_neutral(
         )
         (root / "uv.lock").write_bytes(b"same complete lock")
     monkeypatch.setattr(
-        build_environment, "canonical_molt_root", lambda _root: tmp_path
+        build_environment,
+        "checkout_custody",
+        lambda _root, _env: SimpleNamespace(custody_root=tmp_path),
     )
     monkeypatch.setattr(
         build_environment,

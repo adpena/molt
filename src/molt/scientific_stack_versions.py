@@ -15,7 +15,7 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     require_known_cpython_coverage_version,
 )
-from molt.dx import canonical_molt_root
+from molt.dx import checkout_custody
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
@@ -359,8 +359,8 @@ def apply_scientific_stack_substitutions(value: str) -> str:
 
 
 def scientific_custody_root() -> Path:
-    """Durable package-seal root, independent of scratch/build output policy."""
-    return canonical_molt_root(ROOT)
+    """Package-seal custody, independent of source-checkout location."""
+    return checkout_custody(ROOT, os.environ).custody_root
 
 
 def numpy_witness_seal_root(

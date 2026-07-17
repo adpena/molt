@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ from typing import Literal, Mapping, Sequence, cast
 
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
+GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
 CANONICAL_ROOT_ENV_KEYS = (
     "MOLT_EXT_ROOT",
     "CARGO_TARGET_DIR",
@@ -45,6 +47,7 @@ CANONICAL_RUN_ENV_KEYS = (
 )
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
+    GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
     "PYTHONPATH",
     "MOLT_BACKEND_DAEMON_SOCKET_DIR",
     "MOLT_USE_SCCACHE",
@@ -77,6 +80,29 @@ FALSE_VALUES = {"0", "false", "no", "off"}
 
 class DxConfigError(RuntimeError):
     pass
+
+
+CheckoutCustodyKind = Literal["durable", "github-actions-ephemeral"]
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutCustody:
+    """Typed separation between source location and execution custody.
+
+    A durable checkout family owns long-lived Molt state. A verified hosted CI
+    checkout is source-only: its per-run execution root is issued by the
+    workflow under ``RUNNER_TEMP`` and can never become durable authority.
+    """
+
+    source_root: Path
+    custody_root: Path
+    toolchain_root: Path
+    kind: CheckoutCustodyKind
+    workflow_ref: str | None = None
+
+    @property
+    def ephemeral(self) -> bool:
+        return self.kind == "github-actions-ephemeral"
 
 
 def session_artifact_component(session_id: str) -> str:
@@ -472,9 +498,12 @@ def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
 def _default_external_artifact_roots(
     repo_root: Path, env: Mapping[str, str]
 ) -> tuple[Path, ...]:
+    custody = checkout_custody(repo_root, env, require_exists=False)
+    if custody.ephemeral:
+        return (custody.custody_root,)
     roots: list[Path] = []
     if os.name == "nt":
-        roots.extend(_default_windows_external_artifact_roots(repo_root))
+        roots.extend(_default_windows_external_artifact_roots(repo_root, env))
     else:
         roots.extend(
             Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
@@ -482,14 +511,16 @@ def _default_external_artifact_roots(
     return _dedupe_paths(roots)
 
 
-def _default_windows_external_artifact_roots(repo_root: Path) -> tuple[Path, ...]:
+def _default_windows_external_artifact_roots(
+    repo_root: Path, env: Mapping[str, str] | None = None
+) -> tuple[Path, ...]:
     """Return the one automatic Windows Molt root.
 
     Other volumes are valid only as explicit, non-custodial output locations.
     Volume labels and free-space ranking must never promote a removable or
     legacy volume into source, package-input, worktree, or toolchain authority.
     """
-    root = canonical_molt_root(repo_root, require_exists=False)
+    root = checkout_custody(repo_root, env, require_exists=False).custody_root
     return (root,) if root.is_dir() else ()
 
 
@@ -558,6 +589,199 @@ def _checkout_family_custody_root(repo_root: Path) -> Path:
     return root
 
 
+def _path_is_within(path: Path, parent: Path) -> bool:
+    path_key = os.path.normcase(str(path.resolve()))
+    parent_key = os.path.normcase(str(parent.resolve()))
+    try:
+        return os.path.commonpath((path_key, parent_key)) == parent_key
+    except ValueError:
+        return False
+
+
+def _git_checkout_head(repo_root: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    head = proc.stdout.strip().lower()
+    return head if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+
+
+def _github_actions_checkout_custody(
+    repo_root: Path,
+    env: Mapping[str, str],
+    *,
+    require_exists: bool,
+) -> CheckoutCustody | None:
+    """Verify the complete hosted-checkout contract, or return ``None``.
+
+    ``GITHUB_ACTIONS=true`` is deliberately insufficient. The workflow must
+    issue a per-run custody root under GitHub's runner temp directory, and the
+    reserved runner facts, event payload, workflow identity, workspace, and
+    checked-out commit must agree. Any partial contract fails closed.
+    """
+
+    contract_raw = env.get(GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, "").strip()
+    if not contract_raw:
+        return None
+
+    required_exact = {
+        "GITHUB_ACTIONS": "true",
+        "CI": "true",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_API_URL": "https://api.github.com",
+    }
+    for key, expected in required_exact.items():
+        if env.get(key, "").strip() != expected:
+            raise DxConfigError(
+                f"{GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} requires verified {key}={expected!r}"
+            )
+
+    source_root = repo_root.expanduser().resolve()
+    verify_checkout_files = require_exists or source_root.is_dir()
+    workspace_raw = env.get("GITHUB_WORKSPACE", "").strip()
+    if not workspace_raw or Path(workspace_raw).expanduser().resolve() != source_root:
+        raise DxConfigError(
+            "GitHub Actions custody requires GITHUB_WORKSPACE to equal the source checkout"
+        )
+
+    github_repository = env.get("GITHUB_REPOSITORY", "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", github_repository):
+        raise DxConfigError("GitHub Actions custody requires GITHUB_REPOSITORY")
+    workflow_ref = env.get("GITHUB_WORKFLOW_REF", "").strip()
+    prefix = f"{github_repository}/.github/workflows/"
+    if not workflow_ref.startswith(prefix) or "@" not in workflow_ref[len(prefix) :]:
+        raise DxConfigError("GitHub Actions custody requires a checked-in workflow ref")
+    workflow_name, workflow_revision = workflow_ref[len(prefix) :].rsplit("@", 1)
+    workflow_path = source_root / ".github" / "workflows" / workflow_name
+    if (
+        not workflow_revision.strip()
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name)
+        or (verify_checkout_files and not workflow_path.is_file())
+    ):
+        raise DxConfigError(f"invalid GitHub Actions workflow ref: {workflow_ref!r}")
+    workflow_sha = env.get("GITHUB_WORKFLOW_SHA", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", workflow_sha):
+        raise DxConfigError("GitHub Actions custody requires a full GITHUB_WORKFLOW_SHA")
+
+    event_path_raw = env.get("GITHUB_EVENT_PATH", "").strip()
+    try:
+        event = json.loads(Path(event_path_raw).read_text(encoding="utf-8"))
+        event_repository = event["repository"]["full_name"]
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise DxConfigError("GitHub Actions event provenance is unreadable") from exc
+    if event_repository != github_repository:
+        raise DxConfigError(
+            f"GitHub Actions event repository mismatch: {event_repository!r}"
+        )
+
+    github_sha = env.get("GITHUB_SHA", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", github_sha):
+        raise DxConfigError("GitHub Actions custody requires a full GITHUB_SHA")
+    checkout_head = _git_checkout_head(source_root)
+    if verify_checkout_files and checkout_head != github_sha:
+        raise DxConfigError(
+            f"GitHub Actions checkout HEAD mismatch: expected {github_sha}, got {checkout_head}"
+        )
+
+    runner_temp_raw = env.get("RUNNER_TEMP", "").strip()
+    runner_temp = Path(runner_temp_raw).expanduser()
+    custody_root = Path(contract_raw).expanduser()
+    if not runner_temp_raw or not runner_temp.is_absolute():
+        raise DxConfigError("GitHub Actions custody requires an absolute RUNNER_TEMP")
+    if not custody_root.is_absolute():
+        raise DxConfigError(
+            f"{GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} must be an absolute path"
+        )
+    runner_temp = runner_temp.resolve()
+    custody_root = custody_root.resolve()
+    if verify_checkout_files and not runner_temp.is_dir():
+        raise DxConfigError(f"GitHub Actions RUNNER_TEMP does not exist: {runner_temp}")
+    if custody_root == runner_temp or not _path_is_within(custody_root, runner_temp):
+        raise DxConfigError(
+            f"{GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} must be a child of RUNNER_TEMP"
+        )
+    if _path_is_within(custody_root, source_root) or _path_is_within(
+        source_root, custody_root
+    ):
+        raise DxConfigError("GitHub Actions source checkout and custody roots must be disjoint")
+
+    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        if not env.get(key, "").strip().isdigit():
+            raise DxConfigError(f"GitHub Actions custody requires numeric {key}")
+    if not env.get("GITHUB_JOB", "").strip():
+        raise DxConfigError("GitHub Actions custody requires GITHUB_JOB")
+    for key in ("GITHUB_EVENT_NAME", "GITHUB_REF"):
+        if not env.get(key, "").strip():
+            raise DxConfigError(f"GitHub Actions custody requires {key}")
+    expected_runner_os = {
+        "nt": "Windows",
+        "posix": "macOS" if sys.platform == "darwin" else "Linux",
+    }.get(os.name)
+    if env.get("RUNNER_OS", "").strip() != expected_runner_os:
+        raise DxConfigError(
+            f"GitHub Actions RUNNER_OS does not match this host: {env.get('RUNNER_OS')!r}"
+        )
+    expected_runner_arch = {
+        "amd64": "X64",
+        "x86_64": "X64",
+        "aarch64": "ARM64",
+        "arm64": "ARM64",
+        "x86": "X86",
+        "i386": "X86",
+        "i686": "X86",
+    }.get(platform.machine().lower())
+    if expected_runner_arch is None or env.get("RUNNER_ARCH", "").strip() != expected_runner_arch:
+        raise DxConfigError(
+            "GitHub Actions RUNNER_ARCH does not match this host: "
+            f"{env.get('RUNNER_ARCH')!r}"
+        )
+
+    if os.name == "nt":
+        runner_tool_cache_raw = env.get("RUNNER_TOOL_CACHE", "").strip()
+        runner_tool_cache = Path(runner_tool_cache_raw).expanduser()
+        if not runner_tool_cache_raw or not runner_tool_cache.is_absolute():
+            raise DxConfigError(
+                "GitHub Actions Windows custody requires an absolute RUNNER_TOOL_CACHE"
+            )
+        runner_tool_cache = runner_tool_cache.resolve()
+        if _forbidden_windows_canonical_path(runner_tool_cache):
+            raise DxConfigError(
+                "GitHub Actions RUNNER_TOOL_CACHE resolved to forbidden drive D: "
+                f"({runner_tool_cache})"
+            )
+        if verify_checkout_files and not runner_tool_cache.is_dir():
+            raise DxConfigError(
+                f"GitHub Actions RUNNER_TOOL_CACHE does not exist: {runner_tool_cache}"
+            )
+        toolchain_root = (
+            runner_tool_cache
+            / "molt"
+            / f"{env['GITHUB_RUN_ID']}-{env['GITHUB_RUN_ATTEMPT']}-"
+            f"{session_artifact_component(env['GITHUB_JOB'])}"
+        )
+        if _path_is_within(toolchain_root, source_root):
+            raise DxConfigError(
+                "GitHub Actions toolchain custody must be outside the source checkout"
+            )
+    else:
+        toolchain_root = custody_root / DEFAULT_TARGET_ROOT_DIRNAME
+
+    return CheckoutCustody(
+        source_root=source_root,
+        custody_root=custody_root,
+        toolchain_root=toolchain_root,
+        kind="github-actions-ephemeral",
+        workflow_ref=workflow_ref,
+    )
+
+
 def canonical_molt_root(repo_root: Path, *, require_exists: bool = True) -> Path:
     """Return the single durable Molt custody root for this platform.
 
@@ -578,19 +802,35 @@ def canonical_molt_root(repo_root: Path, *, require_exists: bool = True) -> Path
     return root
 
 
+def checkout_custody(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    require_exists: bool = True,
+) -> CheckoutCustody:
+    """Resolve durable local or verified ephemeral hosted execution custody."""
+
+    source_root = repo_root.expanduser().resolve()
+    env_view = os.environ if env is None else env
+    hosted = _github_actions_checkout_custody(
+        source_root, env_view, require_exists=require_exists
+    )
+    if hosted is not None:
+        return hosted
+    durable_root = canonical_molt_root(source_root, require_exists=require_exists)
+    return CheckoutCustody(
+        source_root=source_root,
+        custody_root=durable_root,
+        toolchain_root=durable_root / DEFAULT_TARGET_ROOT_DIRNAME,
+        kind="durable",
+    )
+
+
 def canonical_toolchain_root(repo_root: Path, *, require_exists: bool = True) -> Path:
     return (
         canonical_molt_root(repo_root, require_exists=require_exists)
         / DEFAULT_TARGET_ROOT_DIRNAME
     )
-
-
-def _maintainer_toolchain_root(artifact_root: Path) -> Path:
-    """Separate repository toolchain custody from user-project scratch layout."""
-    source_checkout = Path(__file__).resolve().parents[2]
-    if (source_checkout / "docs" / "agent" / "ORCHESTRATION.md").is_file():
-        return canonical_toolchain_root(source_checkout)
-    return artifact_root / DEFAULT_TARGET_ROOT_DIRNAME
 
 
 def _forbidden_windows_canonical_path(raw: str | Path) -> bool:
@@ -1134,18 +1374,31 @@ class RunContext:
         env = dict(os.environ if base is None else base)
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
+        custody = checkout_custody(self.root, env)
+
+        if custody.ephemeral:
+            for key in CANONICAL_ROOT_ENV_KEYS:
+                raw = env.get(key, "").strip()
+                if raw and _path_is_within(self._resolve_env_path(raw), self.root):
+                    raise DxConfigError(
+                        f"verified ephemeral checkout cannot own {key}: {raw}. "
+                        f"Use {GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} custody instead."
+                    )
 
         if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
-            ext_root = (
-                None
-                if "MOLT_EXT_ROOT" in forced
-                else require_external_artifact_root(
-                    self.root,
-                    env,
-                    create_dirs=create_dirs,
-                    prefer_external=self.prefer_external_artifacts,
-                )
-            ) or self.root
+            if custody.ephemeral:
+                ext_root = custody.custody_root
+            else:
+                ext_root = (
+                    None
+                    if "MOLT_EXT_ROOT" in forced
+                    else require_external_artifact_root(
+                        self.root,
+                        env,
+                        create_dirs=create_dirs,
+                        prefer_external=self.prefer_external_artifacts,
+                    )
+                ) or self.root
         else:
             ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
         _validate_windows_artifact_root(
@@ -1215,7 +1468,7 @@ class RunContext:
         # MOLT_TARGET_ROOT is durable toolchain custody, not scratch capacity.
         # Keep it on the canonical Molt root even when build outputs are routed
         # elsewhere explicitly.
-        default_toolchain_root = _maintainer_toolchain_root(ext_root)
+        default_toolchain_root = custody.toolchain_root
         raw_target_root = env.get("MOLT_TARGET_ROOT")
         if not raw_target_root or _should_rehome_toolchain_root(
             raw_target_root, ext_root, env
