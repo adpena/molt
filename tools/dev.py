@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import time
-import importlib.util
 import json
 from collections.abc import Mapping
 from datetime import datetime
@@ -19,16 +18,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.import_file import load_module_from_path  # noqa: E402
 
 
 def _load_dx_module():
     dx_path = ROOT / "src" / "molt" / "dx.py"
-    spec = importlib.util.spec_from_file_location("molt_dx_project", dx_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load DX planner from {dx_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module_from_path("molt_dx_project", dx_path)
 
 
 _DX_MODULE = _load_dx_module()
