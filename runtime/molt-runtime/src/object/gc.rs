@@ -981,12 +981,12 @@ impl Drop for GcRunningGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DEALLOC_COUNT;
     use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::object::dec_ref_bits;
     use crate::object::{
         TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_TUPLE,
     };
+    use crate::{DEALLOC_COUNT, obj_from_bits};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -1101,19 +1101,44 @@ mod tests {
             let empty_dict = alloc_dict_with_pairs(_py, &[]);
             assert!(!unsafe { gc_is_tracked(empty_dict) });
 
+            let direct_dict_bits = crate::molt_dict_new(16);
+            let direct_dict = obj_from_bits(direct_dict_bits)
+                .as_ptr()
+                .expect("direct dict allocation");
+            assert!(
+                !unsafe { gc_is_tracked(direct_dict) },
+                "every exact empty-dict constructor must apply dynamic projection"
+            );
+
+            let atomic_dict = alloc_dict_with_pairs(
+                _py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
+            );
+            assert!(!unsafe { gc_is_tracked(atomic_dict) });
+
+            let list = alloc_list(_py, &[]);
+            let list_bits = MoltObject::from_ptr(list).bits();
+            let container_dict =
+                alloc_dict_with_pairs(_py, &[MoltObject::from_int(1).bits(), list_bits]);
+            assert!(unsafe { gc_is_tracked(container_dict) });
+
             let atomic_tuple = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
             assert!(unsafe { gc_is_tracked(atomic_tuple) });
             let _ = unsafe { collect_cycles(_py) };
             assert!(!unsafe { gc_is_tracked(atomic_tuple) });
 
-            let list = alloc_list(_py, &[]);
-            let list_bits = MoltObject::from_ptr(list).bits();
             let container_tuple = alloc_tuple(_py, &[list_bits]);
             assert!(unsafe { gc_is_tracked(container_tuple) });
             let _ = unsafe { collect_cycles(_py) };
             assert!(unsafe { gc_is_tracked(container_tuple) });
 
             dec_ref_bits(_py, MoltObject::from_ptr(empty_dict).bits());
+            dec_ref_bits(_py, direct_dict_bits);
+            dec_ref_bits(_py, MoltObject::from_ptr(atomic_dict).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(container_dict).bits());
             dec_ref_bits(_py, MoltObject::from_ptr(atomic_tuple).bits());
             dec_ref_bits(_py, MoltObject::from_ptr(container_tuple).bits());
             dec_ref_bits(_py, list_bits);
