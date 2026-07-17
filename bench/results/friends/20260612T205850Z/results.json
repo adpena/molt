@@ -35,6 +35,15 @@
     "suite_root_overrides": {},
     "timeout_override": 1800
   },
+  "provenance": {
+    "authoritative": false,
+    "authoritative_reason": "non-canonical lane (tools/bench_friends.py); the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
+    "git_rev": "feb06faf27c26c29391972b97d5e7021603178d7",
+    "lane": "tools/bench_friends.py",
+    "profile": "manifest-defined",
+    "source": "non-canonical"
+  },
   "schema_version": 1,
   "suites": [
     {

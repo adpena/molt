@@ -81,6 +81,7 @@ __all__ = [
     "current_origin_main_rev",
     "doc_age_days",
     "git_rev_is_ancestor_of_origin",
+    "is_non_canonical_provenance",
     "is_stale_snapshot_metadata",
     "non_canonical_provenance",
     "relative_time_delta",
@@ -254,6 +255,25 @@ def non_canonical_provenance(
     }
 
 
+def is_non_canonical_provenance(value: object) -> bool:
+    """Does ``value`` carry the canonical non-citable lane provenance?"""
+    if not isinstance(value, dict):
+        return False
+    return (
+        value.get("authoritative") is False
+        and value.get("source") == "non-canonical"
+        and isinstance(value.get("authoritative_reason"), str)
+        and CANONICAL_GATE in value["authoritative_reason"]
+        and isinstance(value.get("lane"), str)
+        and bool(value["lane"])
+        and isinstance(value.get("profile"), str)
+        and bool(value["profile"])
+        and isinstance(value.get("git_rev"), str)
+        and bool(value["git_rev"])
+        and value.get("canonical_gate") == CANONICAL_GATE
+    )
+
+
 def _command_tokens(command: str) -> tuple[str, ...]:
     try:
         raw = shlex.split(command, posix=False)
@@ -280,9 +300,8 @@ def _has_flag(tokens: Sequence[str], flag: str) -> bool:
 def _command_names_perf_scoreboard(tokens: Sequence[str]) -> bool:
     for token in tokens:
         normalized = token.replace("\\", "/").lower()
-        if (
-            normalized == "perf_scoreboard.py"
-            or normalized.endswith("/perf_scoreboard.py")
+        if normalized == "perf_scoreboard.py" or normalized.endswith(
+            "/perf_scoreboard.py"
         ):
             return True
     return False
@@ -312,16 +331,14 @@ def canonical_scoreboard_command_problems(
     missing_backends = sorted(CANONICAL_PERF_BACKENDS - backends)
     if missing_backends:
         problems.append(
-            f"{label} missing canonical backends: "
-            f"{', '.join(missing_backends)}"
+            f"{label} missing canonical backends: {', '.join(missing_backends)}"
         )
 
     profiles = set(_flag_values(tokens, "--profile"))
     if profiles != {CANONICAL_PERF_PROFILE}:
         got = ", ".join(sorted(profiles)) if profiles else "<none>"
         problems.append(
-            f"{label} must use only --profile {CANONICAL_PERF_PROFILE}; "
-            f"got {got}"
+            f"{label} must use only --profile {CANONICAL_PERF_PROFILE}; got {got}"
         )
 
     required_singletons = {
@@ -335,9 +352,7 @@ def canonical_scoreboard_command_problems(
         values = set(_flag_values(tokens, flag))
         if values != {required}:
             got = ", ".join(sorted(values)) if values else "<none>"
-            problems.append(
-                f"{label} must include {flag} {required}; got {got}"
-            )
+            problems.append(f"{label} must include {flag} {required}; got {got}")
 
     for flag in ("--classify", "--require-quiescent"):
         if not _has_flag(tokens, flag):
@@ -347,9 +362,7 @@ def canonical_scoreboard_command_problems(
         flag for flag in _CANONICAL_PERF_FORBIDDEN_FLAGS if _has_flag(tokens, flag)
     )
     if forbidden:
-        problems.append(
-            f"{label} uses non-release perf flags: {', '.join(forbidden)}"
-        )
+        problems.append(f"{label} uses non-release perf flags: {', '.join(forbidden)}")
 
     return problems
 
@@ -393,8 +406,7 @@ def canonical_scoreboard_shape_problems(
         missing = sorted(expected_benchmarks - run_benchmarks)
         if missing:
             problems.append(
-                f"{label} missing canonical core benchmarks: "
-                f"{_sample_items(missing)}"
+                f"{label} missing canonical core benchmarks: {_sample_items(missing)}"
             )
         extra = sorted(run_benchmarks - expected_benchmarks)
         if extra:
@@ -469,8 +481,7 @@ def canonical_scoreboard_shape_problems(
 
     if not by_benchmark:
         problems.append(
-            f"{label} contains no native+llvm {CANONICAL_PERF_PROFILE} "
-            "benchmark cells"
+            f"{label} contains no native+llvm {CANONICAL_PERF_PROFILE} benchmark cells"
         )
     else:
         missing_rows = [
@@ -569,9 +580,7 @@ def current_scoreboard_problems(
     if age is None:
         problems.append(f"{label} generated_at is missing or unparseable")
     elif age > max_age_days:
-        problems.append(
-            f"{label} generated_at is {age:.0f}d old (>{max_age_days:g}d)"
-        )
+        problems.append(f"{label} generated_at is {age:.0f}d old (>{max_age_days:g}d)")
 
     origin_rev = current_origin_main_rev()
     rev_fields = scoreboard_revision_fields(doc)

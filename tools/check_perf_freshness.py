@@ -262,6 +262,7 @@ def _classify_artifact(
     generated_at: str | None,
     max_age_days: float,
     now: dt.datetime,
+    non_canonical: bool = False,
 ) -> dict:
     age = pa.doc_age_days(generated_at, now=now)
     ancestor = pa.git_rev_is_ancestor_of_origin(git_rev)
@@ -287,11 +288,16 @@ def _classify_artifact(
 
     is_stale = bool(reasons)
     # A doc is a HAZARD iff it presents perf numbers, is stale/undateable, and
-    # is NOT stamped as an acknowledged historical record.
-    hazard = has_numbers and is_stale and not stamped
+    # is neither stamped as historical nor born with canonical non-citable
+    # lane provenance. The latter must be recognized at creation time so CI
+    # does not spontaneously fail when an explicitly non-authoritative receipt
+    # crosses the age horizon.
+    hazard = has_numbers and is_stale and not (stamped or non_canonical)
 
     if not has_numbers:
         verdict = "no-perf-numbers"
+    elif non_canonical:
+        verdict = "non-canonical"
     elif not is_stale:
         verdict = "fresh"
     elif stamped:
@@ -306,6 +312,7 @@ def _classify_artifact(
         "hazard": hazard,
         "has_perf_numbers": has_numbers,
         "stamped": stamped,
+        "non_canonical": non_canonical,
         "git_rev": git_rev,
         "generated_at": generated_at,
         "age_days": round(age, 1) if age is not None else None,
@@ -346,6 +353,7 @@ def evaluate_json(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
         ) | {"reasons": [f"invalid JSON: {exc.msg}"]}
 
     meta = payload.get(pa.STALE_METADATA_KEY) if isinstance(payload, dict) else None
+    provenance = payload.get("provenance") if isinstance(payload, dict) else None
     generated_at = _json_find_first_str(
         payload, {"generated_at", "created_at", "timestamp", "run_started_at"}
     )
@@ -355,6 +363,7 @@ def evaluate_json(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
         artifact_kind="json",
         has_numbers=_json_has_perf_numbers(payload),
         stamped=pa.is_stale_snapshot_metadata(meta),
+        non_canonical=pa.is_non_canonical_provenance(provenance),
         git_rev=git_rev,
         generated_at=generated_at,
         max_age_days=max_age_days,
@@ -383,7 +392,10 @@ def evaluate_scoreboard(path: Path, *, max_age_days: float, now: dt.datetime) ->
             "reasons": [f"invalid JSON: {exc.msg}"],
         }
 
-    if not isinstance(payload, dict) or payload.get("kind") != "cpython_floor_scoreboard":
+    if (
+        not isinstance(payload, dict)
+        or payload.get("kind") != "cpython_floor_scoreboard"
+    ):
         return _classify_artifact(
             path=path,
             artifact_kind="scoreboard-support",
@@ -466,9 +478,7 @@ def run(max_age_days: float) -> dict:
     hazards = [r for r in records if r["hazard"]]
     docs_scanned = sum(1 for r in records if r["artifact_kind"] == "text")
     json_scanned = sum(1 for r in records if r["artifact_kind"] == "json")
-    scoreboards_scanned = sum(
-        1 for r in records if r["artifact_kind"] == "scoreboard"
-    )
+    scoreboards_scanned = sum(1 for r in records if r["artifact_kind"] == "scoreboard")
     scoreboard_support_scanned = sum(
         1 for r in records if r["artifact_kind"] == "scoreboard-support"
     )
