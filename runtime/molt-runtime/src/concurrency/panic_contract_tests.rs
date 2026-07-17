@@ -50,7 +50,7 @@ struct ContractGuard {
 
 impl ContractGuard {
     fn new() -> Self {
-        let guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_mutex_guard();
         molt_runtime_init();
         let _ = molt_exception_clear();
         Self { _guard: guard }
@@ -147,7 +147,7 @@ fn python_level_error_is_catchable() {
 #[test]
 fn pending_exceptions_are_isolated_between_native_threads() {
     // This test exercises thread-local exception state and must remain safe
-    // under the default parallel harness. Do not hold TEST_MUTEX while
+    // under the default parallel harness. Do not hold `test_mutex_guard` while
     // acquiring the GIL: other tests legitimately enter those authorities in
     // the opposite lifetime (GIL-protected work followed by serialized global
     // assertions), and nesting them here would create a harness-only AB/BA

@@ -1300,7 +1300,7 @@ pub(crate) fn clear_thread_runtime_state() {
 /// dangerous double-init / use-after-free during process exit.  Resetting
 /// them is only safe in a controlled test harness where:
 ///
-/// 1. A serialization mutex (`TEST_MUTEX`) ensures no concurrent runtime
+/// 1. `test_mutex_guard` ensures no concurrent runtime
 ///    access.
 /// 2. The previous runtime has been fully shut down via
 ///    `molt_runtime_shutdown()`.
@@ -1458,7 +1458,7 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn finalizing_unpublishes_before_atexit_reentry_and_racing_entrants() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }
@@ -1553,7 +1553,7 @@ mod tests {
     #[cfg(feature = "l7-attestation-probe")]
     #[test]
     fn encoded_core_gil_entry_is_allocation_free_after_warmup() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         assert_eq!(molt_runtime_init(), 1);
 
         for _ in 0..64 {
@@ -1574,7 +1574,7 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn concurrent_init_waits_for_ready_publication() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }

@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-    let _guard = crate::TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::test_mutex_guard();
     let original = {
         let mut env = env_state()
             .lock()
@@ -42,11 +40,9 @@ fn platform_test_path(parts: &[&str]) -> String {
 
 // Each test gets a fresh runtime by resetting the one-shot shutdown flag
 // before re-initializing.  The `molt_runtime_reset_for_testing()` call is
-// `#[cfg(test)]`-gated and safe here because `TEST_MUTEX` serializes access.
+// `#[cfg(test)]`-gated and safe here because `test_mutex_guard` serializes access.
 fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = crate::TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::test_mutex_guard();
     let prior = std::env::var("MOLT_TRUSTED").ok();
     unsafe {
         std::env::set_var("MOLT_TRUSTED", "1");
@@ -158,9 +154,7 @@ fn clear_extension_metadata_validation_cache() {
 
 #[test]
 fn platform_constant_runtime_state_is_owned_and_clearable() {
-    let _guard = crate::TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         platform_clear_runtime_state(_py, runtime_state(_py));
     });
@@ -192,9 +186,7 @@ fn platform_constant_runtime_state_is_owned_and_clearable() {
 
 #[test]
 fn platform_constant_cache_returns_owned_values() {
-    let _guard = crate::TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::test_mutex_guard();
 
     crate::with_gil_entry_nopanic!(_py, {
         let state = runtime_state(_py);
@@ -247,9 +239,7 @@ fn assert_string_attr(
 
 #[test]
 fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
-    let _guard = crate::TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::test_mutex_guard();
 
     crate::with_gil_entry_nopanic!(_py, {
         let spec_holder_name_bits = alloc_test_string_bits(_py, "spec-holder");

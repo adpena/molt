@@ -1019,9 +1019,7 @@ mod tests {
     #[cfg(feature = "free-threaded")]
     #[test]
     fn free_threaded_collection_rejects_known_cycle_before_mutation() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let left = alloc_list(_py, &[]);
             let right = alloc_list(_py, &[]);
@@ -1056,9 +1054,7 @@ mod tests {
 
     #[test]
     fn lifecycle_visit_is_side_effect_free_and_clear_is_idempotent() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let left = alloc_list(_py, &[]);
             let right = alloc_list(_py, &[]);
@@ -1098,9 +1094,7 @@ mod tests {
 
     #[test]
     fn dynamic_dict_and_tuple_tracking_matches_cpython_timing() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let empty_dict = alloc_dict_with_pairs(_py, &[]);
             assert!(!unsafe { gc_is_tracked(empty_dict) });
@@ -1126,7 +1120,7 @@ mod tests {
 
     #[test]
     fn exception_self_cycle_with_physical_abi_projection_is_collectible() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -1163,7 +1157,7 @@ mod tests {
 
     #[test]
     fn exception_landing_external_c_ref_roots_self_cycle_until_released() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -1205,11 +1199,11 @@ mod tests {
     /// tracked registry.
     #[test]
     fn collect_reclaims_unreachable_list_cycle() {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = crate::test_mutex_guard();
         // Force-enable the alloc/dealloc counters so DEALLOC_COUNT is a live signal
         // (otherwise `profile_hit` is a no-op and the deallocation is invisible to the
         // counter, though `gc_is_tracked` below remains an unconditional proof).
-        // SAFETY: single-threaded test serialized by TEST_MUTEX.
+        // SAFETY: single-threaded test serialized by `test_mutex_guard`.
         unsafe {
             std::env::set_var("MOLT_PROFILE", "1");
         }
@@ -1262,9 +1256,7 @@ mod tests {
 
     #[test]
     fn collect_reclaims_cross_shape_list_tuple_cycle() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let list = alloc_list(_py, &[]);
             let list_bits = MoltObject::from_ptr(list).bits();
@@ -1289,8 +1281,8 @@ mod tests {
     /// is a cycle, but `outer` keeps it alive.
     #[test]
     fn collect_spares_externally_reachable_cycle() {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        // SAFETY: single-threaded test serialized by TEST_MUTEX.
+        let _lock = crate::test_mutex_guard();
+        // SAFETY: single-threaded test serialized by `test_mutex_guard`.
         unsafe {
             std::env::set_var("MOLT_PROFILE", "1");
         }
@@ -1339,7 +1331,7 @@ mod tests {
 
     #[test]
     fn abi_view_hold_does_not_root_an_unreachable_cycle() {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = crate::test_mutex_guard();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_list(_py, &[]);
@@ -1360,7 +1352,7 @@ mod tests {
 
     #[test]
     fn direct_c_reference_roots_viewed_cycle_until_released() {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = crate::test_mutex_guard();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_list(_py, &[]);

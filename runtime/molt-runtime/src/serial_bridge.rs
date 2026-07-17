@@ -905,7 +905,7 @@ mod tests {
 
     #[test]
     fn serial_bridge_interns_protocol_names_in_runtime_state() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"__abs__";
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn serial_bridge_rejects_unknown_intern_name() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"__molt_unknown__";

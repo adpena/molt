@@ -1278,9 +1278,7 @@ mod tests {
 
     #[test]
     fn module_repr_includes_file_when_present() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"pathlib");

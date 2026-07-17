@@ -125,9 +125,7 @@ mod tests {
 
     #[test]
     fn native_handle_participates_in_object_refcounting() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let drops = Arc::new(AtomicUsize::new(0));
             let bits = native_handle_new(
