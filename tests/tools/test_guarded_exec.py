@@ -138,6 +138,14 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
         lambda _root: "LLVM backend requires LLVM 22.1 with llvm-config.",
         raising=True,
     )
+    monkeypatch.setattr(
+        module,
+        "mlir_toolchain_environment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            module.LlvmToolchainConfigError("missing SDK")
+        ),
+        raising=True,
+    )
 
     rc = module.main(
         [
@@ -159,6 +167,41 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
     err = capsys.readouterr().err
     assert "guarded_exec preflight" in err
     assert "LLVM backend requires LLVM 22.1" in err
+
+
+def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
+    monkeypatch,
+) -> None:
+    module = _load_guarded_exec()
+    captured = _install_fake_context(module, monkeypatch)
+
+    def project(_root, *, environ):
+        return dict(environ) | {
+            "LLVM_SYS_221_PREFIX": "/usr",
+            "LLVM_CONFIG_PATH": "/usr/bin/llvm-config-22",
+            "MOLT_LLVM_PREFIX": "/usr/lib/llvm-22",
+        }
+
+    monkeypatch.setattr(module, "mlir_toolchain_environment", project, raising=True)
+
+    rc = module.main(
+        [
+            "--prefix",
+            "MOLT_TEST_SUITE",
+            "--",
+            "cargo",
+            "check",
+            "-p",
+            "molt-backend",
+            "--features",
+            "llvm",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["run_env"]["LLVM_SYS_221_PREFIX"] == "/usr"
+    assert captured["run_env"]["LLVM_CONFIG_PATH"] == "/usr/bin/llvm-config-22"
+    assert captured["run_env"]["MOLT_LLVM_PREFIX"] == "/usr/lib/llvm-22"
 
 
 def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:

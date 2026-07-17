@@ -2,6 +2,10 @@ schema_version = 1
 default_release = "22.1.8"
 canonical_build_type = "Release"
 
+[debian_installer]
+url = "https://apt.llvm.org/llvm.sh"
+sha256 = "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+
 [releases."22.1.8"]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz"
 size = 167061596

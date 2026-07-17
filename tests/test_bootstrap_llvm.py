@@ -576,7 +576,7 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         source_identity={"source_tree": {"digest": "b" * 64}},
         architecture_contract_sha256="c" * 64,
         targets="X86;WebAssembly",
-        projects="clang;lld;mlir",
+        projects="clang;lld;mlir;polly",
         build_type="Release",
     )
     bootstrap_llvm._prepare_build_cache(build, first)
@@ -587,7 +587,7 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         source_identity={"source_tree": {"digest": "d" * 64}},
         architecture_contract_sha256="c" * 64,
         targets="X86;WebAssembly",
-        projects="clang;lld;mlir",
+        projects="clang;lld;mlir;polly",
         build_type="Release",
     )
     bootstrap_llvm._prepare_build_cache(build, second)
@@ -607,7 +607,7 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         source_identity={"source_tree": {"digest": "d" * 64}},
         architecture_contract_sha256="c" * 64,
         targets="AArch64;WebAssembly",
-        projects="clang;lld;mlir",
+        projects="clang;lld;mlir;polly",
         build_type="Release",
     )
     assert second["digest"] != third["digest"]
@@ -625,7 +625,7 @@ def test_development_build_refuses_unattested_directory_deletion(
         source_identity={"source_tree": {"digest": "b" * 64}},
         architecture_contract_sha256="c" * 64,
         targets="X86;WebAssembly",
-        projects="clang;lld;mlir",
+        projects="clang;lld;mlir;polly",
         build_type="Release",
     )
 
@@ -656,7 +656,7 @@ def test_development_build_refuses_forged_marker_as_deletion_authority(
         source_identity={"source_tree": {"digest": "b" * 64}},
         architecture_contract_sha256="c" * 64,
         targets="X86;WebAssembly",
-        projects="clang;lld;mlir",
+        projects="clang;lld;mlir;polly",
         build_type="Release",
     )
 

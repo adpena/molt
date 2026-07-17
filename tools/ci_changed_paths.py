@@ -25,7 +25,9 @@ class PathRule:
     def matches(self, path: str) -> bool:
         if path in self.exact:
             return True
-        return any(path == prefix[:-1] or path.startswith(prefix) for prefix in self.prefixes)
+        return any(
+            path == prefix[:-1] or path.startswith(prefix) for prefix in self.prefixes
+        )
 
 
 CI_AUTHORITY = PathRule(
@@ -68,8 +70,25 @@ RUST = PathRule(
 )
 
 LLVM = PathRule(
-    exact=frozenset({"Cargo.lock", "Cargo.toml", "rust-toolchain.toml"}),
+    exact=frozenset(
+        {
+            ".github/workflows/perf-gate.yml",
+            "Cargo.lock",
+            "Cargo.toml",
+            "config/llvm_toolchain_arches.toml",
+            "config/llvm_toolchain_releases.toml",
+            "rust-toolchain.toml",
+            "src/molt/cli/setup_readiness.py",
+            "src/molt/llvm_toolchain.py",
+            "tests/test_bootstrap_llvm.py",
+            "tests/test_llvm_toolchain.py",
+            "tests/tools/test_guarded_exec.py",
+            "tools/bootstrap_llvm.py",
+            "tools/guarded_exec.py",
+        }
+    ),
     prefixes=(
+        ".github/actions/setup-llvm/",
         "runtime/molt-backend/",
         "runtime/molt-backend-mlir/",
         "runtime/molt-backend-native/",
@@ -172,7 +191,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             outputs = classify_paths(changed_paths_for_pull_request(args.base_ref))
         except Exception as exc:  # pragma: no cover - exercised in GitHub fallback.
-            print(f"::warning title=CI path classifier fallback::{exc}", file=sys.stderr)
+            print(
+                f"::warning title=CI path classifier fallback::{exc}", file=sys.stderr
+            )
             outputs = all_true()
     else:
         outputs = all_true()
