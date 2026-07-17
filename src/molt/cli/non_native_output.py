@@ -17,11 +17,13 @@ from typing import Any, Callable, Collection, TypedDict
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     browser_asset_manifest_keys,
+    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli.atomic_io import (
     _atomic_copy_file,
+    _atomic_write_bytes,
     _atomic_write_json,
     _atomic_write_text,
     _remove_file_or_tree,
@@ -94,6 +96,14 @@ def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
         "path": asset_path,
         "size": path.stat().st_size,
         "sha256": h.hexdigest(),
+    }
+
+
+def _bytes_asset(payload: bytes, asset_path: str) -> dict[str, object]:
+    return {
+        "path": asset_path,
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
     }
 
 
@@ -1124,12 +1134,15 @@ def _prepare_non_native_build_result(
                     BROWSER_WASM_ENTRY_ASSETS,
                 )
                 browser_asset_keys = browser_asset_manifest_keys(browser_asset_names)
-                browser_assets = {
-                    browser_asset_keys[name]: _file_asset(
-                        wasm_asset_root.joinpath(*Path(name).parts),
-                        name,
+                browser_asset_payloads = {
+                    name: canonical_wasm_loader_asset_bytes(
+                        wasm_asset_root.joinpath(*Path(name).parts)
                     )
                     for name in browser_asset_names
+                }
+                browser_assets = {
+                    browser_asset_keys[name]: _bytes_asset(payload, name)
+                    for name, payload in browser_asset_payloads.items()
                 }
                 target_feature_manifest_asset = _file_asset(
                     target_feature_manifest_src,
@@ -1317,10 +1330,9 @@ def _prepare_non_native_build_result(
                 ),
             )
             try:
-                for name in browser_asset_names:
-                    _atomic_copy_file(
-                        wasm_asset_root.joinpath(*Path(name).parts),
-                        split_dir.joinpath(*Path(name).parts),
+                for name, payload in browser_asset_payloads.items():
+                    _atomic_write_bytes(
+                        split_dir.joinpath(*Path(name).parts), payload
                     )
             except OSError as exc:
                 return None, _fail(

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from molt.browser_asset_closure import canonical_wasm_loader_asset_bytes
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "src" / "molt" / "browser_asset_graph.toml"
@@ -42,12 +44,15 @@ def _asset_name(value: str) -> str:
     return normalized
 
 
-def _read_manifest() -> tuple[dict[str, dict[str, object]], dict[str, AssetSource]]:
+def _read_manifest(
+    manifest_path: Path = MANIFEST,
+    wasm_root: Path = WASM_ROOT,
+) -> tuple[dict[str, dict[str, object]], dict[str, AssetSource]]:
     try:
-        manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(
-            f"cannot read browser asset source manifest {MANIFEST}: {exc}"
+            f"cannot read browser asset source manifest {manifest_path}: {exc}"
         ) from exc
     if manifest.get("schema_version") != 2:
         raise ValueError("unsupported browser asset source manifest schema")
@@ -77,9 +82,9 @@ def _read_manifest() -> tuple[dict[str, dict[str, object]], dict[str, AssetSourc
         name = _asset_name(raw_path)
         if name in assets:
             raise ValueError(f"browser asset source manifest duplicates {name}")
-        path = WASM_ROOT.joinpath(*PurePosixPath(name).parts)
+        path = wasm_root.joinpath(*PurePosixPath(name).parts)
         try:
-            content = path.read_bytes()
+            content = canonical_wasm_loader_asset_bytes(path)
         except OSError as exc:
             raise FileNotFoundError(
                 f"declared browser asset is missing: {path}"
@@ -257,8 +262,11 @@ def _reachable_assets(
     return reached
 
 
-def generate_with_telemetry() -> tuple[bytes, dict[str, int]]:
-    groups, assets = _read_manifest()
+def generate_with_telemetry(
+    manifest_path: Path = MANIFEST,
+    wasm_root: Path = WASM_ROOT,
+) -> tuple[bytes, dict[str, int]]:
+    groups, assets = _read_manifest(manifest_path, wasm_root)
     scanned, telemetry = scan_sources(assets.values())
     generated_assets: dict[str, dict[str, object]] = {}
     graph: dict[str, tuple[str, ...]] = {}
@@ -335,8 +343,11 @@ def generate_with_telemetry() -> tuple[bytes, dict[str, int]]:
     return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(), telemetry
 
 
-def generate() -> bytes:
-    generated, _telemetry = generate_with_telemetry()
+def generate(
+    manifest_path: Path = MANIFEST,
+    wasm_root: Path = WASM_ROOT,
+) -> bytes:
+    generated, _telemetry = generate_with_telemetry(manifest_path, wasm_root)
     return generated
 
 
