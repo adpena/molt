@@ -95,6 +95,35 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     assert payload["artifacts"]["shared"] == str(runtime_root / "molt_runtime.wasm")
 
 
+def test_prebuild_runtime_wasm_json_failure_is_machine_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm_artifact",
+        lambda *_args, **_kwargs: False,
+        raising=True,
+    )
+
+    assert (
+        RUNTIME_BUILD._prebuild_runtime_wasm(
+            project_root=tmp_path,
+            kind="shared",
+            json_output=True,
+            build_profile="dev",
+            cargo_timeout=1200.0,
+        )
+        == 1
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "Runtime wasm shared prebuild failed.",
+        "status": "error",
+    }
+
+
 def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

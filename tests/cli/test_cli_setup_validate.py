@@ -694,6 +694,12 @@ def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
     assert error is not None
     assert "wasm-tools is required" in error
     assert "reuse is disabled" in error
+    assert (
+        "wasm-tools is required"
+        in RUNTIME_WASM_VALIDATION._reusable_wasm_artifact_validation_error(
+            wasm_path
+        )
+    )
 
 
 def test_cli_diff_command_uses_diff_memory_guard(

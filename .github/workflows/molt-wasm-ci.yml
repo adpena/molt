@@ -102,6 +102,12 @@ jobs:
         with:
           targets: wasm32-wasip1
 
+      - name: Install WASM validator
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: wasm-tools@1.253.0
+          fallback: none
+
       - name: Install native and wasm linkers
         run: |
           if ! command -v mold >/dev/null 2>&1; then
@@ -116,6 +122,7 @@ jobs:
           sudo apt-get install -y wasi-libc
           mold --version
           wasm-ld --version
+          wasm-tools --version
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
