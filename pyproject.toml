@@ -160,6 +160,7 @@ lint = [
     "{project_python} tools/check_ecosystem_compat.py",
     "{project_python} tools/check_suite_honesty.py",
     "{project_python} tools/gen_op_kinds.py --check",
+    "{project_python} tools/gen_runtime_profile_schema.py --check",
     "{project_python} tools/audit_op_kinds.py --check",
     "{project_python} tools/gen_wasm_abi.py --check",
     "{project_python} tools/llvm_runtime_abi_audit.py --check",

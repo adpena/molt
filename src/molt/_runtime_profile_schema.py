@@ -1,154 +1,23 @@
 from __future__ import annotations
 
-from types import MappingProxyType
-from typing import Any, Mapping, TypeGuard
+from typing import Any, TypeGuard
+
+from molt._runtime_profile_schema_generated import (
+    EPOCH_MEMORY_FIELDS,
+    PROCESS_COUNTER_KEYS,
+    PROCESS_MEMORY_FIELDS,
+    PROCESS_PROFILE_KIND,
+    PROCESS_PROFILE_SCHEMA_VERSION,
+    PROCESS_RSS_SOURCES,
+    PROFILE_DELTA_KEYS,
+    PROFILE_EPOCH_KIND,
+    PROFILE_EPOCH_SCHEMA_VERSION,
+    PROFILE_GAUGE_KEYS,
+    UNAVAILABLE_RSS_SOURCES,
+)
 
 
 RuntimeProfilePayload = dict[str, Any]
-
-PROCESS_PROFILE_SCHEMA_VERSION = 3
-PROCESS_PROFILE_KIND = "runtime_feedback"
-PROFILE_EPOCH_SCHEMA_VERSION = 2
-PROFILE_EPOCH_KIND = "runtime_profile_epoch"
-
-# Canonical metric membership for both the process snapshot and epoch schema.
-# Consumers import this authority instead of maintaining partial required-key
-# lists or treating missing counters as zero.
-PROCESS_COUNTER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        "profile": frozenset(
-            {
-                "call_dispatch",
-                "string_count_cache_hit",
-                "string_count_cache_miss",
-                "struct_field_store",
-                "attr_lookup",
-                "handle_resolve",
-                "layout_guard",
-                "layout_guard_fail",
-                "alloc_count",
-                "alloc_object",
-                "alloc_exception",
-                "alloc_dict",
-                "alloc_tuple",
-                "alloc_string",
-                "alloc_callargs",
-                "alloc_bytes_callargs",
-                "tb_builds",
-                "tb_frames",
-                "tb_suppressed",
-                "async_polls",
-                "async_pending",
-                "async_wakeups",
-                "async_sleep_register",
-                "alloc_bytes_total",
-                "alloc_bytes_string",
-                "alloc_bytes_dict",
-                "alloc_bytes_tuple",
-                "alloc_bytes_list",
-                "alloc_bytes_exception",
-                "dealloc_count",
-                "dealloc_bytes_total",
-                "dealloc_object",
-                "dealloc_bigint",
-                "dealloc_string",
-                "dealloc_dict",
-                "dealloc_tuple",
-                "dealloc_exception",
-                "dealloc_bytes_exception",
-                "live_objects",
-                "live_bytes",
-                "live_exception",
-                "live_bytes_exception",
-                "expected_live",
-            }
-        ),
-        "aux": frozenset(
-            {
-                "aux_class_inline_count",
-                "aux_state_inline_count",
-                "aux_sidecar_alloc_count",
-                "aux_sidecar_free_count",
-                "aux_sidecar_live_count",
-                "aux_sidecar_alloc_failure_count",
-                "aux_sidecar_alloc_bytes",
-                "aux_sidecar_free_bytes",
-                "aux_sidecar_live_bytes",
-            }
-        ),
-        "gc": frozenset(
-            {
-                "gc_track_count",
-                "gc_untrack_count",
-                "gc_tracked_live",
-                "gc_tracked_high_water",
-                "gc_registry_lock_contention_count",
-                "gc_registry_lock_wait_ns",
-                "gc_snapshot_alloc_failure_count",
-            }
-        ),
-        "hot_paths": frozenset(
-            {
-                "call_bind_ic_hit",
-                "call_bind_ic_miss",
-                "attr_site_name_hit",
-                "attr_site_name_miss",
-                "split_ws_ascii",
-                "split_ws_unicode",
-                "dict_str_int_prehash_hit",
-                "dict_str_int_prehash_miss",
-                "dict_str_int_prehash_deopt",
-                "taq_ingest_calls",
-                "taq_ingest_skip_marker",
-                "ascii_i64_parse_fail",
-            }
-        ),
-        "deopt_reasons": frozenset(
-            {
-                "call_indirect_noncallable",
-                "invoke_ffi_bridge_capability_denied",
-                "guard_tag_type_mismatch",
-                "guard_dict_shape_layout_mismatch",
-                "guard_dict_shape_layout_fail_null_obj",
-                "guard_dict_shape_layout_fail_non_object",
-                "guard_dict_shape_layout_fail_class_mismatch",
-                "guard_dict_shape_layout_fail_non_type_class",
-                "guard_dict_shape_layout_fail_expected_version_invalid",
-                "guard_dict_shape_layout_fail_version_mismatch",
-            }
-        ),
-    }
-)
-PROFILE_GAUGE_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        "profile": frozenset(
-            {
-                "live_objects",
-                "live_bytes",
-                "live_exception",
-                "live_bytes_exception",
-                "expected_live",
-            }
-        ),
-        "aux": frozenset({"aux_sidecar_live_count", "aux_sidecar_live_bytes"}),
-        "gc": frozenset({"gc_tracked_live", "gc_tracked_high_water"}),
-    }
-)
-PROFILE_DELTA_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        section: keys - PROFILE_GAUGE_KEYS.get(section, frozenset())
-        for section, keys in PROCESS_COUNTER_KEYS.items()
-    }
-)
-PROCESS_RSS_SOURCES = frozenset(
-    {
-        "proc-self-status",
-        "mach-task-basic-info",
-        "windows-process-memory-info",
-        "unsupported-wasm",
-        "unsupported-target",
-    }
-)
 
 _PROCESS_ROOT_KEYS = {
     "schema_version",
@@ -156,12 +25,7 @@ _PROCESS_ROOT_KEYS = {
     *PROCESS_COUNTER_KEYS,
     "memory",
 }
-_MEMORY_SNAPSHOT_KEYS = {
-    "source",
-    "available",
-    "current_rss_bytes",
-    "peak_rss_bytes",
-}
+_MEMORY_SNAPSHOT_KEYS = PROCESS_MEMORY_FIELDS
 _EPOCH_ROOT_KEYS = {
     "schema_version",
     "kind",
@@ -173,7 +37,7 @@ _EPOCH_ROOT_KEYS = {
     "gauges",
     "memory",
 }
-_EPOCH_MEMORY_KEYS = {"start", "end", "current_rss_delta_bytes"}
+_EPOCH_MEMORY_KEYS = EPOCH_MEMORY_FIELDS
 _U64_MAX = (1 << 64) - 1
 _I64_MIN = -(1 << 63)
 _I64_MAX = (1 << 63) - 1
@@ -217,7 +81,7 @@ def _validate_memory_snapshot(value: object, path: str) -> str | None:
     if not isinstance(available, bool):
         return f"{path}.available must be bool"
     if available:
-        if source in {"unsupported-wasm", "unsupported-target"}:
+        if source in UNAVAILABLE_RSS_SOURCES:
             return f"{path}.available cannot be true for {source}"
         if not (_is_u64(current) and _is_u64(peak)):
             return f"{path} available RSS values must be u64"
