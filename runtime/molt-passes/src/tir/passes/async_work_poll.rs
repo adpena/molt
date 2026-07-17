@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::tir::analysis::{AnalysisManager, LoopForest};
 use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::exception_regions::{
-    ExceptionOpPosition, ExceptionRegionFacts, ExceptionRegionToken, ExceptionRegions,
+    ExceptionBoundaryHandler, ExceptionOpPosition, ExceptionRegionFacts, ExceptionRegions,
 };
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
@@ -56,24 +56,21 @@ fn check_label(op: &TirOp) -> Option<i64> {
     }
 }
 
-/// Resolve the owning lexical handler for an insertion boundary. `None` is a
-/// proven depth-zero boundary; anonymous or path-ambiguous regions cannot be
-/// represented by a `CheckException` label and therefore fail closed.
-fn lexical_handler(facts: &ExceptionRegionFacts, position: ExceptionOpPosition) -> Option<i64> {
-    let states = facts
-        .lexical_handlers_before
-        .get(&position)
-        .unwrap_or_else(|| panic!("async-work poll boundary is unreachable: {position:?}"));
-    assert_eq!(
-        states.len(),
-        1,
-        "async-work poll boundary has ambiguous lexical handlers: {position:?} => {states:?}"
-    );
-    match states.iter().next().copied().flatten() {
-        None => None,
-        Some(ExceptionRegionToken::Labeled(label)) => Some(label),
-        Some(ExceptionRegionToken::Anonymous(owner)) => {
-            panic!("async-work poll boundary has anonymous lexical handler {owner:?}")
+/// Resolve a reachable insertion boundary. The outer `Option` is reachability;
+/// the inner `Option` is depth zero versus a labeled lexical handler.
+fn reachable_lexical_handler(
+    facts: &ExceptionRegionFacts,
+    function_name: &str,
+    position: ExceptionOpPosition,
+) -> Option<Option<i64>> {
+    match facts.lexical_handler_before(position) {
+        Ok(ExceptionBoundaryHandler::Unreachable) => None,
+        Ok(ExceptionBoundaryHandler::DepthZero) => Some(None),
+        Ok(ExceptionBoundaryHandler::Labeled(label)) => Some(Some(label)),
+        Err(error) => {
+            panic!(
+                "async-work poll boundary in function {function_name:?} has invalid lexical custody: {error:?}"
+            )
         }
     }
 }
@@ -152,13 +149,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, op)| {
-                    is_call_return_poll(op).then(|| {
-                        let position = ExceptionOpPosition {
-                            block: block_id,
-                            op_index: index + 1,
-                        };
-                        (block_id, index, lexical_handler(&region_facts, position))
-                    })
+                    if !is_call_return_poll(op) {
+                        return None;
+                    }
+                    let position = ExceptionOpPosition {
+                        block: block_id,
+                        op_index: index + 1,
+                    };
+                    let target = reachable_lexical_handler(&region_facts, &func.name, position)?;
+                    Some((block_id, index, target))
                 })
                 .collect::<Vec<_>>()
         })
@@ -169,7 +168,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             block: latch,
             op_index: func.blocks[&latch].ops.len(),
         };
-        let target = lexical_handler(&region_facts, position);
+        let Some(target) = reachable_lexical_handler(&region_facts, &func.name, position) else {
+            continue;
+        };
         let entry = latch_sites_by_block
             .entry(latch)
             .or_insert_with(|| (BTreeSet::new(), target));
@@ -553,5 +554,96 @@ mod tests {
             simple.iter().any(|op| op.kind == "ret_void"),
             "an empty TIR Return must lower to the existing return-with-pending backend sentinel"
         );
+    }
+
+    #[test]
+    fn unreachable_block_call_is_not_a_poll_site() {
+        let mut func = TirFunction::new("dead_call_block".into(), vec![], TirType::None);
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+        let dead = func.fresh_block();
+        func.blocks.insert(
+            dead,
+            TirBlock {
+                id: dead,
+                args: vec![],
+                ops: vec![op(OpCode::Call)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let stats = run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(stats.total_changes(), 0);
+        assert_eq!(func.blocks[&dead].ops.len(), 1);
+        assert!(!func.has_exception_handling);
+    }
+
+    #[test]
+    fn unreachable_in_block_post_call_boundary_is_not_a_poll_site() {
+        let mut func = TirFunction::new("dead_post_transfer_call".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 91);
+        func.blocks.get_mut(&entry).unwrap().ops =
+            vec![op(OpCode::Raise), check(91), op(OpCode::Call)];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let stats = run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(stats.total_changes(), 0);
+        assert_eq!(func.blocks[&entry].ops.len(), 3);
+        assert!(
+            !func.blocks[&entry]
+                .ops
+                .iter()
+                .any(TirOp::is_async_work_poll)
+        );
+    }
+
+    #[test]
+    fn unreachable_loop_latch_is_not_a_poll_site() {
+        let mut func = TirFunction::new("dead_loop".into(), vec![], TirType::None);
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+        let header = func.fresh_block();
+        let latch = func.fresh_block();
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: latch,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            latch,
+            TirBlock {
+                id: latch,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+
+        let stats = run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(stats.total_changes(), 0);
+        assert!(func.blocks[&latch].ops.is_empty());
+        assert!(!func.has_exception_handling);
     }
 }
