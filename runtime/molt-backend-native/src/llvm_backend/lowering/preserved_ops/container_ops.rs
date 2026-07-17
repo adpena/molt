@@ -38,7 +38,11 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
 ];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn lower_preserved_container_op(&mut self, op: &TirOp, kind: &str) -> bool {
+    pub(in crate::llvm_backend::lowering) fn lower_preserved_container_op(
+        &mut self,
+        op: &TirOp,
+        kind: &str,
+    ) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
             "list_from_range" => {
@@ -571,17 +575,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             "unpack_sequence" => {
-                let Some(&seq_id) = op.operands.first() else {
+                if op.operands.len() != 1 {
+                    return false;
+                }
+                let seq_id = op.operands[0];
+                let Some(expected) = op.attrs.get("value").and_then(|v| match v {
+                    AttrValue::Int(v) => usize::try_from(*v).ok(),
+                    _ => None,
+                }) else {
                     return false;
                 };
-                let expected = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(op.results.len());
+                if expected != op.results.len() {
+                    return false;
+                }
                 let out_alloca = self
                     .backend
                     .builder

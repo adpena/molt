@@ -1,6 +1,28 @@
 use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
+fn compile_and_run_emitted(source: &str, stem: &str) -> String {
+    let temp = std::env::temp_dir().join(format!("molt_rust_{stem}_{}", std::process::id()));
+    std::fs::create_dir_all(&temp).expect("create emitted-Rust test directory");
+    let source_path = temp.join("main.rs");
+    let binary_path = temp.join(if cfg!(windows) { "main.exe" } else { "main" });
+    std::fs::write(&source_path, source).expect("write emitted Rust source");
+    let compile = std::process::Command::new("rustc")
+        .args(["--edition", "2024", "-A", "warnings", "-O", "-o"])
+        .arg(&binary_path)
+        .arg(&source_path)
+        .status()
+        .expect("rustc must compile emitted Rust backend source");
+    assert!(compile.success(), "emitted Rust source must compile");
+    let output = std::process::Command::new(&binary_path)
+        .output()
+        .expect("emitted Rust binary must execute");
+    assert!(output.status.success(), "emitted Rust binary must succeed");
+    let stdout = String::from_utf8(output.stdout).expect("emitted stdout must be UTF-8");
+    let _ = std::fs::remove_dir_all(temp);
+    stdout
+}
+
 #[test]
 fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
     let op = |kind: &str| OpIR {
@@ -47,27 +69,10 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
     assert!(source.contains("*depth.borrow_mut() = baseline"));
     assert!(!source.contains("*baseline.borrow_mut() = 0"));
 
-    let temp = std::env::temp_dir().join(format!(
-        "molt_rust_exception_stack_baseline_{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&temp).expect("create test directory");
-    let source_path = temp.join("main.rs");
-    let binary_path = temp.join(if cfg!(windows) { "main.exe" } else { "main" });
-    std::fs::write(&source_path, source).expect("write emitted Rust source");
-    let compile = std::process::Command::new("rustc")
-        .args(["--edition", "2024", "-A", "warnings", "-O", "-o"])
-        .arg(&binary_path)
-        .arg(&source_path)
-        .status()
-        .expect("rustc must compile emitted Rust backend source");
-    assert!(compile.success(), "emitted Rust source must compile");
-    let output = std::process::Command::new(&binary_path)
-        .output()
-        .expect("emitted Rust binary must execute");
-    assert!(output.status.success(), "emitted Rust binary must succeed");
-    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "1");
-    let _ = std::fs::remove_dir_all(temp);
+    assert_eq!(
+        compile_and_run_emitted(&source, "exception_stack_baseline").trim(),
+        "1"
+    );
 }
 
 #[test]
@@ -639,13 +644,55 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
 }
 
 #[test]
-fn compile_unpack_sequence_records_unsupported_protocol_authority() {
+fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
-            params: vec!["seq".to_string()],
+            params: vec![],
             ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(10),
+                    out: Some("old_item".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "build_list".to_string(),
+                    args: Some(vec!["old_item".to_string()]),
+                    out: Some("old".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("old".to_string()),
+                    out: Some("left".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(20),
+                    out: Some("new_item".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "build_list".to_string(),
+                    args: Some(vec!["new_item".to_string()]),
+                    out: Some("new_value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(7),
+                    out: Some("right_value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "build_list".to_string(),
+                    args: Some(vec!["new_value".to_string(), "right_value".to_string()]),
+                    out: Some("seq".to_string()),
+                    ..OpIR::default()
+                },
                 OpIR {
                     kind: "unpack_sequence".to_string(),
                     args: Some(vec![
@@ -657,14 +704,39 @@ fn compile_unpack_sequence_records_unsupported_protocol_authority() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "tuple_new".to_string(),
-                    args: Some(vec!["left".to_string(), "right".to_string()]),
-                    out: Some("pair".to_string()),
+                    kind: "const".to_string(),
+                    value: Some(30),
+                    out: Some("appended".to_string()),
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "ret".to_string(),
-                    var: Some("pair".to_string()),
+                    kind: "list_append".to_string(),
+                    args: Some(vec!["left".to_string(), "appended".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "len".to_string(),
+                    args: Some(vec!["left".to_string()]),
+                    out: Some("left_len".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "len".to_string(),
+                    args: Some(vec!["old".to_string()]),
+                    out: Some("old_len".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "print".to_string(),
+                    args: Some(vec![
+                        "left_len".to_string(),
+                        "old_len".to_string(),
+                        "right".to_string(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return_none".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -676,7 +748,128 @@ fn compile_unpack_sequence_records_unsupported_protocol_authority() {
     };
 
     let source = backend.compile(&ir);
-    assert!(!source.contains("fn molt_unpack_sequence("));
+    assert!(source.contains("fn molt_unpack_sequence("));
+    assert!(source.contains("molt_unpack_sequence(&seq, 2).into_iter()"));
+    let list_arm = source
+        .find("MoltValue::List(values) =>")
+        .expect("list unpack arm");
+    let list_len = source[list_arm..]
+        .find("let actual = values.len();")
+        .expect("O(1) list length guard");
+    let list_clone = source[list_arm..]
+        .find("values.clone()")
+        .expect("exact-match list clone");
+    assert!(
+        list_len < list_clone,
+        "list cardinality must be checked before cloning"
+    );
+    let dict_arm = source
+        .find("MoltValue::Dict(entries) =>")
+        .expect("dict unpack arm");
+    let dict_len = source[dict_arm..]
+        .find("let actual = entries.len();")
+        .expect("O(1) dict length guard");
+    let dict_collect = source[dict_arm..]
+        .find("entries.iter().map")
+        .expect("exact-match dict key clone");
+    assert!(
+        dict_len < dict_collect,
+        "dict cardinality must be checked before cloning"
+    );
+    assert!(source.contains("let probe_limit = expected_count.saturating_add(1);"));
+    assert!(source.contains("Vec::with_capacity(expected_count.min(value.len()))"));
+    assert!(source.contains("while items.len() < probe_limit"));
+    assert!(source.contains("let mut left: MoltValue = MoltValue::None;"));
+    assert!(source.contains("let mut right: MoltValue = MoltValue::None;"));
+    assert!(source.contains("left = __molt_unpack_values.next()"));
+    assert!(source.contains("right = __molt_unpack_values.next()"));
+    assert_eq!(
+        compile_and_run_emitted(&source, "unpack_multi_definition").trim(),
+        "2 1 7",
+        "unpack outputs must remain in scope and must sever stale aliases"
+    );
+    assert!(
+        !backend
+            .unsupported_ops
+            .iter()
+            .any(|failure| failure.contains("unpack_sequence"))
+    );
+}
+
+#[test]
+fn compile_unpack_sequence_iterates_unicode_scalars_not_utf8_bytes() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("a🦀".to_string()),
+                    out: Some("seq".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    args: Some(vec![
+                        "seq".to_string(),
+                        "left".to_string(),
+                        "right".to_string(),
+                    ]),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "print".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return_none".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let source = backend.compile(&ir);
+    assert_eq!(
+        compile_and_run_emitted(&source, "unpack_unicode_scalars").trim(),
+        "a 🦀"
+    );
+}
+
+#[test]
+fn malformed_simple_ir_unpack_is_reported_not_emitted() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec!["seq".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    args: Some(vec!["seq".to_string(), "left".to_string()]),
+                    value: None,
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return_none".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let source = backend.compile(&ir);
+    assert!(!source.contains("molt_unpack_sequence(&seq"));
     assert!(
         backend
             .unsupported_ops

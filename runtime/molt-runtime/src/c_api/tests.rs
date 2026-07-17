@@ -889,9 +889,9 @@ fn create_guarded_test_class(
     let class_bits = unsafe {
         crate::object::ops::molt_guarded_class_def(
             name_bits,
-            bases.as_ptr() as usize as u64,
+            crate::provenance::abi::expose_address(bases.as_ptr()),
             bases.len() as u64,
-            attr_storage.as_ptr() as usize as u64,
+            crate::provenance::abi::expose_address(attr_storage.as_ptr()),
             attrs.len() as u64,
             std::mem::size_of::<u64>() as i64,
             1,
@@ -1615,7 +1615,9 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
         assert!(!del_func_ptr.is_null());
         let init_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            c_api_test_init_stores_tag_and_borrows_self as *const () as usize as u64,
+            crate::provenance::abi::expose_function_address(
+                c_api_test_init_stores_tag_and_borrows_self as *const (),
+            ),
             2,
         );
         assert!(!init_func_ptr.is_null());
@@ -6171,5 +6173,55 @@ fn memoryview_from_c_buffer_rejects_invalid_readonly_flag() {
 
         let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
         assert_none_with_exception_class(_py, view_bits, "BufferError");
+    });
+}
+#[test]
+fn nested_public_gil_release_preserves_outer_attachment() {
+    let _guard = crate::test_mutex_guard();
+    assert_eq!(crate::c_api::molt_init(), 0);
+    assert_eq!(crate::c_api::molt_gil_acquire(), 0);
+    assert_eq!(crate::c_api::molt_gil_acquire(), 0);
+    assert_eq!(
+        molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+        1
+    );
+    assert_eq!(crate::c_api::molt_gil_release(), 0);
+    assert_eq!(crate::c_api::molt_gil_is_held(), 1);
+    assert_eq!(
+        molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+        1
+    );
+    assert_eq!(crate::c_api::molt_gil_release(), 0);
+    assert_eq!(
+        molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+        0
+    );
+}
+
+#[test]
+fn public_gil_boundary_owns_only_attachment_when_gil_is_preheld() {
+    let _guard = crate::test_mutex_guard();
+    assert_eq!(crate::c_api::molt_init(), 0);
+    crate::with_gil_entry_nopanic!(_py, {
+        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        assert_eq!(crate::c_api::molt_gil_acquire(), 0);
+        assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        assert_eq!(crate::c_api::molt_gil_release(), 0);
+        assert!(crate::concurrency::gil::gil_held());
+        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+    });
+}
+
+#[test]
+fn public_gil_boundary_does_not_steal_nested_molt_custody() {
+    let _guard = crate::test_mutex_guard();
+    assert_eq!(crate::c_api::molt_init(), 0);
+    crate::with_gil_entry_nopanic!(_py, {
+        molt_cpython_abi::api::object::attach_runtime_execution_thread();
+        assert_eq!(crate::c_api::molt_gil_acquire(), 0);
+        assert_eq!(crate::c_api::molt_gil_release(), 0);
+        assert!(crate::concurrency::gil::gil_held());
+        assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        molt_cpython_abi::api::object::detach_runtime_execution_thread();
     });
 }

@@ -231,6 +231,23 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         "ObjectNewBoundStack requires positive payload byte size",
                     )),
                 },
+                TirVerifyAttrRule::UnpackSequenceShape => {
+                    let expected = match op.attrs.get("value") {
+                        Some(AttrValue::Int(value)) => usize::try_from(*value).ok(),
+                        _ => None,
+                    };
+                    if op.operands.len() != 1 || expected != Some(op.results.len()) {
+                        errors.push(VerifyError::op(
+                            *bid,
+                            op_idx,
+                            format!(
+                                "UnpackSequence requires one operand and value == result count (operands={}, results={}, value={expected:?})",
+                                op.operands.len(),
+                                op.results.len(),
+                            ),
+                        ));
+                    }
+                }
                 _ => {}
             }
             verify_native_callable_attrs(*bid, op_idx, op, errors);
@@ -1105,6 +1122,49 @@ mod tests {
             "expected ObjectNewBoundStack payload size error, got: {:?}",
             errors
         );
+    }
+
+    fn unpack_function(operand_count: usize, result_count: usize, expected: i64) -> TirFunction {
+        let mut func = TirFunction::new(
+            "unpack".into(),
+            vec![TirType::DynBox; operand_count],
+            TirType::None,
+        );
+        let results: Vec<ValueId> = (0..result_count).map(|_| func.fresh_value()).collect();
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(expected));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnpackSequence,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results,
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+        func
+    }
+
+    #[test]
+    fn unpack_sequence_shape_is_verified() {
+        assert!(verify_function(&unpack_function(1, 2, 2)).is_ok());
+        assert!(verify_function(&unpack_function(1, 0, 0)).is_ok());
+        for malformed in [
+            unpack_function(0, 0, 0),
+            unpack_function(2, 2, 2),
+            unpack_function(1, 2, 1),
+            unpack_function(1, 1, 2),
+            unpack_function(1, 0, -1),
+        ] {
+            let errors = verify_function(&malformed).expect_err("malformed unpack must fail");
+            assert!(
+                errors.iter().any(|error| error
+                    .message
+                    .contains("UnpackSequence requires one operand")),
+                "unexpected errors: {errors:?}"
+            );
+        }
     }
 
     #[test]

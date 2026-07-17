@@ -89,7 +89,7 @@
 | callable_builtin | `tests/differential/basic/builtins_api_surface_312_plus.py`, `tests/differential/basic/builtins_basic.py`, `tests/differential/basic/builtins_symbol_abs_82451b41.py` (+858 more) |
 | getattr_builtin | `tests/differential/basic/assignment_equality_side_effects.py`, `tests/differential/basic/attr_hooks.py`, `tests/differential/basic/attr_security.py` (+929 more) |
 | setattr_builtin | `tests/differential/basic/attr_security.py`, `tests/differential/basic/class_descriptors.py`, `tests/differential/basic/dict_subclass_slots.py` (+4 more) |
-| delattr_builtin | `tests/differential/basic/attr_dunder_access.py`, `tests/differential/basic/attr_security.py`, `tests/differential/basic/class_layout_size_fallback.py` (+2 more) |
+| delattr_builtin | `tests/differential/basic/attr_dunder_access.py`, `tests/differential/basic/attr_security.py` (+2 more) |
 | hasattr_builtin | `tests/differential/basic/attr_dunder_access.py`, `tests/differential/basic/attribute_property_delete.py`, `tests/differential/basic/builtins_basic.py` (+64 more) |
 | format_builtin | `tests/differential/basic/complex_format.py`, `tests/differential/basic/complex_format_errors.py`, `tests/differential/basic/complex_formatting.py` (+2 more) |
 | ascii_builtin | `tests/differential/basic/builtin_chr_ord.py`, `tests/differential/basic/builtin_formatting.py` |

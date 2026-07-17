@@ -353,6 +353,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::GetIter
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed
+                | OpCode::UnpackSequence
                 | OpCode::ForIter
                 | OpCode::StateSwitch
                 | OpCode::ClosureLoad

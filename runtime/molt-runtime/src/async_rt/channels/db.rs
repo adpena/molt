@@ -70,7 +70,9 @@ fn db_query_impl(
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    let len = usize_from_bits(len_bits);
+    let Some(len) = usize_from_bits(len_bits) else {
+        return 1;
+    };
     if out.is_null() {
         return 2;
     }
@@ -122,7 +124,9 @@ fn db_exec_impl(
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    let len = usize_from_bits(len_bits);
+    let Some(len) = usize_from_bits(len_bits) else {
+        return 1;
+    };
     if out.is_null() {
         return 2;
     }

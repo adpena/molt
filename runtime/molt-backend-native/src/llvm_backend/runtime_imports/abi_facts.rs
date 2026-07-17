@@ -103,7 +103,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_object_field_set_ptr", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_object_new", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_object_new_bound", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_object_new_bound_sized", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_ord", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_ord_at", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_range_new", 3, RuntimeReturnAbi::I64),

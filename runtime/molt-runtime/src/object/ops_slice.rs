@@ -246,21 +246,19 @@ pub unsafe extern "C" fn molt_dataclass_new_from_values(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let Ok(len) = usize::try_from(len) else {
-                return raise_exception::<_>(_py, "MemoryError", "dataclass is too large");
+            let Some(values_ptr) = crate::provenance::abi::const_ptr::<u64>(values_ptr_bits) else {
+                return raise_exception::<_>(
+                    _py,
+                    "MemoryError",
+                    "dataclass values address exceeds the active address space",
+                );
             };
-            let values_ptr = values_ptr_bits as usize as *const u64;
-            if len > 0 && values_ptr.is_null() {
+            let Some(values) = crate::provenance::abi::slice(values_ptr, len) else {
                 return raise_exception::<_>(
                     _py,
                     "RuntimeError",
-                    "dataclass values pointer is null",
+                    "dataclass values range is invalid for the active target",
                 );
-            }
-            let values = if len == 0 {
-                &[]
-            } else {
-                std::slice::from_raw_parts(values_ptr, len)
             };
             dataclass_new_from_value_slice(_py, name_bits, field_names_bits, values, flags_bits)
         })

@@ -1,6 +1,116 @@
 use super::*;
 
 #[test]
+fn multi_result_unpack_releases_every_owned_output_once() {
+    let mut func = TirFunction::new(
+        "unpack_sequence_outputs".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+    );
+    let sequence = ValueId(0);
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    for value in [first, second] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        let mut unpack = op(OpCode::UnpackSequence, vec![sequence], vec![first, second]);
+        unpack.attrs.insert("value".into(), AttrValue::Int(2));
+        block.ops.push(unpack);
+        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.terminator = Terminator::Return { values: vec![] };
+    }
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let dropped: Vec<ValueId> = func.blocks[&entry]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert_eq!(dropped.iter().filter(|&&value| value == first).count(), 1);
+    assert_eq!(dropped.iter().filter(|&&value| value == second).count(), 1);
+}
+
+#[test]
+fn getattr_default_result_and_default_temporary_are_independent_owned_roots() {
+    let mut func = TirFunction::new(
+        "getattr_default_owned_result".into(),
+        vec![TirType::DynBox, TirType::Str],
+        TirType::None,
+    );
+    let receiver = ValueId(0);
+    let name = ValueId(1);
+    let default = func.fresh_value();
+    let result = func.fresh_value();
+    for value in [default, result] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(finalizer_object(default));
+        block.ops.push(original_copy_with_operands(
+            "get_attr_name_default",
+            vec![receiver, name, default],
+            vec![result],
+        ));
+        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.terminator = Terminator::Return { values: vec![] };
+    }
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let dropped: Vec<ValueId> = func.blocks[&entry]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert_eq!(dropped.iter().filter(|&&value| value == default).count(), 1);
+    assert_eq!(dropped.iter().filter(|&&value| value == result).count(), 1);
+}
+
+#[test]
+fn special_attribute_result_is_an_independent_owned_root() {
+    let mut func = TirFunction::new(
+        "special_attr_owned_result".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+    );
+    let receiver = ValueId(0);
+    let result = func.fresh_value();
+    func.value_types.insert(result, TirType::DynBox);
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(original_copy_with_operands(
+            "get_attr_special_obj",
+            vec![receiver],
+            vec![result],
+        ));
+        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.terminator = Terminator::Return { values: vec![] };
+    }
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let dropped: Vec<ValueId> = func.blocks[&entry]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert_eq!(dropped.iter().filter(|&&value| value == result).count(), 1);
+}
+
+#[test]
 fn finalizer_sensitive_container_releases_at_return_boundary() {
     let mut func = TirFunction::new("finalizer_scope".into(), vec![], TirType::None);
     let item = func.fresh_value();

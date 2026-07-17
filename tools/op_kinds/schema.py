@@ -30,6 +30,9 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
     # Copy is also the legacy SimpleIR fallback carrier and may model zero,
     # one, or multi-result transport shapes until each spelling is promoted.
     "Copy",
+    # Exact unpacking has one result per assignment target (including zero for
+    # Python's empty target); the verifier ties the dynamic count to `value`.
+    "UnpackSequence",
     # SCF ops model region-shaped dialect constructs whose result count is
     # determined by the region signature, not the opcode name alone.
     "ScfIf",
@@ -226,6 +229,7 @@ _TIR_VERIFY_ATTR_RULES = {
     "call_callee": "CallCallee",
     "call_method": "CallMethod",
     "positive_payload_bytes": "PositivePayloadBytes",
+    "unpack_sequence_shape": "UnpackSequenceShape",
 }
 _SROA_CONST_IMMEDIATE_RULES = {
     "always_immediate": "AlwaysImmediate",

@@ -282,6 +282,24 @@ pub extern "C" fn molt_guarded_call(
     nargs: u64,
     code_id: i64,
 ) -> u64 {
+    let Some(fn_target) = crate::provenance::abi::function_ptr(fn_ptr) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call target address exceeds the active address space",
+            )
+        });
+    };
+    let Some(args) = (unsafe { crate::provenance::abi::slice(args_ptr, nargs) }) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call argument range is invalid for the active target",
+            )
+        });
+    };
     if !recursion_guard_enter() {
         crate::with_gil_entry_nopanic!(_py, {
             return raise_exception::<u64>(
@@ -297,10 +315,7 @@ pub extern "C" fn molt_guarded_call(
             frame_stack_push_owned(_py, code_bits);
         });
     }
-    let result: u64 = unsafe {
-        let n = nargs as usize;
-        molt_guarded_call_dispatch(fn_ptr as usize as *const (), args_ptr, n)
-    };
+    let result: u64 = unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) };
     if code_id >= 0 {
         crate::with_gil_entry_nopanic!(_py, {
             frame_stack_pop(_py);
@@ -324,6 +339,24 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
     nargs: u64,
     callee_bits: u64,
 ) -> u64 {
+    let Some(fn_target) = crate::provenance::abi::function_ptr(fn_ptr) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call target address exceeds the active address space",
+            )
+        });
+    };
+    let Some(args) = (unsafe { crate::provenance::abi::slice(args_ptr, nargs) }) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call argument range is invalid for the active target",
+            )
+        });
+    };
     if !recursion_guard_enter() {
         crate::with_gil_entry_nopanic!(_py, {
             return raise_exception::<u64>(
@@ -361,10 +394,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
             frame_stack_push_function(_py, code_bits, frame_func_ptr);
         });
     }
-    let result: u64 = unsafe {
-        let n = nargs as usize;
-        molt_guarded_call_dispatch(fn_ptr as usize as *const (), args_ptr, n)
-    };
+    let result: u64 = unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) };
     if callee_bits != 0 {
         crate::with_gil_entry_nopanic!(_py, {
             frame_stack_pop(_py);
@@ -920,22 +950,31 @@ pub extern "C" fn molt_call_func_dispatch(
     code_id: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let n = nargs as usize;
-        let args_ptr = args_ptr_bits as usize as *const u64;
+        let Some(args_ptr) = crate::provenance::abi::const_ptr::<u64>(args_ptr_bits) else {
+            return raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "call argument address exceeds the active address space",
+            );
+        };
+        let Some(raw_args) = (unsafe { crate::provenance::abi::slice(args_ptr, nargs) }) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "call argument range is invalid for the active target",
+            );
+        };
+        let n = raw_args.len();
 
         // Read arguments into an inline stack buffer to avoid heap allocation
         // on every function call.  Falls back to Vec only for >16 args (very rare).
         let mut inline_buf = [0u64; 16];
         let heap_args: Vec<u64>;
         let args_slice: &[u64] = if n <= 16 {
-            for (i, slot) in inline_buf.iter_mut().enumerate().take(n) {
-                unsafe {
-                    *slot = *args_ptr.add(i);
-                }
-            }
+            inline_buf[..n].copy_from_slice(raw_args);
             &inline_buf[..n]
         } else {
-            heap_args = unsafe { (0..n).map(|i| *args_ptr.add(i)).collect() };
+            heap_args = raw_args.to_vec();
             &heap_args
         };
 
@@ -982,7 +1021,13 @@ pub extern "C" fn molt_call_func_dispatch(
         let trampoline_ptr = unsafe { function_trampoline_ptr(func_ptr) };
         let has_trampoline = trampoline_ptr != 0;
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
-        let func_arity = unsafe { function_arity(func_ptr) } as usize;
+        let Some(func_arity) = (unsafe { function_arity_usize(func_ptr) }) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "function arity exceeds the active address space",
+            );
+        };
         let eff_nargs = effective_args.len();
         if unsafe { crate::call::bind::function_needs_full_binder(_py, func_ptr) } {
             unsafe {
@@ -1328,10 +1373,7 @@ unsafe fn direct_call_target_for_function(func_ptr: *mut u8, fn_ptr: u64) -> Opt
     {
         let tramp_ptr = unsafe { function_trampoline_ptr(func_ptr) };
         let call_target = crate::call::function::fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
-        if u32::try_from(call_target).is_ok() {
-            return Some(call_target as usize as *const ());
-        }
-        None
+        crate::provenance::abi::function_ptr(call_target)
     }
     #[cfg(not(target_arch = "wasm32"))]
     runtime_callable_target_ptr(fn_ptr)
@@ -1461,7 +1503,7 @@ unsafe fn probe_simple_func(
             crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
             return None;
         }
-        if (function_arity(ptr) as usize) != expected_arity {
+        if function_arity_usize(ptr)? != expected_arity {
             return None;
         }
         let fn_ptr = function_fn_ptr(ptr);

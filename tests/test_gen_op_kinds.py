@@ -897,6 +897,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "CallBuiltin",
         "CheckException",
         "Copy",
+        "UnpackSequence",
         "ScfIf",
         "ScfFor",
         "ScfWhile",
@@ -3424,6 +3425,7 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "CallMethodIc", "rule": "call_method"},
         {"opcode": "CallSuperMethodIc", "rule": "call_method"},
         {"opcode": "ObjectNewBoundStack", "rule": "positive_payload_bytes"},
+        {"opcode": "UnpackSequence", "rule": "unpack_sequence_shape"},
     ]
     assert data["sroa_const_immediate_rules"] == [
         {"opcode": "ConstNone", "rule": "always_immediate"},
@@ -3455,6 +3457,7 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     rendered_expectations = {
         "OpCode::Call => TirVerifyAttrRule::CallCallee": rendered,
         "OpCode::ObjectNewBoundStack => TirVerifyAttrRule::PositivePayloadBytes": rendered,
+        "OpCode::UnpackSequence => TirVerifyAttrRule::UnpackSequenceShape": rendered,
         "OpCode::ConstNone => SroaConstImmediateRule::AlwaysImmediate": rendered,
         "OpCode::ConstInt => SroaConstImmediateRule::InlineIntIfRange": rendered,
         "OpCode::FloorDiv => StrengthReductionRule::PowerTwoFloorDiv": rendered,

@@ -15,7 +15,9 @@ pub extern "C" fn molt_header_size() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let size = usize_from_bits(size_bits);
+        let Some(size) = usize_from_bits(size_bits) else {
+            return MoltObject::none().bits();
+        };
         let Some(total_size) = raw_payload_total_or_null(size) else {
             return MoltObject::none().bits();
         };
@@ -138,7 +140,10 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits
             type_id = crate::object::class_instance_type_id(class_ptr);
         }
     }
-    let Some(total_size) = raw_payload_total_or_null(usize_from_bits(size_bits)) else {
+    let Some(size) = usize_from_bits(size_bits) else {
+        return MoltObject::none().bits();
+    };
+    let Some(total_size) = raw_payload_total_or_null(size) else {
         return MoltObject::none().bits();
     };
     let aux = if class_bits == 0 {
@@ -339,7 +344,11 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
                 let val = capacity_obj.as_int_unchecked();
                 if val > 0 { val as usize } else { 0 }
             } else if capacity_obj.is_float() {
-                usize_from_bits(capacity_bits)
+                let Some(capacity) = usize_from_bits(capacity_bits) else {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return raise_exception::<_>(_py, "MemoryError", "list capacity is too large");
+                };
+                capacity
             } else {
                 0
             };
@@ -595,7 +604,10 @@ pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
             return 0;
         }
         unsafe {
-            let capacity_hint = usize_from_bits(capacity_bits);
+            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return 0;
+            };
             let Some(vec_capacity) = capacity_hint.checked_mul(2) else {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return 0;
@@ -676,7 +688,10 @@ pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
             return 0;
         }
         unsafe {
-            let capacity_hint = usize_from_bits(capacity_bits);
+            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return 0;
+            };
             let Some(vec_ptr) =
                 crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
             else {
@@ -1387,7 +1402,10 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        std::ptr::write(
+            ptr.add(4 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicU64,
+            std::sync::atomic::AtomicU64::new(0),
+        );
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         let none_bits = MoltObject::none().bits();
@@ -1544,9 +1562,10 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let bases_bits = MoltObject::none().bits();
     let mro_bits = MoltObject::none().bits();
-    // Eight object-reference/layout slots followed by one atomic cold-policy
-    // word. Keeping policy out of MoltHeader preserves hot RC/GC flag capacity.
-    let total = std::mem::size_of::<MoltHeader>() + 9 * std::mem::size_of::<u64>();
+    // Eight object-reference/layout slots, one atomic cold-policy word, then
+    // an internal write-once payload-size cache. The cache is not a
+    // Python attribute and cannot be forged through the class namespace.
+    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_TYPE, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
         dec_ref_bits(_py, dict_bits);
@@ -1566,6 +1585,10 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         std::ptr::write(
             ptr.add(8 * std::mem::size_of::<u64>()) as *mut MoltAuxWord,
             MoltAuxWord::new(0),
+        );
+        std::ptr::write(
+            ptr.add(9 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicUsize,
+            std::sync::atomic::AtomicUsize::new(0),
         );
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, bases_bits);

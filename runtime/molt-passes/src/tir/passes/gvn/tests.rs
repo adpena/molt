@@ -197,6 +197,28 @@ fn side_effecting_ops_preserved() {
 }
 
 #[test]
+fn zero_result_unpack_remains_ordering_visible() {
+    let mut func = TirFunction::new("unpack_effect".into(), vec![TirType::DynBox], TirType::None);
+    let mut attrs = AttrDict::new();
+    attrs.insert("value".into(), AttrValue::Int(0));
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    for _ in 0..2 {
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnpackSequence,
+            operands: vec![ValueId(0)],
+            results: vec![],
+            attrs: attrs.clone(),
+            source_span: None,
+        });
+    }
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let _ = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+    assert_eq!(func.blocks[&func.entry_block].ops.len(), 2);
+}
+
+#[test]
 fn duplicate_type_guards_with_same_attr_are_deduped() {
     let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::Bool);
     let p0 = ValueId(0);

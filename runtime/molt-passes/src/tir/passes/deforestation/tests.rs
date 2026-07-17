@@ -316,17 +316,13 @@ fn fusion_check_empty_is_fusable() {
 // Tuple Scalarization Tests
 // ===================================================================
 
-/// Helper: make an unpack_sequence op (Copy with _original_kind).
+/// Helper: make a first-class unpack_sequence op.
 fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> TirOp {
     let mut attrs = AttrDict::new();
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("unpack_sequence".into()),
-    );
     attrs.insert("value".into(), AttrValue::Int(count));
     TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::Copy,
+        opcode: OpCode::UnpackSequence,
         operands: vec![source],
         results,
         attrs,
@@ -625,6 +621,88 @@ fn tuple_scalarize_multiple_in_same_block() {
     let entry = &func.blocks[&func.entry_block];
     assert_eq!(entry.ops.len(), 4);
     assert!(entry.ops.iter().all(|op| op.opcode == OpCode::Copy));
+}
+
+#[test]
+fn tuple_scalarize_interleaved_pairs_are_reconstructed_from_original_indices() {
+    let mut func = TirFunction::new(
+        "interleaved".into(),
+        vec![TirType::I64, TirType::I64, TirType::I64, TirType::I64],
+        TirType::I64,
+    );
+
+    let tuple1 = func.fresh_value();
+    let tuple2 = func.fresh_value();
+    let out1_a = func.fresh_value();
+    let out1_b = func.fresh_value();
+    let out2_a = func.fresh_value();
+    let out2_b = func.fresh_value();
+
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    // The pairs cross: Build A, Build B, Unpack A, Unpack B. Applying either
+    // candidate by stale absolute indices corrupts the other candidate.
+    entry.ops.push(make_op(
+        OpCode::BuildTuple,
+        vec![ValueId(0), ValueId(1)],
+        vec![tuple1],
+    ));
+    entry.ops.push(make_op(
+        OpCode::BuildTuple,
+        vec![ValueId(2), ValueId(3)],
+        vec![tuple2],
+    ));
+    entry
+        .ops
+        .push(make_unpack_sequence(tuple1, vec![out1_a, out1_b], 2));
+    entry
+        .ops
+        .push(make_unpack_sequence(tuple2, vec![out2_a, out2_b], 2));
+    entry.terminator = Terminator::Return {
+        values: vec![out1_a, out1_b, out2_a, out2_b],
+    };
+
+    let stats = run_tuple_scalarize(&mut func);
+
+    assert_eq!(stats.values_changed, 2);
+    assert_eq!(stats.ops_removed, 4);
+    assert_eq!(stats.ops_added, 4);
+    let entry = &func.blocks[&func.entry_block];
+    let edges: Vec<(ValueId, ValueId)> = entry
+        .ops
+        .iter()
+        .map(|op| {
+            assert_eq!(op.opcode, OpCode::Copy);
+            (op.operands[0], op.results[0])
+        })
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            (ValueId(0), out1_a),
+            (ValueId(1), out1_b),
+            (ValueId(2), out2_a),
+            (ValueId(3), out2_b),
+        ]
+    );
+}
+
+#[test]
+fn tuple_scalarize_empty_pair_reconstructs_without_capacity_underflow() {
+    let mut func = TirFunction::new("empty_unpack".into(), vec![], TirType::I64);
+    let tuple = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry
+        .ops
+        .push(make_op(OpCode::BuildTuple, vec![], vec![tuple]));
+    entry.ops.push(make_unpack_sequence(tuple, vec![], 0));
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let stats = run_tuple_scalarize(&mut func);
+
+    assert_eq!(stats.values_changed, 1);
+    assert_eq!(stats.ops_removed, 2);
+    assert_eq!(stats.ops_added, 0);
+    assert!(func.blocks[&func.entry_block].ops.is_empty());
 }
 
 // -----------------------------------------------------------------------

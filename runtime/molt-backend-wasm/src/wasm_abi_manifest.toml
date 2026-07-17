@@ -815,10 +815,6 @@ name = "object_new_bound"
 type = 2
 
 [[import]]
-name = "object_new_bound_sized"
-type = 3
-
-[[import]]
 name = "object_set_class"
 type = 3
 
@@ -1809,6 +1805,10 @@ type = 2
 [[import]]
 name = "index"
 type = 3
+
+[[import]]
+name = "unpack_sequence"
+type = 5
 
 [[import]]
 name = "intarray_from_seq"
@@ -5598,6 +5598,18 @@ variant = "Alloc"
 import_name = "alloc"
 
 [[lir_runtime_call]]
+variant = "ScratchAlloc"
+import_name = "scratch_alloc"
+
+[[lir_runtime_call]]
+variant = "ScratchFree"
+import_name = "scratch_free"
+
+[[lir_runtime_call]]
+variant = "UnpackSequence"
+import_name = "unpack_sequence"
+
+[[lir_runtime_call]]
 variant = "ListBuilderNew"
 import_name = "list_builder_new"
 
@@ -5776,23 +5788,6 @@ import_name = "context_closing"
 [[lir_runtime_call]]
 variant = "ObjectNewBound"
 import_name = "object_new_bound"
-
-[[lir_runtime_call]]
-variant = "ObjectNewBoundSized"
-import_name = "object_new_bound_sized"
-
-# Payload-size-aware object allocation helper selector. The manifest owns both
-# the direct WASM import name and the LIR runtime call variant.
-
-[[object_new_bound_selector]]
-payload = "unsized"
-import_name = "object_new_bound"
-lir_variant = "ObjectNewBound"
-
-[[object_new_bound_selector]]
-payload = "sized"
-import_name = "object_new_bound_sized"
-lir_variant = "ObjectNewBoundSized"
 
 [[lir_runtime_call]]
 variant = "ClosureLoad"

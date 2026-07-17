@@ -9,7 +9,6 @@ use std::time::Instant;
 use crossbeam_deque::{Injector, Worker};
 
 use crate::object::ops::string_obj_to_owned;
-use crate::state::clear_worker_thread_state;
 use crate::{
     ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GIL_DEPTH, GilGuard, GilReleaseGuard,
     HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
@@ -248,55 +247,56 @@ impl MoltScheduler {
                 let running_clone = Arc::clone(&running);
 
                 let handle = thread::spawn(move || {
-                    if async_trace_enabled() {
-                        eprintln!("molt async trace: worker_start idx={}", i);
-                    }
-                    loop {
-                        if !running_clone.load(AtomicOrdering::Relaxed) {
-                            with_gil(|py| clear_worker_thread_state(&py));
-                            break;
+                    crate::state::run_runtime_worker(|| {
+                        if async_trace_enabled() {
+                            eprintln!("molt async trace: worker_start idx={}", i);
                         }
-
-                        if let Some(task) = worker.pop() {
-                            Self::execute_task(task, &injector_clone);
-                            continue;
-                        }
-
-                        match injector_clone.steal_batch_and_pop(&worker) {
-                            crossbeam_deque::Steal::Success(task) => {
-                                Self::execute_task(task, &injector_clone);
-                                continue;
-                            }
-                            crossbeam_deque::Steal::Retry => continue,
-                            crossbeam_deque::Steal::Empty => {}
-                        }
-
-                        let mut stolen = false;
-                        for (j, stealer) in stealers_clone.iter().enumerate() {
-                            if i == j {
-                                continue;
-                            }
-                            if let crossbeam_deque::Steal::Success(task) =
-                                stealer.steal_batch_and_pop(&worker)
-                            {
-                                Self::execute_task(task, &injector_clone);
-                                stolen = true;
+                        loop {
+                            if !running_clone.load(AtomicOrdering::Relaxed) {
                                 break;
                             }
-                        }
 
-                        if !stolen {
-                            let _ = epoch_clone.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-                            if Self::flush_deferred_shared(
-                                &deferred_clone,
-                                &epoch_clone,
-                                &injector_clone,
-                            ) {
+                            if let Some(task) = worker.pop() {
+                                Self::execute_task(task, &injector_clone);
                                 continue;
                             }
-                            thread::yield_now();
+
+                            match injector_clone.steal_batch_and_pop(&worker) {
+                                crossbeam_deque::Steal::Success(task) => {
+                                    Self::execute_task(task, &injector_clone);
+                                    continue;
+                                }
+                                crossbeam_deque::Steal::Retry => continue,
+                                crossbeam_deque::Steal::Empty => {}
+                            }
+
+                            let mut stolen = false;
+                            for (j, stealer) in stealers_clone.iter().enumerate() {
+                                if i == j {
+                                    continue;
+                                }
+                                if let crossbeam_deque::Steal::Success(task) =
+                                    stealer.steal_batch_and_pop(&worker)
+                                {
+                                    Self::execute_task(task, &injector_clone);
+                                    stolen = true;
+                                    break;
+                                }
+                            }
+
+                            if !stolen {
+                                let _ = epoch_clone.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                                if Self::flush_deferred_shared(
+                                    &deferred_clone,
+                                    &epoch_clone,
+                                    &injector_clone,
+                                ) {
+                                    continue;
+                                }
+                                thread::yield_now();
+                            }
                         }
-                    }
+                    })
                 });
                 worker_handles.push(handle);
             }

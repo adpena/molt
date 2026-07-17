@@ -905,6 +905,8 @@ pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
 // Objects with this flag are also immortal (never freed).
 pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
+/// Internal class field-offset dictionaries become immutable at class seal.
+pub(crate) const HEADER_FLAG_FROZEN_LAYOUT_MAP: u32 = 1 << 18;
 /// Container (list, tuple, dict, set) has at least one element that is a heap
 /// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
 /// iterating over elements because they are all primitives (int/float/bool/None).
@@ -962,7 +964,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 30] = [
+const HEADER_FLAG_REGISTRY: [u32; 31] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_GEN_RUNNING,
     HEADER_FLAG_GEN_STARTED,
@@ -980,6 +982,7 @@ const HEADER_FLAG_REGISTRY: [u32; 30] = [
     HEADER_FLAG_IMMORTAL,
     HEADER_FLAG_FINALIZER_RAN,
     HEADER_FLAG_INTERNED,
+    HEADER_FLAG_FROZEN_LAYOUT_MAP,
     HEADER_FLAG_CONTAINS_REFS,
     HEADER_FLAG_RAW_ALLOC,
     HEADER_FLAG_ARENA,
@@ -1012,6 +1015,7 @@ const CLASS_POLICY_NOT_BASE: u64 = 1;
 const CLASS_POLICY_IMMUTABLE: u64 = 1 << 1;
 const CLASS_POLICY_INSTANCE_KIND_EXPLICIT: u64 = 1 << 2;
 const CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT: u64 = 1 << 3;
+const CLASS_POLICY_DEFINITION_FINISHED: u64 = 1 << 4;
 const CLASS_POLICY_INSTANCE_SHAPE_SHIFT: u32 = 8;
 const CLASS_POLICY_INSTANCE_SHAPE_MASK: u64 =
     (u16::MAX as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
@@ -1224,6 +1228,10 @@ pub(crate) unsafe fn class_is_immutable(_py: &PyToken<'_>, class_ptr: *mut u8) -
         return false;
     }
     unsafe { class_has_policy(class_ptr, CLASS_POLICY_IMMUTABLE) }
+}
+
+pub(crate) unsafe fn class_definition_is_finished(class_ptr: *mut u8) -> bool {
+    unsafe { class_has_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHED) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,7 +1661,12 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
 /// Returns the state value (0 if the selected aux representation has no state lane).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
-    let data_ptr = data_ptr_bits as usize as *mut u8;
+    let Some(data_ptr) = crate::provenance::abi::mut_ptr::<u8>(data_ptr_bits) else {
+        return 0;
+    };
+    if data_ptr.is_null() {
+        return 0;
+    }
     let state = object_state(data_ptr);
     if trace_object_state() {
         eprintln!(
@@ -1667,7 +1680,12 @@ pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
 /// Write the generator/coroutine state for the object at `data_ptr`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
-    let data_ptr = data_ptr_bits as usize as *mut u8;
+    let Some(data_ptr) = crate::provenance::abi::mut_ptr::<u8>(data_ptr_bits) else {
+        return;
+    };
+    if data_ptr.is_null() {
+        return;
+    }
     if trace_object_state() {
         eprintln!(
             "molt object_state set ptr=0x{:x} state={}",
@@ -1730,8 +1748,12 @@ pub extern "C" fn molt_object_init_stack(
         if object_type_id(cls_ptr) != TYPE_ID_TYPE {
             return MoltObject::none().bits();
         }
-        let payload = payload_size_bytes as usize;
-        let total = std::mem::size_of::<MoltHeader>() + payload;
+        let Some(payload) = crate::usize_from_bits(payload_size_bytes) else {
+            return MoltObject::none().bits();
+        };
+        let Some(total) = std::mem::size_of::<MoltHeader>().checked_add(payload) else {
+            return MoltObject::none().bits();
+        };
         std::ptr::write_bytes(header_ptr, 0, total);
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = class_instance_type_id(cls_ptr);
@@ -2421,6 +2443,23 @@ pub(crate) unsafe fn class_refresh_finalizer_flag(_py: &PyToken<'_>, class_ptr: 
 pub(crate) unsafe fn class_finish_definition(_py: &PyToken<'_>, class_ptr: *mut u8) {
     unsafe {
         class_refresh_finalizer_flag(_py, class_ptr);
+        let fields_name = crate::intern_static_name(
+            _py,
+            &runtime_state(_py).interned.field_offsets_name,
+            b"__molt_field_offsets__",
+        );
+        if let Some(dict_ptr) = obj_from_bits(crate::class_dict_bits(class_ptr)).as_ptr()
+            && let Some(offsets_bits) = crate::dict_get_in_place(_py, dict_ptr, fields_name)
+            && let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr()
+            && object_type_id(offsets_ptr) == TYPE_ID_DICT
+        {
+            (*header_from_obj_ptr(offsets_ptr)).fetch_or_flags(HEADER_FLAG_FROZEN_LAYOUT_MAP);
+        }
+        class_add_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHED);
+        // Publish the validated immutable size only after both metadata inputs
+        // have been sealed. Competing future free-threaded readers may publish
+        // the same value; a mismatch is an invariant failure.
+        let _ = crate::call::class_init::class_layout_size_cached(_py, class_ptr);
     }
 }
 
@@ -4023,7 +4062,12 @@ mod tests {
         let obj_ptr = crate::obj_from_bits(obj_bits)
             .as_ptr()
             .expect("bare object allocation");
-        let result = unsafe { crate::molt_object_set_class(obj_ptr as usize as u64, class_bits) };
+        let result = unsafe {
+            crate::molt_object_set_class(
+                crate::provenance::abi::expose_address(obj_ptr),
+                class_bits,
+            )
+        };
         assert_eq!(result, crate::MoltObject::none().bits());
 
         crate::with_gil_entry_nopanic!(_py, {

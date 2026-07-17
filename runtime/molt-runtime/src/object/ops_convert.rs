@@ -439,7 +439,9 @@ fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
 pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return MoltObject::none().bits();
+            };
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }

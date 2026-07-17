@@ -2,6 +2,7 @@ use super::emit_helpers::{
     arg0, args2, declare_molt_value, is_assignable_var, out_var, rust_clone, rust_slot_key,
     rust_string_literal, rust_value, var_ref,
 };
+use super::lowering::op_definition_vars;
 use super::runtime_surface::runtime_value_call_for_kind;
 use super::{RustBackend, rust_ident};
 use crate::OpIR;
@@ -36,9 +37,8 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op(&mut self, op: &OpIR) {
-        if let Some(name) = op.out.as_deref() {
-            let out_name = rust_ident(name);
-            self.clear_alias(&out_name);
+        for definition in op_definition_vars(op) {
+            self.clear_alias(&definition);
         }
 
         match op.kind.as_str() {

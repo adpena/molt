@@ -78,6 +78,13 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
             }
+            if crate::object::class_definition_is_finished(class_ptr) {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "class bases are immutable after definition",
+                );
+            }
         }
         let mut bases_vec = Vec::new();
         let bases_owned;

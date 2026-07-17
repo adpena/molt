@@ -1,8 +1,5 @@
 use crate::OpIR;
-use crate::wasm_abi_generated::{
-    LirRuntimeCall, WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, WasmRuntimeImport,
-    wasm_object_new_bound_selection,
-};
+use crate::wasm_abi_generated::{LirRuntimeCall, WasmRuntimeImport};
 use molt_tir::tir::lir::LirOp;
 use molt_tir::tir::ops::AttrValue;
 
@@ -50,15 +47,9 @@ pub(in crate::wasm) fn selected_lir_object_new_bound_runtime(
 
 fn selected_object_new_bound_runtime_for_size(size: Option<i64>) -> WasmObjectNewBoundRuntime {
     let payload_size = positive_payload_size(size);
-    let payload = if payload_size.is_some() {
-        WasmObjectNewBoundPayload::Sized
-    } else {
-        WasmObjectNewBoundPayload::Unsized
-    };
-    let selection: WasmObjectNewBoundSelection = wasm_object_new_bound_selection(payload);
     WasmObjectNewBoundRuntime {
-        import: selection.import,
-        lir_runtime_call: selection.lir_runtime_call,
+        import: WasmRuntimeImport::ObjectNewBound,
+        lir_runtime_call: LirRuntimeCall::ObjectNewBound,
         payload_size,
     }
 }

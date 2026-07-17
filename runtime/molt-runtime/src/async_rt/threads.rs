@@ -162,6 +162,11 @@ impl ThreadTaskState {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_worker(rx: Receiver<ThreadWork>) {
+    crate::state::run_runtime_worker(|| thread_worker_inner(rx));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn thread_worker_inner(rx: Receiver<ThreadWork>) {
     while let Ok(work) = rx.recv() {
         match work {
             ThreadWork::Shutdown => break,
@@ -204,7 +209,6 @@ fn thread_worker(rx: Receiver<ThreadWork>) {
             }
         }
     }
-    with_gil(|py| crate::state::clear_worker_thread_state(&py));
 }
 
 fn call_thread_callable(

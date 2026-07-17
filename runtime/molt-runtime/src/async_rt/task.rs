@@ -13,7 +13,7 @@ pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
     }
     let high = bits >> 48;
     if high == 0 || high == 0xffff {
-        let addr = bits as usize;
+        let addr = usize::try_from(bits).ok()?;
         if addr < 4096 || (addr & 0x7) != 0 {
             return None;
         }

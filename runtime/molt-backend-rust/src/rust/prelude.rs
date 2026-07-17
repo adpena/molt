@@ -1148,20 +1148,49 @@ fn molt_unpack_too_many_message(expected_count: usize, actual: usize) -> String 
 }
 
 fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue> {
-    let items = match seq {
-        MoltValue::List(v) => v.clone(),
-        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),
-        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),
+    match seq {
+        MoltValue::List(values) => {
+            let actual = values.len();
+            if actual < expected_count {
+                panic!("not enough values to unpack (expected {}, got {})", expected_count, actual);
+            }
+            if actual > expected_count {
+                panic!("{}", molt_unpack_too_many_message(expected_count, actual));
+            }
+            values.clone()
+        }
+        MoltValue::Dict(entries) => {
+            let actual = entries.len();
+            if actual < expected_count {
+                panic!("not enough values to unpack (expected {}, got {})", expected_count, actual);
+            }
+            if actual > expected_count {
+                panic!("{}", molt_unpack_too_many_message(expected_count, actual));
+            }
+            entries.iter().map(|(key, _)| key.clone()).collect()
+        }
+        MoltValue::Str(value) => {
+            // Python unpack only needs to distinguish fewer, exact, and more.
+            // Probe at most expected+1 Unicode scalar values so a huge mismatch
+            // never allocates or scans the remainder of the string.
+            let probe_limit = expected_count.saturating_add(1);
+            let mut chars = value.chars();
+            let mut items = Vec::with_capacity(expected_count.min(value.len()));
+            while items.len() < probe_limit {
+                let Some(ch) = chars.next() else { break };
+                items.push(MoltValue::Str(ch.to_string()));
+            }
+            let actual = items.len();
+            if actual < expected_count {
+                panic!("not enough values to unpack (expected {}, got {})", expected_count, actual);
+            }
+            if actual > expected_count {
+                panic!("{}", molt_unpack_too_many_message(expected_count, actual));
+            }
+            items
+        }
         _ => panic!("cannot unpack non-iterable {} object", molt_unpack_type_name(seq)),
-    };
-    let actual = items.len();
-    if actual < expected_count {
-        panic!("not enough values to unpack (expected {}, got {})", expected_count, actual);
     }
-    if actual > expected_count {
-        panic!("{}", molt_unpack_too_many_message(expected_count, actual));
-    }
-    items
 }
 
 "#,

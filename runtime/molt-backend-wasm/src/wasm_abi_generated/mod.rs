@@ -13,7 +13,6 @@ mod import_tokens;
 mod lir_runtime_calls;
 mod method_ic_selector;
 mod numeric_runtime_selector;
-mod object_new_bound_selector;
 mod pure_profile;
 mod runtime_callables;
 mod runtime_surface;
@@ -45,9 +44,6 @@ pub(crate) use method_ic_selector::{
 };
 pub(crate) use numeric_runtime_selector::{
     WasmNumericOpLoopKind, WasmNumericRuntimeSelection, wasm_numeric_runtime_selection,
-};
-pub(crate) use object_new_bound_selector::{
-    WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, wasm_object_new_bound_selection,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{

@@ -1,6 +1,18 @@
 // Binary pickle dumps/loads C-ABI entrypoints and multiprocessing codec.
 
 use super::*;
+use crate::PyToken;
+
+#[inline]
+fn pickle_payload_len(_py: &PyToken<'_>, len: u64) -> Result<usize, u64> {
+    usize::try_from(len).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "pickle payload length exceeds the active address space",
+        )
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pickle_dumps_core(
@@ -399,7 +411,10 @@ pub extern "C" fn molt_pickle_loads_core(
                             }
                         }
                         _ => match pickle_read_u64_le(data.as_slice(), &mut idx, _py) {
-                            Ok(v) => v as usize,
+                            Ok(v) => match pickle_payload_len(_py, v) {
+                                Ok(v) => v,
+                                Err(err_bits) => return err_bits,
+                            },
                             Err(err_bits) => return err_bits,
                         },
                     };
@@ -415,7 +430,10 @@ pub extern "C" fn molt_pickle_loads_core(
                 }
                 PICKLE_OP_BYTEARRAY8 => {
                     let size = match pickle_read_u64_le(data.as_slice(), &mut idx, _py) {
-                        Ok(v) => v as usize,
+                        Ok(v) => match pickle_payload_len(_py, v) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        },
                         Err(err_bits) => return err_bits,
                     };
                     let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {

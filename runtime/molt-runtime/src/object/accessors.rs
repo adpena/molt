@@ -263,8 +263,11 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
 pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr_bits: u64, offset_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let offset = usize_from_bits(offset_bits);
+            let obj_ptr =
+                crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             object_field_get_ptr_raw(_py, obj_ptr, offset)
         })
     }
@@ -280,8 +283,11 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let offset = usize_from_bits(offset_bits);
+            let obj_ptr =
+                crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
     }
@@ -298,8 +304,11 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let offset = usize_from_bits(offset_bits);
+            let obj_ptr =
+                crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
     }
@@ -397,7 +406,8 @@ pub unsafe extern "C" fn molt_guard_layout_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
+            let obj_ptr =
+                crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
             let matches = guard_layout_match(_py, obj_ptr, class_bits, expected_version);
             if !matches {
                 profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT);
@@ -421,9 +431,16 @@ pub unsafe extern "C" fn molt_guarded_field_get_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
-            let offset = usize_from_bits(offset_bits);
+            let Some(obj_ptr) = crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits) else {
+                return MoltObject::none().bits();
+            };
+            let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
                 if is_missing_bits(_py, bits) {
@@ -450,9 +467,16 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
-            let offset = usize_from_bits(offset_bits);
+            let Some(obj_ptr) = crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits) else {
+                return MoltObject::none().bits();
+            };
+            let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
@@ -476,9 +500,16 @@ pub unsafe extern "C" fn molt_guarded_field_init_ptr(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let obj_ptr = obj_ptr_bits as usize as *mut u8;
-            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
-            let offset = usize_from_bits(offset_bits);
+            let Some(obj_ptr) = crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits) else {
+                return MoltObject::none().bits();
+            };
+            let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
@@ -496,7 +527,9 @@ pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) 
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
-            let offset = usize_from_bits(offset_bits);
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             let slot = obj_ptr.add(offset) as *const u64;
             let bits = *slot;
             inc_ref_bits(_py, bits);
@@ -518,7 +551,9 @@ pub unsafe extern "C" fn molt_object_field_set(
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
-            let offset = usize_from_bits(offset_bits);
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
             let slot = obj_ptr.add(offset) as *mut u64;
             let old_bits = *slot;
@@ -555,7 +590,9 @@ pub unsafe extern "C" fn molt_object_field_init(
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
-            let offset = usize_from_bits(offset_bits);
+            let Some(offset) = usize_from_bits(offset_bits) else {
+                return MoltObject::none().bits();
+            };
             let slot = obj_ptr.add(offset) as *mut u64;
             let old_bits = *slot;
             debug_assert!(
@@ -613,8 +650,9 @@ pub unsafe extern "C" fn molt_getattr_ic(
             // IC fast path: only applicable to OBJECT and DATACLASS types whose
             // attributes may resolve to fixed-offset struct fields.
             if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
-                let ic_index = usize_from_bits(ic_index_bits);
-                if ic_index < IC_TABLE_CAPACITY {
+                if let Some(ic_index) = usize_from_bits(ic_index_bits)
+                    && ic_index < IC_TABLE_CAPACITY
+                {
                     let ic = global_ic_table().get(ic_index);
 
                     if let Some((class_bits, _class_ptr, class_version)) =
@@ -650,15 +688,16 @@ pub unsafe extern "C" fn molt_getattr_ic(
                         && let Some((class_bits, class_ptr, class_version)) =
                             attr_ic_class_key(obj_ptr)
                     {
-                        let attr_len = usize_from_bits(attr_name_len_bits);
-                        let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                        if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                            if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                                && offset <= u32::MAX as usize
-                            {
-                                ic.update(class_bits, offset as u32, class_version);
+                        if let Some(attr_len) = usize_from_bits(attr_name_len_bits) {
+                            let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                                if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+                                    && offset <= u32::MAX as usize
+                                {
+                                    ic.update(class_bits, offset as u32, class_version);
+                                }
+                                dec_ref_bits(_py, attr_bits);
                             }
-                            dec_ref_bits(_py, attr_bits);
                         }
                     }
 
@@ -706,7 +745,9 @@ pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> 
             return 0;
         };
 
-        let idx = ic_index as usize;
+        let Some(idx) = usize_from_bits(ic_index) else {
+            return 0;
+        };
         if idx >= IC_TABLE_CAPACITY {
             return 0;
         }
@@ -763,7 +804,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
                 return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
             }
 
-            let idx = ic_index as usize;
+            let idx = usize_from_bits(ic_index).unwrap_or(IC_TABLE_CAPACITY);
 
             // Full resolution.
             let result = crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
@@ -775,16 +816,17 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
                 && !exception_pending(_py)
                 && let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
             {
-                let attr_len = usize_from_bits(attr_name_len_bits);
-                let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                    if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                        && offset <= u32::MAX as usize
-                    {
-                        let ic = global_ic_table().get(idx);
-                        ic.update(class_bits, offset as u32, class_version);
+                if let Some(attr_len) = usize_from_bits(attr_name_len_bits) {
+                    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                    if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                        if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+                            && offset <= u32::MAX as usize
+                        {
+                            let ic = global_ic_table().get(idx);
+                            ic.update(class_bits, offset as u32, class_version);
+                        }
+                        dec_ref_bits(_py, attr_bits);
                     }
-                    dec_ref_bits(_py, attr_bits);
                 }
             }
 
@@ -798,7 +840,14 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { object_field_get_ptr_raw(_py, obj_ptr, offset as usize) }
+        let Some(offset) = usize_from_bits(offset) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "object field offset exceeds the active address space",
+            );
+        };
+        unsafe { object_field_get_ptr_raw(_py, obj_ptr, offset) }
     })
 }
 

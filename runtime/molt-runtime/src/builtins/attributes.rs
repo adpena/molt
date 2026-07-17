@@ -2374,7 +2374,9 @@ pub unsafe extern "C" fn molt_get_attr_generic(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
             }
@@ -2488,7 +2490,9 @@ pub unsafe extern "C" fn molt_get_attr_object(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
@@ -2531,7 +2535,9 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             let Some(site_id) = ic_site_from_bits(site_bits) else {
                 return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
             };
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
 
             // --- Result-level IC fast path ---
@@ -2653,7 +2659,9 @@ pub unsafe extern "C" fn molt_get_attr_special(
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<i64>(_py, "OverflowError", "attribute name is too large");
+            };
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");

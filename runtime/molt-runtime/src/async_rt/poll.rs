@@ -552,8 +552,20 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         {
             // SAFETY: `poll_fn_addr` is a valid extern "C" fn pointer stored in the task object
             // by the async runtime. The caller ensures it points to a 1-arg poll function. UB if null.
-            let poll_target = crate::builtins::functions::runtime_callable_target_ptr(poll_fn_addr)
-                .unwrap_or(poll_fn_addr as usize as *const ());
+            let poll_target = if let Some(target) =
+                crate::builtins::functions::runtime_callable_target_ptr(poll_fn_addr)
+            {
+                target
+            } else {
+                let Some(target) = crate::provenance::abi::function_ptr(poll_fn_addr) else {
+                    return crate::raise_exception::<i64>(
+                        _py,
+                        "RuntimeError",
+                        "async poll address exceeds the active address space",
+                    );
+                };
+                target
+            };
             let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_target);
             poll_fn(addr)
         }

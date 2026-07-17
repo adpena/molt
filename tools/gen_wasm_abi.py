@@ -20,7 +20,6 @@ from wasm_abi_gen.manifest import (
     METHOD_IC_MAX_EXTRA_ARGS,
     METHOD_IC_SELECTOR_FAMILIES,
     NUMERIC_OP_LOOP_VARIANTS,
-    OBJECT_NEW_BOUND_SELECTOR_PAYLOADS,
     OP_LOOP_RUNTIME_SINKS,
     WASM_BULK_MEMORY_INSTRUCTIONS,
     WASM_VAL_TYPES,
@@ -423,7 +422,6 @@ def _render_rs_mod() -> str:
             "mod lir_runtime_calls;\n",
             "mod method_ic_selector;\n",
             "mod numeric_runtime_selector;\n",
-            "mod object_new_bound_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
@@ -459,10 +457,6 @@ def _render_rs_mod() -> str:
             "pub(crate) use numeric_runtime_selector::{\n",
             "    wasm_numeric_runtime_selection, WasmNumericOpLoopKind,\n",
             "    WasmNumericRuntimeSelection,\n",
-            "};\n",
-            "pub(crate) use object_new_bound_selector::{\n",
-            "    wasm_object_new_bound_selection, WasmObjectNewBoundPayload,\n",
-            "    WasmObjectNewBoundSelection,\n",
             "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
@@ -1171,87 +1165,6 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
     lines.extend(
         [
             "        _ => None,\n",
-            "    }\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_object_new_bound_selector(data: dict) -> str:
-    selector_by_payload = {
-        entry["payload"]: entry for entry in data.get("object_new_bound_selector", [])
-    }
-    payload_variants = {
-        payload: _rust_pascal_variant(payload)
-        for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS
-    }
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n",
-            "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmObjectNewBoundPayload {\n",
-        ]
-    )
-    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
-        lines.append(f"    {payload_variants[payload]},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmObjectNewBoundSelection {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) lir_runtime_call: LirRuntimeCall,\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmObjectNewBoundSelectorSpec {\n",
-            "    pub(crate) payload: WasmObjectNewBoundPayload,\n",
-            "    pub(crate) selection: WasmObjectNewBoundSelection,\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const WASM_OBJECT_NEW_BOUND_SELECTORS: &[WasmObjectNewBoundSelectorSpec] = &[\n",
-        ]
-    )
-    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
-        entry = selector_by_payload[payload]
-        lines.extend(
-            [
-                "    WasmObjectNewBoundSelectorSpec {\n",
-                f"        payload: WasmObjectNewBoundPayload::{payload_variants[payload]},\n",
-                "        selection: WasmObjectNewBoundSelection {\n",
-                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
-                f"            lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
-                "        },\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) const fn wasm_object_new_bound_selection(\n",
-            "    payload: WasmObjectNewBoundPayload,\n",
-            ") -> WasmObjectNewBoundSelection {\n",
-            "    match payload {\n",
-        ]
-    )
-    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
-        entry = selector_by_payload[payload]
-        lines.extend(
-            [
-                f"        WasmObjectNewBoundPayload::{payload_variants[payload]} => {{\n",
-                "            WasmObjectNewBoundSelection {\n",
-                f"                import: {_rust_runtime_import(data, entry['import_name'])},\n",
-                f"                lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
-                "            }\n",
-                "        }\n",
-            ]
-        )
-    lines.extend(
-        [
             "    }\n",
             "}\n",
         ]
@@ -2182,7 +2095,6 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "method_ic_selector.rs": _render_rs_method_ic_selector(data),
         "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),
-        "object_new_bound_selector.rs": _render_rs_object_new_bound_selector(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
         "runtime_callables.rs": _render_rs_runtime_callables(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
@@ -2429,15 +2341,6 @@ def render_py(data: dict) -> str:
         lines.append(
             f'    ("{entry["op"]}", "{entry["fact"]}", '
             f'"{entry["import_name"]}", {lir_variant_repr}),\n'
-        )
-    lines.append(")\n\n")
-    lines.append(
-        "WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (\n"
-    )
-    for entry in data.get("object_new_bound_selector", []):
-        lines.append(
-            f'    ("{entry["payload"]}", "{entry["import_name"]}", '
-            f'"{entry["lir_variant"]}"),\n'
         )
     lines.append(")\n\n")
     lines.append("WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (\n")

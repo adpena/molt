@@ -177,8 +177,11 @@ pub extern "C" fn molt_arena_alloc(arena: *mut ScopeArena, size: u64) -> *mut u8
     }
     // SAFETY: caller guarantees `arena` was returned by `molt_arena_new`
     // and has not been freed.
+    let Some(size) = usize_from_bits(size) else {
+        return std::ptr::null_mut();
+    };
     let arena = unsafe { &mut *arena };
-    arena.alloc(size as usize)
+    arena.alloc(size)
 }
 
 /// Bump-allocate a `MoltObject` (header + payload) inside the arena and
@@ -202,7 +205,9 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
         return MoltObject::none().bits();
     }
     crate::with_gil_entry_nopanic!(_py, {
-        let payload = usize_from_bits(size_bits);
+        let Some(payload) = usize_from_bits(size_bits) else {
+            return MoltObject::none().bits();
+        };
         let total = match payload.checked_add(size_of::<MoltHeader>()) {
             Some(v) => v,
             None => return MoltObject::none().bits(),

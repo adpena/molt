@@ -158,6 +158,10 @@ pub(crate) fn concurrent_clear_runtime_state(
 // CPython's ThreadPoolExecutor model.
 
 fn worker_loop(receiver: Receiver<Option<WorkItem>>) {
+    crate::state::run_runtime_worker(|| worker_loop_inner(receiver));
+}
+
+fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
     while let Ok(Some(item)) = receiver.recv() {
         // Mark running.
         {

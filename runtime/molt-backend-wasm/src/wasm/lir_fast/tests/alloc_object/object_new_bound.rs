@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[test]
-fn object_new_bound_stays_lir_fast_and_selects_sized_helper_from_payload_attr() {
+fn object_new_bound_stays_lir_fast_and_uses_class_owned_layout_size() {
     let cases = [
         (
             "object_new_bound_unsized",
@@ -10,10 +10,10 @@ fn object_new_bound_stays_lir_fast_and_selects_sized_helper_from_payload_attr() 
             "object_new_bound_sized",
         ),
         (
-            "object_new_bound_sized",
+            "object_new_bound_with_static_stack_hint",
             Some(24),
-            "object_new_bound_sized",
             "object_new_bound",
+            "object_new_bound_sized",
         ),
     ];
 

@@ -36,6 +36,18 @@ pub(super) fn emit_tir_op<'c, 'a>(
                 .to_string(),
         );
     }
+    if op.opcode == OpCode::UnpackSequence {
+        let expected = match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => usize::try_from(*value).ok(),
+            _ => None,
+        };
+        if op.operands.len() != 1 || expected != Some(op.results.len()) {
+            return Err(
+                "UnpackSequence requires one source and a value equal to its exact result count"
+                    .to_string(),
+            );
+        }
+    }
 
     match (&op.dialect, &op.opcode) {
         // ---- Constants ----
@@ -407,7 +419,14 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         // ---- Iteration ----
-        (_, OpCode::GetIter | OpCode::IterNext | OpCode::IterNextUnboxed | OpCode::ForIter) => {
+        (
+            _,
+            OpCode::GetIter
+            | OpCode::IterNext
+            | OpCode::IterNextUnboxed
+            | OpCode::UnpackSequence
+            | OpCode::ForIter,
+        ) => {
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 

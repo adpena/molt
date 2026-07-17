@@ -1,6 +1,9 @@
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
 use crate::object::{ClassEdgeOwnership, object_replace_class_edge};
 
+#[cfg(test)]
+mod unpack_transaction_tests;
+
 pub(crate) use crate::object::ops_iter::{
     enumerate_new_impl, filter_new_impl, map_new_impl, reversed_new_impl, zip_new_impl,
 };
@@ -2012,18 +2015,20 @@ fn unpack_non_iterable_message(_py: &PyToken<'_>, seq_bits: u64) -> String {
     format!("cannot unpack non-iterable {type_name} object")
 }
 
-/// Outlined sequence unpacking helper. Validates that the sequence length
-/// matches `expected_count`, extracts each element (with incref), and writes
-/// element bits to `output_ptr[0..expected_count]`.
+/// Outlined transactional sequence-unpacking authority. It initializes every
+/// output to `None`, validates exact arity, and publishes one independent owned
+/// reference per output only on success. Every failure rolls back all published
+/// references and leaves the entire output range as `None`.
 ///
-/// Returns 0 on success.  On length mismatch a `ValueError` is raised through
-/// the normal exception-pending mechanism and `MoltObject::none().bits()` is
-/// returned so the caller can short-circuit.
+/// Returns 0 on success. Errors are raised through the normal exception-pending
+/// mechanism and return `MoltObject::none().bits()`.
 ///
 /// # Safety
 ///
-/// `output_ptr_bits` must encode writable storage for at least `expected_count`
-/// `u64` elements.
+/// A nonzero `output_ptr_bits` must encode writable storage for at least
+/// `expected_count` `u64` elements. A null pointer with a nonzero count is the
+/// allocation-failure signal used by pointer-width backends and raises
+/// `MemoryError` before any source iteration.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_unpack_sequence(
     seq_bits: u64,
@@ -2031,12 +2036,48 @@ pub unsafe extern "C" fn molt_unpack_sequence(
     output_ptr_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+        let Ok(expected) = usize::try_from(expected_count) else {
+            return raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "sequence unpack target count exceeds the active address space",
+            );
+        };
+        let output_ptr = if expected == 0 {
+            std::ptr::null_mut()
+        } else {
+            let Some(output_ptr) = crate::provenance::abi::mut_ptr::<u64>(output_ptr_bits) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "sequence unpack result address exceeds the active address space",
+                );
+            };
+            output_ptr
+        };
+        if expected != 0 && output_ptr.is_null() {
+            return raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "sequence unpack result allocation failed",
+            );
         }
+        let Some(out_slice) =
+            (unsafe { crate::provenance::abi::slice_mut(output_ptr, expected_count) })
+        else {
+            return raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "sequence unpack result range is invalid for the active target",
+            );
+        };
+        let no_value = MoltObject::none().bits();
+        out_slice.fill(no_value);
+        if exception_pending(_py) {
+            return no_value;
+        }
+
         let obj = obj_from_bits(seq_bits);
-        let expected = expected_count as usize;
-        let output_ptr = output_ptr_bits as usize as *mut u64;
         let Some(ptr) = obj.as_ptr() else {
             let msg = unpack_non_iterable_message(_py, seq_bits);
             raise_exception::<u64>(_py, "TypeError", &msg);
@@ -2060,19 +2101,26 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     return MoltObject::none().bits();
                 }
-                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
                 for (i, &raw) in elems.iter().enumerate().take(expected) {
                     out_slice[i] = MoltObject::from_bool(raw != 0).bits();
                 }
             } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let Some(elems) = crate::object::seq_access::snapshot(
-                    _py,
-                    ptr,
-                    "sequence unpack snapshot allocation failed",
-                ) else {
-                    return MoltObject::none().bits();
-                };
-                let actual = elems.len();
+                // Exact built-in sequences need no temporary snapshot. The
+                // scoped read authority holds the list mutation lock (or a
+                // zero-lock immutable tuple view), validates arity, and mints
+                // each output owner before releasing that view. This removes
+                // the former O(n) allocation and its duplicate retain/release
+                // traffic while remaining free-threaded safe.
+                let actual = crate::object::seq_access::with_borrowed(ptr, |elems| {
+                    let actual = elems.len();
+                    if actual == expected {
+                        for (slot, &bits) in out_slice.iter_mut().zip(elems.iter()) {
+                            inc_ref_bits(_py, bits);
+                            *slot = bits;
+                        }
+                    }
+                    actual
+                });
                 if actual < expected {
                     let msg = format!(
                         "not enough values to unpack (expected {}, got {})",
@@ -2086,11 +2134,6 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     return MoltObject::none().bits();
                 }
-                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
-                for (i, &bits) in elems.iter().enumerate().take(expected) {
-                    inc_ref_bits(_py, bits);
-                    out_slice[i] = bits;
-                }
             } else {
                 // Generic iterable: materialize via iter/next.
                 let iter_bits = molt_iter(seq_bits);
@@ -2102,62 +2145,50 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     raise_exception::<u64>(_py, "TypeError", &msg);
                     return MoltObject::none().bits();
                 }
-                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
                 let mut count = 0usize;
                 loop {
-                    let pair_bits = molt_iter_next(iter_bits);
-                    let pair_obj = obj_from_bits(pair_bits);
-                    let Some(pair_ptr) = pair_obj.as_ptr() else {
-                        break;
-                    };
-                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    let mut value_bits = no_value;
+                    let done_bits = crate::molt_iter_next_unboxed(
+                        iter_bits,
+                        crate::provenance::abi::expose_address(&raw mut value_bits),
+                    );
+                    if exception_pending(_py) {
+                        for slot in out_slice.iter_mut().take(count) {
+                            dec_ref_bits(_py, *slot);
+                            *slot = no_value;
+                        }
+                        dec_ref_bits(_py, iter_bits);
+                        return no_value;
+                    }
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
-                    let Some((val_bits, done_bits)) =
-                        crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                            items.first().copied().zip(items.get(1).copied())
-                        })
-                        .flatten()
-                    else {
-                        break;
-                    };
-                    let done = is_truthy(_py, obj_from_bits(done_bits));
-                    if done {
-                        break;
-                    }
-                    if count < expected {
-                        inc_ref_bits(_py, val_bits);
-                        out_slice[count] = val_bits;
-                    }
-                    count += 1;
-                    if count > expected {
+                    if count == expected {
+                        dec_ref_bits(_py, value_bits);
+                        for slot in out_slice.iter_mut() {
+                            dec_ref_bits(_py, *slot);
+                            *slot = no_value;
+                        }
                         dec_ref_bits(_py, iter_bits);
                         let msg = format!("too many values to unpack (expected {})", expected);
                         raise_exception::<u64>(_py, "ValueError", &msg);
-                        return MoltObject::none().bits();
+                        return no_value;
                     }
+                    out_slice[count] = value_bits;
+                    count += 1;
                 }
                 dec_ref_bits(_py, iter_bits);
                 if count < expected {
-                    // If an exception is already pending (e.g. the iterator
-                    // raised RuntimeError, not StopIteration), propagate that
-                    // exception instead of replacing it with ValueError.
-                    if exception_pending(_py) {
-                        for value in out_slice.iter().take(count) {
-                            dec_ref_bits(_py, *value);
-                        }
-                        return MoltObject::none().bits();
-                    }
                     let msg = format!(
                         "not enough values to unpack (expected {}, got {})",
                         expected, count
                     );
                     raise_exception::<u64>(_py, "ValueError", &msg);
-                    // Dec-ref any already-extracted values.
-                    for value in out_slice.iter().take(count) {
-                        dec_ref_bits(_py, *value);
+                    for slot in out_slice.iter_mut().take(count) {
+                        dec_ref_bits(_py, *slot);
+                        *slot = no_value;
                     }
-                    return MoltObject::none().bits();
+                    return no_value;
                 }
             }
         }
@@ -2676,19 +2707,86 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     use molt_obj_model::MoltObject;
 
     let none = MoltObject::none().bits();
+    let Ok(nb) = usize::try_from(nbases) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(_py, "MemoryError", "class base count is too large")
+        });
+    };
+    let Ok(na) = usize::try_from(nattrs) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(_py, "MemoryError", "class attribute count is too large")
+        });
+    };
+    let Some(attr_slots) = na.checked_mul(2) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(_py, "MemoryError", "class attribute storage is too large")
+        });
+    };
+    let bases_ptr = if nb == 0 {
+        std::ptr::null()
+    } else {
+        let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(bases_ptr_bits) else {
+            return crate::with_gil_entry_nopanic!(_py, {
+                raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "class base address exceeds the active address space",
+                )
+            });
+        };
+        if ptr.is_null() {
+            return crate::with_gil_entry_nopanic!(_py, {
+                raise_exception::<u64>(_py, "RuntimeError", "class base pointer is null")
+            });
+        }
+        ptr
+    };
+    let attrs_ptr = if attr_slots == 0 {
+        std::ptr::null()
+    } else {
+        let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(attrs_ptr_bits) else {
+            return crate::with_gil_entry_nopanic!(_py, {
+                raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "class attribute address exceeds the active address space",
+                )
+            });
+        };
+        if ptr.is_null() {
+            return crate::with_gil_entry_nopanic!(_py, {
+                raise_exception::<u64>(_py, "RuntimeError", "class attribute pointer is null")
+            });
+        }
+        ptr
+    };
+    let Some(bases) = (unsafe { crate::provenance::abi::slice(bases_ptr, nbases) }) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "class base range is invalid for the active target",
+            )
+        });
+    };
+    let attr_slots_bits =
+        u64::try_from(attr_slots).expect("usize is no wider than Molt's u64 runtime ABI word");
+    let Some(attrs) = (unsafe { crate::provenance::abi::slice(attrs_ptr, attr_slots_bits) }) else {
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "class attribute range is invalid for the active target",
+            )
+        });
+    };
+    let bases_vec = bases.to_vec();
+    let attrs_vec = attrs.to_vec();
     let debug_class_def = std::env::var("MOLT_DEBUG_CLASS_DEF").as_deref() == Ok("1");
     let class_bits = molt_class_new(name_bits);
     if class_bits == none {
         return class_bits;
     }
-    let bases_ptr = bases_ptr_bits as usize as *const u64;
-    let attrs_ptr = attrs_ptr_bits as usize as *const u64;
-    let nb = nbases as usize;
-    let bases_vec = if nb > 0 {
-        unsafe { std::slice::from_raw_parts(bases_ptr, nb).to_vec() }
-    } else {
-        Vec::new()
-    };
     if (flags & 1) != 0 && nb > 0 {
         if nb == 1 {
             molt_class_set_base(class_bits, bases_vec[0]);
@@ -2704,12 +2802,6 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         }
     }
 
-    let na = nattrs as usize;
-    let attrs_vec = if na > 0 {
-        unsafe { std::slice::from_raw_parts(attrs_ptr, na * 2).to_vec() }
-    } else {
-        Vec::new()
-    };
     if na > 0 {
         for pair in attrs_vec.chunks_exact(2) {
             molt_set_attr_name(class_bits, pair[0], pair[1]);
@@ -2803,7 +2895,13 @@ pub unsafe extern "C" fn molt_guarded_class_def(
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let n = n_parts as usize;
+        let Some(n) = crate::provenance::abi::address(n_parts) else {
+            return raise_exception::<_>(
+                _py,
+                "MemoryError",
+                "f-string part count exceeds the active address space",
+            );
+        };
         if n == 0 {
             let ptr = alloc_string(_py, &[]);
             return if ptr.is_null() {
@@ -2812,14 +2910,34 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
                 MoltObject::from_ptr(ptr).bits()
             };
         }
+        if parts_ptr.is_null() {
+            return raise_exception::<_>(_py, "RuntimeError", "f-string parts pointer is null");
+        }
+        let Some(pair_slots) = n.checked_mul(2) else {
+            return raise_exception::<_>(_py, "MemoryError", "f-string part storage overflow");
+        };
+        let pair_slots_bits =
+            u64::try_from(pair_slots).expect("usize is no wider than Molt's u64 runtime ABI word");
+        let Some(raw_parts) =
+            (unsafe { crate::provenance::abi::slice(parts_ptr, pair_slots_bits) })
+        else {
+            return raise_exception::<_>(_py, "RuntimeError", "f-string parts pointer is invalid");
+        };
 
         // Collect string parts — resolve values via str() as needed.
-        let mut parts: Vec<(u64, bool)> = Vec::with_capacity(n); // (string_bits, owned)
+        let mut parts: Vec<(u64, bool)> = Vec::new(); // (string_bits, owned)
+        if parts.try_reserve_exact(n).is_err() {
+            return raise_exception::<_>(
+                _py,
+                "MemoryError",
+                "f-string part storage allocation failed",
+            );
+        }
         let mut total_len: usize = 0;
 
-        for i in 0..n {
-            let is_literal = unsafe { *parts_ptr.add(i * 2) };
-            let value_bits = unsafe { *parts_ptr.add(i * 2 + 1) };
+        for pair in raw_parts.chunks_exact(2) {
+            let is_literal = pair[0];
+            let value_bits = pair[1];
 
             let string_bits = if is_literal != 0 {
                 // Literal — already a string, borrow it.
@@ -2843,7 +2961,22 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
             if let Some(ptr) = obj_from_bits(string_bits.0).as_ptr() {
                 unsafe {
                     if object_type_id(ptr) == TYPE_ID_STRING {
-                        total_len += string_len(ptr);
+                        let Some(next_len) = total_len.checked_add(string_len(ptr)) else {
+                            for &(bits, owned) in &parts {
+                                if owned {
+                                    dec_ref_bits(_py, bits);
+                                }
+                            }
+                            if string_bits.1 {
+                                dec_ref_bits(_py, string_bits.0);
+                            }
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "f-string result length overflow",
+                            );
+                        };
+                        total_len = next_len;
                     }
                 }
             }

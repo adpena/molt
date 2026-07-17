@@ -5,6 +5,7 @@
     "classifier_silent_fallthrough": [],
     "simpleir_lane_gap": [],
     "mapped_never_emitted": [
+      "async_work_poll",
       "bit_not",
       "borrow",
       "box_from_raw_int",
