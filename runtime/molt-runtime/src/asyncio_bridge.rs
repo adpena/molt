@@ -98,9 +98,7 @@ mod tests {
 
     #[test]
     fn asyncio_extension_state_teardown_releases_refs_and_resets_handles() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             crate::state::runtime_extension_states_clear_and_drop(state);

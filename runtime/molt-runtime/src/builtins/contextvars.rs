@@ -261,9 +261,7 @@ mod tests {
 
     #[test]
     fn contextvars_state_is_runtime_scoped_and_clearable() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(py, {
             let state = runtime_state(py);

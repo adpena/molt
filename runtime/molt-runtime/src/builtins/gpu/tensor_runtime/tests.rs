@@ -465,7 +465,7 @@ fn linear_gate_up8_store_unaligned_matches_reference_outputs() {
 
 #[test]
 fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let tensor_name_ptr = alloc_string(_py, b"Tensor");
         let buffer_name_ptr = alloc_string(_py, b"Buffer");
@@ -539,7 +539,7 @@ fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
 
 #[test]
 fn gpu_repeat_axis_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let data_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let fmt_ptr = alloc_string(_py, b"f");
@@ -577,7 +577,7 @@ fn gpu_repeat_axis_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_buffer_to_list_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let tensor_name_ptr = alloc_string(_py, b"Tensor");
         let buffer_name_ptr = alloc_string(_py, b"Buffer");
@@ -623,7 +623,7 @@ fn gpu_buffer_to_list_f32_roundtrip() {
 
 #[test]
 fn gpu_module_tensor_linear_wrapper_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let tensor_name_ptr = alloc_string(_py, b"Tensor");
         let buffer_name_ptr = alloc_string(_py, b"Buffer");
@@ -679,7 +679,7 @@ fn gpu_module_tensor_linear_wrapper_roundtrip() {
 
 #[test]
 fn gpu_module_tensor_reshape_view_wrapper_reuses_buffer() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let tensor_name_ptr = alloc_string(_py, b"Tensor");
         let buffer_name_ptr = alloc_string(_py, b"Buffer");
@@ -731,7 +731,7 @@ fn gpu_module_tensor_reshape_view_wrapper_reuses_buffer() {
 
 #[test]
 fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let tensor_name_ptr = alloc_string(_py, b"Tensor");
         let buffer_name_ptr = alloc_string(_py, b"Buffer");
@@ -805,7 +805,7 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
 
 #[test]
 fn gpu_linear_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let w_ptr = alloc_bytes(_py, &f32_bytes(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]));
@@ -838,7 +838,7 @@ fn gpu_linear_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let w_ptr = alloc_bytes(
@@ -897,7 +897,7 @@ fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0]));
         let w_ptr = alloc_bytes(
@@ -955,7 +955,7 @@ fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
 
 #[test]
 fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let w_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0]));
@@ -984,7 +984,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wide_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[2.0, 3.0]));
         let w_ptr = alloc_bytes(
@@ -1019,7 +1019,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wide_roundtrip() {
 
 #[test]
 fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wider_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[2.0, 3.0]));
         let w_ptr = alloc_bytes(
@@ -1058,7 +1058,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wider_roundtrip() {
 
 #[test]
 fn gpu_broadcast_binary_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let a_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let b_ptr = alloc_bytes(_py, &f32_bytes(&[10.0, 20.0]));
@@ -1102,7 +1102,7 @@ fn gpu_broadcast_binary_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_matmul_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let a_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let b_ptr = alloc_bytes(_py, &f32_bytes(&[5.0, 6.0, 7.0, 8.0]));
@@ -1145,7 +1145,7 @@ fn gpu_matmul_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_rope_apply_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let cos_ptr = alloc_bytes(_py, &f32_bytes(&[0.0, 1.0]));
@@ -1179,7 +1179,7 @@ fn gpu_rope_apply_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_rope_apply_contiguous_rejects_odd_dim() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0]));
         let cos_ptr = alloc_bytes(_py, &f32_bytes(&[1.0]));
@@ -1208,7 +1208,7 @@ fn gpu_rope_apply_contiguous_rejects_odd_dim() {
 
 #[test]
 fn gpu_softmax_last_axis_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let fmt_ptr = alloc_string(_py, b"f");
@@ -1241,7 +1241,7 @@ fn gpu_softmax_last_axis_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_rms_norm_last_axis_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(_py, &f32_bytes(&[3.0, 4.0, 0.0, 5.0]));
         let fmt_ptr = alloc_string(_py, b"f");
@@ -1277,7 +1277,7 @@ fn gpu_rms_norm_last_axis_contiguous_f32_roundtrip() {
 
 #[test]
 fn gpu_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
-    let _guard = crate::TEST_MUTEX.lock().unwrap();
+    let _guard = crate::test_mutex_guard();
     crate::with_gil_entry_nopanic!(_py, {
         let x_ptr = alloc_bytes(
             _py,

@@ -772,9 +772,7 @@ mod runtime_resource_env_tests {
 
     #[test]
     fn resource_limits_from_env_rejects_invalid_values() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "not-a-number") };
 
@@ -787,9 +785,7 @@ mod runtime_resource_env_tests {
 
     #[test]
     fn resource_limits_from_env_rejects_zero_values() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe { std::env::set_var("MOLT_RESOURCE_MAX_DURATION_MS", "0") };
 
@@ -802,9 +798,7 @@ mod runtime_resource_env_tests {
 
     #[test]
     fn resource_limits_from_env_builds_positive_limit_set() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe {
             std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576");
@@ -826,9 +820,7 @@ mod runtime_resource_env_tests {
     fn resource_limits_from_env_carries_per_operation_caps() {
         // Parity guard: per-op env vars (mirroring the Python ResourceLimits
         // per-op fields) must reach the Rust ResourceLimits without loss.
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe {
             std::env::set_var("MOLT_RESOURCE_MAX_OPERATION_RESULT", "9000");
@@ -850,9 +842,7 @@ mod runtime_resource_env_tests {
 
     #[test]
     fn molt_memory_limit_alias_parses_human_size() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "64M") };
 
@@ -866,9 +856,7 @@ mod runtime_resource_env_tests {
     fn molt_memory_limit_alias_overrides_canonical_field() {
         // When both are set, the user-facing alias wins (single source of
         // truth; the alias resolves into the SAME max_memory field).
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe {
             std::env::set_var("MOLT_MEMORY_LIMIT", "128M");
@@ -883,9 +871,7 @@ mod runtime_resource_env_tests {
 
     #[test]
     fn molt_memory_limit_alias_rejects_garbage() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "not-a-size") };
 
@@ -898,9 +884,7 @@ mod runtime_resource_env_tests {
     #[test]
     fn no_resource_env_yields_none() {
         // Without any env set, behavior is unchanged: no limits installed.
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         clear_resource_env();
         let limits = resource_limits_from_env().unwrap();
         assert!(limits.is_none());

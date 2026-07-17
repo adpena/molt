@@ -3510,7 +3510,7 @@ mod tests {
 
     #[test]
     fn exception_landing_identity_is_one_owned_class_edge_and_name_is_derived() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let class_ptr = super::alloc_class_obj_from_name(_py, "IdentityBefore");
             assert!(!class_ptr.is_null());
@@ -3600,7 +3600,7 @@ mod tests {
 
     #[test]
     fn exception_landing_invalid_class_rolls_back_every_payload_edge() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let invalid_class_ptr = crate::alloc_string(_py, b"not a class");
             let msg_ptr = crate::alloc_string(_py, b"payload");
@@ -3638,7 +3638,7 @@ mod tests {
 
     #[test]
     fn exceptions_runtime_state_is_owned_and_clearable() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             let value_error_bits =
@@ -3675,7 +3675,7 @@ mod tests {
 
     #[test]
     fn generator_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
@@ -3695,7 +3695,7 @@ mod tests {
 
     #[test]
     fn task_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
@@ -3712,7 +3712,7 @@ mod tests {
 
     #[test]
     fn task_exception_detach_publishes_all_side_registries_empty_before_release() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let task = crate::alloc_list(_py, &[]);
             let stacked = crate::alloc_list(_py, &[]);
@@ -3796,7 +3796,7 @@ mod tests {
 
     #[test]
     fn exception_last_ignores_non_pending_slots_inside_handler() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let exc_ptr = alloc_exception(_py, "RuntimeError", "stale");
             let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
@@ -3823,7 +3823,7 @@ mod tests {
 
     #[test]
     fn exception_last_pending_ignores_active_handler_context() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let outer_ptr = alloc_exception(_py, "ValueError", "outer");
             let outer_bits = MoltObject::from_ptr(outer_ptr).bits();
@@ -3849,7 +3849,7 @@ mod tests {
 
     #[test]
     fn active_exception_stack_owns_one_canonical_view_until_context_clear() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -3896,7 +3896,7 @@ mod tests {
 
     #[test]
     fn active_exception_stack_pop_preserves_direct_c_root_and_pointer_identity() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -3940,7 +3940,7 @@ mod tests {
 
     #[test]
     fn builtin_exception_one_arg_materializes_args_on_demand() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let exc_bits = molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits());
             let exc_ptr = obj_from_bits(exc_bits).as_ptr().expect("exception object");
@@ -3976,7 +3976,7 @@ mod tests {
 
     #[test]
     fn stop_iteration_lazy_arg_keeps_public_value_after_args_materialization() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let exc_bits = molt_exception_new_builtin_one(8, MoltObject::from_int(99).bits());
             let exc_ptr = obj_from_bits(exc_bits).as_ptr().expect("exception object");
@@ -4006,7 +4006,7 @@ mod tests {
 
     #[test]
     fn execution_contexts_isolate_pending_exceptions_and_fast_flag() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let task_a = Box::into_raw(Box::new(0_u8));
             let task_b = Box::into_raw(Box::new(0_u8));
@@ -4069,7 +4069,7 @@ mod tests {
 
     #[test]
     fn rerecording_same_exception_reuses_the_owned_slot_edge() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let task = Box::into_raw(Box::new(0_u8));
             let exc_ptr = alloc_exception(_py, "RuntimeError", "same-owner");
@@ -4104,7 +4104,7 @@ mod tests {
 
     #[test]
     fn worker_exit_releases_its_pending_exception_edge() {
-        // This is deliberately not serialized by TEST_MUTEX. The worker's TLS
+        // This deliberately does not hold `test_mutex_guard`. The worker's TLS
         // destructor reacquires runtime custody before consuming its owned
         // exception edge, so holding an unrelated process-wide fixture lock
         // across join would create a hidden lock lifetime and can deadlock a
@@ -4159,7 +4159,7 @@ mod tests {
     #[test]
     #[ignore = "permanently shuts down process-global runtime; run in isolation"]
     fn tls_exception_destructor_excludes_concurrent_shutdown() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         let exc_bits = crate::with_gil_entry_nopanic!(_py, {
             MoltObject::from_ptr(alloc_exception(_py, "RuntimeError", "tls-shutdown")).bits()
         });

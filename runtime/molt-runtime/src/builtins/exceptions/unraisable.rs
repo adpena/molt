@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn unraisable_args_are_an_internal_immutable_structured_tuple() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let none = MoltObject::none().bits();
             let fields = [
@@ -1377,7 +1377,7 @@ mod tests {
 
     #[test]
     fn armed_transaction_restores_edges_when_the_body_unwinds() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let original = pending_exception(_py, "outer");
             inc_ref_bits(_py, original); // Test-owned observation edge.
@@ -1399,7 +1399,7 @@ mod tests {
 
     #[test]
     fn begin_and_drop_recover_a_poisoned_task_exception_map_without_losing_ownership() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let bits = pending_exception(_py, "task-owned");
             inc_ref_bits(_py, bits);
@@ -1443,7 +1443,7 @@ mod tests {
 
     #[test]
     fn reporter_panic_releases_report_edge_and_restores_original_exactly_once() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let original = pending_exception(_py, "outer");
             inc_ref_bits(_py, original);
@@ -1485,7 +1485,7 @@ mod tests {
 
     #[test]
     fn policy_panic_preserves_outer_exception_and_releases_inner_exception() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let original = pending_exception(_py, "outer");
             inc_ref_bits(_py, original);
@@ -1522,7 +1522,7 @@ mod tests {
 
     #[test]
     fn reentrant_reporting_keeps_outer_transaction_edges_private() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let original = pending_exception(_py, "outer");
             inc_ref_bits(_py, original);
@@ -1555,7 +1555,7 @@ mod tests {
 
     #[test]
     fn impossible_reentrant_restore_defers_both_handled_edge_classes_and_fails_closed() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let active_ptr = alloc_exception(_py, "RuntimeError", "active");
             let fallback_ptr = alloc_exception(_py, "RuntimeError", "fallback");

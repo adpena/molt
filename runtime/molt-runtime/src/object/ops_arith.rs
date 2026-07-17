@@ -2931,9 +2931,7 @@ mod tests {
 
     #[test]
     fn molt_lshift_promotes_bigint_operand_correctly() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         // Clear any pending exception leaked from prior tests so that
         // `molt_repr_from_obj`'s pending-exception fast path doesn't return
         // None and trip the assertion below.
@@ -2953,9 +2951,7 @@ mod tests {
 
     #[test]
     fn molt_shift_counts_do_not_truncate_at_u32_width() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let huge_inline_count = int_bits_from_i128(_py, 1_i128 << 32);
@@ -2974,9 +2970,7 @@ mod tests {
 
     #[test]
     fn molt_shift_counts_accept_heap_bigint_sign_without_i64_narrowing() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let huge_count = int_bits_from_i128(_py, 1_i128 << 70);
@@ -3000,9 +2994,7 @@ mod tests {
 
     #[test]
     fn molt_lshift_rejects_unallocatable_counts_before_bigint_shift() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let count = bigint_bits(_py, BigInt::from(10u32).pow(100));
@@ -3023,9 +3015,7 @@ mod tests {
 
     #[test]
     fn molt_shift_operands_reject_exact_floats_and_generic_index_objects() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let one = MoltObject::from_int(1).bits();

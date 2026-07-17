@@ -1,6 +1,6 @@
 // NOTE: c_api tests share a single process-global RuntimeState.
 // The runtime is initialized once by the first test and reused.
-// Each test acquires TEST_MUTEX to serialize access, preventing
+// Each test acquires `test_mutex_guard` to serialize access, preventing
 // concurrent GIL re-entry from corrupting the slab allocator.
 //
 // Run with: cargo test -p molt-runtime --lib -- c_api::tests --test-threads=1
@@ -17,7 +17,7 @@ struct CApiTestGuard {
 
 impl CApiTestGuard {
     fn new() -> Self {
-        let guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_mutex_guard();
         let _ = molt_err_clear();
         Self { _guard: guard }
     }

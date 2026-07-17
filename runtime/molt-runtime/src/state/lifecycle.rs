@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             clear_worker_thread_state(_py);
         });
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn clear_special_cache_releases_function_descriptor_slots() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_special_cache(_py, state);
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn clear_interned_names_releases_every_manifest_slot() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_interned_names(_py, state);

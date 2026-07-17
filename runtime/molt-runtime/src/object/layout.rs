@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn list_int_storage_denied_growth_keeps_original_buffer() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         let owner_bytes = std::mem::size_of::<ListIntStorage>();
         let initial_buffer = 4 * std::mem::size_of::<i64>();
         let replacement_buffer = 16 * std::mem::size_of::<i64>();
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn function_code_slot_retains_and_releases_borrowed_code() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = alloc_function_obj(_py, 0, 0);
             assert_eq!(unsafe { function_code_bits(func_ptr) }, 0);
@@ -1639,7 +1639,7 @@ mod tests {
 
     #[test]
     fn fn_ptr_code_map_retain_replace_and_clear_release_outside_slot_owner() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let key = 0xF00D_C0DE_5151_0001;
             fn_ptr_code_set(_py, key, 0);

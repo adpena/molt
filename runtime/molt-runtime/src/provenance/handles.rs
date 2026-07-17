@@ -28,9 +28,7 @@ mod tests {
 
     #[test]
     fn handle_resolve_is_gil_free_for_pointer_bits() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let total_size = std::mem::size_of::<MoltHeader>() + 8;
         let (ptr, bits) = crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
