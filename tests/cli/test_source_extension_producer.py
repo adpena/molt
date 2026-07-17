@@ -1676,7 +1676,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     source = source_root / "scipy/ndimage/src/nd_image.c"
     generated = build_root / "scipy/ndimage/_nd_image.c"
     for path, content in (
-        (source, b"int source_symbol(void) { return 1; }\n"),
+        (
+            source,
+            b"int source_symbol(void) { return 1; }\n"
+            b"int import_numpy(void) { return _import_array(); }\n",
+        ),
         (generated, b"int PyInit__nd_image(void) { return 2; }\n"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1782,6 +1786,13 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     assert staged_manifest["sources"] == [
         item["source"] for item in staged_manifest["object_closure"]["objects"]
     ]
+    expected_capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    assert staged_manifest["object_closure"]["required_capsules"] == [
+        expected_capsule
+    ]
+    assert staged_manifest["object_closure"]["objects"][0][
+        "required_capsules"
+    ] == [expected_capsule]
     assert str(tmp_path) not in json.dumps(staged_manifest)
     for item in staged_manifest["object_closure"]["objects"]:
         staged_source = (
@@ -1804,6 +1815,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         assert "scipy/ndimage/_nd_image.molt.wasm" not in archive.namelist()
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
+        assert embedded["object_closure"]["required_capsules"] == [expected_capsule]
         assert embedded["object_closure"]["objects"][0]["source"].startswith("@source/")
         assert embedded["object_closure"]["objects"][1]["source"].startswith("@build/")
         assert all(

@@ -2360,6 +2360,81 @@ def source_extension_manifest_required_capsule_imports_by_source(
     return by_source, missing_diagnostics
 
 
+def canonicalize_source_extension_manifest_required_capsules(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+    allow_missing_sources: bool = False,
+) -> list[str]:
+    """Persist source-derived capsule custody into the closure and its objects."""
+    by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
+        manifest,
+        manifest_path=manifest_path,
+        allow_missing_sources=allow_missing_sources,
+    )
+    if errors and not (
+        allow_missing_sources
+        and source_extension_manifest_errors_are_missing_sources(errors)
+    ):
+        return errors
+    if by_source is None:
+        return errors
+    if not by_source:
+        return []
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, dict):
+        return ["source-extension manifest requires non-empty object_closure custody"]
+
+    def string_set(value: object) -> set[str]:
+        if not isinstance(value, list):
+            return set()
+        return {
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        }
+
+    required_capsules = string_set(object_closure.get("required_capsules"))
+    for imports_by_capsule in by_source.values():
+        required_capsules.update(imports_by_capsule)
+    object_closure["required_capsules"] = sorted(required_capsules)
+
+    objects = object_closure.get("objects")
+    if not isinstance(objects, list):
+        return []
+    for item in objects:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        source_sha256 = item.get("source_sha256")
+        source_path, source_errors = source_extension_manifest_source_path(
+            source,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            expected_sha256=(
+                source_sha256.strip()
+                if isinstance(source_sha256, str) and source_sha256.strip()
+                else None
+            ),
+        )
+        if source_errors and not (
+            allow_missing_sources
+            and source_extension_manifest_errors_are_missing_sources(source_errors)
+        ):
+            return source_errors
+        if source_path is None:
+            continue
+        imports_by_capsule = by_source.get(source_path)
+        if not imports_by_capsule:
+            continue
+        item_capsules = string_set(item.get("required_capsules"))
+        item_capsules.update(imports_by_capsule)
+        item["required_capsules"] = sorted(item_capsules)
+    return []
+
+
 def source_extension_manifest_runtime_python_imports(
     manifest: Mapping[str, Any],
     *,
