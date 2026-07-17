@@ -1799,7 +1799,9 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     assert staged.wheel_sha256 == staged_manifest["wheel_sha256"]
     with zipfile.ZipFile(staged_wheel) as archive:
         embedded = json.loads(archive.read("extension_manifest.json"))
-        assert embedded["extension"] == "scipy/ndimage/_nd_image.molt.wasm"
+        assert embedded["extension"] == "_nd_image.molt.wasm"
+        assert archive.read(embedded["extension"]) == staged.artifact_path.read_bytes()
+        assert "scipy/ndimage/_nd_image.molt.wasm" not in archive.namelist()
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
         assert embedded["object_closure"]["objects"][0]["source"].startswith("@source/")

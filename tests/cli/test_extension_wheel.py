@@ -78,6 +78,7 @@ def test_staged_wheel_identity_comes_only_from_canonical_manifest(tmp_path: Path
     assert first_sha == second_sha
     assert first_destination.read_bytes() == second_destination.read_bytes()
     assert first_embedded == second_embedded
+    assert first_embedded["extension"] == "_nd_image.molt.wasm"
     assert "extension_sha256" in first_embedded
     assert not ({"wheel_sha256", "generated_at_utc"} & first_embedded.keys())
     assert str(tmp_path) not in json.dumps(first_embedded)
@@ -88,9 +89,40 @@ def test_staged_wheel_identity_comes_only_from_canonical_manifest(tmp_path: Path
         ) + ["scipy-1.0.dist-info/RECORD"]
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in infos)
         record_lines = wheel.read("scipy-1.0.dist-info/RECORD").decode().splitlines()
+        assert wheel.read("_nd_image.molt.wasm") == b"\x00asm-canonical"
+        assert "scipy/ndimage/_nd_image.molt.wasm" not in wheel.namelist()
         for info in infos[:-1]:
             assert _record_line(info.filename, wheel.read(info)) in record_lines
         assert record_lines[-1] == "scipy-1.0.dist-info/RECORD,,"
+
+
+def test_staged_wheel_rejects_canonical_extension_member_collision(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.whl"
+    raw_extension = "scipy/ndimage/_nd_image.molt.wasm"
+    manifest = {"extension": raw_extension}
+    _write_extension_wheel(
+        source,
+        entries=(
+            (raw_extension, b"raw-extension"),
+            ("_nd_image.molt.wasm", b"foreign-member"),
+            ("extension_manifest.json", json.dumps(manifest).encode()),
+            ("scipy-1.0.dist-info/WHEEL", b"Wheel-Version: 1.0\n"),
+            ("scipy-1.0.dist-info/METADATA", b"Metadata-Version: 2.1\n"),
+        ),
+        record_path="scipy-1.0.dist-info/RECORD",
+    )
+
+    with pytest.raises(ExtensionWheelError, match="collides"):
+        _rewrite_staged_extension_wheel(
+            source,
+            tmp_path / "destination.whl",
+            canonical_embedded_manifest={
+                "extension": "_nd_image.molt.wasm",
+                "extension_sha256": hashlib.sha256(b"raw-extension").hexdigest(),
+            },
+        )
 
 
 @pytest.mark.parametrize(

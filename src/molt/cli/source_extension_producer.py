@@ -1443,6 +1443,7 @@ def _stage_extension(
         meson_plan_path=raw_plan_path,
         compile_commands_path=raw_compile_commands_path,
     )
+    canonical_embedded_manifest["extension"] = destination.name
 
     staged_sources = _stage_compiled_inputs(raw_manifest, publish_root=publish_root)
     source_references = {
