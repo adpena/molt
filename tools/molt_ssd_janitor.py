@@ -9,18 +9,13 @@ janitor sweeps them by AGE, dry-run by default, scoped strictly to the artifact
 root, and NEVER touches anything that is plausibly live:
 
   - registered git worktrees (via ``git worktree list``) are always protected;
-  - the current session's dirs (``MOLT_SESSION_ID``) are protected;
   - anything modified within ``--min-idle-hours`` is protected (a running build
     touches its target dir continuously, so idle-age is a reliable liveness
     proxy);
-  - sessions with a live memory-guard marker under ``tmp/memory_guard/active``
-    are protected.
-
 Classes (``--classes``, default = the auto-safe set; ``cargo`` and ``all`` are
 opt-in because deleting a cargo target forces a rebuild):
 
   tmp        <root>/tmp/*                      idle > --tmp-age-days      (default 3)
-  sessions   <root>/target/sessions/*          idle > --session-age-days (default 3)
   scratch    dated/one-off dirs (``*-YYYYMMDD*``, clippy-*, extrepro-*, ...)
                                                idle > --scratch-age-days (default 21)
   worktrees  ORPHANED (unregistered) dirs under <root>/worktrees/
@@ -29,9 +24,14 @@ opt-in because deleting a cargo target forces a rebuild):
   cargo      <root>/cargo-target-* (flat legacy targets, NOT target/sessions)
                                                idle > --cargo-age-days   (default 30)
 
+``target/sessions`` is intentionally absent: ``tools/disk_guard.py`` is its
+single deletion authority because it understands every registered worktree,
+Cargo locks, live lane registrations, and memory-guard custody.
+
 Nothing is deleted without ``--apply``. Every run appends a JSON record to
 ``<root>/logs/janitor/``. Use ``--watch --interval SECONDS`` for a periodic sweep.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,14 +48,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
 
-AUTO_SAFE_CLASSES = ("tmp", "sessions", "scratch", "worktrees", "caches")
+AUTO_SAFE_CLASSES = ("tmp", "scratch", "worktrees", "caches")
 ALL_CLASSES = (*AUTO_SAFE_CLASSES, "cargo")
 
 CACHE_DIRNAMES = (".molt_cache", ".sccache", ".uv-cache", ".pip-cache")
 
 # Dated / one-off scratch dirs created ad hoc by past sessions and never swept.
 _SCRATCH_PATTERNS = (
-    re.compile(r".*-20\d{6}([T-].*)?$"),      # anything stamped -YYYYMMDD[...]
+    re.compile(r".*-20\d{6}([T-].*)?$"),  # anything stamped -YYYYMMDD[...]
     re.compile(r"clippy-.*"),
     re.compile(r"extrepro.*"),
     re.compile(r"ext-ci-repro.*"),
@@ -126,7 +126,9 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
     # may contain this checkout as <root>/molt-src or <root>/worktrees/<name>;
     # that is the normal maintained layout and must remain usable.
     if root == repo_root or repo_root in root.parents:
-        raise SystemExit(f"molt_ssd_janitor: refusing to operate inside the repo {root}")
+        raise SystemExit(
+            f"molt_ssd_janitor: refusing to operate inside the repo {root}"
+        )
     if root in repo_root.parents and not _repo_is_artifact_checkout_under_root(
         repo_root, root
     ):
@@ -150,8 +152,7 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
 
 def _repo_is_artifact_checkout_under_root(repo_root: Path, root: Path) -> bool:
     return _same_path(repo_root, root / "molt-src") or (
-        repo_root.parent.name == "worktrees"
-        and repo_root.parent.parent == root
+        repo_root.parent.name == "worktrees" and repo_root.parent.parent == root
     )
 
 
@@ -181,7 +182,10 @@ def _registered_worktrees(root: Path) -> set[Path]:
     try:
         out = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=60, check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -189,30 +193,10 @@ def _registered_worktrees(root: Path) -> set[Path]:
     for line in out.splitlines():
         if line.startswith("worktree "):
             try:
-                paths.add(Path(line[len("worktree "):].strip()).resolve())
+                paths.add(Path(line[len("worktree ") :].strip()).resolve())
             except OSError:
                 pass
     return paths
-
-
-def _active_guard_sessions(root: Path) -> set[str]:
-    """Session ids with a live memory-guard active marker (protected)."""
-    sessions: set[str] = set()
-    active_dir = root / "tmp" / "memory_guard" / "active"
-    try:
-        entries = list(active_dir.iterdir())
-    except OSError:
-        return sessions
-    for entry in entries:
-        try:
-            data = json.loads(entry.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        for key in ("session_id", "MOLT_SESSION_ID", "session"):
-            val = data.get(key) if isinstance(data, dict) else None
-            if isinstance(val, str) and val:
-                sessions.add(val)
-    return sessions
 
 
 def _dir_size(path: Path, deadline: float) -> tuple[int, bool]:
@@ -261,9 +245,7 @@ def _gather(
     ages: dict[str, float],
     min_idle_hours: float,
     cache_cap_gb: float,
-    current_session: str | None,
     registered: set[Path],
-    guard_sessions: set[str],
 ) -> SweepPlan:
     plan = SweepPlan(root=root)
     min_idle_s = min_idle_hours * 3600.0
@@ -283,7 +265,9 @@ def _gather(
             return
         if mtime and (now - mtime) / 86400.0 < age_days:
             return  # younger than the class threshold: silently keep
-        plan.candidates.append(Candidate(path=path, kind=kind, reason=reason, mtime=mtime))
+        plan.candidates.append(
+            Candidate(path=path, kind=kind, reason=reason, mtime=mtime)
+        )
 
     if "tmp" in classes:
         for entry in _iter_dir(root / "tmp"):
@@ -291,22 +275,14 @@ def _gather(
                 continue
             protect_or_add(entry, "tmp", "stale tmp entry", ages["tmp"])
 
-    if "sessions" in classes:
-        for entry in _iter_dir(root / "target" / "sessions"):
-            if current_session and entry.name == current_session:
-                plan.protected.append((entry, "current MOLT_SESSION_ID"))
-                continue
-            if entry.name in guard_sessions:
-                plan.protected.append((entry, "live memory-guard session"))
-                continue
-            protect_or_add(entry, "sessions", "stale session target", ages["sessions"])
-
     if "scratch" in classes:
         for entry in _iter_dir(root):
             if not entry.is_dir() or entry.name in _SCRATCH_KEEP:
                 continue
             if any(p.fullmatch(entry.name) for p in _SCRATCH_PATTERNS):
-                protect_or_add(entry, "scratch", "dated/one-off scratch", ages["scratch"])
+                protect_or_add(
+                    entry, "scratch", "dated/one-off scratch", ages["scratch"]
+                )
 
     if "worktrees" in classes:
         for entry in _iter_dir(root / "worktrees"):
@@ -315,7 +291,12 @@ def _gather(
             if entry.resolve() in registered:
                 plan.protected.append((entry, "registered git worktree"))
                 continue
-            protect_or_add(entry, "worktrees", "orphaned (unregistered) worktree", ages["worktrees"])
+            protect_or_add(
+                entry,
+                "worktrees",
+                "orphaned (unregistered) worktree",
+                ages["worktrees"],
+            )
 
     if "cargo" in classes:
         for entry in _iter_dir(root):
@@ -328,8 +309,10 @@ def _gather(
     return plan
 
 
-def _gather_cache_overflow(root: Path, cap_gb: float, plan: SweepPlan, too_fresh) -> None:
-    cap = int(cap_gb * 1024 ** 3)
+def _gather_cache_overflow(
+    root: Path, cap_gb: float, plan: SweepPlan, too_fresh
+) -> None:
+    cap = int(cap_gb * 1024**3)
     deadline = time.monotonic() + 30.0
     for name in CACHE_DIRNAMES:
         cache = root / name
@@ -354,7 +337,13 @@ def _gather_cache_overflow(root: Path, cap_gb: float, plan: SweepPlan, too_fresh
                 break
             if too_fresh(mtime):
                 continue
-            c = Candidate(path=child, kind="caches", reason=f"{name} over {cap_gb}GB cap", mtime=mtime, size=size)
+            c = Candidate(
+                path=child,
+                kind="caches",
+                reason=f"{name} over {cap_gb}GB cap",
+                mtime=mtime,
+                size=size,
+            )
             plan.candidates.append(c)
             total -= size
 
@@ -404,36 +393,34 @@ def _run_once(args: argparse.Namespace) -> int:
     classes = _select_classes(args)
     ages = {
         "tmp": args.tmp_age_days,
-        "sessions": args.session_age_days,
         "scratch": args.scratch_age_days,
         "worktrees": args.worktree_age_days,
         "cargo": args.cargo_age_days,
     }
     free_before = shutil.disk_usage(root).free
-    if args.free_below_gb and free_before > args.free_below_gb * 1024 ** 3:
+    if args.free_below_gb and free_before > args.free_below_gb * 1024**3:
         print(
             f"molt_ssd_janitor: {_human(free_before)} free on {root} "
             f"(>{args.free_below_gb}GB) — skipping sweep."
         )
         return 0
 
-    current_session = os.environ.get("MOLT_SESSION_ID") or None
     plan = _gather(
         root,
         classes=classes,
         ages=ages,
         min_idle_hours=args.min_idle_hours,
         cache_cap_gb=args.cache_cap_gb,
-        current_session=current_session,
         registered=_registered_worktrees(root),
-        guard_sessions=_active_guard_sessions(root),
     )
     if not args.no_sizes:
         _measure(plan, budget_s=args.size_budget_s)
 
     mode = "APPLY" if args.apply else "DRY-RUN"
-    print(f"molt_ssd_janitor [{mode}] root={root}  free={_human(free_before)}  "
-          f"classes={','.join(classes)}")
+    print(
+        f"molt_ssd_janitor [{mode}] root={root}  free={_human(free_before)}  "
+        f"classes={','.join(classes)}"
+    )
     by_kind: dict[str, list[Candidate]] = {}
     for c in plan.candidates:
         by_kind.setdefault(c.kind, []).append(c)
@@ -448,10 +435,14 @@ def _run_once(args: argparse.Namespace) -> int:
         total_count += len(items)
         print(f"  {kind:9s} {len(items):5d} entries  ~{_human(ksize):>9s}")
         for c in sorted(items, key=lambda c: -max(0, c.size))[: args.show]:
-            print(f"      ~{_human(max(0,c.size)):>9s}  {c.age_days:5.0f}d  {c.path.name}  ({c.reason})")
+            print(
+                f"      ~{_human(max(0, c.size)):>9s}  {c.age_days:5.0f}d  {c.path.name}  ({c.reason})"
+            )
         if len(items) > args.show:
             print(f"      ... and {len(items) - args.show} more")
-    print(f"  TOTAL     {total_count:5d} entries  ~{_human(total_size):>9s} reclaimable")
+    print(
+        f"  TOTAL     {total_count:5d} entries  ~{_human(total_size):>9s} reclaimable"
+    )
 
     deleted = 0
     reclaimed = 0
@@ -465,9 +456,11 @@ def _run_once(args: argparse.Namespace) -> int:
             else:
                 errors.append(f"{c.path}: {err}")
         free_after = shutil.disk_usage(root).free
-        print(f"  APPLIED: deleted {deleted}/{total_count}, "
-              f"free {_human(free_before)} -> {_human(free_after)} "
-              f"(+{_human(free_after - free_before)})")
+        print(
+            f"  APPLIED: deleted {deleted}/{total_count}, "
+            f"free {_human(free_before)} -> {_human(free_after)} "
+            f"(+{_human(free_after - free_before)})"
+        )
         for e in errors[:10]:
             _eprint(f"  ERROR {e}")
 
@@ -497,7 +490,9 @@ def _select_classes(args: argparse.Namespace) -> tuple[str, ...]:
         chosen = tuple(c.strip() for c in args.classes.split(",") if c.strip())
         bad = [c for c in chosen if c not in ALL_CLASSES]
         if bad:
-            raise SystemExit(f"molt_ssd_janitor: unknown class(es) {bad}; valid: {ALL_CLASSES}")
+            raise SystemExit(
+                f"molt_ssd_janitor: unknown class(es) {bad}; valid: {ALL_CLASSES}"
+            )
         return chosen
     return AUTO_SAFE_CLASSES
 
@@ -510,25 +505,45 @@ def main(argv: list[str] | None = None) -> int:
         "--root",
         help="artifact root (default: explicit $MOLT_EXT_ROOT or C:\\Molt on Windows)",
     )
-    ap.add_argument("--apply", action="store_true", help="delete (default: dry-run report only)")
-    ap.add_argument("--classes", help=f"comma list of {ALL_CLASSES}; default = auto-safe {AUTO_SAFE_CLASSES}")
+    ap.add_argument(
+        "--apply", action="store_true", help="delete (default: dry-run report only)"
+    )
+    ap.add_argument(
+        "--classes",
+        help=f"comma list of {ALL_CLASSES}; default = auto-safe {AUTO_SAFE_CLASSES}",
+    )
     ap.add_argument("--all", action="store_true", help="all classes including cargo")
-    ap.add_argument("--force", action="store_true", help="allow a C:-drive root (discouraged)")
+    ap.add_argument(
+        "--force", action="store_true", help="allow a C:-drive root (discouraged)"
+    )
     ap.add_argument("--tmp-age-days", type=float, default=3.0)
-    ap.add_argument("--session-age-days", type=float, default=3.0)
     ap.add_argument("--scratch-age-days", type=float, default=21.0)
     ap.add_argument("--worktree-age-days", type=float, default=7.0)
     ap.add_argument("--cargo-age-days", type=float, default=30.0)
-    ap.add_argument("--min-idle-hours", type=float, default=6.0,
-                    help="never delete anything modified within this many hours")
+    ap.add_argument(
+        "--min-idle-hours",
+        type=float,
+        default=6.0,
+        help="never delete anything modified within this many hours",
+    )
     ap.add_argument("--cache-cap-gb", type=float, default=30.0)
-    ap.add_argument("--free-below-gb", type=float, default=0.0,
-                    help="only sweep when free space is below this many GB (0 = always)")
-    ap.add_argument("--no-sizes", action="store_true", help="skip size measurement (faster)")
+    ap.add_argument(
+        "--free-below-gb",
+        type=float,
+        default=0.0,
+        help="only sweep when free space is below this many GB (0 = always)",
+    )
+    ap.add_argument(
+        "--no-sizes", action="store_true", help="skip size measurement (faster)"
+    )
     ap.add_argument("--size-budget-s", type=float, default=120.0)
     ap.add_argument("--show", type=int, default=8, help="entries to list per class")
-    ap.add_argument("--watch", action="store_true", help="loop forever, sweeping every --interval")
-    ap.add_argument("--interval", type=float, default=86400.0, help="--watch sweep interval seconds")
+    ap.add_argument(
+        "--watch", action="store_true", help="loop forever, sweeping every --interval"
+    )
+    ap.add_argument(
+        "--interval", type=float, default=86400.0, help="--watch sweep interval seconds"
+    )
     args = ap.parse_args(argv)
 
     if not args.watch:
