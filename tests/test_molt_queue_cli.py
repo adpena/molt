@@ -9,6 +9,7 @@ import pytest
 
 from molt.cli import entrypoint_parser
 from molt.cli import queue_cli
+from molt.dx import _maintainer_toolchain_root
 
 
 def test_molt_queue_parser_preserves_queue_args() -> None:
@@ -158,7 +159,7 @@ def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) ->
     ext_root = Path(env["MOLT_EXT_ROOT"])
     assert ext_root.is_absolute()
     assert env["CARGO_TARGET_DIR"].startswith(str(ext_root / "target"))
-    assert env["MOLT_TARGET_ROOT"].startswith(str(ext_root))
+    assert Path(env["MOLT_TARGET_ROOT"]) == _maintainer_toolchain_root(ext_root)
 
 
 @pytest.mark.parametrize("queue_size", ["0", "-1", "banana"])
