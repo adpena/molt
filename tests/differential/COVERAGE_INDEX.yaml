@@ -755,7 +755,7 @@ stdlib:
   runpy:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_fs_b.py
-      - tests/differential/stdlib/runpy_basic.py
+      - tests/differential/stdlib/runpy_run_path_basic.py
       - tests/differential/stdlib/runpy_run_module_basic.py
   sched:
     tests:
