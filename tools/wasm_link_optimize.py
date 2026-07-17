@@ -3,19 +3,22 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 
 from molt.wasm_artifact import strip_wasm_publication_sections
 
 from wasm_link_edit import _strip_internal_exports
+from wasm_link_facts import (
+    active_function_element_rows,
+    fact_index_set,
+    function_reference_rows,
+    table_mutation_rows,
+)
 from wasm_link_format import (
-    CALL_INDIRECT_RE,
     _TRAP_STUB_BODY,
-    _build_call_graph,
     _build_sections,
-    _collect_element_declared_funcs,
     _collect_function_exports,
     _count_func_imports,
-    is_table_ref_export_name,
     _parse_func_type_indices,
     _parse_import_desc,
     _parse_sections,
@@ -40,166 +43,69 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
     return stripped if stripped != data else None
 
 
-def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
-    """Scan the code section for function indices referenced by ``call`` instructions.
+def _function_reference_graph(
+    facts: dict[str, object],
+) -> dict[int, set[int]]:
+    graph: dict[int, set[int]] = {}
+    for function_index, direct_calls, ref_funcs in function_reference_rows(facts):
+        graph[function_index] = {*direct_calls, *ref_funcs}
+    return graph
 
-    Returns the set of function indices that appear as direct call targets.
-    This is intentionally conservative -- functions reached only via
-    ``call_indirect`` (through the element/table) are NOT included, which is
-    exactly what we want: element entries whose targets never appear in a
-    direct ``call`` are candidates for neutralisation.
 
-    Indices outside the valid function range are discarded to avoid false
-    positives from the naive byte scan (0x10 can appear as part of other
-    instruction immediates).
-    """
-    # Compute total function count (imports + defined) for validation.
-    total_funcs = _count_func_imports(sections)
-    for sid, payload in sections:
-        if sid == 10:
-            off = 0
-            n, off = _read_varuint(payload, off)
-            total_funcs += n
-            break
+def _fact_index_set(
+    facts: dict[str, object],
+    field: str,
+) -> set[int]:
+    return fact_index_set(facts, field)
 
-    called: set[int] = set()
-    for sid, payload in sections:
-        if sid != 10:
-            continue
-        offset = 0
-        func_count, offset = _read_varuint(payload, offset)
-        for _ in range(func_count):
-            body_size, offset = _read_varuint(payload, offset)
-            body_end = offset + body_size
-            # Skip local declarations
-            pos = offset
-            try:
-                local_count, pos = _read_varuint(payload, pos)
-                for _lc in range(local_count):
-                    _, pos = _read_varuint(payload, pos)  # count
-                    pos += 1  # type byte
-            except (IndexError, ValueError):
-                offset = body_end
+
+def _root_function_indices(facts: dict[str, object]) -> set[int]:
+    return _fact_index_set(facts, "root_function_indices")
+
+
+def _reachable_function_indices(facts: dict[str, object]) -> set[int]:
+    graph = _function_reference_graph(facts)
+    reachable: set[int] = set()
+    worklist = list(_root_function_indices(facts))
+    exported_tables = _fact_index_set(facts, "exported_table_indices")
+    if facts.get("reachable_dynamic_dispatch") is True or 0 in exported_tables:
+        for table_index, _slot, function_index in active_function_element_rows(facts):
+            if table_index != 0:
                 continue
-            # Scan for call (0x10), return_call (0x12), and ref.func (0xD2)
-            # opcodes — each has a single varuint func-index immediate.
-            while pos < body_end:
-                b = payload[pos]
-                if b in (0x10, 0x12, 0xD2):
-                    pos += 1
-                    try:
-                        idx, pos = _read_varuint(payload, pos)
-                        if idx < total_funcs:
-                            called.add(idx)
-                    except (IndexError, ValueError):
-                        break
-                else:
-                    pos += 1
-            offset = body_end
-    return called
-
-
-def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]:
-    """Return the set of function indices referenced by active element segments."""
-    indices: set[int] = set()
-    for sid, payload in sections:
-        if sid != 9:
+            worklist.append(function_index)
+    while worklist:
+        function_index = worklist.pop()
+        if function_index in reachable:
             continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            flags = payload[offset]
-            offset += 1
-            if flags == 0:
-                # Active segment for table 0: i32.const <offset> end <count> <idx>*
-                if payload[offset] != 0x41:
-                    break
-                offset += 1
-                _, offset = _read_varuint(payload, offset)  # table offset
-                if payload[offset] != 0x0B:
-                    break
-                offset += 1  # end
-                n, offset = _read_varuint(payload, offset)
-                for _ in range(n):
-                    idx, offset = _read_varuint(payload, offset)
-                    indices.add(idx)
-            elif flags == 1:
-                # Passive funcref: element kind + count + indices
-                offset += 1  # element kind byte
-                n, offset = _read_varuint(payload, offset)
-                for _ in range(n):
-                    idx, offset = _read_varuint(payload, offset)
-                    indices.add(idx)
-            elif flags == 2:
-                # Active with explicit table index: table idx + init expr + kind + count + indices
-                _, offset = _read_varuint(payload, offset)  # table index
-                offset = _skip_init_expr(payload, offset)  # proper LEB128-aware skip
-                offset += 1  # element kind byte
-                n, offset = _read_varuint(payload, offset)
-                for _ in range(n):
-                    idx, offset = _read_varuint(payload, offset)
-                    indices.add(idx)
-            elif flags == 3:
-                # Declarative: element kind + count + indices
-                offset += 1  # element kind byte
-                n, offset = _read_varuint(payload, offset)
-                for _ in range(n):
-                    idx, offset = _read_varuint(payload, offset)
-                    indices.add(idx)
-            else:
-                # Flags 4-7 use expression-based elements; skip for safety
-                break
-    return indices
+        reachable.add(function_index)
+        worklist.extend(graph.get(function_index, set()) - reachable)
+    if any(
+        function_index in reachable and operation == "table.init"
+        for function_index, operation, _table_index, _source_table_index in table_mutation_rows(facts)
+    ):
+        worklist = list(_fact_index_set(facts, "element_function_indices") - reachable)
+        while worklist:
+            function_index = worklist.pop()
+            if function_index in reachable:
+                continue
+            reachable.add(function_index)
+            worklist.extend(graph.get(function_index, set()) - reachable)
+    return reachable
 
 
-def _code_section_has_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
-    """Return True if the code section contains any ``call_indirect`` (0x11).
-
-    This is a quick byte scan.  False positives (0x11 appearing as part of
-    another instruction's immediate) are safe — they merely disable the
-    optimisation.
-    """
-    for sid, payload in sections:
-        if sid == 10:
-            return b"\x11" in payload
-    return False
+def _referenced_function_indices(facts: dict[str, object]) -> set[int]:
+    referenced = _root_function_indices(facts)
+    referenced.update(_fact_index_set(facts, "element_function_indices"))
+    referenced.update(_fact_index_set(facts, "declared_function_indices"))
+    for targets in _function_reference_graph(facts).values():
+        referenced.update(targets)
+    return referenced
 
 
-def _module_imports_host_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
-    """Return True when the module imports host `molt_call_indirect*` shims.
-
-    Split-runtime/direct mode routes dynamic indirect dispatch through JS host
-    imports named `env::molt_call_indirectN` instead of raw wasm
-    `call_indirect` opcodes in the module body. Treat those imports as
-    evidence of dynamic table dispatch so element-entry neutralization does not
-    clear live trampoline slots.
-    """
-    for sid, payload in sections:
-        if sid != 2:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            module_name, offset = _read_string(payload, offset)
-            field_name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                break
-            kind = payload[offset]
-            offset += 1
-            if kind == 0:  # function
-                _, offset = _read_varuint(payload, offset)
-            else:
-                offset = _parse_import_desc(payload, offset, kind)
-            if (
-                kind == 0
-                and module_name == "env"
-                and CALL_INDIRECT_RE.fullmatch(field_name) is not None
-            ):
-                return True
-    return False
-
-
-def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
+def _neutralize_dead_element_entries(
+    data: bytes,
+    facts: dict[str, object],
+) -> bytes | None:
     """Replace indirect-call table entries for dead functions with the sentinel.
 
     After linking, the element section (section 9) populates the indirect
@@ -224,15 +130,26 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     # indices. Those targets are not statically attributable to direct call
     # edges, so element neutralization is unsound when any call_indirect
     # remains in the module.
-    if _code_section_has_call_indirect(sections) or _module_imports_host_call_indirect(
-        sections
+    if facts.get("reachable_dynamic_dispatch") is True:
+        return None
+
+    exported_tables = _fact_index_set(facts, "exported_table_indices")
+    if 0 in exported_tables:
+        return None
+
+    reachable = _reachable_function_indices(facts)
+    if any(
+        function_index in reachable and operation == "table.init"
+        for function_index, operation, _table_index, _source_table_index in table_mutation_rows(facts)
     ):
         return None
 
-    code_called = _collect_code_referenced_funcs(sections)
-    elem_indices = _collect_element_func_indices(sections)
+    elem_indices = {
+        function_index
+        for _table_index, _slot, function_index in active_function_element_rows(facts)
+    }
     # Functions only in the element table, never directly called from code
-    dead_indices = elem_indices - code_called
+    dead_indices = elem_indices - reachable
 
     if not dead_indices:
         return None
@@ -315,7 +232,10 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _stub_dead_functions(data: bytes) -> bytes | None:
+def _stub_dead_functions(
+    data: bytes,
+    facts: dict[str, object],
+) -> bytes | None:
     """Replace bodies of provably-dead functions with a minimal trap stub.
 
     A function is *dead* when it is unreachable from every export and every
@@ -335,99 +255,12 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
 
     import_count = _count_func_imports(sections)
 
-    # Build call graph from the code section
-    code_payload = None
-    for sid, payload in sections:
-        if sid == 10:
-            code_payload = payload
-            break
-    if code_payload is None:
-        return None
+    reachable = _reachable_function_indices(facts)
 
-    call_graph = _build_call_graph(code_payload, import_count)
-    if not call_graph:
-        return None
-
-    # Collect roots: start function + exports + element-section entries
-    roots: set[int] = set()
-    for sid, payload in sections:
-        if sid == 8:  # start section
-            offset = 0
-            idx, _ = _read_varuint(payload, offset)
-            roots.add(idx)
-        elif sid == 7:  # export section
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            while offset < len(payload):
-                _, offset = _read_string(payload, offset)
-                if offset >= len(payload):
-                    break
-                kind = payload[offset]
-                offset += 1
-                idx, offset = _read_varuint(payload, offset)
-                if kind == 0:  # function export
-                    roots.add(idx)
-        elif sid == 9:  # element section
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            for _ in range(count):
-                flags = payload[offset]
-                offset += 1
-                if flags == 0:
-                    # Active segment for table 0
-                    if payload[offset] != 0x41:
-                        break
-                    offset += 1
-                    _, offset = _read_varuint(payload, offset)
-                    if payload[offset] != 0x0B:
-                        break
-                    offset += 1
-                    n, offset = _read_varuint(payload, offset)
-                    for _ in range(n):
-                        idx, offset = _read_varuint(payload, offset)
-                        roots.add(idx)
-                elif flags == 1:
-                    # Passive funcref: element kind + count + indices
-                    offset += 1  # element kind byte
-                    n, offset = _read_varuint(payload, offset)
-                    for _ in range(n):
-                        idx, offset = _read_varuint(payload, offset)
-                        roots.add(idx)
-                elif flags == 2:
-                    # Active with explicit table index
-                    _, offset = _read_varuint(payload, offset)  # table index
-                    offset = _skip_init_expr(
-                        payload, offset
-                    )  # proper LEB128-aware skip
-                    offset += 1  # element kind byte
-                    n, offset = _read_varuint(payload, offset)
-                    for _ in range(n):
-                        idx, offset = _read_varuint(payload, offset)
-                        roots.add(idx)
-                elif flags == 3:
-                    # Declarative: element kind + count + indices
-                    offset += 1  # element kind byte
-                    n, offset = _read_varuint(payload, offset)
-                    for _ in range(n):
-                        idx, offset = _read_varuint(payload, offset)
-                        roots.add(idx)
-                else:
-                    # Flags 4-7 use expression-based elements; skip for safety
-                    break
-
-    # Compute transitive reachability
-    reachable: set[int] = set()
-    worklist = list(roots)
-    while worklist:
-        f = worklist.pop()
-        if f in reachable:
-            continue
-        reachable.add(f)
-        for callee in call_graph.get(f, ()):
-            if callee not in reachable:
-                worklist.append(callee)
-
-    all_defined = set(range(import_count, import_count + len(call_graph)))
+    defined_count = facts.get("defined_function_count")
+    if not isinstance(defined_count, int) or isinstance(defined_count, bool):
+        raise ValueError("WASM facts defined_function_count must be an integer")
+    all_defined = set(range(import_count, import_count + defined_count))
     dead = all_defined - reachable
     if not dead:
         return None
@@ -471,6 +304,7 @@ def _strip_unused_module_function_imports(
     data: bytes,
     *,
     module_name: str,
+    facts: dict[str, object],
 ) -> bytes | None:
     """Remove unreferenced function imports for a specific import module."""
 
@@ -506,38 +340,6 @@ def _strip_unused_module_function_imports(
                 continue
             raise ValueError(f"Unsupported init expr opcode 0x{opcode:02x}")
         raise ValueError("Unexpected EOF while reading init expr")
-
-    def _collect_global_ref_funcs(payload: bytes) -> set[int]:
-        refs: set[int] = set()
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            if offset + 2 > len(payload):
-                raise ValueError("Unexpected EOF while reading global header")
-            offset += 2
-            expr_start = offset
-            _, offset = _rewrite_init_expr_func_indices(
-                payload, offset, lambda idx: idx
-            )
-            expr = payload[expr_start:offset]
-            expr_offset = 0
-            while expr_offset < len(expr):
-                opcode = expr[expr_offset]
-                expr_offset += 1
-                if opcode == 0x0B:
-                    break
-                if opcode == 0xD2:
-                    idx, expr_offset = _read_varuint(expr, expr_offset)
-                    refs.add(idx)
-                elif opcode in (0x41, 0x42, 0x23):
-                    _, expr_offset = _read_varuint(expr, expr_offset)
-                elif opcode in (0x43, 0x44):
-                    expr_offset += 4 if opcode == 0x43 else 8
-                elif opcode == 0xD0:
-                    expr_offset += 1
-                else:
-                    raise ValueError(f"Unsupported global init opcode 0x{opcode:02x}")
-        return refs
 
     def _rewrite_export_section(payload: bytes, remap_func_index) -> bytes:
         offset = 0
@@ -804,28 +606,7 @@ def _strip_unused_module_function_imports(
     if not import_entries:
         return None
 
-    referenced: set[int] = set()
-    for sid, payload in sections:
-        if sid == 7:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            for _ in range(count):
-                _, offset = _read_string(payload, offset)
-                kind = payload[offset]
-                offset += 1
-                idx, offset = _read_varuint(payload, offset)
-                if kind == 0:
-                    referenced.add(idx)
-        elif sid == 8:
-            idx, _ = _read_varuint(payload, 0)
-            referenced.add(idx)
-        elif sid == 9:
-            referenced.update(_collect_element_declared_funcs(data))
-        elif sid == 6:
-            referenced.update(_collect_global_ref_funcs(payload))
-        elif sid == 10:
-            for callees in _build_call_graph(payload, import_count).values():
-                referenced.update(callees)
+    referenced = _referenced_function_indices(facts)
 
     removed_sorted = sorted(
         func_index
@@ -1128,7 +909,7 @@ def _post_link_optimize(
     reference_data: bytes | None = None,
     preserve_exports: set[str] | None = None,
     preserve_reference_exports: bool = True,
-    preserve_table_refs: bool = True,
+    facts_provider: Callable[[bytes], dict[str, object]],
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
@@ -1151,9 +932,7 @@ def _post_link_optimize(
     preserved_export_names = set(preserve_exports or ())
     if preserve_reference_exports and reference_data is not None:
         preserved_export_names.update(
-            name
-            for name in _collect_function_exports(reference_data)
-            if not is_table_ref_export_name(name)
+            _collect_function_exports(reference_data)
         )
 
     updated = _strip_debug_sections(data)
@@ -1163,7 +942,6 @@ def _post_link_optimize(
     updated = _strip_internal_exports(
         data,
         preserve_exports=preserved_export_names,
-        preserve_table_refs=preserve_table_refs,
     )
     if updated is not None:
         data = updated
@@ -1173,11 +951,13 @@ def _post_link_optimize(
     # callers were themselves dead), which in turn frees more element entries.
     # Typically converges in 2-3 rounds.
     for _dce_round in range(5):
-        updated = _neutralize_dead_element_entries(data)
+        facts = facts_provider(data)
+        updated = _neutralize_dead_element_entries(data, facts)
         if updated is not None:
             data = updated
+            facts = facts_provider(data)
 
-        updated = _stub_dead_functions(data)
+        updated = _stub_dead_functions(data, facts)
         if updated is not None:
             data = updated
         else:
