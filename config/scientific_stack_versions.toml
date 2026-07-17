@@ -39,7 +39,7 @@ meson_setup_args = [
 module = "numpy._core._multiarray_umath"
 target = "_multiarray_umath"
 python_exports = ["numpy"]
-capabilities = ["fs.read"]
+capabilities = ["module.extension.exec"]
 provided_capsules = [
   "numpy.core._multiarray_umath._ARRAY_API",
   "numpy.core._multiarray_umath._UFUNC_API",
@@ -50,7 +50,7 @@ exclude_linked_static_libraries = []
 module = "numpy.linalg._umath_linalg"
 target = "_umath_linalg"
 python_exports = ["numpy.linalg._umath_linalg"]
-capabilities = ["fs.read"]
+capabilities = ["module.extension.exec"]
 provided_capsules = []
 exclude_linked_static_libraries = ["npymath"]
 
@@ -76,22 +76,22 @@ meson_setup_args = [
 module = "scipy.ndimage._nd_image"
 target = "_nd_image"
 python_exports = ["scipy"]
-capabilities = []
+capabilities = ["module.extension.exec"]
 
 [[verified.extension_sets.extensions]]
 module = "scipy.ndimage._ni_label"
 target = "_ni_label"
 python_exports = ["scipy.ndimage._ni_label"]
-capabilities = []
+capabilities = ["module.extension.exec"]
 
 [[verified.extension_sets.extensions]]
 module = "scipy.ndimage._rank_filter_1d"
 target = "_rank_filter_1d"
 python_exports = ["scipy.ndimage._rank_filter_1d"]
-capabilities = []
+capabilities = ["module.extension.exec"]
 
 [[verified.extension_sets.extensions]]
 module = "scipy._lib._ccallback_c"
 target = "_ccallback_c"
 python_exports = ["scipy._lib._ccallback_c"]
-capabilities = []
+capabilities = ["module.extension.exec"]

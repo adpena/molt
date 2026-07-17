@@ -64,7 +64,7 @@ meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
 module = "numpy._core._multiarray_umath"
 target = "_multiarray_umath"
 python_exports = ["numpy"]
-capabilities = ["fs.read"]
+capabilities = ["module.extension.exec"]
 provided_capsules = ["numpy.core._multiarray_umath._ARRAY_API"]
 exclude_linked_static_libraries = []
 
@@ -81,7 +81,7 @@ meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
 module = "scipy.ndimage._nd_image"
 target = "_nd_image"
 python_exports = ["scipy"]
-capabilities = []
+capabilities = ["module.extension.exec"]
 provided_capsules = []
 exclude_linked_static_libraries = []
 ''',
@@ -164,24 +164,29 @@ def test_scipy_extension_set_and_seal_root_are_typed_and_version_keyed(
         )
         for extension in extension_set.extensions
     ] == [
-        ("scipy.ndimage._nd_image", "_nd_image", ("scipy",), ()),
+        (
+            "scipy.ndimage._nd_image",
+            "_nd_image",
+            ("scipy",),
+            ("module.extension.exec",),
+        ),
         (
             "scipy.ndimage._ni_label",
             "_ni_label",
             ("scipy.ndimage._ni_label",),
-            (),
+            ("module.extension.exec",),
         ),
         (
             "scipy.ndimage._rank_filter_1d",
             "_rank_filter_1d",
             ("scipy.ndimage._rank_filter_1d",),
-            (),
+            ("module.extension.exec",),
         ),
         (
             "scipy._lib._ccallback_c",
             "_ccallback_c",
             ("scipy._lib._ccallback_c",),
-            (),
+            ("module.extension.exec",),
         ),
     ]
     expected = tmp_path / "package-seals" / "scipy" / "1.18.0" / "pact_scipy_witness"
@@ -247,6 +252,14 @@ def test_schema_v4_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
     [
         ("", "capabilities must be a string array"),
         (
+            "capabilities = []\n",
+            "must include 'module.extension.exec'",
+        ),
+        (
+            'capabilities = ["fs.read"]\n',
+            "must include 'module.extension.exec'",
+        ),
+        (
             'capabilities = ["net", "fs.read"]\n',
             "must be sorted and contain no duplicate capabilities",
         ),
@@ -263,7 +276,7 @@ def test_schema_v4_requires_canonical_module_capability_authority(
     _write_config(config, selected_numpy="2.5.1")
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "capabilities = []\n", replacement, 1
+            'capabilities = ["module.extension.exec"]\n', replacement, 1
         ),
         encoding="utf-8",
     )
