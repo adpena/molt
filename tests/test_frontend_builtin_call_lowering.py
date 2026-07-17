@@ -462,6 +462,32 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
 
 
+def test_async_with_serializes_metadata_region_as_label_valued_handler_entry() -> None:
+    source = (
+        "async def f(cm):\n"
+        "    async with cm:\n"
+        "        return 1\n"
+    )
+    ir = compile_to_tir(source)
+    poll_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"].endswith("__f_poll")
+    )
+    starts = [op for op in poll_ops if op.get("kind") == "try_start"]
+    assert starts
+    labels = {op.get("value") for op in starts}
+    assert None not in labels
+    assert all(isinstance(label, int) for label in labels)
+    assert labels.issubset(
+        {
+            op.get("value")
+            for op in poll_ops
+            if op.get("kind") == "try_end"
+        }
+    )
+
+
 def test_try_finally_uses_finally_pending_observer_not_handler_match_ref() -> None:
     source = (
         "def f(i):\n"

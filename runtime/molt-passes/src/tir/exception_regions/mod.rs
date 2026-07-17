@@ -19,8 +19,9 @@ use super::function::TirFunction;
 use super::values::ValueId;
 
 use self::path_state::{
-    compute_state_resume_stacks, is_match_ref_source, iter_ops, lexical_handlers_before,
-    match_ref_release_owner, original_kind, path_states_before, reachable_region_pops,
+    AnonymousHandlerDestinations, StateResumeStacks, compute_state_resume_stacks,
+    is_match_ref_source, iter_ops, label_value, lexical_handlers_before, match_ref_release_owner,
+    original_kind, path_states_before, reachable_region_pops,
 };
 
 mod path_state;
@@ -87,15 +88,20 @@ pub enum ExceptionBoundaryHandler {
     Unreachable,
     DepthZero,
     Labeled(i64),
+    Anonymous {
+        owner: ExceptionOpPosition,
+        destination: i64,
+    },
 }
 
-/// Reachable boundaries whose lexical custody cannot be represented by one
-/// ordinary labeled `CheckException` remain explicit fail-closed errors.
+/// Reachable boundaries whose lexical custody or recovered destination is not
+/// singular remain explicit fail-closed errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExceptionBoundaryHandlerError {
-    Anonymous {
+    AnonymousDestination {
         position: ExceptionOpPosition,
         owner: ExceptionOpPosition,
+        destinations: BTreeSet<i64>,
     },
     Ambiguous {
         position: ExceptionOpPosition,
@@ -109,6 +115,11 @@ pub struct ExceptionRegionFacts {
     /// Multiple entries are preserved so consumers can fail closed rather
     /// than guessing when CFG paths carry different exception stacks.
     lexical_handlers_before: BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
+    /// Concrete label destinations recovered for legacy/hand-built unlabeled
+    /// try regions. Canonical frontend regions carry this identity directly;
+    /// this map keeps anonymous TIR owners representable without weakening
+    /// backend label/cleanup invariants.
+    anonymous_handler_destinations: BTreeMap<ExceptionOpPosition, BTreeSet<i64>>,
     pub match_refs: BTreeMap<ValueId, ExceptionMatchRefFact>,
     pub release_to_matches: BTreeMap<ExceptionOpPosition, Vec<ValueId>>,
     pub release_to_match_facts: BTreeMap<ExceptionOpPosition, Vec<ExceptionMatchReleaseFact>>,
@@ -137,8 +148,88 @@ impl ExceptionRegionFacts {
                 Ok(ExceptionBoundaryHandler::Labeled(label))
             }
             Some(ExceptionRegionToken::Anonymous(owner)) => {
-                Err(ExceptionBoundaryHandlerError::Anonymous { position, owner })
+                let destinations = self
+                    .anonymous_handler_destinations
+                    .get(&owner)
+                    .cloned()
+                    .unwrap_or_default();
+                if destinations.len() == 1 {
+                    Ok(ExceptionBoundaryHandler::Anonymous {
+                        owner,
+                        destination: *destinations.iter().next().unwrap(),
+                    })
+                } else {
+                    Err(ExceptionBoundaryHandlerError::AnonymousDestination {
+                        position,
+                        owner,
+                        destinations,
+                    })
+                }
             }
+        }
+    }
+}
+
+fn observe_anonymous_handler_destinations(
+    func: &TirFunction,
+    handlers: &BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
+) -> BTreeMap<ExceptionOpPosition, BTreeSet<i64>> {
+    let mut destinations: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for (position, states) in handlers {
+        if states.len() != 1 {
+            continue;
+        }
+        let Some(ExceptionRegionToken::Anonymous(owner)) = states.iter().next().copied().flatten()
+        else {
+            continue;
+        };
+        let Some(block) = func.blocks.get(&position.block) else {
+            continue;
+        };
+        let candidate = block.ops.get(position.op_index).and_then(|op| {
+            if dominators::is_exception_transfer_edge(op.opcode) {
+                label_value(op)
+            } else if op.opcode == super::ops::OpCode::TryEnd && label_value(op).is_none() {
+                func.label_id_map.get(&position.block.0).copied()
+            } else {
+                None
+            }
+        });
+        if let Some(label) = candidate {
+            destinations.entry(owner).or_default().insert(label);
+        }
+    }
+    destinations
+}
+
+fn exception_region_path_authority(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+) -> (
+    StateResumeStacks,
+    BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
+    AnonymousHandlerDestinations,
+) {
+    let mut anonymous_destinations = AnonymousHandlerDestinations::new();
+    loop {
+        let state_resume_stacks =
+            compute_state_resume_stacks(func, label_to_block, &anonymous_destinations);
+        let handlers = lexical_handlers_before(
+            func,
+            label_to_block,
+            &state_resume_stacks,
+            &anonymous_destinations,
+        );
+        let observed = observe_anonymous_handler_destinations(func, &handlers);
+        let mut changed = false;
+        for (owner, labels) in observed {
+            let destinations = anonymous_destinations.entry(owner).or_default();
+            for label in labels {
+                changed |= destinations.insert(label);
+            }
+        }
+        if !changed {
+            return (state_resume_stacks, handlers, anonymous_destinations);
         }
     }
 }
@@ -166,13 +257,11 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
-    let state_resume_stacks = compute_state_resume_stacks(func, &label_to_block);
+    let (state_resume_stacks, lexical_handlers_before, anonymous_handler_destinations) =
+        exception_region_path_authority(func, &label_to_block);
     let mut facts = ExceptionRegionFacts {
-        lexical_handlers_before: lexical_handlers_before(
-            func,
-            &label_to_block,
-            &state_resume_stacks,
-        ),
+        anonymous_handler_destinations: anonymous_handler_destinations.clone(),
+        lexical_handlers_before,
         ..ExceptionRegionFacts::default()
     };
     for (producer, op) in iter_ops(func) {
@@ -185,10 +274,15 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         let Some(&value) = op.results.first() else {
             continue;
         };
-        let producer_states: Vec<_> =
-            path_states_before(func, &label_to_block, &state_resume_stacks, producer)
-                .into_iter()
-                .collect();
+        let producer_states: Vec<_> = path_states_before(
+            func,
+            &label_to_block,
+            &state_resume_stacks,
+            &anonymous_handler_destinations,
+            producer,
+        )
+        .into_iter()
+        .collect();
         let owning_tokens: BTreeSet<_> = producer_states
             .iter()
             .filter_map(|state| state.owners.last().copied())
@@ -291,6 +385,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 func,
                 &label_to_block,
                 &state_resume_stacks,
+                &anonymous_handler_destinations,
                 producer,
                 owner,
                 &owner_states,
