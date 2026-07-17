@@ -85,3 +85,23 @@ def test_msgpack_full_stdlib_args_reach_wasm_and_profile_tools() -> None:
     assert bench_wasm.molt_args_for_benchmark(script) == expected
     assert profile.molt_args_for_benchmark("bench_parse_msgpack.py") == expected
     assert bench_wasm.MOLT_ARGS_BY_BENCH[script] == expected
+def test_heap_lifecycle_benchmarks_use_canonical_profile_epochs() -> None:
+    expected_labels = {
+        "bench_heap_canonical_cache.py": {"canonical_cache_hits"},
+        "bench_weakref_native.py": {
+            "weakref_constructor_cache_hits",
+            "weakref_calls",
+            "weakref_sticky_hash_hits",
+        },
+        "bench_gc_pressure.py": {"gc_pressure_allocation"},
+        "bench_object_class_lifecycle.py": {
+            "bare_object_lifecycle",
+            "user_class_lifecycle",
+        },
+    }
+    for filename, labels in expected_labels.items():
+        source = (ROOT / "tests" / "benchmarks" / filename).read_text(encoding="utf-8")
+        assert 'load_intrinsic("molt_profile_epoch_reset")' in source
+        assert 'load_intrinsic("molt_profile_epoch_dump")' in source
+        for label in labels:
+            assert f'"{label}"' in source

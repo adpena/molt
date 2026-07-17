@@ -3778,6 +3778,75 @@ mod tests {
     }
 
     #[test]
+    fn bare_object_constructor_preselects_replaceable_owned_class_edge() {
+        let _guard = crate::test_mutex_guard();
+        let obj_bits = crate::molt_object_new();
+        let (class_bits, initial_class_rc) = crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = crate::obj_from_bits(obj_bits)
+                .as_ptr()
+                .expect("bare object allocation");
+            let header = unsafe { &*super::header_from_obj_ptr(obj_ptr) };
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_CLASS_INLINE);
+            assert!(
+                header.gc_is_published(),
+                "completed bare-object construction must be visible to cycle collection"
+            );
+            assert_eq!(
+                unsafe { object_class_bits(obj_ptr) },
+                crate::builtin_classes(_py).object
+            );
+
+            let name_ptr = crate::alloc_string(_py, b"ReplacementClass");
+            assert!(!name_ptr.is_null());
+            let name_bits = crate::MoltObject::from_ptr(name_ptr).bits();
+            let class_ptr = crate::alloc_class_obj(_py, name_bits);
+            dec_ref_bits(_py, name_bits);
+            assert!(!class_ptr.is_null());
+            (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
+                (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot()
+            })
+        });
+
+        let obj_ptr = crate::obj_from_bits(obj_bits)
+            .as_ptr()
+            .expect("bare object allocation");
+        let result = unsafe { crate::molt_object_set_class(obj_ptr as usize as u64, class_bits) };
+        assert_eq!(result, crate::MoltObject::none().bits());
+
+        crate::with_gil_entry_nopanic!(_py, {
+            assert!(!crate::exception_pending(_py));
+            assert_eq!(unsafe { object_class_bits(obj_ptr) }, class_bits);
+            let class_rc = unsafe {
+                (*super::header_from_obj_ptr(
+                    crate::obj_from_bits(class_bits)
+                        .as_ptr()
+                        .expect("replacement class"),
+                ))
+                .ref_count_snapshot()
+            };
+            assert_eq!(
+                class_rc,
+                initial_class_rc + 1,
+                "object replacement must acquire exactly one owned class edge"
+            );
+            dec_ref_bits(_py, obj_bits);
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(
+                        crate::obj_from_bits(class_bits)
+                            .as_ptr()
+                            .expect("replacement class"),
+                    ))
+                    .ref_count_snapshot()
+                },
+                initial_class_rc,
+                "object teardown must discharge exactly its owned class edge"
+            );
+            dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
     fn common_state_stays_inline() {
         let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {

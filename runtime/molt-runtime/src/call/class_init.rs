@@ -202,13 +202,15 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     }
 }
 
-pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    total_size: usize,
+) -> u64 {
     unsafe {
         let type_id = crate::object::class_instance_type_id(class_ptr);
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let size = class_layout_size(_py, class_ptr);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_aux(
+        let obj_ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
             _py,
             total_size,
             type_id,
@@ -222,7 +224,18 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
             dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             return MoltObject::none().bits();
         }
+        crate::object::gc::gc_publish_initialized(_py, obj_ptr);
         MoltObject::from_ptr(obj_ptr).bits()
+    }
+}
+
+pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
+    unsafe {
+        let payload_size = class_layout_size(_py, class_ptr);
+        let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
+            return MoltObject::none().bits();
+        };
+        alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
     }
 }
 
@@ -257,24 +270,11 @@ pub(crate) unsafe fn alloc_instance_for_class_sized(
             "alloc_instance_for_class_sized: caller-supplied size must match \
              class_layout_size — frontend layout drift detected"
         );
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let type_id = crate::object::class_instance_type_id(class_ptr);
-        let total_size = payload_size_bytes + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_aux(
-            _py,
-            total_size,
-            type_id,
-            ObjectAuxPreselection::ClassInline,
-        );
-        if obj_ptr.is_null() {
+        let Some(total_size) = payload_size_bytes.checked_add(std::mem::size_of::<MoltHeader>())
+        else {
             return MoltObject::none().bits();
-        }
-        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
-        {
-            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(obj_ptr).bits()
+        };
+        alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
     }
 }
 
@@ -298,25 +298,11 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     class_ptr: *mut u8,
 ) -> u64 {
     unsafe {
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let type_id = crate::object::class_instance_type_id(class_ptr);
-        let size = class_layout_size(_py, class_ptr);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_aux(
-            _py,
-            total_size,
-            type_id,
-            ObjectAuxPreselection::ClassInline,
-        );
-        if obj_ptr.is_null() {
+        let payload_size = class_layout_size(_py, class_ptr);
+        let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
             return MoltObject::none().bits();
-        }
-        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
-        {
-            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(obj_ptr).bits()
+        };
+        alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
     }
 }
 
@@ -1325,9 +1311,30 @@ pub(crate) unsafe fn function_set_attr_bits(
 
 #[cfg(test)]
 mod tests {
-    use super::{call_class_init_with_args, construct_exception_from_args};
+    use super::{
+        alloc_instance_for_class, call_class_init_with_args, construct_exception_from_args,
+    };
     use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
     use crate::*;
+
+    #[test]
+    fn class_instance_allocation_publishes_only_after_class_edge_initialization() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = builtin_classes(_py).object;
+            let class_ptr = obj_from_bits(class_bits)
+                .as_ptr()
+                .expect("builtin object class");
+            let inst_bits = unsafe { alloc_instance_for_class(_py, class_ptr) };
+            let inst_ptr = obj_from_bits(inst_bits)
+                .as_ptr()
+                .expect("published object instance");
+            let header = unsafe { &*header_from_obj_ptr(inst_ptr) };
+            assert!(header.gc_is_published());
+            assert_eq!(unsafe { object_class_bits(inst_ptr) }, class_bits);
+            dec_ref_bits(_py, inst_bits);
+        });
+    }
 
     #[test]
     fn tuple_subclass_constructor_copies_exact_tuple_without_retagging_source() {

@@ -127,7 +127,7 @@ pub extern "C" fn molt_object_publish_initialized(obj_bits: u64) -> u64 {
     })
 }
 
-fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits: u64) -> u64 {
+pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits: u64) -> u64 {
     let mut type_id = TYPE_ID_OBJECT;
     if class_bits != 0 {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
