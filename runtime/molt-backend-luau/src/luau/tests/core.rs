@@ -29,6 +29,1155 @@ fn test_empty_ir() {
 }
 
 #[test]
+fn unpack_sequence_uses_exact_arity_runtime_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "unpack_exact".to_string(),
+            params: vec!["seq".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    value: Some(2),
+                    args: Some(vec![
+                        "seq".to_string(),
+                        "left".to_string(),
+                        "right".to_string(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["left".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+
+    assert!(source.contains("local function molt_unpack_sequence"));
+    assert!(source.contains("if actual < expected then"));
+    assert!(source.contains("if actual > expected then break end"));
+    assert!(source.contains("molt_unpack_sequence(seq, 2, \"auto\")"));
+    assert!(source.contains("while actual <= expected do"));
+    assert!(source.contains("for _, codepoint in utf8.codes(obj) do"));
+    assert!(source.contains("local actual = molt_dict_len(mapping)"));
+    assert!(source.contains("molt_dict_view_snapshot(molt_dict_keys(mapping))"));
+    assert!(!source.contains("for key in pairs(mapping) do"));
+    assert!(source.contains("for value in iterable do"));
+    assert!(source.contains("local packed = rawget(sequence, molt_sequence_length_key)"));
+    assert!(!source.contains("local actual = #obj"));
+    assert!(!source.contains("local left = seq[1]"));
+}
+
+#[test]
+fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "unpack_none".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("none_value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(7),
+                    out: Some("seven".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "build_list".to_string(),
+                    args: Some(vec!["none_value".to_string(), "seven".to_string()]),
+                    out: Some("seq".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    value: Some(2),
+                    args: Some(vec![
+                        "seq".to_string(),
+                        "left".to_string(),
+                        "right".to_string(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+
+    assert!(source.contains("molt_pack_list(none_value, seven)"));
+    assert!(source.contains("molt_unpack_sequence(seq, 2, \"sequence\")"));
+    assert!(source.contains("rawget(sequence, i)"));
+    assert!(source.contains("rawset(items, molt_sequence_length_key, actual)"));
+}
+
+#[test]
+fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "unpack_mapping_n".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("n".to_string()),
+                    out: Some("key".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "build_dict".to_string(),
+                    args: Some(vec!["key".to_string(), "value".to_string()]),
+                    out: Some("mapping".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    value: Some(1),
+                    args: Some(vec!["mapping".to_string(), "only".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+
+    assert!(source.contains("molt_unpack_sequence(mapping, 1, \"mapping\")"));
+    assert!(source.contains("local mapping: {[any]: any} = molt_dict_new()"));
+    assert!(source.contains("molt_dict_set(mapping, key, value)"));
+    assert!(source.contains("molt_dict_view_snapshot(molt_dict_keys(mapping))"));
+    assert!(!source.contains("for key in pairs(mapping) do"));
+    assert!(!source.contains("if key ~= \"n\""));
+    assert!(source.contains("local molt_sequence_length_key = {}"));
+    assert!(source.contains("local molt_dict_metadata = setmetatable({}, {__mode = \"k\"})"));
+    assert!(!source.contains("rawget(obj, \"n\")"));
+}
+
+#[test]
+fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
+    let ops = vec![
+        OpIR {
+            kind: "dict_new".to_string(),
+            out: Some("d".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_set".to_string(),
+            args: Some(vec![
+                "d".to_string(),
+                "key".to_string(),
+                "value".to_string(),
+            ]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_setdefault".to_string(),
+            args: Some(vec![
+                "d".to_string(),
+                "other".to_string(),
+                "value".to_string(),
+            ]),
+            out: Some("defaulted".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_pop".to_string(),
+            args: Some(vec![
+                "d".to_string(),
+                "other".to_string(),
+                "none".to_string(),
+            ]),
+            out: Some("popped".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_copy".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("copy".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_update".to_string(),
+            args: Some(vec!["copy".to_string(), "d".to_string()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "eq".to_string(),
+            args: Some(vec!["copy".to_string(), "d".to_string()]),
+            out: Some("equal".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "repr_from_obj".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("rendered".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_keys".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("keys".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_values".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("values".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_items".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("items".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_popitem".to_string(),
+            args: Some(vec!["d".to_string()]),
+            out: Some("last".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
+    ];
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "ordered_dict_surface".to_string(),
+            params: vec![
+                "key".to_string(),
+                "other".to_string(),
+                "value".to_string(),
+                "none".to_string(),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops,
+        }],
+        profile: None,
+    };
+
+    let first = LuauBackend::new().compile(&ir);
+    let second = LuauBackend::new().compile(&ir);
+    assert_eq!(
+        first, second,
+        "identical IR must compile byte-for-byte deterministically"
+    );
+    for required in [
+        "local molt_dict_none_key = {}",
+        "local molt_dict_none_value = {}",
+        "local molt_dict_metadata = setmetatable({}, {__mode = \"k\"})",
+        "local function molt_hashed_index_new",
+        "molt_dict_set(d, key, value)",
+        "molt_dict_setdefault(d, other, value)",
+        "molt_dict_pop(d, other, true, none)",
+        "molt_dict_copy(d)",
+        "molt_dict_update(copy, d)",
+        "molt_equal(copy, d)",
+        "molt_repr(d)",
+        "molt_dict_keys(d)",
+        "molt_dict_values(d)",
+        "molt_dict_items(d)",
+        "molt_dict_popitem(d)",
+    ] {
+        assert!(
+            first.contains(required),
+            "missing ordered-dict authority `{required}`:\n{first}"
+        );
+    }
+    assert!(first.contains("if kind == \"boolean\" then value = if value then 1 else 0"));
+    assert!(first.contains("if value ~= value then"));
+    assert!(first.contains("unhashable container type"));
+    assert!(first.contains("if molt_dict_is_ordered(x) then return \"{...}\" end"));
+    assert!(first.contains("local entry_id = molt_hashed_index_find(metadata, key)"));
+    assert!(first.contains("local slot = molt_hashed_index_delete(metadata, entry_id)"));
+    assert!(!first.contains("for __k, __v in pairs(d)"));
+}
+
+#[test]
+fn dict_runtime_dependency_slices_do_not_ship_unreferenced_call_or_repr_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "dict_only".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("mapping".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+    assert!(source.contains("local function molt_dict_new"));
+    assert!(!source.contains("local function molt_callargs_new"));
+    assert!(!source.contains("local function molt_equal"));
+    assert!(!source.contains("local function molt_repr_string"));
+    assert!(dict_runtime::DICT_CORE_RUNTIME.len() < source.len());
+    assert!(
+        dict_runtime::CALLARGS_RUNTIME.len() + dict_runtime::EQUALITY_REPR_RUNTIME.len() > 4_000,
+        "dependency slicing must avoid a material amount of unreferenced source"
+    );
+}
+
+#[test]
+fn callargs_codegen_uses_packed_positional_and_ordered_keyword_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "invoke".to_string(),
+            params: vec!["func".to_string(), "value".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "callargs_new".to_string(),
+                    out: Some("builder".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_push_pos".to_string(),
+                    args: Some(vec!["builder".to_string(), "value".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_bind".to_string(),
+                    args: Some(vec!["func".to_string(), "builder".to_string()]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+    assert!(source.contains("local builder: {any} = molt_callargs_new()"));
+    assert!(source.contains("molt_callargs_push_pos(builder, value)"));
+    assert!(source.contains("local result = molt_callargs_invoke(func, builder)"));
+    assert!(source.contains("molt_call_checked = function"));
+    assert!(source.contains("local function molt_callargs_expand_kwstar"));
+    assert!(!source.contains("local function molt_equal"));
+    assert!(!source.contains("molt_function_params"));
+    assert!(source.contains(
+        "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})"
+    ));
+    assert!(source.contains(
+        "local molt_func_attrs: {[any]: {[string]: any}} = setmetatable({}, {__mode = \"k\"})"
+    ));
+    assert!(source.contains("if value == func then molt_func_self_attr else value"));
+}
+
+#[test]
+fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
+    let const_str = |out: &str, value: &str| OpIR {
+        kind: "const_str".to_string(),
+        out: Some(out.to_string()),
+        s_value: Some(value.to_string()),
+        ..OpIR::default()
+    };
+    let none = |out: &str| OpIR {
+        kind: "const_none".to_string(),
+        out: Some(out.to_string()),
+        ..OpIR::default()
+    };
+    let ops = vec![
+        OpIR {
+            kind: "func_new".to_string(),
+            s_value: Some("target".to_string()),
+            value: Some(2),
+            out: Some("function_value".to_string()),
+            ..OpIR::default()
+        },
+        const_str("name", "target"),
+        const_str("qualname", "target"),
+        const_str("module", "sample"),
+        const_str("arg_a", "a"),
+        const_str("arg_b", "b"),
+        OpIR {
+            kind: "tuple_new".to_string(),
+            args: Some(vec!["arg_a".to_string(), "arg_b".to_string()]),
+            out: Some("arg_names".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "const_float".to_string(),
+            f_value: Some(0.0),
+            out: Some("posonly".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "tuple_new".to_string(),
+            args: Some(vec![]),
+            out: Some("kwonly".to_string()),
+            ..OpIR::default()
+        },
+        none("vararg"),
+        none("varkw"),
+        none("defaults"),
+        none("kwdefaults"),
+        none("doc"),
+        none("bind_kind"),
+        const_str("filename", "sample.py"),
+        OpIR {
+            kind: "const_float".to_string(),
+            f_value: Some(1.0),
+            out: Some("first_line".to_string()),
+            ..OpIR::default()
+        },
+        none("linetable"),
+        OpIR {
+            kind: "tuple_new".to_string(),
+            args: Some(vec![]),
+            out: Some("names".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "code_new".to_string(),
+            args: Some(vec![
+                "filename".to_string(),
+                "name".to_string(),
+                "first_line".to_string(),
+                "linetable".to_string(),
+                "arg_names".to_string(),
+                "names".to_string(),
+                "posonly".to_string(),
+                "posonly".to_string(),
+                "posonly".to_string(),
+            ]),
+            out: Some("code".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "code_slot_set".to_string(),
+            value: Some(3),
+            args: Some(vec!["code".to_string()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "tuple_new".to_string(),
+            args: Some(vec![
+                "name".to_string(),
+                "qualname".to_string(),
+                "module".to_string(),
+                "arg_names".to_string(),
+                "posonly".to_string(),
+                "kwonly".to_string(),
+                "vararg".to_string(),
+                "varkw".to_string(),
+                "defaults".to_string(),
+                "kwdefaults".to_string(),
+                "doc".to_string(),
+            ]),
+            out: Some("metadata".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "call".to_string(),
+            s_value: Some("molt_function_init_metadata_packed".to_string()),
+            args: Some(vec![
+                "function_value".to_string(),
+                "metadata".to_string(),
+                "code".to_string(),
+                "bind_kind".to_string(),
+            ]),
+            out: Some("initialized".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
+    ];
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops,
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "target".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["a".to_string()]),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_via_ir(&ir)
+        .expect("frontend-shaped callable metadata must pass checked Luau admission");
+    assert!(source.contains("local function molt_function_init_metadata_packed"));
+    assert!(
+        source.contains(
+            "molt_call_checked(molt_function_init_metadata_packed, function_value, metadata, code, bind_kind)"
+        ),
+        "packed metadata call must remain reachable:\n{source}"
+    );
+    assert!(source.contains("local code = {__molt_code=true"));
+    assert!(source.contains("molt_code_slots[3] = code"));
+    assert!(!source.contains("molt_function_params"));
+    assert!(!source.contains("[unsupported op:"));
+}
+
+#[test]
+fn canonical_set_codegen_has_one_deterministic_side_metadata_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "set_surface".to_string(),
+            params: vec!["left".to_string(), "right".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "set_new".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    out: Some("set_value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "frozenset_new".to_string(),
+                    args: Some(vec!["right".to_string(), "left".to_string()]),
+                    out: Some("frozen".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "contains".to_string(),
+                    args: Some(vec!["set_value".to_string(), "left".to_string()]),
+                    out: Some("present".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "eq".to_string(),
+                    args: Some(vec!["set_value".to_string(), "frozen".to_string()]),
+                    out: Some("equal".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "repr_from_obj".to_string(),
+                    args: Some(vec!["set_value".to_string()]),
+                    out: Some("rendered".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+    for required in [
+        "local molt_set_metadata = setmetatable({}, {__mode = \"k\"})",
+        "local set_value = molt_set_new(\"set\")",
+        "local frozen = molt_set_new(\"frozenset\")",
+        "molt_set_freeze(frozen)",
+        "molt_set_contains(set_value, left)",
+        "molt_equal(set_value, frozen)",
+        "molt_repr(set_value)",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing canonical set authority `{required}`:\n{source}"
+        );
+    }
+    assert!(!source.contains("[left] = true"));
+    assert!(!source.contains("for value in pairs(set_value)"));
+    assert!(!source.contains("table.clear(set_value)"));
+}
+
+#[test]
+fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("a".to_string()),
+                    out: Some("text_key".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_bytes".to_string(),
+                    bytes: Some(vec![b'a']),
+                    out: Some("bytes_key".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    args: Some(vec![
+                        "text_key".to_string(),
+                        "text_key".to_string(),
+                        "bytes_key".to_string(),
+                        "text_key".to_string(),
+                    ]),
+                    out: Some("mapping".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_via_ir(&ir)
+        .expect("tagged bytes keys must pass checked Luau admission");
+    assert!(source.contains("local text_key: string = \"a\""));
+    assert!(source.contains("local bytes_key = molt_binary_new(\"bytes\", \"\\x61\")"));
+    assert!(source.contains("return molt_hash_string(668265263, binary.value)"));
+    assert!(source.contains("molt_dict_set(mapping, text_key, text_key)"));
+    assert!(source.contains("molt_dict_set(mapping, bytes_key, text_key)"));
+}
+
+#[test]
+fn ordered_dict_runtime_executes_full_semantics_in_lune_when_available() {
+    let runner = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| {
+            home.join("bin")
+                .join(if cfg!(windows) { "lune.exe" } else { "lune" })
+        })
+        .or_else(|| {
+            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+            Some(
+                std::path::PathBuf::from(home)
+                    .join(".cargo")
+                    .join("bin")
+                    .join(if cfg!(windows) { "lune.exe" } else { "lune" }),
+            )
+        });
+    let Some(runner) = runner.filter(|path| path.is_file()) else {
+        eprintln!("Lune unavailable; executable ordered-dict proof skipped");
+        return;
+    };
+
+    let source = format!(
+        "--!strict\nlocal molt_func_attrs = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_function_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_call_checked: (any, ...any) -> any\nlocal molt_equal: (any, any, any?) -> boolean\nlocal molt_sequence_length_key = {{}}\nlocal molt_sequence_kind_key = {{}}\nlocal function molt_sequence_len(sequence: {{any}}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {{any}} local sequence = table.pack(...); rawset(sequence, molt_sequence_length_key, sequence.n); rawset(sequence, molt_sequence_kind_key, kind); rawset(sequence, \"n\", nil); return sequence end\nlocal function molt_pack_list(...): {{any}} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {{any}} return molt_pack_sequence_kind(\"tuple\", ...) end\n{}\nlocal math_floor = math.floor\n{}\n{}",
+        format!(
+            "local molt_binary_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal function molt_binary_new(kind: string, value: string): any local result = {{}}; molt_binary_metadata[result] = {{kind=kind, value=value}}; return result end\n{}{}{}",
+            dict_runtime::DICT_CORE_RUNTIME,
+            dict_runtime::CALLARGS_RUNTIME,
+            dict_runtime::EQUALITY_REPR_RUNTIME
+        ),
+        include_str!("../../luau_json_prelude.luau"),
+        r#"
+local function run_authority_oracle()
+local d = molt_dict_new()
+assert(next(d) == nil)
+molt_dict_set(d, "a", 1)
+molt_dict_set(d, "b", nil)
+molt_dict_set(d, "n", 3)
+molt_dict_set(d, "b", 20)
+assert(molt_dict_len(d) == 3)
+local keys = molt_dict_keys(d)
+local key_snapshot = molt_dict_view_snapshot(keys)
+assert(rawget(key_snapshot, 1) == "a" and rawget(key_snapshot, 2) == "b" and rawget(key_snapshot, 3) == "n")
+local values = molt_dict_values(d)
+local value_snapshot = molt_dict_view_snapshot(values)
+assert(rawget(value_snapshot, 1) == 1 and rawget(value_snapshot, 2) == 20 and rawget(value_snapshot, 3) == 3)
+local items = molt_dict_items(d)
+local item_snapshot = molt_dict_view_snapshot(items)
+assert(rawget(rawget(item_snapshot, 2), 1) == "b" and rawget(rawget(item_snapshot, 2), 2) == 20)
+assert(molt_dict_setdefault(d, "b", 99) == 20)
+assert(molt_dict_setdefault(d, "c", 5) == 5)
+assert(molt_dict_pop(d, "c", false, nil) == 5)
+molt_dict_delete(d, "a", false)
+molt_dict_set(d, "a", 4)
+keys = molt_dict_keys(d)
+key_snapshot = molt_dict_view_snapshot(keys)
+assert(rawget(key_snapshot, 1) == "b" and rawget(key_snapshot, 2) == "n" and rawget(key_snapshot, 3) == "a")
+local popped = molt_dict_popitem(d)
+assert(rawget(popped, 1) == "a" and rawget(popped, 2) == 4)
+keys = molt_dict_keys(d)
+key_snapshot = molt_dict_view_snapshot(keys)
+assert(molt_dict_view_len(keys) == 2 and rawget(key_snapshot, 1) == "b" and rawget(key_snapshot, 2) == "n")
+molt_dict_set(d, nil, nil)
+assert(molt_dict_contains(d, nil) and molt_dict_getitem(d, nil) == nil)
+assert(molt_repr(d) == "{'b': 20, 'n': 3, None: None}")
+assert(molt_json_dumps(d) == '{"b": 20, "n": 3, "null": null}')
+assert(molt_json_dumps(molt_pack_list("a\n")) == '["a\\n"]')
+local nonfinite_ok, nonfinite_error = pcall(function() molt_json_dumps(math.huge) end)
+assert(not nonfinite_ok and nonfinite_error.__type == "ValueError")
+
+local aliases = molt_dict_new()
+molt_dict_set(aliases, true, "true-first")
+molt_dict_set(aliases, 1, "one-replaces")
+molt_dict_set(aliases, false, "false-first")
+molt_dict_set(aliases, 0, "zero-replaces")
+local alias_keys = molt_dict_keys(aliases)
+local alias_snapshot = molt_dict_view_snapshot(alias_keys)
+assert(molt_dict_len(aliases) == 2)
+assert(rawget(alias_snapshot, 1) == true and rawget(alias_snapshot, 2) == false)
+assert(molt_dict_getitem(aliases, true) == "one-replaces")
+assert(molt_dict_getitem(aliases, 0) == "zero-replaces")
+local text_key = "a"
+local bytes_key = molt_binary_new("bytes", "a")
+local equal_bytes_key = molt_binary_new("bytes", "a")
+local binary_keys = molt_dict_new(); molt_dict_set(binary_keys, text_key, "text"); molt_dict_set(binary_keys, bytes_key, "bytes")
+assert(molt_dict_len(binary_keys) == 2 and molt_dict_getitem(binary_keys, text_key) == "text" and molt_dict_getitem(binary_keys, equal_bytes_key) == "bytes")
+local bytearray_key_ok, bytearray_key_error = pcall(function() molt_dict_set(binary_keys, molt_binary_new("bytearray", "a"), 1) end)
+assert(not bytearray_key_ok and bytearray_key_error.__type == "TypeError")
+local range_key_ok, range_key_error = pcall(function() molt_dict_set(binary_keys, molt_pack_sequence_kind("range", 0, 1), 1) end)
+assert(not range_key_ok and range_key_error.__type == "TypeError")
+
+local compacted = molt_dict_new()
+for index = 0, 79 do molt_dict_set(compacted, index, index) end
+for index = 0, 59 do molt_dict_delete(compacted, index, false) end
+for index = 0, 9 do molt_dict_set(compacted, index, index) end
+local compacted_keys = molt_dict_keys(compacted)
+local compacted_snapshot = molt_dict_view_snapshot(compacted_keys)
+assert(molt_dict_len(compacted) == 30 and molt_dict_view_len(compacted_keys) == 30)
+for index = 1, 20 do assert(rawget(compacted_snapshot, index) == index + 59) end
+for index = 21, 30 do assert(rawget(compacted_snapshot, index) == index - 21) end
+molt_dict_delete(compacted, 60, false)
+molt_dict_set(compacted, 60, 600)
+compacted_snapshot = molt_dict_view_snapshot(molt_dict_keys(compacted))
+assert(rawget(compacted_snapshot, 30) == 60 and molt_dict_getitem(compacted, 60) == 600)
+local compacted_last = molt_dict_popitem(compacted)
+assert(rawget(compacted_last, 1) == 60 and rawget(compacted_last, 2) == 600)
+
+local left = molt_dict_new()
+local right = molt_dict_new()
+molt_dict_set(left, "a", molt_pack_list(1, true))
+molt_dict_set(left, "b", 2)
+molt_dict_set(right, "b", 2)
+molt_dict_set(right, "a", molt_pack_list(1, 1))
+assert(molt_equal(left, right))
+molt_dict_set(right, "b", 3)
+assert(not molt_equal(left, right))
+assert(not molt_equal(molt_pack_list(1), molt_pack_tuple(1)))
+assert(not molt_equal({1}, {1}))
+
+local live = molt_dict_keys(d)
+local before = molt_dict_view_len(live)
+molt_dict_set(d, "live", 9)
+assert(molt_dict_view_len(live) == before + 1)
+local iterator = molt_dict_iterator_new(d, "keys")
+molt_dict_iterator_next(iterator)
+molt_dict_set(d, "mutated", 10)
+local mutation_ok, mutation_error = pcall(function() molt_dict_iterator_next(iterator) end)
+assert(not mutation_ok and mutation_error.__type == "RuntimeError")
+
+local kwargs = molt_callargs_new()
+molt_callargs_push_kw(kwargs, "x", 1)
+local duplicate_ok, duplicate_error = pcall(function() molt_callargs_push_kw(kwargs, "x", 2) end)
+assert(not duplicate_ok and duplicate_error.__type == "TypeError")
+local function add(a, b) return a + b end
+molt_function_metadata[add] = {arg_names=molt_pack_tuple("a", "b"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+local invoke_args = molt_callargs_new()
+molt_callargs_push_pos(invoke_args, 4)
+molt_callargs_push_kw(invoke_args, "b", 5)
+assert(molt_callargs_invoke(add, invoke_args) == 9)
+local positional_duplicate = molt_callargs_new()
+molt_callargs_push_pos(positional_duplicate, 4)
+molt_callargs_push_kw(positional_duplicate, "a", 5)
+local positional_duplicate_ok, positional_duplicate_error = pcall(function() molt_callargs_invoke(add, positional_duplicate) end)
+assert(not positional_duplicate_ok and positional_duplicate_error.__type == "TypeError")
+
+local kwonly_defaults = molt_dict_new()
+molt_dict_set(kwonly_defaults, "c", nil)
+local function exact(a, b, c, rest, extras) return molt_pack_tuple(a, b, c, rest, extras) end
+molt_function_metadata[exact] = {arg_names=molt_pack_tuple("a", "b"), posonly=1, kwonly=molt_pack_tuple("c"), vararg="rest", varkw="extras", defaults=molt_pack_tuple(nil), kwdefaults=kwonly_defaults}
+local exact_args = molt_callargs_new()
+molt_callargs_push_pos(exact_args, 7)
+local exact_result = molt_callargs_invoke(exact, exact_args)
+assert(molt_sequence_len(exact_result) == 5 and rawget(exact_result, 1) == 7 and rawget(exact_result, 2) == nil and rawget(exact_result, 3) == nil)
+assert(molt_sequence_len(rawget(exact_result, 4)) == 0 and molt_dict_len(rawget(exact_result, 5)) == 0)
+local rich_args = molt_callargs_new()
+molt_callargs_push_pos(rich_args, 1)
+molt_callargs_push_pos(rich_args, nil)
+molt_callargs_push_pos(rich_args, 30)
+molt_callargs_push_pos(rich_args, nil)
+molt_callargs_push_kw(rich_args, "c", 9)
+molt_callargs_push_kw(rich_args, "a", 44)
+molt_callargs_push_kw(rich_args, "other", nil)
+local rich_result = molt_callargs_invoke(exact, rich_args)
+assert(rawget(rich_result, 1) == 1 and rawget(rich_result, 2) == nil and rawget(rich_result, 3) == 9)
+local rich_rest = rawget(rich_result, 4)
+assert(molt_sequence_len(rich_rest) == 2 and rawget(rich_rest, 1) == 30 and rawget(rich_rest, 2) == nil)
+local rich_extras = rawget(rich_result, 5)
+assert(molt_dict_getitem(rich_extras, "a") == 44 and molt_dict_contains(rich_extras, "other") and molt_dict_getitem(rich_extras, "other") == nil)
+local function strict(a, b) return a + b end
+molt_function_metadata[strict] = {arg_names=molt_pack_tuple("a", "b"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+local extra_pos = molt_callargs_new(); molt_callargs_push_pos(extra_pos, 1); molt_callargs_push_pos(extra_pos, 2); molt_callargs_push_pos(extra_pos, 3)
+local extra_pos_ok, extra_pos_error = pcall(function() molt_callargs_invoke(strict, extra_pos) end)
+assert(not extra_pos_ok and extra_pos_error.__type == "TypeError")
+local unexpected = molt_callargs_new(); molt_callargs_push_pos(unexpected, 1); molt_callargs_push_kw(unexpected, "other", 2)
+local unexpected_ok, unexpected_error = pcall(function() molt_callargs_invoke(strict, unexpected) end)
+assert(not unexpected_ok and unexpected_error.__type == "TypeError")
+local missing_call = molt_callargs_new(); molt_callargs_push_pos(missing_call, 1)
+local missing_ok_call, missing_error_call = pcall(function() molt_callargs_invoke(strict, missing_call) end)
+assert(not missing_ok_call and missing_error_call.__type == "TypeError")
+local function method(self, x) return self + x end
+molt_function_metadata[method] = {arg_names=molt_pack_tuple("self", "x"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+local bound = molt_bound_method_new(method, 10)
+local bound_args = molt_callargs_new(); molt_callargs_push_kw(bound_args, "x", 5)
+assert(molt_callargs_invoke(bound, bound_args) == 15)
+local function method_with_defaults(self, x, y) return self + x + y end
+molt_function_metadata[method_with_defaults] = {arg_names=molt_pack_tuple("self", "x", "y"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=molt_pack_tuple(99, 5, 7), kwdefaults=nil}
+local bound_defaults = molt_bound_method_new(method_with_defaults, 10)
+assert(molt_sequence_len(molt_function_metadata[bound_defaults].defaults) == 2)
+assert(molt_callargs_invoke(bound_defaults, molt_callargs_new()) == 22)
+local bound_override = molt_callargs_new(); molt_callargs_push_kw(bound_override, "y", 2)
+assert(molt_callargs_invoke(bound_defaults, bound_override) == 17)
+local function capture3(a, b, c) return molt_pack_tuple(a, b, c) end
+molt_function_metadata[capture3] = {arg_names=molt_pack_tuple("a", "b", "c"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+local string_star = molt_callargs_new(); molt_callargs_expand_star(string_star, "ab"); molt_callargs_push_pos(string_star, "c")
+local string_star_result = molt_callargs_invoke(capture3, string_star)
+assert(rawget(string_star_result, 1) == "a" and rawget(string_star_result, 2) == "b" and rawget(string_star_result, 3) == "c")
+local set_star_value = molt_set_new("set"); molt_set_add(set_star_value, "x"); molt_set_add(set_star_value, "y")
+local set_star = molt_callargs_new(); molt_callargs_expand_star(set_star, set_star_value); molt_callargs_push_pos(set_star, "z")
+local set_star_result = molt_callargs_invoke(capture3, set_star)
+assert(rawget(set_star_result, 1) == "x" and rawget(set_star_result, 2) == "y" and rawget(set_star_result, 3) == "z")
+local dict_star_value = molt_dict_new(); molt_dict_set(dict_star_value, "k1", 1); molt_dict_set(dict_star_value, "k2", 2)
+local dict_star = molt_callargs_new(); molt_callargs_expand_star(dict_star, dict_star_value); molt_callargs_push_pos(dict_star, "tail")
+local dict_star_result = molt_callargs_invoke(capture3, dict_star)
+assert(rawget(dict_star_result, 1) == "k1" and rawget(dict_star_result, 2) == "k2" and rawget(dict_star_result, 3) == "tail")
+local bad_star_ok, bad_star_error = pcall(function() molt_callargs_expand_star(molt_callargs_new(), 42) end)
+assert(not bad_star_ok and bad_star_error.__type == "TypeError")
+
+local set_value = molt_set_new("set")
+molt_set_add(set_value, nil); molt_set_add(set_value, true); molt_set_add(set_value, 1); molt_set_add(set_value, "x")
+assert(molt_set_len(set_value) == 3 and molt_set_contains(set_value, nil) and molt_set_contains(set_value, 1))
+assert(molt_repr(set_value) == "{None, True, 'x'}")
+local frozen = molt_set_new("frozenset")
+molt_frozenset_build_add(frozen, "x"); molt_frozenset_build_add(frozen, nil); molt_frozenset_build_add(frozen, 1); molt_set_freeze(frozen)
+assert(molt_equal(set_value, frozen) and molt_repr(frozen) == "frozenset({'x', None, 1})")
+local frozen_ok, frozen_error = pcall(function() molt_set_add(frozen, 2) end)
+assert(not frozen_ok and frozen_error.__type == "AttributeError")
+local set_iterator = molt_iterator_new(set_value)
+local set_first = set_iterator()
+assert(rawget(set_first, 1) == nil and rawget(set_first, 2) == false)
+
+local view_dict = molt_dict_new()
+molt_dict_set(view_dict, "a", 1); molt_dict_set(view_dict, "b", nil)
+local view_keys = molt_dict_keys(view_dict)
+local view_values = molt_dict_values(view_dict)
+local view_items = molt_dict_items(view_dict)
+assert(molt_dict_view_contains(view_keys, "a"))
+assert(molt_dict_view_contains(view_values, nil))
+assert(molt_dict_view_contains(view_items, molt_pack_tuple("b", nil)))
+local key_set = molt_set_new("set"); molt_set_add(key_set, "b"); molt_set_add(key_set, "a")
+assert(molt_equal(view_keys, key_set))
+assert(not molt_equal(view_values, molt_dict_values(view_dict)))
+assert(molt_repr(view_keys) == "dict_keys(['a', 'b'])")
+assert(molt_repr(view_values) == "dict_values([1, None])")
+assert(molt_repr(view_items) == "dict_items([('a', 1), ('b', None)])")
+
+local weak_function = setmetatable({}, {__mode="v"})
+local weak_self_sentinel = {}
+local function molt_func_attr_set(func, name, value)
+	local attrs = molt_func_attrs[func]
+	if attrs == nil then attrs = {}; molt_func_attrs[func] = attrs end
+	rawset(attrs, name, if value == func then weak_self_sentinel else value)
+end
+local function install_ephemeral()
+	local function ephemeral(value) return value end
+	molt_function_metadata[ephemeral] = {arg_names=molt_pack_tuple("value"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+	molt_func_attr_set(ephemeral, "__self_cycle", ephemeral)
+	assert(molt_func_attrs[ephemeral].__self_cycle == weak_self_sentinel)
+	weak_function[1] = ephemeral
+end
+install_ephemeral()
+assert(getmetatable(molt_function_metadata).__mode == "k" and getmetatable(molt_func_attrs).__mode == "k")
+
+local missing = {}
+local missing_target = molt_dict_new()
+molt_dict_update_missing(missing_target, "x", 1, missing)
+assert(molt_dict_getitem(missing_target, "x") == 1)
+molt_dict_update_missing(missing_target, "x", missing, missing)
+assert(not molt_dict_contains(missing_target, "x"))
+local kwstar_source = molt_dict_new()
+molt_dict_set(kwstar_source, "good", 1)
+molt_dict_update_kwstar(missing_target, kwstar_source)
+assert(molt_dict_getitem(missing_target, "good") == 1)
+local bad_kwstar = molt_dict_new()
+molt_dict_set(bad_kwstar, 1, 2)
+local kwstar_ok, kwstar_error = pcall(function() molt_dict_update_kwstar(missing_target, bad_kwstar) end)
+assert(not kwstar_ok and kwstar_error.__type == "TypeError")
+
+local recursive = molt_dict_new()
+molt_dict_set(recursive, "self", recursive)
+assert(molt_repr(recursive) == "{'self': {...}}")
+local escaped_repr = molt_repr("a\n'b\\c")
+assert(escaped_repr == "'a\\n\\'b\\\\c'", escaped_repr)
+
+local nan_ok, nan_error = pcall(function() molt_dict_set(d, 0 / 0, 1) end)
+assert(not nan_ok and type(nan_error) == "table" and nan_error.__type == "TypeError")
+local object_key = {}
+molt_dict_set(d, object_key, "identity")
+assert(molt_dict_getitem(d, object_key) == "identity" and not molt_dict_contains(d, {}))
+local negative_zero_dict = molt_dict_new(); molt_dict_set(negative_zero_dict, -0.0, "zero")
+assert(molt_dict_getitem(negative_zero_dict, 0) == "zero" and molt_dict_len(negative_zero_dict) == 1)
+local custom_key_class = {__eq__=function(left, right) return left == right end}; custom_key_class.__index = custom_key_class
+local custom_key = {}; setmetatable(custom_key, custom_key_class)
+local custom_key_ok, custom_key_error = pcall(function() molt_dict_set(d, custom_key, 1) end)
+assert(not custom_key_ok and custom_key_error.__type == "TypeError")
+local tuple_key = molt_pack_tuple("tuple", nil, 3)
+local equal_tuple_key = molt_pack_tuple("tuple", nil, 3)
+molt_dict_set(d, tuple_key, "tuple-value")
+assert(molt_dict_getitem(d, equal_tuple_key) == "tuple-value")
+local ordered_tuple_key = molt_pack_tuple(3, nil, "tuple")
+assert(not molt_dict_contains(d, ordered_tuple_key))
+local frozen_key = molt_set_new("frozenset"); molt_frozenset_build_add(frozen_key, "a"); molt_frozenset_build_add(frozen_key, 2); molt_set_freeze(frozen_key)
+local equal_frozen_key = molt_set_new("frozenset"); molt_frozenset_build_add(equal_frozen_key, 2); molt_frozenset_build_add(equal_frozen_key, "a"); molt_set_freeze(equal_frozen_key)
+molt_dict_set(d, frozen_key, "frozen-value")
+assert(molt_dict_getitem(d, equal_frozen_key) == "frozen-value")
+local tuple_members = molt_set_new("set")
+molt_set_add(tuple_members, tuple_key); molt_set_add(tuple_members, equal_tuple_key)
+assert(molt_set_len(tuple_members) == 1)
+local collision_left = {}; local collision_right = {}
+molt_identity_hashes[collision_left] = 1234567; molt_identity_hashes[collision_right] = 1234567
+local collision_dict = molt_dict_new()
+molt_dict_set(collision_dict, collision_left, "left"); molt_dict_set(collision_dict, collision_right, "right")
+assert(molt_dict_getitem(collision_dict, collision_left) == "left" and molt_dict_getitem(collision_dict, collision_right) == "right")
+
+local copied = molt_dict_copy(d)
+assert(molt_equal(copied, d))
+local converted = molt_dict_from_obj(d)
+assert(molt_equal(converted, d))
+local foreign_ok = pcall(function() molt_dict_from_obj({a = 1}) end)
+assert(not foreign_ok)
+local cycle = molt_pack_list()
+rawset(cycle, 1, cycle); rawset(cycle, molt_sequence_length_key, 1)
+local cycle_ok, cycle_error = pcall(function() molt_json_dumps(cycle) end)
+assert(not cycle_ok and cycle_error.__type == "ValueError")
+local foreign_json_ok = pcall(function() molt_json_dumps({1, 2}) end)
+assert(not foreign_json_ok)
+molt_dict_update(copied, aliases)
+assert(molt_dict_contains(copied, true) and molt_dict_contains(copied, false))
+molt_dict_clear(copied)
+assert(molt_dict_len(copied) == 0 and molt_repr(copied) == "{}")
+local memory_before = gcinfo()
+local bench_start = os.clock()
+local retained = molt_pack_list()
+for index = 1, 5000 do
+	local entry = molt_dict_new()
+	molt_dict_set(entry, "a", index)
+	molt_dict_set(entry, "b", index + 1)
+	molt_dict_set(entry, "c", index + 2)
+	molt_dict_set(entry, "d", index + 3)
+	rawset(retained, index, entry)
+end
+rawset(retained, molt_sequence_length_key, 5000)
+local bench_elapsed = os.clock() - bench_start
+local dict_retained_kib = gcinfo() - memory_before
+local call_memory_before = gcinfo()
+local call_bench_start = os.clock()
+local call_total = 0
+for _index = 1, 100000 do call_total += molt_call_checked(strict, 1, 2) end
+local call_bench_elapsed = os.clock() - call_bench_start
+local call_heap_delta_kib = gcinfo() - call_memory_before
+assert(call_total == 300000 and call_bench_elapsed < 5)
+local function measure_set_scale(count)
+	local memory_before_scale = gcinfo()
+	local start = os.clock()
+	local value = molt_set_new("set")
+	for index = 1, count do molt_set_add(value, index) end
+	local elapsed = os.clock() - start
+	local heap_delta_kib = gcinfo() - memory_before_scale
+	assert(molt_set_len(value) == count and molt_set_contains(value, count - 1) and elapsed < 5)
+	return value, elapsed, heap_delta_kib, heap_delta_kib * 1024 / count
+end
+local set_1k, set_1k_elapsed, set_1k_heap_kib, set_1k_bytes = measure_set_scale(1000)
+local set_10k, set_10k_elapsed, set_10k_heap_kib, set_10k_bytes = measure_set_scale(10000)
+local set_100k, set_100k_elapsed, set_100k_heap_kib, set_100k_bytes = measure_set_scale(100000)
+assert(molt_set_len(set_1k) + molt_set_len(set_10k) + molt_set_len(set_100k) == 111000)
+assert(set_100k_bytes < 512 and set_10k_bytes < 512)
+local tuple_bench_memory_before = gcinfo()
+local tuple_bench_start = os.clock()
+local tuple_dict = molt_dict_new()
+local tuple_keys = molt_pack_list()
+for index = 1, 10000 do
+	local key = molt_pack_tuple(index, "key")
+	rawset(tuple_keys, index, key)
+	molt_dict_set(tuple_dict, key, index)
+end
+rawset(tuple_keys, molt_sequence_length_key, 10000)
+for operation = 1, 100000 do
+	local index = ((operation - 1) % 10000) + 1
+	local key = rawget(tuple_keys, index)
+	if operation % 2 == 0 then molt_dict_delete(tuple_dict, key, false); molt_dict_set(tuple_dict, key, index)
+	else assert(molt_dict_getitem(tuple_dict, key) == index) end
+end
+local tuple_bench_elapsed = os.clock() - tuple_bench_start
+local tuple_peak_heap_delta_kib = gcinfo() - tuple_bench_memory_before
+assert(molt_dict_len(tuple_dict) == 10000 and #molt_dict_metadata[tuple_dict].order <= 20032 and tuple_bench_elapsed < 5)
+local collision_bench_start = os.clock()
+local collision_bench_dict = molt_dict_new()
+local collision_keys = molt_pack_list()
+for index = 1, 10000 do
+	local key = {}
+	molt_identity_hashes[key] = index % 1000
+	rawset(collision_keys, index, key)
+	molt_dict_set(collision_bench_dict, key, index)
+end
+rawset(collision_keys, molt_sequence_length_key, 10000)
+for index = 1, 10000 do assert(molt_dict_getitem(collision_bench_dict, rawget(collision_keys, index)) == index) end
+local collision_bench_elapsed = os.clock() - collision_bench_start
+assert(molt_dict_len(collision_bench_dict) == 10000 and collision_bench_elapsed < 5)
+local churn_memory_before = gcinfo()
+local churn_start = os.clock()
+local churn_dict = molt_dict_new()
+for index = 1, 100000 do molt_dict_set(churn_dict, index, index) end
+local churn_metadata = molt_dict_metadata[churn_dict]
+local churn_high_water_records = churn_metadata.records
+for index = 1, 99900 do molt_dict_delete(churn_dict, index, false) end
+local churn_elapsed = os.clock() - churn_start
+local churn_heap_delta_kib = gcinfo() - churn_memory_before
+assert(molt_dict_len(churn_dict) == 100 and churn_metadata.records ~= churn_high_water_records)
+assert(churn_metadata.next_id <= churn_metadata.size * 2 + 32 and #churn_metadata.records <= churn_metadata.next_id * 7)
+for index = 99901, 100000 do assert(molt_dict_getitem(churn_dict, index) == index) end
+local frozen_bench = molt_set_new("frozenset")
+for index = 1, 10000 do molt_frozenset_build_add(frozen_bench, index) end
+molt_set_freeze(frozen_bench)
+local frozen_bench_dict = molt_dict_new(); molt_dict_set(frozen_bench_dict, frozen_bench, "cached")
+local frozen_lookup_start = os.clock()
+for _index = 1, 100000 do assert(molt_dict_getitem(frozen_bench_dict, frozen_bench) == "cached") end
+local frozen_lookup_elapsed = os.clock() - frozen_lookup_start
+assert(molt_set_metadata[frozen_bench].cached_hash ~= nil and molt_set_metadata[frozen_bench].hash_locked == true)
+assert(churn_elapsed < 5 and frozen_lookup_elapsed < 5)
+assert(bench_elapsed < 5 and dict_retained_kib > 0 and set_10k_heap_kib > 0 and call_heap_delta_kib < 64)
+print(string.format("luau-authority-ok dict5k_elapsed=%.6f dict_heap_kib=%.1f dict_bytes_per_map=%.1f call100k_elapsed=%.6f call_heap_delta_kib=%.1f set1k_elapsed=%.6f set1k_heap_kib=%.1f set1k_bytes=%.1f set10k_elapsed=%.6f set10k_heap_kib=%.1f set10k_bytes=%.1f set100k_elapsed=%.6f set100k_heap_kib=%.1f set100k_bytes=%.1f tuple10k_mixed100k_elapsed=%.6f tuple_peak_heap_delta_kib=%.1f collision10k_elapsed=%.6f churn100k_delete99900_elapsed=%.6f churn_allocator_delta_kib=%.1f churn_capacity=%d frozen10k_lookup100k_elapsed=%.6f", bench_elapsed, dict_retained_kib, dict_retained_kib * 1024 / 5000, call_bench_elapsed, call_heap_delta_kib, set_1k_elapsed, set_1k_heap_kib, set_1k_bytes, set_10k_elapsed, set_10k_heap_kib, set_10k_bytes, set_100k_elapsed, set_100k_heap_kib, set_100k_bytes, tuple_bench_elapsed, tuple_peak_heap_delta_kib, collision_bench_elapsed, churn_elapsed, churn_heap_delta_kib, churn_metadata.next_id, frozen_lookup_elapsed))
+end
+run_authority_oracle()
+"#
+    );
+    let runtime_bytes = dict_runtime::DICT_CORE_RUNTIME.len()
+        + dict_runtime::CALLARGS_RUNTIME.len()
+        + dict_runtime::EQUALITY_REPR_RUNTIME.len();
+    let prelude_bytes = include_str!("../../luau_json_prelude.luau").len();
+    assert!(
+        runtime_bytes < 43_000,
+        "Luau container/call runtime grew to {runtime_bytes} bytes"
+    );
+    eprintln!(
+        "luau-source-size runtime_bytes={runtime_bytes} prelude_bytes={prelude_bytes} oracle_bytes={}",
+        source.len()
+    );
+    let path = std::env::temp_dir().join(format!(
+        "molt_luau_ordered_dict_{}.luau",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).expect("write executable Luau proof");
+    let output = std::process::Command::new(&runner)
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run Lune ordered-dict proof");
+    if output.status.success() {
+        let _ = std::fs::remove_file(&path);
+    }
+    assert!(
+        output.status.success(),
+        "Lune ordered-dict proof failed:\nstdout:\n{}\nstderr:\n{}\nsource: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        path.display()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .trim()
+            .starts_with("luau-authority-ok dict5k_elapsed=")
+    );
+    eprintln!("{}", stdout.trim());
+}
+
+#[test]
+fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "scalar_equal".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("left".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("right".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "eq".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    out: Some("equal".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["equal".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+    assert!(source.contains("local equal: boolean = (left == right)"));
+    assert!(!source.contains("local molt_dict_metadata_key = {}"));
+    assert!(!source.contains("molt_equal(left, right)"));
+}
+
+#[test]
 fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -698,7 +1847,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
 }
 
 #[test]
-fn test_compile_checked_lowers_code_and_frame_metadata_as_luau_noops() {
+fn test_compile_checked_lowers_code_slot_metadata_to_reachable_luau_state() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "code_frame_metadata_test".to_string(),
@@ -755,6 +1904,8 @@ fn test_compile_checked_lowers_code_and_frame_metadata_as_luau_noops() {
         source.contains("code_frame_metadata_test"),
         "compiled code/frame metadata function should be emitted, got:\n{source}"
     );
+    assert!(source.contains("molt_code_slots = table.create(2)"));
+    assert!(source.contains("molt_code_slots[1] = code"));
     assert!(
         !source.contains("[internal: code_slots_init]")
             && !source.contains("[internal: code_slot_set]")

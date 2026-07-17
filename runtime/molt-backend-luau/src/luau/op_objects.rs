@@ -217,13 +217,31 @@ impl LuauBackend {
                     self.emit_line("__cls.__molt_field_offsets__ = __merged");
                     self.pop_indent();
                     self.emit_line("end");
+                    self.emit_line("if molt_dict_is_ordered(__offsets) then");
+                    self.push_indent();
+                    self.emit_line(
+                        "local __offset_iter = molt_dict_iterator_new(__offsets, \"items\")",
+                    );
+                    self.emit_line("while true do");
+                    self.push_indent();
+                    self.emit_line("local __offset_step = molt_dict_iterator_next(__offset_iter)");
+                    self.emit_line("if rawget(__offset_step, 2) then break end");
+                    self.emit_line("local __pair = rawget(__offset_step, 1)");
+                    self.emit_line("local __k = rawget(__pair, 1)");
+                    self.emit_line("local __v = rawget(__pair, 2)");
+                    self.emit_line(
+                        "if type(__k) == \"string\" and type(__v) == \"number\" and __v >= 0 and __merged[__k] == nil then __merged[__k] = __v end",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
                     self.emit_line("for __k, __v in pairs(__offsets) do");
                     self.push_indent();
                     self.emit_line(
-                        "if type(__k) == \"string\" and type(__v) == \"number\" and __v >= 0 and __merged[__k] == nil then",
+                        "if type(__k) == \"string\" and type(__v) == \"number\" and __v >= 0 and __merged[__k] == nil then __merged[__k] = __v end",
                     );
-                    self.push_indent();
-                    self.emit_line("__merged[__k] = __v");
                     self.pop_indent();
                     self.emit_line("end");
                     self.pop_indent();
@@ -402,7 +420,7 @@ impl LuauBackend {
                     let module = sanitize_ident(&args[0]);
                     let attr_var = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
+                        "local {out} = if molt_dict_is_ordered({module}) then molt_dict_get({module}, {attr_var}, nil) elseif type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
                     ));
                 } else {
                     self.emit_unsupported_op(op);
@@ -419,7 +437,7 @@ impl LuauBackend {
                     // Only emit for non-dunder attributes (user variables).
                     // Dunder metadata writes are unnecessary in Luau.
                     self.emit_line(&format!(
-                        "if type({module}) ~= \"table\" then error({{__type=\"TypeError\", __msg=\"module attribute assignment expects module\"}}) end; {module}[{attr_name}] = {value}"
+                        "if type({module}) ~= \"table\" then error({{__type=\"TypeError\", __msg=\"module attribute assignment expects module\"}}) elseif molt_dict_is_ordered({module}) then molt_dict_set({module}, {attr_name}, {value}) else {module}[{attr_name}] = {value} end"
                     ));
                 } else {
                     self.emit_unsupported_op(op);

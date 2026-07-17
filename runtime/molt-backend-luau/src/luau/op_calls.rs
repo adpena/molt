@@ -17,22 +17,14 @@ impl LuauBackend {
             // ================================================================
             "callargs_new" => {
                 let out = self.out_var(op);
-                let items = op
-                    .args
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|a| sanitize_ident(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.emit_line(&format!("local {out}: {{any}} = {{{items}}}"));
+                self.emit_line(&format!("local {out}: {{any}} = molt_callargs_new()"));
             }
             "callargs_push_pos" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let callargs = sanitize_ident(&args[0]);
                     let value = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("rawset({callargs}, #{callargs} + 1, {value})"));
+                    self.emit_line(&format!("molt_callargs_push_pos({callargs}, {value})"));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -42,9 +34,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let callargs = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "table.move({other}, 1, #{other}, #{callargs} + 1, {callargs})"
-                    ));
+                    self.emit_line(&format!("molt_callargs_expand_star({callargs}, {other})"));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -55,7 +45,9 @@ impl LuauBackend {
                     let callargs = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("{callargs}[{key}] = {value}"));
+                    self.emit_line(&format!(
+                        "molt_callargs_push_kw({callargs}, {key}, {value})"
+                    ));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -65,9 +57,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let callargs = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "for __k, __v in pairs({other}) do {callargs}[__k] = __v end"
-                    ));
+                    self.emit_line(&format!("molt_callargs_expand_kwstar({callargs}, {other})"));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -76,7 +66,7 @@ impl LuauBackend {
             // ================================================================
             // Callable objects and builtin wrappers
             // ================================================================
-            "func_new" | "func_new_closure" | "code_new" => {
+            "func_new" | "func_new_closure" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let Some(name) = op.s_value.as_deref().map(sanitize_ident) else {
@@ -85,6 +75,17 @@ impl LuauBackend {
                     };
                     self.emit_line(&format!("local {out} = {name}"));
                 }
+            }
+            "code_new" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let fields = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| format!("[{}]={}", index + 1, sanitize_ident(value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.emit_line(&format!("local {out} = {{__molt_code=true, {fields}}}"));
             }
             "builtin_func" => {
                 if let Some(ref out_name) = op.out {
@@ -96,15 +97,15 @@ impl LuauBackend {
                     // positional args tuple for the correct calling convention.
                     let mapped = match s_val {
                         "molt_max_builtin" => {
-                            "function(a, ...) return math.max(table.unpack(a)) end"
+                            "function(a, ...) return math.max(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_min_builtin" => {
-                            "function(a, ...) return math.min(table.unpack(a)) end"
+                            "function(a, ...) return math.min(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_abs_builtin" => "function(a, ...) return math.abs(a[1]) end",
                         "molt_round_builtin" => "function(a, ...) return math.round(a[1]) end",
                         "molt_print_builtin" => {
-                            "function(a, ...) return molt_print(table.unpack(a)) end"
+                            "function(a, ...) return molt_print(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_len" => "function(a, ...) return molt_len(a[1]) end",
                         "molt_int_builtin" | "molt_int" => {
@@ -123,16 +124,16 @@ impl LuauBackend {
                         "molt_any_builtin" => "function(a, ...) return molt_any(a[1]) end",
                         "molt_all_builtin" => "function(a, ...) return molt_all(a[1]) end",
                         "molt_sorted_builtin" => {
-                            "function(a, ...) return molt_sorted(table.unpack(a)) end"
+                            "function(a, ...) return molt_sorted(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_reversed_builtin" => {
                             "function(a, ...) return molt_reversed(a[1]) end"
                         }
                         "molt_enumerate_builtin" => {
-                            "function(a, ...) return molt_enumerate(table.unpack(a)) end"
+                            "function(a, ...) return molt_enumerate(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_zip_builtin" => {
-                            "function(a, ...) return molt_zip(table.unpack(a)) end"
+                            "function(a, ...) return molt_zip(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_isinstance" => {
                             "function(a, ...) return molt_isinstance(a[1], a[2]) end"
@@ -159,19 +160,19 @@ impl LuauBackend {
                         }
                         "molt_iter_checked" => "function(a, ...) return molt_iter(a[1]) end",
                         "molt_next_builtin" => {
-                            "function(a, ...) return molt_next(table.unpack(a)) end"
+                            "function(a, ...) return molt_next(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_getattr_builtin" => {
-                            "function(a, ...) local value = molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
+                            "function(a, ...) local value = if type(a[1]) == \"function\" then molt_func_attr_get(a[1], a[2]) else molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
                         }
                         "molt_set_attr_name" => {
-                            "function(a, ...) return molt_set_attr(a[1], a[2], a[3]) end"
+                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_set(a[1], a[2], a[3]) end; return molt_set_attr(a[1], a[2], a[3]) end"
                         }
                         "molt_del_attr_name" => {
-                            "function(a, ...) return molt_del_attr(a[1], a[2]) end"
+                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_del(a[1], a[2]) end; return molt_del_attr(a[1], a[2]) end"
                         }
                         "molt_has_attr_name" => {
-                            "function(a, ...) return molt_has_attr(a[1], a[2]) end"
+                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_get(a[1], a[2]) ~= nil end; return molt_has_attr(a[1], a[2]) end"
                         }
                         "molt_divmod_builtin" => {
                             "function(a, ...) return molt_divmod(a[1], a[2]) end"
@@ -181,14 +182,18 @@ impl LuauBackend {
                         "molt_bin_builtin" => "function(a, ...) return molt_bin(a[1]) end",
                         "molt_ascii_from_obj" => "function(a, ...) return molt_ascii(a[1]) end",
                         "molt_format_builtin" => {
-                            "function(a, ...) return molt_format(table.unpack(a)) end"
+                            "function(a, ...) return molt_format(table.unpack(a, 1, molt_sequence_len(a))) end"
                         }
                         "molt_dir_builtin" => "function(a, ...) return molt_dir(a[1]) end",
                         "molt_vars_builtin" => "function(a, ...) return molt_vars(a[1]) end",
+                        "molt_function_init_metadata_packed" => {
+                            "function(a, ...) return molt_function_init_metadata_packed(a[1], a[2], a[3], a[4]) end"
+                        }
+                        "molt_function_set_defaults" => {
+                            "function(a, ...) return molt_function_set_defaults(a[1], a[2], a[3]) end"
+                        }
                         // Runtime intrinsics that have no Luau equivalent.
-                        "molt_function_init_metadata_packed"
-                        | "molt_function_set_builtin"
-                        | "molt_function_set_defaults"
+                        "molt_function_set_builtin"
                         | "molt_open_builtin"
                         | "molt_aiter"
                         | "molt_anext_builtin" => {
@@ -211,7 +216,7 @@ impl LuauBackend {
                     let method = sanitize_ident(&args[0]);
                     let obj = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = function(...) local __m = {method}; if type(__m) ~= \"function\" then error({{__type=\"TypeError\", __msg=\"object is not callable\"}}) end; return __m({obj}, ...) end"
+                        "local {out} = molt_bound_method_new({method}, {obj})"
                     ));
                 } else {
                     self.emit_unsupported_op(op);
@@ -255,7 +260,7 @@ impl LuauBackend {
                         "map" | "molt_map" => format!("molt_map({call_args})"),
                         "filter" | "molt_filter" => format!("molt_filter({call_args})"),
                         "print" => format!("molt_print({call_args})"),
-                        _ => format!("{func_name}({call_args})"),
+                        _ => checked_call_expr(&func_name, &call_args),
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
                 } else {
@@ -405,7 +410,8 @@ impl LuauBackend {
                 // In Molt IR, call_bind is a function CALL whose second arg is
                 // always a callargs tuple (built via callargs_new + callargs_push_pos).
                 // We must unpack the tuple so individual args are spread:
-                //   func(table.unpack(args_tuple))  instead of  func(args_tuple)
+                // The canonical builder keeps packed positional arguments and
+                // ordered keyword presence separately; invocation binds both.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -414,12 +420,10 @@ impl LuauBackend {
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!(
-                            "local {out} = molt_call_checked({func}, table.unpack({args_tuple}))"
+                            "local {out} = molt_callargs_invoke({func}, {args_tuple})"
                         ));
                     } else {
-                        self.emit_line(&format!(
-                            "molt_call_checked({func}, table.unpack({args_tuple}))"
-                        ));
+                        self.emit_line(&format!("molt_callargs_invoke({func}, {args_tuple})"));
                     }
                 } else if let Some(func) = args.first() {
                     self.emit_line(&format!(

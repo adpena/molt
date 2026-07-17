@@ -8,7 +8,9 @@ impl LuauBackend {
                     if args.len() == 1 {
                         let val = sanitize_ident(&args[0]);
                         if self.tuple_vars.contains(&args[0]) {
-                            self.emit_line(&format!("return table.unpack({val})"));
+                            self.emit_line(&format!(
+                                "return table.unpack({val}, 1, molt_sequence_len({val}))"
+                            ));
                         } else {
                             self.emit_line(&format!("return {val}"));
                         }
@@ -21,7 +23,9 @@ impl LuauBackend {
                 } else if let Some(ref var) = op.var {
                     let val = sanitize_ident(var);
                     if self.tuple_vars.contains(var) {
-                        self.emit_line(&format!("return table.unpack({val})"));
+                        self.emit_line(&format!(
+                            "return table.unpack({val}, 1, molt_sequence_len({val}))"
+                        ));
                     } else {
                         self.emit_line(&format!("return {val}"));
                     }

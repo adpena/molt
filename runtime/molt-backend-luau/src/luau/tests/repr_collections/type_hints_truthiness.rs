@@ -360,7 +360,7 @@ fn test_len_transport_hint_does_not_force_luau_raw_length() {
 }
 
 #[test]
-fn test_len_uses_tir_container_fact_for_luau_raw_length() {
+fn test_len_uses_tir_container_fact_for_packed_sequence_length() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "typed_len".to_string(),
@@ -388,8 +388,8 @@ fn test_len_uses_tir_container_fact_for_luau_raw_length() {
     let output = backend.compile(&ir);
 
     assert!(
-        output.contains("local n = #xs"),
-        "typed list len should use raw Luau length, got:\n{output}"
+        output.contains("local n = molt_sequence_len(xs)"),
+        "typed list len should use packed-sequence length authority, got:\n{output}"
     );
     assert!(
         !output.contains("local n = molt_len(xs)"),
@@ -398,7 +398,40 @@ fn test_len_uses_tir_container_fact_for_luau_raw_length() {
 }
 
 #[test]
-fn test_typed_list_truthiness_uses_luau_raw_length_for_not() {
+fn test_typed_string_len_uses_unicode_codepoint_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "typed_string_len".to_string(),
+            params: vec!["text".to_string()],
+            param_types: Some(vec!["str".to_string()]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "len".to_string(),
+                    args: Some(vec!["text".to_string()]),
+                    out: Some("n".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["n".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let output = backend.compile(&ir);
+
+    assert!(output.contains("local n = molt_len(text)"));
+    assert!(output.contains("utf8.len(obj)"));
+    assert!(!output.contains("local n = #text"));
+}
+
+#[test]
+fn test_typed_list_truthiness_uses_packed_sequence_length_for_not() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "typed_list_not".to_string(),
@@ -426,8 +459,8 @@ fn test_typed_list_truthiness_uses_luau_raw_length_for_not() {
     let output = backend.compile(&ir);
 
     assert!(
-        output.contains("local empty: boolean = not (#xs > 0)"),
-        "typed list truthiness should use raw Luau length for not, got:\n{output}"
+        output.contains("local empty: boolean = not (molt_sequence_len(xs) > 0)"),
+        "typed list truthiness should use packed-sequence length authority, got:\n{output}"
     );
     assert!(
         !output.contains("not molt_bool(xs)"),
@@ -436,7 +469,7 @@ fn test_typed_list_truthiness_uses_luau_raw_length_for_not() {
 }
 
 #[test]
-fn test_typed_dict_truthiness_uses_luau_next_for_or() {
+fn test_typed_dict_truthiness_uses_ordered_dict_size_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "typed_dict_or".to_string(),
@@ -467,8 +500,8 @@ fn test_typed_dict_truthiness_uses_luau_next_for_or() {
     let output = backend.compile(&ir);
 
     assert!(
-        output.contains("local selected = if (next(d) ~= nil) then d else fallback"),
-        "typed dict truthiness should use raw Luau next() for or, got:\n{output}"
+        output.contains("local selected = if (molt_dict_len(d) > 0) then d else fallback"),
+        "typed dict truthiness should use canonical O(1) dict size, got:\n{output}"
     );
     assert!(
         !output.contains("molt_bool(d)"),

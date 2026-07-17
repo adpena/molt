@@ -94,7 +94,21 @@ impl LuauBackend {
             ir,
             "luau",
             molt_tir::target_admission::NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
-            molt_tir::target_admission::RuntimeTargetCapabilities::NONE,
+            molt_tir::target_admission::RuntimeTargetCapabilities {
+                python_identity: true,
+                tuple_representation: true,
+                exception_model: true,
+                deterministic_lifetime: false,
+                format_protocol: false,
+                iterable_protocol: true,
+                object_model: true,
+                python_truthiness: true,
+                python_comparison: true,
+                structured_runtime_errors: true,
+                async_runtime: false,
+                unstructured_control_flow: true,
+                host_capabilities: false,
+            },
         )?;
         let source = self.emit_source(ir);
         // Dispatch failures emit no source and this Result boundary never
@@ -136,7 +150,62 @@ impl LuauBackend {
             "--!native\n--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n",
         );
         self.output
-            .push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
+            .push_str("local molt_func_attrs: {[any]: {[string]: any}} = setmetatable({}, {__mode = \"k\"})\n");
+        self.output.push_str("local molt_func_self_attr = {}\nlocal function molt_func_attr_get(func: any, name: any): any\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then return nil end\n\tlocal value = rawget(attrs, name)\n\tif value == molt_func_self_attr then return func end\n\treturn value\nend\nlocal function molt_func_attr_set(func: any, name: any, value: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then attrs = {}; molt_func_attrs[func] = attrs end\n\trawset(attrs, name, if value == func then molt_func_self_attr else value)\n\treturn nil\nend\nlocal function molt_func_attr_del(func: any, name: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs ~= nil then rawset(attrs, name, nil) end\n\treturn nil\nend\n");
+        self.output.push_str(
+            "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})\n",
+        );
+        self.output
+            .push_str("local molt_code_slots: {[number]: any} = {}\n");
+        self.output
+            .push_str("local molt_call_checked: (any, ...any) -> any\n");
+        self.output
+            .push_str("local molt_equal: (any, any, any?) -> boolean\n");
+        self.output
+            .push_str("local molt_sequence_length_key = {}\nlocal molt_sequence_kind_key = {}\nlocal function molt_sequence_len(sequence: {any}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {any}\n\tlocal sequence = table.pack(...)\n\trawset(sequence, molt_sequence_length_key, sequence.n)\n\trawset(sequence, molt_sequence_kind_key, kind)\n\trawset(sequence, \"n\", nil)\n\treturn sequence\nend\nlocal function molt_pack_list(...): {any} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {any} return molt_pack_sequence_kind(\"tuple\", ...) end\nlocal function molt_function_register_signature(func: any, arg_names: {any}): nil\n\tmolt_function_metadata[func] = {arg_names = arg_names, posonly = 0, kwonly = molt_pack_tuple(), vararg = nil, varkw = nil, defaults = nil, kwdefaults = nil}\n\treturn nil\nend\n");
+        let needs_callargs_runtime = func_body.contains("molt_callargs_")
+            || func_body.contains("molt_function_init_metadata_packed(")
+            || func_body.contains("molt_function_set_defaults(")
+            || func_body.contains("molt_call_checked(")
+            || func_body.contains("molt_bound_method_new(")
+            || func_body.contains("molt_get_attr")
+            || func_body.contains("molt_set_attr(")
+            || func_body.contains("molt_del_attr(")
+            || func_body.contains("molt_class_apply_set_name(");
+        let needs_equality_repr_runtime = func_body.contains("molt_equal(")
+            || func_body.contains("molt_set_")
+            || func_body.contains("molt_frozenset_")
+            || func_body.contains("molt_dict_view_contains(")
+            || func_body.contains("molt_str(")
+            || func_body.contains("molt_repr(")
+            || func_body.contains("molt_print(");
+        let needs_dict_runtime = func_body.contains("molt_dict_")
+            || needs_equality_repr_runtime
+            || func_body.contains("molt_len(")
+            || func_body.contains("molt_bool(")
+            || func_body.contains("molt_unpack_sequence(")
+            || func_body.contains("molt_module_get_global(")
+            || func_body.contains("molt_module_get_name(")
+            || func_body.contains("molt_module_del_global(")
+            || func_body.contains("molt_json_dumps(")
+            || func_body.contains("\"json\"")
+            || needs_callargs_runtime;
+        let needs_dict_runtime = needs_dict_runtime || func_body.contains("molt_iterator_new(");
+        let needs_binary_runtime =
+            func_body.contains("molt_binary_new(") || func_body.contains("molt_binary_metadata");
+        if needs_dict_runtime || needs_binary_runtime {
+            self.output.push_str("local molt_binary_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})\nlocal function molt_binary_new(kind: string, value: string): any local result = {}; molt_binary_metadata[result] = {kind=kind, value=value}; return result end\n");
+        }
+        if needs_dict_runtime {
+            self.output.push_str(dict_runtime::DICT_CORE_RUNTIME);
+            if needs_callargs_runtime {
+                self.output.push_str(dict_runtime::CALLARGS_RUNTIME);
+            }
+            if needs_equality_repr_runtime {
+                self.output.push_str(dict_runtime::EQUALITY_REPR_RUNTIME);
+            }
+            self.output.push('\n');
+        }
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
 
         let needs_luau_module_import = func_body.contains("molt_luau_import_module(");
@@ -254,8 +323,12 @@ impl LuauBackend {
                 "end\n\n",
                 "local function molt_module_get_global(module: any, name: any): any\n",
                 "\tif type(module) ~= \"table\" then return molt_module_type_error(\"get_global\") end\n",
-                "\tlocal value = module[name]\n",
-                "\tif value ~= nil then return value end\n",
+                "\tif molt_dict_is_ordered(module) then\n",
+                "\t\tif molt_dict_contains(module, name) then return molt_dict_getitem(module, name) end\n",
+                "\telse\n",
+                "\t\tlocal value = module[name]\n",
+                "\t\tif value ~= nil then return value end\n",
+                "\tend\n",
                 "\tlocal builtins = molt_module_cache[\"builtins\"]\n",
                 "\tif type(builtins) == \"table\" then\n",
                 "\t\tlocal builtin_value = builtins[name]\n",
@@ -265,13 +338,21 @@ impl LuauBackend {
                 "end\n\n",
                 "local function molt_module_get_name(module: any, name: any): any\n",
                 "\tif type(module) ~= \"table\" then return molt_module_type_error(\"get_name\") end\n",
-                "\tlocal value = module[name]\n",
-                "\tif value ~= nil then return value end\n",
+                "\tif molt_dict_is_ordered(module) then\n",
+                "\t\tif molt_dict_contains(module, name) then return molt_dict_getitem(module, name) end\n",
+                "\telse\n",
+                "\t\tlocal value = module[name]\n",
+                "\t\tif value ~= nil then return value end\n",
+                "\tend\n",
                 "\terror({__type = \"AttributeError\", __msg = \"module has no attribute '\" .. tostring(name) .. \"'\"})\n",
                 "end\n\n",
                 "local function molt_module_del_global(module: any, name: any, missing_ok: boolean): any\n",
                 "\tif type(module) ~= \"table\" then return molt_module_type_error(\"del_global\") end\n",
-                "\tif module[name] ~= nil then\n",
+                "\tif molt_dict_is_ordered(module) and molt_dict_contains(module, name) then\n",
+                "\t\tmolt_dict_delete(module, name, false)\n",
+                "\t\treturn nil\n",
+                "\tend\n",
+                "\tif not molt_dict_is_ordered(module) and module[name] ~= nil then\n",
                 "\t\tmodule[name] = nil\n",
                 "\t\treturn nil\n",
                 "\tend\n",
@@ -285,12 +366,97 @@ impl LuauBackend {
         // Each helper is a (name, source) pair.
         let helpers: &[(&str, &str)] = &[
             (
+                "molt_pack_sequence",
+                "local function molt_pack_sequence(...): {any} return molt_pack_list(...) end\n",
+            ),
+            (
                 "molt_range",
-                "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal s = step or 1\n\tlocal result = table.create(math.max(0, math.ceil((stop - start) / s)))\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n",
+                "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal s = step or 1\n\tlocal result = molt_pack_sequence_kind(\"range\")\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\trawset(result, n, i)\n\t\ti += s\n\tend\n\trawset(result, molt_sequence_length_key, n)\n\treturn result\nend\n",
             ),
             (
                 "molt_len",
-                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then\n\t\tlocal n = #obj\n\t\tif n > 0 or next(obj) == nil then return n end\n\t\tlocal c = 0; for _ in pairs(obj) do c += 1 end; return c\n\tend\n\terror(\"TypeError: object of type '\" .. type(obj) .. \"' has no len()\")\nend\n",
+                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then local n = utf8.len(obj); if n == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end; return n end\n\tif type(obj) == \"table\" then\n\t\tlocal binary = molt_binary_metadata[obj]; if binary ~= nil then return #binary.value end\n\t\tif molt_dict_is_ordered(obj) then return molt_dict_len(obj) end\n\t\tif molt_dict_view_is(obj) then return molt_dict_view_len(obj) end\n\t\tif molt_set_is(obj) then return molt_set_len(obj) end\n\t\tlocal packed = rawget(obj, molt_sequence_length_key)\n\t\tif type(packed) == \"number\" then return packed end\n\t\terror({__type=\"TypeError\", __msg=\"foreign Luau table has no deterministic Python length\"})\n\tend\n\terror(\"TypeError: object of type '\" .. type(obj) .. \"' has no len()\")\nend\n",
+            ),
+            (
+                "molt_unpack_sequence",
+                r#"local function molt_unpack_sequence(obj: any, expected: number, shape: string?): {any}
+	local function fail_arity(actual: number): nil
+		if actual < expected then
+			error({__type="ValueError", __msg="not enough values to unpack (expected " .. tostring(expected) .. ", got " .. tostring(actual) .. ")"})
+		end
+		error({__type="ValueError", __msg="too many values to unpack (expected " .. tostring(expected) .. ")"})
+	end
+	local function finish(items: {any}, actual: number): {any}
+		if actual ~= expected then fail_arity(actual) end
+		rawset(items, molt_sequence_length_key, actual)
+		return items
+	end
+	local function unpack_packed_sequence(sequence: {any}): {any}
+		local packed = rawget(sequence, molt_sequence_length_key)
+		if type(packed) == "number" then
+			if packed ~= math.floor(packed) or packed < 0 then
+				error({__type="TypeError", __msg="invalid packed sequence length"})
+			end
+			if packed ~= expected then fail_arity(packed) end
+			local items = table.create(expected)
+			for i = 1, expected do rawset(items, i, rawget(sequence, i)) end
+			return finish(items, packed)
+		end
+		-- An ordinary Luau array cannot contain an explicit nil element. Probe
+		-- only expected+1 slots; packed arrays above preserve Python None holes.
+		local items = table.create(expected)
+		local actual = 0
+		while actual <= expected do
+			local value = rawget(sequence, actual + 1)
+			if value == nil then break end
+			actual += 1
+			if actual <= expected then rawset(items, actual, value) end
+		end
+		return finish(items, actual)
+	end
+	local function unpack_mapping_keys(mapping: {any}): {any}
+		local actual = molt_dict_len(mapping)
+		if actual ~= expected then fail_arity(actual) end
+		return finish(molt_dict_view_snapshot(molt_dict_keys(mapping)), actual)
+	end
+	local function unpack_custom_iterable(iterable: any): {any}
+		local items = table.create(expected)
+		local actual = 0
+		for value in iterable do
+			actual += 1
+			if actual <= expected then rawset(items, actual, value) end
+			if actual > expected then break end
+		end
+		return finish(items, actual)
+	end
+	local kind = type(obj)
+	if kind == "string" then
+		local items = table.create(expected)
+		local actual = 0
+		for _, codepoint in utf8.codes(obj) do
+			actual += 1
+			if actual <= expected then rawset(items, actual, utf8.char(codepoint)) end
+			if actual > expected then break end
+		end
+		return finish(items, actual)
+	end
+	if kind ~= "table" then
+		local type_name = if kind == "nil" then "NoneType" else kind
+		error({__type="TypeError", __msg="cannot unpack non-iterable " .. type_name .. " object"})
+	end
+	if shape == "sequence" then return unpack_packed_sequence(obj) end
+	if shape == "mapping" then return unpack_mapping_keys(obj) end
+	local mt = getmetatable(obj)
+	if type(mt) == "table" and type(rawget(mt, "__iter")) == "function" then
+		return unpack_custom_iterable(obj)
+	end
+	if molt_dict_is_ordered(obj) then return unpack_mapping_keys(obj) end
+	if type(rawget(obj, molt_sequence_length_key)) == "number" or rawget(obj, 1) ~= nil or next(obj) == nil then
+		return unpack_packed_sequence(obj)
+	end
+	error({__type="TypeError", __msg="unordered foreign Luau table is not a deterministic Python iterable"})
+end
+"#,
             ),
             (
                 "molt_int",
@@ -301,12 +467,8 @@ impl LuauBackend {
                 "local function molt_float(x: any): number\n\tlocal value = tonumber(x)\n\tif value == nil then error({__type=\"ValueError\", __msg=\"could not convert string to float\"}) end\n\treturn value\nend\n",
             ),
             (
-                "molt_str",
-                "local function molt_str(x: any): string\n\tif type(x) == \"table\" then\n\t\tlocal n = #x\n\t\tif n > 0 or next(x) == nil then\n\t\t\tlocal parts = table.create(n)\n\t\t\tfor i = 1, n do parts[i] = molt_str(x[i]) end\n\t\t\treturn \"[\" .. table.concat(parts, \", \") .. \"]\"\n\t\telse\n\t\t\tlocal parts = {}\n\t\t\tlocal m = 0\n\t\t\tfor k, v in pairs(x) do m += 1; parts[m] = molt_repr(k) .. \": \" .. molt_str(v) end\n\t\t\treturn \"{\" .. table.concat(parts, \", \") .. \"}\"\n\t\tend\n\tend\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n",
-            ),
-            (
                 "molt_bool",
-                "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n",
+                "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" then local binary = molt_binary_metadata[x]; if binary ~= nil then return #binary.value > 0 end; if molt_dict_is_ordered(x) then return molt_dict_len(x) > 0 end; if molt_dict_view_is(x) then return molt_dict_view_len(x) > 0 end; if molt_set_is(x) then return molt_set_len(x) > 0 end; local packed = rawget(x, molt_sequence_length_key); if type(packed) == \"number\" then return packed > 0 end end\n\treturn true\nend\n",
             ),
             (
                 "molt_builtin_type",
@@ -326,7 +488,7 @@ impl LuauBackend {
             ),
             (
                 "molt_get_attr",
-                "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then\n\t\t\tlocal func = raw.__func\n\t\t\treturn function(...) return func(owner, ...) end\n\t\tend\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn fget(obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then\n\t\treturn function(...) return raw(obj, ...) end\n\tend\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_has_attr(obj: any, attr: any): boolean\n\tlocal ok, value = pcall(function() return molt_get_attr(obj, attr) end)\n\tif ok then return value ~= nil end\n\tif type(value) == \"table\" and value.__type == \"AttributeError\" then return false end\n\terror(value)\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tfset(obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tfdel(obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
+                "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then return molt_bound_method_new(raw.__func, owner) end\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn molt_call_checked(fget, obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then return molt_bound_method_new(raw, obj) end\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_has_attr(obj: any, attr: any): boolean\n\tlocal ok, value = pcall(function() return molt_get_attr(obj, attr) end)\n\tif ok then return value ~= nil end\n\tif type(value) == \"table\" and value.__type == \"AttributeError\" then return false end\n\terror(value)\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tmolt_call_checked(fset, obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tmolt_call_checked(fdel, obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
             ),
             (
                 "molt_class_apply_set_name",
@@ -345,10 +507,6 @@ impl LuauBackend {
                 "local function molt_guard_type(val: any, expected: any): any\n\tif type(expected) ~= \"number\" then error({__type=\"TypeError\", __msg=\"guard type tag must be int\"}) end\n\treturn val\nend\n",
             ),
             (
-                "molt_repr",
-                "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return \"'\" .. x .. \"'\" end\n\tif type(x) == \"table\" then return molt_str(x) end\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n",
-            ),
-            (
                 "molt_floor_div",
                 "local function molt_floor_div(a: number, b: number): number\n\treturn a // b\nend\n",
             ),
@@ -362,63 +520,51 @@ impl LuauBackend {
             ),
             (
                 "molt_enumerate",
-                "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tlocal s = start or 0\n\tfor i = 1, len do\n\t\tresult[i] = {s + i - 1, t[i]}\n\tend\n\treturn result\nend\n",
+                "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal len = molt_sequence_len(t)\n\tlocal result = molt_pack_sequence_kind(\"iterator\")\n\tlocal s = start or 0\n\tfor i = 1, len do rawset(result, i, molt_pack_tuple(s + i - 1, rawget(t, i))) end\n\trawset(result, molt_sequence_length_key, len)\n\treturn result\nend\n",
             ),
             (
                 "molt_zip",
-                "local function molt_zip(a: {any}, b: {any}): {{any}}\n\tlocal result = {}\n\tlocal len = math.min(#a, #b)\n\tfor i = 1, len do\n\t\tresult[i] = {a[i], b[i]}\n\tend\n\treturn result\nend\n",
+                "local function molt_zip(a: {any}, b: {any}): {{any}}\n\tlocal result = molt_pack_sequence_kind(\"iterator\")\n\tlocal len = math.min(molt_sequence_len(a), molt_sequence_len(b))\n\tfor i = 1, len do rawset(result, i, molt_pack_tuple(rawget(a, i), rawget(b, i))) end\n\trawset(result, molt_sequence_length_key, len)\n\treturn result\nend\n",
             ),
             (
                 "molt_sorted",
-                "local function molt_sorted(t: {any}): {any}\n\tlocal copy = table.clone(t)\n\ttable.sort(copy)\n\treturn copy\nend\n",
+                "local function molt_sorted(t: {any}): {any}\n\tlocal count = molt_sequence_len(t)\n\tlocal copy = molt_pack_list()\n\tfor index = 1, count do rawset(copy, index, rawget(t, index)) end\n\trawset(copy, molt_sequence_length_key, count)\n\ttable.sort(copy)\n\treturn copy\nend\n",
             ),
             (
                 "molt_reversed",
-                "@native\nlocal function molt_reversed(t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = t[len - i + 1]\n\tend\n\treturn result\nend\n",
+                "@native\nlocal function molt_reversed(t: {any}): {any}\n\tlocal len = molt_sequence_len(t)\n\tlocal result = molt_pack_sequence_kind(\"iterator\")\n\trawset(result, molt_sequence_length_key, len)\n\tfor i = 1, len do\n\t\trawset(result, i, rawget(t, len - i + 1))\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_sum",
-                "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor __i = 1, #t do s += t[__i] end\n\treturn s\nend\n",
+                "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal len = molt_sequence_len(t)\n\tlocal s = start or 0\n\tfor __i = 1, len do s += t[__i] end\n\treturn s\nend\n",
             ),
             (
                 "molt_any",
-                "local function molt_any(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif molt_bool(t[__i]) then return true end\n\tend\n\treturn false\nend\n",
+                "local function molt_any(t: {any}): boolean\n\tlocal len = molt_sequence_len(t)\n\tfor __i = 1, len do\n\t\tif molt_bool(rawget(t, __i)) then return true end\n\tend\n\treturn false\nend\n",
             ),
             (
                 "molt_all",
-                "local function molt_all(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif not molt_bool(t[__i]) then return false end\n\tend\n\treturn true\nend\n",
+                "local function molt_all(t: {any}): boolean\n\tlocal len = molt_sequence_len(t)\n\tfor __i = 1, len do\n\t\tif not molt_bool(rawget(t, __i)) then return false end\n\tend\n\treturn true\nend\n",
             ),
             (
                 "molt_map",
-                "@native\nlocal function molt_map(func: (any) -> any, t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = func(t[i])\n\tend\n\treturn result\nend\n",
+                "@native\nlocal function molt_map(func: (any) -> any, t: {any}): {any}\n\tlocal len = molt_sequence_len(t)\n\tlocal result = molt_pack_sequence_kind(\"iterator\")\n\trawset(result, molt_sequence_length_key, len)\n\tfor i = 1, len do\n\t\trawset(result, i, func(rawget(t, i)))\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_filter",
-                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor __i = 1, #t do\n\t\tlocal v = t[__i]\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif molt_bool(v) then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
-            ),
-            (
-                "molt_dict_keys",
-                "local function molt_dict_keys(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k in pairs(d) do n += 1; result[n] = k end\n\treturn result\nend\n",
-            ),
-            (
-                "molt_dict_values",
-                "local function molt_dict_values(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in pairs(d) do n += 1; result[n] = v end\n\treturn result\nend\n",
-            ),
-            (
-                "molt_dict_items",
-                "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n",
+                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal len = molt_sequence_len(t)\n\tlocal result = molt_pack_sequence_kind(\"iterator\")\n\tlocal n = 0\n\tfor __i = 1, len do\n\t\tlocal v = rawget(t, __i)\n\t\tif func then\n\t\t\tif func(v) then n += 1; rawset(result, n, v) end\n\t\telseif molt_bool(v) then\n\t\t\tn += 1; rawset(result, n, v)\n\t\tend\n\tend\n\trawset(result, molt_sequence_length_key, n)\n\treturn result\nend\n",
             ),
             (
                 "molt_string_split_ws_dict_inc",
-                "local function molt_string_split_ws_dict_inc(line: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"dict increment expects dict\"}) end\n\tlocal last: any = nil\n\tlocal had_any = false\n\tfor token in string.gmatch(line, \"%S+\") do\n\t\tlocal current = dict[token]\n\t\tif current == nil then current = 0 end\n\t\tdict[token] = current + delta\n\t\tlast = token\n\t\thad_any = true\n\tend\n\treturn {last, had_any}\nend\n",
+                "local function molt_string_split_ws_dict_inc(line: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tmolt_dict_require(dict)\n\tlocal last: any = nil\n\tlocal had_any = false\n\tfor token in string.gmatch(line, \"%S+\") do\n\t\tmolt_dict_inc(dict, token, delta)\n\t\tlast = token\n\t\thad_any = true\n\tend\n\treturn {last, had_any}\nend\n",
             ),
             (
                 "molt_string_split_sep_dict_inc",
-                "local function molt_string_split_sep_dict_inc(line: any, sep: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tif type(sep) ~= \"string\" then error({__type=\"TypeError\", __msg=\"must be str or None\"}) end\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"dict increment expects dict\"}) end\n\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\tlocal last: any = nil\n\tlocal had_any = false\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, sep, pos, true)\n\t\tlocal token\n\t\tif i then\n\t\t\ttoken = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\ttoken = string.sub(line, pos)\n\t\tend\n\t\tlocal current = dict[token]\n\t\tif current == nil then current = 0 end\n\t\tdict[token] = current + delta\n\t\tlast = token\n\t\thad_any = true\n\t\tif not i then break end\n\tend\n\treturn {last, had_any}\nend\n",
+                "local function molt_string_split_sep_dict_inc(line: any, sep: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tif type(sep) ~= \"string\" then error({__type=\"TypeError\", __msg=\"must be str or None\"}) end\n\tmolt_dict_require(dict)\n\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\tlocal last: any = nil\n\tlocal had_any = false\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, sep, pos, true)\n\t\tlocal token\n\t\tif i then\n\t\t\ttoken = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\ttoken = string.sub(line, pos)\n\t\tend\n\t\tmolt_dict_inc(dict, token, delta)\n\t\tlast = token\n\t\thad_any = true\n\t\tif not i then break end\n\tend\n\treturn {last, had_any}\nend\n",
             ),
             (
                 "molt_taq_ingest_line",
-                "local function molt_taq_parse_i64_field(field: string): number\n\tlocal trimmed = string.match(field, \"^%s*(.-)%s*$\")\n\tif trimmed == nil or trimmed == \"\" then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: ''\"}) end\n\tif string.match(trimmed, \"^[+-]?%d+$\") == nil then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: '\" .. trimmed .. \"'\"}) end\n\treturn tonumber(trimmed) :: number\nend\n\nlocal function molt_taq_div_euclid(a: number, b: number): number\n\tlocal q = if a >= 0 then math.floor(a / b) else math.ceil(a / b)\n\tlocal r = a - q * b\n\tif r < 0 then\n\t\tif b > 0 then q -= 1 else q += 1 end\n\tend\n\treturn q\nend\n\nlocal function molt_taq_ingest_line(dict: any, line: any, bucket_size: any): boolean\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects dict\"}) end\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects str\"}) end\n\tif type(bucket_size) ~= \"number\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects integer bucket size\"}) end\n\tif bucket_size == 0 then error({__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}) end\n\tlocal fields = {}\n\tlocal field_count = 0\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, \"|\", pos, true)\n\t\tfield_count += 1\n\t\tif i then\n\t\t\tfields[field_count] = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\tfields[field_count] = string.sub(line, pos)\n\t\t\tbreak\n\t\tend\n\tend\n\tlocal ts_field = fields[1]\n\tlocal sym_field = fields[3]\n\tlocal vol_field = fields[5]\n\tif ts_field == nil or sym_field == nil or vol_field == nil then error({__type=\"IndexError\", __msg=\"list index out of range\"}) end\n\tif ts_field == \"END\" or vol_field == \"ENDP\" then return false end\n\tlocal timestamp = molt_taq_parse_i64_field(ts_field)\n\tlocal volume = molt_taq_parse_i64_field(vol_field)\n\tlocal series = dict[sym_field]\n\tif series == nil then\n\t\tseries = {}\n\t\tdict[sym_field] = series\n\tend\n\tif type(series) ~= \"table\" then error({__type=\"TypeError\", __msg=\"TAQ ingest bucket must be list\"}) end\n\tseries[#series + 1] = {molt_taq_div_euclid(timestamp, bucket_size), volume}\n\treturn true\nend\n",
+                "local function molt_taq_parse_i64_field(field: string): number\n\tlocal trimmed = string.match(field, \"^%s*(.-)%s*$\")\n\tif trimmed == nil or trimmed == \"\" then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: ''\"}) end\n\tif string.match(trimmed, \"^[+-]?%d+$\") == nil then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: '\" .. trimmed .. \"'\"}) end\n\treturn tonumber(trimmed) :: number\nend\n\nlocal function molt_taq_div_euclid(a: number, b: number): number\n\tlocal q = if a >= 0 then math.floor(a / b) else math.ceil(a / b)\n\tlocal r = a - q * b\n\tif r < 0 then\n\t\tif b > 0 then q -= 1 else q += 1 end\n\tend\n\treturn q\nend\n\nlocal function molt_taq_ingest_line(dict: any, line: any, bucket_size: any): boolean\n\tmolt_dict_require(dict)\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects str\"}) end\n\tif type(bucket_size) ~= \"number\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects integer bucket size\"}) end\n\tif bucket_size == 0 then error({__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}) end\n\tlocal fields = {}\n\tlocal field_count = 0\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, \"|\", pos, true)\n\t\tfield_count += 1\n\t\tif i then\n\t\t\tfields[field_count] = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\tfields[field_count] = string.sub(line, pos)\n\t\t\tbreak\n\t\tend\n\tend\n\tlocal ts_field = fields[1]\n\tlocal sym_field = fields[3]\n\tlocal vol_field = fields[5]\n\tif ts_field == nil or sym_field == nil or vol_field == nil then error({__type=\"IndexError\", __msg=\"list index out of range\"}) end\n\tif ts_field == \"END\" or vol_field == \"ENDP\" then return false end\n\tlocal timestamp = molt_taq_parse_i64_field(ts_field)\n\tlocal volume = molt_taq_parse_i64_field(vol_field)\n\tlocal series = molt_dict_get(dict, sym_field, nil)\n\tif series == nil then\n\t\tseries = {}\n\t\tmolt_dict_set(dict, sym_field, series)\n\tend\n\tif type(series) ~= \"table\" then error({__type=\"TypeError\", __msg=\"TAQ ingest bucket must be list\"}) end\n\tseries[#series + 1] = {molt_taq_div_euclid(timestamp, bucket_size), volume}\n\treturn true\nend\n",
             ),
             (
                 "molt_print",
@@ -435,10 +581,6 @@ impl LuauBackend {
             (
                 "molt_ord",
                 "local function molt_ord(ch: any): number\n\tif type(ch) ~= \"string\" then error({__type=\"TypeError\", __msg=\"ord() expected string of length 1, but \" .. type(ch) .. \" found\"}) end\n\tlocal len = molt_str_codepoint_len(ch)\n\tif len ~= 1 then error({__type=\"TypeError\", __msg=\"ord() expected a character, but string of length \" .. tostring(len) .. \" found\"}) end\n\tlocal code = utf8.codepoint(ch, 1)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
-            ),
-            (
-                "molt_call_checked",
-                "local function molt_call_checked(callable: any, ...): any\n\tif type(callable) ~= \"function\" then error({__type=\"TypeError\", __msg=\"object is not callable\"}) end\n\treturn callable(...)\nend\n",
             ),
             (
                 "molt_get_attr_checked",
@@ -481,14 +623,9 @@ impl LuauBackend {
             ),
         ];
 
-        // Dependency: molt_str ↔ molt_repr are mutually recursive for table
-        // serialization. molt_print depends on molt_str. If any is used, emit all linked.
-        // Luau `local function` is NOT hoisted, so we need a forward declaration for
-        // molt_repr before molt_str (which calls molt_repr in its body).
+        // Dict/list rendering is part of the canonical container runtime above.
+        // molt_print still needs that runtime because it calls molt_str.
         let needs_print = used_call("molt_print");
-        let needs_str = used_call("molt_str") || needs_print;
-        let needs_repr = used_call("molt_repr");
-        let needs_str_group = needs_str || needs_repr;
         let needs_ord_group = used_call("molt_ord")
             || used_call("molt_ord_at")
             || used_call("molt_str_codepoint_len")
@@ -508,17 +645,12 @@ impl LuauBackend {
             || used_call("molt_del_attr")
             || used_call("molt_class_apply_set_name")
             || needs_matmul_group;
-        if needs_str_group {
-            self.output.push_str("local molt_repr\n");
-        }
         if needs_not_implemented {
             self.output
                 .push_str("local molt_not_implemented = {__molt_not_implemented = true}\n");
         }
         for (name, source) in helpers {
-            let emit = if matches!(*name, "molt_str" | "molt_repr") {
-                needs_str_group
-            } else if matches!(
+            let emit = if matches!(
                 *name,
                 "molt_str_codepoint_len" | "molt_str_byte_offset" | "molt_ord" | "molt_ord_at"
             ) {
@@ -543,18 +675,10 @@ impl LuauBackend {
                 used_call(name)
             };
             if emit {
-                // molt_repr uses assignment form since it was forward-declared.
-                if *name == "molt_repr" && needs_str_group {
-                    let assigned =
-                        source.replace("local function molt_repr(", "molt_repr = function(");
-                    self.output.push_str(&assigned);
-                } else {
-                    self.output.push_str(source);
-                }
+                self.output.push_str(source);
                 self.output.push('\n');
             }
         }
-
         // Exception handling helpers — only emit if pcall-based try/except is used.
         if used_call("molt_exception_kind") || used_call("molt_exception_match") {
             self.output.push_str(concat!(
@@ -707,7 +831,7 @@ impl LuauBackend {
                 "\tformat = string.format,\n",
                 "\tjoin = function(sep: string, t: {string}): string\n\t\treturn table.concat(t, sep)\n\tend,\n",
                 "\tsplit = function(s: string, sep: string?): {string}\n",
-                "\t\tlocal result = {}\n\t\tlocal n = 0\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
+                "\t\tlocal result = molt_pack_list()\n\t\tlocal n = 0\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
                 "\t\tif sep then\n\t\t\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\t\t\tlocal pos = 1\n\t\t\twhile pos <= #s do\n",
                 "\t\t\t\tlocal i, j = string.find(s, pattern, pos, true)\n",
                 "\t\t\t\tif i then\n\t\t\t\t\tn += 1; result[n] = string.sub(s, pos, i - 1)\n",
@@ -715,7 +839,7 @@ impl LuauBackend {
                 "\t\t\t\t\tn += 1; result[n] = string.sub(s, pos)\n\t\t\t\t\tbreak\n",
                 "\t\t\t\tend\n\t\t\tend\n\t\telse\n",
                 "\t\t\tfor w in string.gmatch(s, \"%S+\") do\n\t\t\t\tn += 1; result[n] = w\n",
-                "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n",
+                "\t\t\tend\n\t\tend\n\t\trawset(result, molt_sequence_length_key, n)\n\t\treturn result\n\tend,\n",
                 "\tsplit_validate = function(s: string, sep: string): nil\n",
                 "\t\tif type(s) ~= \"string\" then error({__type=\"TypeError\", __msg=\"descriptor 'split' for 'str' objects doesn't apply to a '\" .. type(s) .. \"' object\"}) end\n",
                 "\t\tif type(sep) ~= \"string\" then error({__type=\"TypeError\", __msg=\"must be str or None, not \" .. type(sep)}) end\n",
