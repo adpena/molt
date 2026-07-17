@@ -248,9 +248,13 @@ def _discover_module_graph_from_paths(
     )
     explicit_imports: set[str] = set()
     seen_import_names: set[str] = set()
-    queue = list(reversed(entry_paths))
-    queued_paths = set(entry_paths)
     resolution_cache = resolver_cache or _module_resolution._ModuleResolutionCache()
+    queue: list[tuple[Path, str | None]] = [
+        (path, None) for path in reversed(entry_paths)
+    ]
+    queued_entries = {
+        (resolution_cache.resolved_path(path), None) for path in entry_paths
+    }
     import_admission_policy = import_admission_policy or _ImportAdmissionPolicy()
     resolved_entry_paths = frozenset(
         resolution_cache.resolved_path(path) for path in entry_paths
@@ -294,12 +298,21 @@ def _discover_module_graph_from_paths(
         )
 
     while queue:
-        path = queue.pop()
-        queued_paths.discard(path)
-        module_name = resolution_cache.module_name_from_path(
+        path, forced_module_name = queue.pop()
+        queued_entries.discard(
+            (resolution_cache.resolved_path(path), forced_module_name)
+        )
+        module_name = forced_module_name or resolution_cache.module_name_from_path(
             path, module_roots, stdlib_root
         )
         if module_name in graph:
+            if resolution_cache.resolved_path(
+                graph[module_name]
+            ) != resolution_cache.resolved_path(path):
+                raise ValueError(
+                    f"module {module_name!r} has multiple statically executed source authorities: "
+                    f"{graph[module_name]} and {path}"
+                )
             continue
         graph[module_name] = path
         is_package = path.name == "__init__.py"
@@ -315,6 +328,11 @@ def _discover_module_graph_from_paths(
             if precomputed_imports_by_path is not None
             else None
         )
+        source_executions: tuple[
+            _module_import_scanner._StaticSourceExecution, ...
+        ] = ()
+        source: str | None = None
+        tree: ast.AST | None = None
         if import_admission_policy.owns_source_closure_with_native_artifact_plan(
             module_name,
             path,
@@ -376,6 +394,85 @@ def _discover_module_graph_from_paths(
                 )
             else:
                 imports = persisted_imports
+        # Source-execution roots are part of the module graph, not ordinary
+        # import-name rows.  Import-scan cache hits therefore cannot authorize
+        # skipping this projection.  The marker guard keeps the common path to
+        # one cached source read and no AST walk.
+        if not import_admission_policy.owns_source_closure_with_native_artifact_plan(
+            module_name, path
+        ):
+            if source is None:
+                try:
+                    source = resolution_cache.read_module_source(path)
+                except (OSError, SyntaxError, UnicodeDecodeError):
+                    source = None
+            if (
+                source is not None
+                and _module_import_scanner._source_may_use_static_source_execution(
+                    source
+                )
+            ):
+                if tree is None:
+                    try:
+                        tree = resolution_cache.parse_module_ast(
+                            path,
+                            source,
+                            filename=str(path),
+                            target_python=target_python,
+                        )
+                    except SyntaxError:
+                        tree = None
+                if tree is not None:
+                    source_executions = (
+                        _module_import_scanner._collect_static_source_executions(
+                            tree,
+                            source_path=path,
+                            import_scan_mode=import_scan_mode,
+                            module_name=module_name,
+                        )
+                    )
+        for execution in source_executions:
+            execution_name = (
+                execution.module_name
+                or resolution_cache.module_name_from_path(
+                    execution.source_path, module_roots, stdlib_root
+                )
+            )
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+                execution_name,
+            ):
+                raise ValueError(
+                    f"statically executed source uses invalid module name {execution_name!r}"
+                )
+            from_entry_path = (
+                allow_entry_external_imports
+                and resolution_cache.resolved_path(path) in resolved_entry_paths
+            )
+            if not import_admission_policy.admits_import(
+                execution_name,
+                execution.source_path,
+                from_entry_path=from_entry_path,
+            ):
+                continue
+            existing = graph.get(execution_name)
+            if existing is not None:
+                if resolution_cache.resolved_path(
+                    existing
+                ) != resolution_cache.resolved_path(execution.source_path):
+                    raise ValueError(
+                        f"module {execution_name!r} has multiple statically executed source "
+                        f"authorities: {existing} and {execution.source_path}"
+                    )
+                continue
+            explicit_imports.add(execution_name)
+            entry = (
+                resolution_cache.resolved_path(execution.source_path),
+                execution_name,
+            )
+            if entry not in queued_entries:
+                queued_entries.add(entry)
+                queue.append((execution.source_path, execution_name))
         for name in imports:
             if name in seen_import_names:
                 continue
@@ -394,7 +491,7 @@ def _discover_module_graph_from_paths(
                 ):
                     continue
                 resolved = resolve_candidate(candidate)
-                if resolved is None or resolved in queued_paths:
+                if resolved is None:
                     continue
                 from_entry_path = (
                     allow_entry_external_imports
@@ -406,9 +503,11 @@ def _discover_module_graph_from_paths(
                     from_entry_path=from_entry_path,
                 ):
                     continue
-                if resolved not in queued_paths:
-                    queued_paths.add(resolved)
-                    queue.append(resolved)
+                entry = (resolution_cache.resolved_path(resolved), None)
+                if candidate in graph or entry in queued_entries:
+                    continue
+                queued_entries.add(entry)
+                queue.append((resolved, None))
     if use_persisted_graph_cache:
         with contextlib.suppress(OSError):
             _module_graph_cache._write_persisted_module_graph(

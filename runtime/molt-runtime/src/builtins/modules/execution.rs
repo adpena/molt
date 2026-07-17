@@ -53,12 +53,8 @@ const EXECUTION_NAME_PENDING: u8 = 1 << 0;
 const SCRIPT_FILE_PENDING: u8 = 1 << 1;
 const SCRIPT_PACKAGE_PENDING: u8 = 1 << 2;
 const SCRIPT_SPEC_PENDING: u8 = 1 << 3;
-const LOADER_LOADER_PENDING: u8 = 1 << 4;
-const LOADER_CACHED_PENDING: u8 = 1 << 5;
 const SCRIPT_METADATA_PENDING: u8 =
     EXECUTION_NAME_PENDING | SCRIPT_FILE_PENDING | SCRIPT_PACKAGE_PENDING | SCRIPT_SPEC_PENDING;
-const LOADER_METADATA_PENDING: u8 =
-    SCRIPT_METADATA_PENDING | LOADER_LOADER_PENDING | LOADER_CACHED_PENDING;
 
 thread_local! {
     static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
@@ -679,12 +675,6 @@ pub(super) fn module_metadata_override_bits(
             (ExecutionMetadata::LoaderNamespace { .. }, "__spec__") => {
                 (SCRIPT_SPEC_PENDING, MetadataOverride::Existing)
             }
-            (ExecutionMetadata::LoaderNamespace { .. }, "__loader__") => {
-                (LOADER_LOADER_PENDING, MetadataOverride::Existing)
-            }
-            (ExecutionMetadata::LoaderNamespace { .. }, "__cached__") => {
-                (LOADER_CACHED_PENDING, MetadataOverride::Existing)
-            }
             _ => return None,
         };
         if ctx.metadata_override_pending & bit == 0 {
@@ -1021,7 +1011,7 @@ pub(crate) fn execute_compiled_module(
         ExecutionMetadata::ScriptFile(_) => SCRIPT_METADATA_PENDING,
         ExecutionMetadata::ImportContainer(_) => EXECUTION_NAME_PENDING | SCRIPT_PACKAGE_PENDING,
         ExecutionMetadata::Module { .. } => EXECUTION_NAME_PENDING,
-        ExecutionMetadata::LoaderNamespace { .. } => LOADER_METADATA_PENDING,
+        ExecutionMetadata::LoaderNamespace { .. } => SCRIPT_METADATA_PENDING,
     };
     EXECUTION_STACK.with(|stack| {
         stack.borrow_mut().push(ExecutionContext {
