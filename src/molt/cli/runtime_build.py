@@ -106,6 +106,7 @@ from molt.cli.runtime_wasm_validation import (
     _runtime_wasm_has_matching_integrity_pin,
     _runtime_wasm_integrity_key,
     _runtime_wasm_missing_exports,
+    _shared_runtime_wasm_validation_error,
     _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli.wasm_link_args import (
@@ -1025,13 +1026,19 @@ def _prebuild_runtime_wasm(
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     verbose: bool = False,
 ) -> int:
+    def fail(message: str) -> int:
+        # JSON mode owns stdout framing, not error suppression. Keep a stable
+        # machine-readable failure envelope while the lower build/validation
+        # boundary emits its precise diagnostic on stderr for CI and operators.
+        if json_output:
+            print(json.dumps({"status": "error", "error": message}, sort_keys=True))
+        else:
+            print(message, file=sys.stderr)
+        return 1
+
     cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile)
     if profile_error is not None:
-        if json_output:
-            print(json.dumps({"ok": False, "error": profile_error}))
-        else:
-            print(profile_error, file=sys.stderr)
-        return 1
+        return fail(profile_error)
     concrete_stdlib_profile = runtime_stdlib_profile_for_required_features(
         stdlib_profile,
         frozenset(),
@@ -1055,12 +1062,7 @@ def _prebuild_runtime_wasm(
             runtime_state.runtime_wasm is None
             or runtime_state.runtime_reloc_wasm is None
         ):
-            if not json_output:
-                print(
-                    "Runtime wasm shared/reloc artifact path is unavailable.",
-                    file=sys.stderr,
-                )
-            return 1
+            return fail("Runtime wasm shared/reloc artifact path is unavailable.")
         if verbose and not json_output:
             print(
                 "Prebuilding runtime wasm shared+reloc (single combined compile): "
@@ -1079,9 +1081,7 @@ def _prebuild_runtime_wasm(
             resolved_modules=None,
             required_exports=None,
         ):
-            if not json_output:
-                print("Runtime wasm prebuild failed.", file=sys.stderr)
-            return 1
+            return fail("Runtime wasm prebuild failed.")
         artifacts["shared"] = os.fspath(runtime_state.runtime_wasm)
         artifacts["reloc"] = os.fspath(runtime_state.runtime_reloc_wasm)
     else:
@@ -1091,12 +1091,7 @@ def _prebuild_runtime_wasm(
             runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
         )
         if runtime_path is None:
-            if not json_output:
-                print(
-                    f"Runtime wasm {label} artifact path is unavailable.",
-                    file=sys.stderr,
-                )
-            return 1
+            return fail(f"Runtime wasm {label} artifact path is unavailable.")
         if verbose and not json_output:
             print(
                 f"Prebuilding runtime wasm {label} artifact: {runtime_path}",
@@ -1115,9 +1110,7 @@ def _prebuild_runtime_wasm(
             resolved_modules=None,
             required_exports=None,
         ):
-            if not json_output:
-                print(f"Runtime wasm {label} prebuild failed.", file=sys.stderr)
-            return 1
+            return fail(f"Runtime wasm {label} prebuild failed.")
         artifacts[label] = os.fspath(runtime_path)
     _emit_runtime_wasm_build_timings(json_output=json_output)
     if json_output:
@@ -3093,12 +3086,12 @@ def _ensure_runtime_wasm(
                     )
                 return False
         if not _is_valid_shared_runtime_wasm_artifact(src):
-            if not json_output:
-                print(
-                    "Runtime wasm build produced artifact missing shared "
-                    "memory/table import ABI.",
-                    file=sys.stderr,
-                )
+            shared_validation_error = _shared_runtime_wasm_validation_error(src)
+            print(
+                "Runtime wasm build produced an unusable shared artifact: "
+                f"{shared_validation_error or 'validation failed'}.",
+                file=sys.stderr,
+            )
             return False
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
         _atomic_copy_file(src, runtime_wasm)
