@@ -361,6 +361,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         reset_ptr_registry();
         trace_shutdown("reset_gc_registry");
         crate::object::gc::gc_reset_registry();
+        trace_shutdown("reset_gc_workspace");
+        crate::object::gc::gc_reset_workspace();
+        trace_shutdown("reset_detached_sink_pool");
+        crate::object::heap_lifecycle::reset_detached_sink_pool();
         trace_shutdown("clear_profile_epoch");
         crate::object::ops::profile_epoch_clear();
     }
