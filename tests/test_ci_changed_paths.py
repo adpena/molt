@@ -26,7 +26,6 @@ def test_docs_only_pr_skips_expensive_workflows() -> None:
         "python_tooling": False,
         "rust": False,
         "llvm": False,
-        "kani": False,
         "python_security": False,
         "rust_security": False,
     }
@@ -38,18 +37,16 @@ def test_python_source_change_runs_python_smoke_only() -> None:
     assert classes["python_tooling"] is True
     assert classes["rust"] is False
     assert classes["llvm"] is False
-    assert classes["kani"] is False
     assert classes["python_security"] is False
     assert classes["rust_security"] is False
 
 
-def test_runtime_text_leaf_change_runs_rust_without_llvm_or_kani() -> None:
+def test_runtime_text_leaf_change_runs_rust_without_llvm() -> None:
     classes = _classes("runtime/molt-stdlib-text/src/tokenize.rs")
 
     assert classes["python_tooling"] is False
     assert classes["rust"] is True
     assert classes["llvm"] is False
-    assert classes["kani"] is False
 
 
 def test_midend_change_runs_llvm_stack() -> None:
@@ -57,15 +54,6 @@ def test_midend_change_runs_llvm_stack() -> None:
 
     assert classes["rust"] is True
     assert classes["llvm"] is True
-    assert classes["kani"] is False
-
-
-def test_runtime_core_change_runs_kani() -> None:
-    classes = _classes("runtime/molt-runtime/src/lib.rs")
-
-    assert classes["rust"] is True
-    assert classes["llvm"] is False
-    assert classes["kani"] is True
 
 
 def test_lockfiles_select_security_and_build_classes() -> None:
@@ -74,7 +62,6 @@ def test_lockfiles_select_security_and_build_classes() -> None:
 
     assert cargo["rust"] is True
     assert cargo["llvm"] is True
-    assert cargo["kani"] is True
     assert cargo["rust_security"] is True
     assert cargo["python_tooling"] is False
 
@@ -86,16 +73,11 @@ def test_lockfiles_select_security_and_build_classes() -> None:
 
 def test_workflow_authority_changes_run_their_owned_jobs() -> None:
     ci = _classes(".github/workflows/ci.yml")
-    kani = _classes(".github/workflows/kani.yml")
     security = _classes(".github/workflows/security_hardening.yml")
 
     assert ci["python_tooling"] is True
     assert ci["rust"] is True
     assert ci["llvm"] is True
-    assert ci["kani"] is False
-
-    assert kani["kani"] is True
-    assert kani["rust"] is False
 
     assert security["python_security"] is True
     assert security["rust_security"] is True

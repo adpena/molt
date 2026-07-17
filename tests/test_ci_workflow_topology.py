@@ -176,17 +176,15 @@ def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
     assert "stdlib_full" not in runtime_block
 
 
-def test_kani_workflow_is_path_classified() -> None:
+def test_kani_workflow_is_scheduled_manual_and_standalone() -> None:
     kani_text = _read(".github/workflows/kani.yml")
 
-    assert "classify-changes:" in kani_text
-    assert "name: Changed Path Classifier" in kani_text
-    assert "kani: ${{ steps.paths.outputs.kani }}" in kani_text
-    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
-        kani_text
-    )
-    assert "needs: classify-changes" in kani_text
-    assert "if: needs.classify-changes.outputs.kani == 'true'" in kani_text
+    assert "workflow_dispatch:" in kani_text
+    assert "schedule:" in kani_text
+    assert "push:" not in kani_text
+    assert "pull_request:" not in kani_text
+    assert "classify-changes:" not in kani_text
+    assert "ci_changed_paths.py" not in kani_text
 
 
 def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
@@ -197,12 +195,14 @@ def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
     assert 'workspace_manifest["workspace"]["package"]["rust-version"]' in kani_text
     assert 'runtime" / "molt-obj-model" / "Cargo.toml"' in kani_text
     assert 'runtime" / "molt-runtime" / "Cargo.toml"' in kani_text
-    assert "run_kani = version_key(kani_rustc) >= version_key(required)" in kani_text
-    assert "run_kani={'true' if run_kani else 'false'}" in kani_text
-    assert "GITHUB_STEP_SUMMARY" in kani_text
-    assert "::warning title=Kani rust-version gate::" in kani_text
-    assert "if: steps.kani-toolchain.outputs.run_kani == 'true'" in kani_text
-    assert "if: steps.kani-toolchain.outputs.run_kani != 'true'" in kani_text
+    assert "compatible = version_key(kani_rustc) >= version_key(required)" in kani_text
+    assert "zero executed proofs is a failure" in kani_text
+    assert "outputs.compatible" not in kani_text
+    assert "if: always() && steps.kani-toolchain.outcome == 'success'" in kani_text
+    assert "Report skipped Kani proofs" not in kani_text
+    assert "molt.kani-proof-result.v1" in kani_text
+    assert "executed_proof_commands" in kani_text
+    assert "if-no-files-found: error" in kani_text
     assert "--ignore-rust-version" not in kani_text
 
 

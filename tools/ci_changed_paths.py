@@ -12,7 +12,6 @@ CLASS_NAMES = (
     "python_tooling",
     "rust",
     "llvm",
-    "kani",
     "python_security",
     "rust_security",
 )
@@ -33,17 +32,6 @@ CI_AUTHORITY = PathRule(
     exact=frozenset(
         {
             ".github/workflows/ci.yml",
-            "tools/ci_changed_paths.py",
-            "tests/test_ci_changed_paths.py",
-            "tests/test_ci_workflow_topology.py",
-        }
-    )
-)
-
-KANI_AUTHORITY = PathRule(
-    exact=frozenset(
-        {
-            ".github/workflows/kani.yml",
             "tools/ci_changed_paths.py",
             "tests/test_ci_changed_paths.py",
             "tests/test_ci_workflow_topology.py",
@@ -91,11 +79,6 @@ LLVM = PathRule(
     ),
 )
 
-KANI = PathRule(
-    exact=frozenset({"Cargo.lock", "Cargo.toml", "rust-toolchain.toml"}),
-    prefixes=("runtime/molt-obj-model/", "runtime/molt-runtime/"),
-)
-
 PYTHON_SECURITY = PathRule(
     exact=frozenset({".python-version", "pyproject.toml", "uv.lock"})
 )
@@ -120,14 +103,12 @@ def all_true() -> dict[str, bool]:
 def classify_paths(paths: list[str] | tuple[str, ...]) -> dict[str, bool]:
     normalized = tuple(normalize_path(path) for path in paths)
     ci_authority = _any_match(normalized, CI_AUTHORITY)
-    kani_authority = _any_match(normalized, KANI_AUTHORITY)
     security_authority = _any_match(normalized, SECURITY_AUTHORITY)
 
     return {
         "python_tooling": ci_authority or _any_match(normalized, PYTHON_TOOLING),
         "rust": ci_authority or _any_match(normalized, RUST),
         "llvm": ci_authority or _any_match(normalized, LLVM),
-        "kani": kani_authority or _any_match(normalized, KANI),
         "python_security": security_authority
         or _any_match(normalized, PYTHON_SECURITY),
         "rust_security": security_authority or _any_match(normalized, RUST_SECURITY),
