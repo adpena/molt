@@ -29,6 +29,27 @@ thread_local! {
 
 static TERMINAL_EDGE_SINK_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+fn take_best_buffer<T>(slots: &mut [Option<Vec<T>>; 4], required: usize) -> Vec<T> {
+    let selected = slots
+        .iter()
+        .enumerate()
+        .filter_map(|(index, slot)| slot.as_ref().map(|values| (index, values.capacity())))
+        .filter(|(_, cached)| *cached >= required)
+        .min_by_key(|(_, cached)| *cached)
+        .map(|(index, _)| index)
+        .or_else(|| {
+            slots
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| slot.as_ref().map(|values| (index, values.capacity())))
+                .max_by_key(|(_, cached)| *cached)
+                .map(|(index, _)| index)
+        });
+    selected
+        .and_then(|index| slots[index].take())
+        .unwrap_or_default()
+}
+
 pub(crate) enum DetachedResource {
     /// A tuple's canonical C projection after both bridge identity maps have
     /// published it absent.  Its projection-owned references are retired only
@@ -62,15 +83,17 @@ impl DetachedEdgeSink {
         edge_capacity: usize,
         resource_capacity: usize,
     ) -> Option<Self> {
-        let mut edges = Vec::new();
-        edges.try_reserve_exact(edge_capacity).ok()?;
-        let mut resources = Vec::new();
-        resources.try_reserve_exact(resource_capacity).ok()?;
-        Some(Self {
+        let edges = TERMINAL_EDGE_SINK_POOL
+            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity));
+        let resources = TERMINAL_RESOURCE_SINK_POOL
+            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity));
+        let mut sink = Self {
             edges,
             resources,
-            recycle: false,
-        })
+            recycle: true,
+        };
+        sink.try_ensure_capacities(edge_capacity, resource_capacity)
+            .then_some(sink)
     }
 
     /// Acquire reusable terminal-deallocation storage. Allocation failure is a
@@ -78,29 +101,8 @@ impl DetachedEdgeSink {
     /// refcount-zero object would violate memory safety. The steady-state path
     /// performs no allocation once the per-thread high-water mark is learned.
     pub(crate) fn terminal_with_capacities(edge_capacity: usize, resource_capacity: usize) -> Self {
-        let mut edges = TERMINAL_EDGE_SINK_POOL.with(|pool| {
-            let mut slots = pool.borrow_mut();
-            let selected = slots
-                .iter()
-                .enumerate()
-                .filter_map(|(index, slot)| slot.as_ref().map(|edges| (index, edges.capacity())))
-                .filter(|(_, cached)| *cached >= edge_capacity)
-                .min_by_key(|(_, cached)| *cached)
-                .map(|(index, _)| index)
-                .or_else(|| {
-                    slots
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, slot)| {
-                            slot.as_ref().map(|edges| (index, edges.capacity()))
-                        })
-                        .max_by_key(|(_, cached)| *cached)
-                        .map(|(index, _)| index)
-                });
-            selected
-                .and_then(|index| slots[index].take())
-                .unwrap_or_default()
-        });
+        let mut edges = TERMINAL_EDGE_SINK_POOL
+            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity));
         if edges.capacity() < edge_capacity {
             TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
             if edges.try_reserve_exact(edge_capacity).is_err() {
@@ -109,29 +111,8 @@ impl DetachedEdgeSink {
                 std::alloc::handle_alloc_error(layout);
             }
         }
-        let mut resources = TERMINAL_RESOURCE_SINK_POOL.with(|pool| {
-            let mut slots = pool.borrow_mut();
-            let selected = slots
-                .iter()
-                .enumerate()
-                .filter_map(|(index, slot)| slot.as_ref().map(|values| (index, values.capacity())))
-                .filter(|(_, cached)| *cached >= resource_capacity)
-                .min_by_key(|(_, cached)| *cached)
-                .map(|(index, _)| index)
-                .or_else(|| {
-                    slots
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, slot)| {
-                            slot.as_ref().map(|values| (index, values.capacity()))
-                        })
-                        .max_by_key(|(_, cached)| *cached)
-                        .map(|(index, _)| index)
-                });
-            selected
-                .and_then(|index| slots[index].take())
-                .unwrap_or_default()
-        });
+        let mut resources = TERMINAL_RESOURCE_SINK_POOL
+            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity));
         if resources.capacity() < resource_capacity {
             TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
             if resources.try_reserve_exact(resource_capacity).is_err() {
@@ -269,6 +250,17 @@ impl Drop for DetachedEdgeSink {
             });
         }
     }
+}
+
+/// Release the current runtime thread's learned detach-buffer high-water.
+/// Runtime shutdown calls this only after every detached owner has drained.
+pub(crate) fn reset_detached_sink_pool() {
+    TERMINAL_EDGE_SINK_POOL.with(|pool| {
+        *pool.borrow_mut() = [None, None, None, None];
+    });
+    TERMINAL_RESOURCE_SINK_POOL.with(|pool| {
+        *pool.borrow_mut() = [None, None, None, None];
+    });
 }
 
 #[cfg(test)]
