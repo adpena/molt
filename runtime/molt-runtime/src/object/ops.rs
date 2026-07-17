@@ -121,6 +121,11 @@ use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
 use super::ops_sys::runtime_target_minor;
+use crate::runtime_profile_schema_generated::{
+    PROFILE_EPOCH_KIND, PROFILE_EPOCH_SCHEMA_VERSION, RuntimeProfileMetricSemantic,
+    RuntimeProfileSnapshot, runtime_profile_epoch_memory_payload, runtime_profile_memory_payload,
+    runtime_profile_metric_semantic,
+};
 
 #[inline]
 fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
@@ -645,129 +650,96 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
             crate::EXPECTED_LIVE_OBJECTS,
         ));
     }
-    // A flat insertion macro avoids serde_json::json!'s token-recursion cost for
-    // this intentionally wide counter schema without raising a crate-global
-    // recursion limit.
-    macro_rules! json_counter_object {
-        ($($name:literal : $value:expr),* $(,)?) => {{
-            let mut object = serde_json::Map::new();
-            $(object.insert($name.to_owned(), serde_json::Value::from($value));)*
-            serde_json::Value::Object(object)
-        }};
+    RuntimeProfileSnapshot {
+        call_dispatch,
+        string_count_cache_hit: cache_hit,
+        string_count_cache_miss: cache_miss,
+        struct_field_store: struct_stores,
+        attr_lookup: attr_lookups,
+        handle_resolve: handle_resolves,
+        layout_guard,
+        layout_guard_fail,
+        alloc_count: allocs,
+        alloc_object: alloc_objects,
+        alloc_exception: alloc_exceptions,
+        alloc_dict: alloc_dicts,
+        alloc_tuple: alloc_tuples,
+        alloc_string: alloc_strings,
+        alloc_callargs,
+        alloc_bytes_callargs,
+        tb_builds,
+        tb_frames,
+        tb_suppressed,
+        async_polls,
+        async_pending,
+        async_wakeups,
+        async_sleep_register: async_sleep_reg,
+        alloc_bytes_total,
+        alloc_bytes_string,
+        alloc_bytes_dict,
+        alloc_bytes_tuple,
+        alloc_bytes_list,
+        alloc_bytes_exception,
+        dealloc_count: deallocs,
+        dealloc_bytes_total,
+        dealloc_object: dealloc_objects,
+        dealloc_bigint: dealloc_bigints,
+        dealloc_string: dealloc_strings,
+        dealloc_dict: dealloc_dicts,
+        dealloc_tuple: dealloc_tuples,
+        dealloc_exception: dealloc_exceptions,
+        dealloc_bytes_exception,
+        live_objects,
+        live_bytes,
+        live_exception: live_exceptions,
+        live_bytes_exception,
+        expected_live: crate::EXPECTED_LIVE_OBJECTS,
+        aux_class_inline_count: aux_class_inline,
+        aux_state_inline_count: aux_state_inline,
+        aux_sidecar_alloc_count: aux_sidecar_alloc,
+        aux_sidecar_free_count: aux_sidecar_free,
+        aux_sidecar_live_count: aux_sidecar_live,
+        aux_sidecar_alloc_failure_count: aux_sidecar_alloc_failure,
+        aux_sidecar_alloc_bytes,
+        aux_sidecar_free_bytes,
+        aux_sidecar_live_bytes,
+        gc_track_count: gc_track,
+        gc_untrack_count: gc_untrack,
+        gc_tracked_live,
+        gc_tracked_high_water,
+        gc_registry_lock_contention_count: gc_registry_lock_contention,
+        gc_registry_lock_wait_ns,
+        gc_snapshot_alloc_failure_count: GC_SNAPSHOT_ALLOC_FAILURE_COUNT
+            .load(AtomicOrdering::Relaxed),
+        call_bind_ic_hit,
+        call_bind_ic_miss,
+        attr_site_name_hit,
+        attr_site_name_miss,
+        split_ws_ascii,
+        split_ws_unicode,
+        dict_str_int_prehash_hit,
+        dict_str_int_prehash_miss,
+        dict_str_int_prehash_deopt,
+        taq_ingest_calls,
+        taq_ingest_skip_marker,
+        ascii_i64_parse_fail,
+        call_indirect_noncallable: call_indirect_noncallable_deopt,
+        invoke_ffi_bridge_capability_denied,
+        guard_tag_type_mismatch: guard_tag_type_mismatch_deopt,
+        guard_dict_shape_layout_mismatch: guard_dict_shape_layout_mismatch_deopt,
+        guard_dict_shape_layout_fail_null_obj,
+        guard_dict_shape_layout_fail_non_object,
+        guard_dict_shape_layout_fail_class_mismatch,
+        guard_dict_shape_layout_fail_non_type_class,
+        guard_dict_shape_layout_fail_expected_version_invalid,
+        guard_dict_shape_layout_fail_version_mismatch,
     }
-    let profile_payload = json_counter_object! {
-            "call_dispatch": call_dispatch,
-            "string_count_cache_hit": cache_hit,
-            "string_count_cache_miss": cache_miss,
-            "struct_field_store": struct_stores,
-            "attr_lookup": attr_lookups,
-            "handle_resolve": handle_resolves,
-            "layout_guard": layout_guard,
-            "layout_guard_fail": layout_guard_fail,
-            "alloc_count": allocs,
-            "alloc_object": alloc_objects,
-            "alloc_exception": alloc_exceptions,
-            "alloc_dict": alloc_dicts,
-            "alloc_tuple": alloc_tuples,
-            "alloc_string": alloc_strings,
-            "alloc_callargs": alloc_callargs,
-            "alloc_bytes_callargs": alloc_bytes_callargs,
-            "tb_builds": tb_builds,
-            "tb_frames": tb_frames,
-            "tb_suppressed": tb_suppressed,
-            "async_polls": async_polls,
-            "async_pending": async_pending,
-            "async_wakeups": async_wakeups,
-            "async_sleep_register": async_sleep_reg,
-            "alloc_bytes_total": alloc_bytes_total,
-            "alloc_bytes_string": alloc_bytes_string,
-            "alloc_bytes_dict": alloc_bytes_dict,
-            "alloc_bytes_tuple": alloc_bytes_tuple,
-            "alloc_bytes_list": alloc_bytes_list,
-            "alloc_bytes_exception": alloc_bytes_exception,
-            "dealloc_count": deallocs,
-            "dealloc_bytes_total": dealloc_bytes_total,
-            "dealloc_object": dealloc_objects,
-            "dealloc_bigint": dealloc_bigints,
-            "dealloc_string": dealloc_strings,
-            "dealloc_dict": dealloc_dicts,
-            "dealloc_tuple": dealloc_tuples,
-            "dealloc_exception": dealloc_exceptions,
-            "dealloc_bytes_exception": dealloc_bytes_exception,
-            "live_objects": live_objects,
-            "live_bytes": live_bytes,
-            "live_exception": live_exceptions,
-            "live_bytes_exception": live_bytes_exception,
-            "expected_live": crate::EXPECTED_LIVE_OBJECTS,
-    };
-    let aux_payload = json_counter_object! {
-            "aux_class_inline_count": aux_class_inline,
-            "aux_state_inline_count": aux_state_inline,
-            "aux_sidecar_alloc_count": aux_sidecar_alloc,
-            "aux_sidecar_free_count": aux_sidecar_free,
-            "aux_sidecar_live_count": aux_sidecar_live,
-            "aux_sidecar_alloc_failure_count": aux_sidecar_alloc_failure,
-            "aux_sidecar_alloc_bytes": aux_sidecar_alloc_bytes,
-            "aux_sidecar_free_bytes": aux_sidecar_free_bytes,
-            "aux_sidecar_live_bytes": aux_sidecar_live_bytes,
-    };
-    let gc_payload = json_counter_object! {
-            "gc_track_count": gc_track,
-            "gc_untrack_count": gc_untrack,
-            "gc_tracked_live": gc_tracked_live,
-            "gc_tracked_high_water": gc_tracked_high_water,
-            "gc_registry_lock_contention_count": gc_registry_lock_contention,
-            "gc_registry_lock_wait_ns": gc_registry_lock_wait_ns,
-            "gc_snapshot_alloc_failure_count": GC_SNAPSHOT_ALLOC_FAILURE_COUNT.load(AtomicOrdering::Relaxed),
-    };
-    let memory_payload = runtime_profile_memory_payload(memory_snapshot);
-    let hot_paths_payload = json_counter_object! {
-            "call_bind_ic_hit": call_bind_ic_hit,
-            "call_bind_ic_miss": call_bind_ic_miss,
-            "attr_site_name_hit": attr_site_name_hit,
-            "attr_site_name_miss": attr_site_name_miss,
-            "split_ws_ascii": split_ws_ascii,
-            "split_ws_unicode": split_ws_unicode,
-            "dict_str_int_prehash_hit": dict_str_int_prehash_hit,
-            "dict_str_int_prehash_miss": dict_str_int_prehash_miss,
-            "dict_str_int_prehash_deopt": dict_str_int_prehash_deopt,
-            "taq_ingest_calls": taq_ingest_calls,
-            "taq_ingest_skip_marker": taq_ingest_skip_marker,
-            "ascii_i64_parse_fail": ascii_i64_parse_fail,
-    };
-    let deopt_reasons_payload = json_counter_object! {
-            "call_indirect_noncallable": call_indirect_noncallable_deopt,
-            "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
-            "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
-            "guard_dict_shape_layout_mismatch": guard_dict_shape_layout_mismatch_deopt,
-            "guard_dict_shape_layout_fail_null_obj": guard_dict_shape_layout_fail_null_obj,
-            "guard_dict_shape_layout_fail_non_object": guard_dict_shape_layout_fail_non_object,
-            "guard_dict_shape_layout_fail_class_mismatch": guard_dict_shape_layout_fail_class_mismatch,
-            "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
-            "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
-            "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
-    };
-    serde_json::json!({
-        "schema_version": 3,
-        "kind": "runtime_feedback",
-        "profile": profile_payload,
-        "aux": aux_payload,
-        "gc": gc_payload,
-        "memory": memory_payload,
-        "hot_paths": hot_paths_payload,
-        "deopt_reasons": deopt_reasons_payload,
-    })
-}
-
-fn runtime_profile_memory_payload(
-    snapshot: crate::state::ProcessMemorySnapshot,
-) -> serde_json::Value {
-    serde_json::json!({
-        "source": snapshot.source,
-        "available": snapshot.available_flag(),
-        "current_rss_bytes": snapshot.current_rss_bytes,
-        "peak_rss_bytes": snapshot.peak_rss_bytes,
-    })
+    .into_process_payload(runtime_profile_memory_payload(
+        memory_snapshot.source,
+        memory_snapshot.available_flag(),
+        memory_snapshot.current_rss_bytes,
+        memory_snapshot.peak_rss_bytes,
+    ))
 }
 
 pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
@@ -800,24 +772,6 @@ struct RuntimeProfileEpochState {
 
 static RUNTIME_PROFILE_EPOCH: OnceLock<Mutex<RuntimeProfileEpochState>> = OnceLock::new();
 
-/// State metrics need start/end/delta evidence instead of unsigned work-counter
-/// subtraction. This is the sole semantic classification authority for the
-/// epoch schema; every other numeric metric is a monotonic counter. The tracked
-/// high-water mark is intentionally a gauge even though its process-wide value
-/// is monotonic: its endpoints distinguish an unchanged prior peak from a new
-/// peak reached during this epoch.
-const RUNTIME_PROFILE_GAUGES: &[(&str, &str)] = &[
-    ("profile", "live_objects"),
-    ("profile", "live_bytes"),
-    ("profile", "live_exception"),
-    ("profile", "live_bytes_exception"),
-    ("profile", "expected_live"),
-    ("aux", "aux_sidecar_live_count"),
-    ("aux", "aux_sidecar_live_bytes"),
-    ("gc", "gc_tracked_live"),
-    ("gc", "gc_tracked_high_water"),
-];
-
 fn runtime_profile_epoch_state() -> &'static Mutex<RuntimeProfileEpochState> {
     RUNTIME_PROFILE_EPOCH.get_or_init(|| Mutex::new(RuntimeProfileEpochState::default()))
 }
@@ -835,9 +789,7 @@ pub(crate) fn profile_epoch_clear() {
 }
 
 fn runtime_profile_is_gauge(section: &str, metric: &str) -> bool {
-    RUNTIME_PROFILE_GAUGES
-        .iter()
-        .any(|&(gauge_section, gauge_metric)| section == gauge_section && metric == gauge_metric)
+    runtime_profile_metric_semantic(section, metric) == Some(RuntimeProfileMetricSemantic::Gauge)
 }
 
 fn runtime_profile_metric(payload: &serde_json::Value, section: &str, metric: &str) -> Option<u64> {
@@ -849,7 +801,13 @@ fn runtime_profile_metric(payload: &serde_json::Value, section: &str, metric: &s
 
 fn runtime_profile_set_settled_memory_snapshot(payload: &mut serde_json::Value) {
     if let Some(memory) = payload.get_mut("memory") {
-        *memory = runtime_profile_memory_payload(process_memory_snapshot());
+        let snapshot = process_memory_snapshot();
+        *memory = runtime_profile_memory_payload(
+            snapshot.source,
+            snapshot.available_flag(),
+            snapshot.current_rss_bytes,
+            snapshot.peak_rss_bytes,
+        );
     }
 }
 
@@ -948,19 +906,15 @@ fn runtime_profile_epoch_delta_payload(
     };
     let claimable = counter_regression_sections.is_empty();
     Ok(serde_json::json!({
-        "schema_version": 2,
-        "kind": "runtime_profile_epoch",
+        "schema_version": PROFILE_EPOCH_SCHEMA_VERSION,
+        "kind": PROFILE_EPOCH_KIND,
         "generation": baseline.generation,
         "label": baseline.label.as_str(),
         "claimable": claimable,
         "delta": serde_json::Value::Object(counter_sections),
         "counter_regressions": serde_json::Value::Object(counter_regression_sections),
         "gauges": serde_json::Value::Object(gauge_sections),
-        "memory": {
-            "start": memory_start,
-            "end": memory_end,
-            "current_rss_delta_bytes": rss_delta,
-        },
+        "memory": runtime_profile_epoch_memory_payload(memory_start, memory_end, rss_delta),
     }))
 }
 

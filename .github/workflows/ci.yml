@@ -66,6 +66,9 @@ jobs:
       - name: Check heap-kind lifetime authority generated files are in sync
         run: uv run python3 tools/gen_heap_kinds.py --check
 
+      - name: Check runtime-profile schema generated files are in sync
+        run: uv run python3 tools/gen_runtime_profile_schema.py --check
+
       - name: Check CPython type-slot header is in sync
         run: uv run python3 tools/gen_cpython_type_slots.py --check
 

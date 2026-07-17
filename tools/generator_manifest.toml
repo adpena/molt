@@ -104,6 +104,20 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_runtime_profile_schema.py"
+outputs = [
+  "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",
+  "src/molt/_runtime_profile_schema_generated.py",
+]
+source = "runtime/runtime_profile_schema.toml"
+check_mode = true
+check_command = "tools/gen_runtime_profile_schema.py --check"
+idempotent = true
+sync_test = "tests/test_gen_runtime_profile_schema.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_op_kinds.py"
 outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
