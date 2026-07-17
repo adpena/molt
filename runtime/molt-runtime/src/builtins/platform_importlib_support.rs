@@ -16,15 +16,15 @@ pub(super) struct SourceLoaderResolution {
     pub(super) package_root: Option<String>,
 }
 
-pub(super) struct ImportlibSourceExecPayload {
+pub(super) struct ImportlibZipSourcePayload {
     pub(super) source: Vec<u8>,
     pub(super) is_package: bool,
     pub(super) module_package: String,
     pub(super) package_root: Option<String>,
+    pub(super) origin: String,
 }
 
-pub(super) struct ImportlibZipSourceExecPayload {
-    pub(super) source: Vec<u8>,
+pub(super) struct ImportlibZipSourceResolution {
     pub(super) is_package: bool,
     pub(super) module_package: String,
     pub(super) package_root: Option<String>,
@@ -237,28 +237,6 @@ pub(super) fn sourceless_loader_resolution(
     }
 }
 
-pub(super) fn importlib_source_exec_payload(
-    module_name: &str,
-    path: &str,
-    spec_is_package: bool,
-) -> Result<ImportlibSourceExecPayload, std::io::Error> {
-    let source_bytes = std::fs::read(path)?;
-    let source =
-        match crate::object::ops::decode_bytes_text("utf-8", "surrogateescape", &source_bytes) {
-            Ok((text, _encoding)) => text,
-            Err(_) => String::from_utf8_lossy(&source_bytes)
-                .into_owned()
-                .into_bytes(),
-        };
-    let resolution = source_loader_resolution(module_name, path, spec_is_package);
-    Ok(ImportlibSourceExecPayload {
-        source,
-        is_package: resolution.is_package,
-        module_package: resolution.module_package,
-        package_root: resolution.package_root,
-    })
-}
-
 #[cfg(feature = "stdlib_archive")]
 pub(super) fn zip_archive_open(
     path: &str,
@@ -392,12 +370,12 @@ pub(super) fn zip_archive_read_entry(path: &str, entry: &str) -> Result<Vec<u8>,
 }
 
 #[cfg(feature = "stdlib_archive")]
-pub(super) fn importlib_zip_source_exec_payload(
+pub(super) fn importlib_zip_source_payload(
     module_name: &str,
     archive_path: &str,
     inner_path: &str,
     spec_is_package: bool,
-) -> Result<ImportlibZipSourceExecPayload, std::io::Error> {
+) -> Result<ImportlibZipSourcePayload, std::io::Error> {
     let source_bytes = zip_archive_read_entry(archive_path, inner_path)?;
     let source =
         match crate::object::ops::decode_bytes_text("utf-8", "surrogateescape", &source_bytes) {
@@ -408,13 +386,50 @@ pub(super) fn importlib_zip_source_exec_payload(
         };
     let origin = format!("{archive_path}/{inner_path}");
     let resolution = source_loader_resolution(module_name, &origin, spec_is_package);
-    Ok(ImportlibZipSourceExecPayload {
+    Ok(ImportlibZipSourcePayload {
         source,
         is_package: resolution.is_package,
         module_package: resolution.module_package,
         package_root: resolution.package_root,
         origin,
     })
+}
+
+#[cfg(feature = "stdlib_archive")]
+pub(super) fn importlib_zip_source_resolution(
+    module_name: &str,
+    archive_path: &str,
+    inner_path: &str,
+    spec_is_package: bool,
+) -> Result<ImportlibZipSourceResolution, std::io::Error> {
+    if !zip_archive_entry_exists(archive_path, inner_path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("zip entry {inner_path:?} not found in {archive_path:?}"),
+        ));
+    }
+    Ok(zip_source_loader_resolution(
+        module_name,
+        archive_path,
+        inner_path,
+        spec_is_package,
+    ))
+}
+
+pub(super) fn zip_source_loader_resolution(
+    module_name: &str,
+    archive_path: &str,
+    inner_path: &str,
+    spec_is_package: bool,
+) -> ImportlibZipSourceResolution {
+    let origin = format!("{archive_path}/{inner_path}");
+    let resolution = source_loader_resolution(module_name, &origin, spec_is_package);
+    ImportlibZipSourceResolution {
+        is_package: resolution.is_package,
+        module_package: resolution.module_package,
+        package_root: resolution.package_root,
+        origin,
+    }
 }
 
 // --- Stubs when stdlib_archive is disabled ---
@@ -468,16 +483,46 @@ pub(super) fn zip_archive_read_entry(_path: &str, _entry: &str) -> Result<Vec<u8
 }
 
 #[cfg(not(feature = "stdlib_archive"))]
-pub(super) fn importlib_zip_source_exec_payload(
+pub(super) fn importlib_zip_source_payload(
     _module_name: &str,
     _archive_path: &str,
     _inner_path: &str,
     _spec_is_package: bool,
-) -> Result<ImportlibZipSourceExecPayload, std::io::Error> {
+) -> Result<ImportlibZipSourcePayload, std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "zip archive support requires the stdlib_archive feature",
     ))
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+pub(super) fn importlib_zip_source_resolution(
+    _module_name: &str,
+    _archive_path: &str,
+    _inner_path: &str,
+    _spec_is_package: bool,
+) -> Result<ImportlibZipSourceResolution, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "zip archive support requires the stdlib_archive feature",
+    ))
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+pub(super) fn zip_source_loader_resolution(
+    module_name: &str,
+    archive_path: &str,
+    inner_path: &str,
+    spec_is_package: bool,
+) -> ImportlibZipSourceResolution {
+    let origin = format!("{archive_path}/{inner_path}");
+    let resolution = source_loader_resolution(module_name, &origin, spec_is_package);
+    ImportlibZipSourceResolution {
+        is_package: resolution.is_package,
+        module_package: resolution.module_package,
+        package_root: resolution.package_root,
+        origin,
+    }
 }
 
 pub(super) fn importlib_cache_from_source(path: &str) -> String {

@@ -535,6 +535,16 @@ runtime_name = "molt_module_cache_set"
 callable_arity = 2
 
 [[import]]
+name = "module_registry_install"
+type = 14
+runtime_name = "molt_module_registry_install"
+
+[[import]]
+name = "module_ensure"
+type = 2
+runtime_name = "molt_module_ensure"
+
+[[import]]
 name = "module_del_global"
 type = 3
 
@@ -2992,18 +3002,6 @@ name = "importlib_ensure_default_meta_path"
 type = 2
 
 [[import]]
-name = "importlib_exec_extension"
-type = 5
-
-[[import]]
-name = "importlib_exec_restricted_source"
-type = 5
-
-[[import]]
-name = "importlib_exec_sourceless"
-type = 5
-
-[[import]]
 name = "importlib_extension_loader_payload"
 type = 5
 
@@ -3290,10 +3288,6 @@ name = "importlib_set_module_state"
 type = 28
 
 [[import]]
-name = "importlib_source_exec_payload"
-type = 5
-
-[[import]]
 name = "importlib_source_from_cache"
 type = 2
 
@@ -3328,7 +3322,7 @@ name = "importlib_zip_read_entry"
 type = 3
 
 [[import]]
-name = "importlib_zip_source_exec_payload"
+name = "importlib_zip_source_payload"
 type = 7
 
 [[import]]

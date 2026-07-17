@@ -8347,7 +8347,7 @@ BASE_IMPORTS = """\
     }
     const moduleBits = boxPtr({ type: 'module', name: name ?? '<module>', dictBits });
     if (dict && name === 'importlib.machinery') {
-      const loaderKey = boxPtr({ type: 'str', value: 'MOLT_LOADER' });
+      const loaderKey = boxPtr({ type: 'str', value: '_MOLT_LOADER' });
       const loaderBits = boxPtr({ type: 'molt_loader' });
       dictSetValue(dict, loaderKey, loaderBits);
     }

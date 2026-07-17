@@ -11,10 +11,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_runpy_run_path",
             crate::molt_runpy_run_path as *const (),
         )),
-        "molt_runpy_resolve_path" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_runpy_resolve_path",
-            crate::molt_runpy_resolve_path as *const (),
-        )),
         _ => None,
     }
 }

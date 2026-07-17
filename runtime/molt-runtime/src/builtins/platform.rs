@@ -8,7 +8,7 @@ use serde_json::Value as JsonValue;
 
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
 use crate::builtins::exceptions::molt_exception_last_pending;
-use crate::builtins::modules::{runpy_exec_restricted_source, sys_modules_dict_bits};
+use crate::builtins::modules::{ExecutionMetadata, execute_compiled_module, sys_modules_dict_bits};
 use crate::object::ops_sys::runtime_target_minor;
 use crate::*;
 pub(crate) use molt_runtime_platform::env_support::{
@@ -835,17 +835,14 @@ fn importlib_extension_exec_unavailable(
     module_name: &str,
     path: &str,
     kind: &str,
-    shim_candidates: &[String],
 ) -> u64 {
-    let mut message = format!(
-        "libmolt {kind} execution has no intrinsic execution candidate for {module_name:?} at {path:?}"
-    );
-    if !shim_candidates.is_empty() {
-        message.push_str(" (searched intrinsic execution candidates: ");
-        message.push_str(&shim_candidates.join(", "));
-        message.push(')');
-    }
-    raise_exception::<u64>(_py, "ImportError", message.as_str())
+    raise_exception::<u64>(
+        _py,
+        "ImportError",
+        &format!(
+            "{kind} module {module_name:?} at {path:?} has no compiler-emitted body in this binary"
+        ),
+    )
 }
 
 #[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
@@ -1013,40 +1010,73 @@ fn cext_loader_dlopen(
     Ok(())
 }
 
-fn importlib_decode_source_text(source_bytes: &[u8]) -> String {
-    match crate::object::ops::decode_bytes_text("utf-8", "surrogateescape", source_bytes) {
-        Ok((text, _encoding)) => String::from_utf8_lossy(&text).into_owned(),
-        Err(_) => String::from_utf8_lossy(source_bytes).into_owned(),
-    }
-}
-
-fn importlib_exec_restricted_source_path(
+fn importlib_exec_compiled_module(
     _py: &PyToken<'_>,
-    namespace_ptr: *mut u8,
-    source_path: &str,
-) -> Result<(), u64> {
-    let source_bytes = importlib_read_file_bytes(_py, source_path)?;
-    let source = importlib_decode_source_text(&source_bytes);
-    // NOTE(dynamic-exec-policy): Restricted source shim execution is intentional
-    // for compiled binaries. Native extension/pyc execution parity is deferred
-    // until an explicit capability-gated design is approved with perf evidence.
-    unsafe { runpy_exec_restricted_source(_py, namespace_ptr, &source, source_path) }
-}
-
-fn importlib_restricted_exec_error_message(
-    _py: &PyToken<'_>,
-    kind: &str,
+    target_module_bits: u64,
     module_name: &str,
-    source_path: &str,
-) -> Option<String> {
-    if clear_pending_if_kind(_py, &["NotImplementedError"]) {
-        let message = format!(
-            "unsupported {kind} shim semantics for {module_name:?} at {source_path:?}; \
-restricted source execution only supports docstring/pass/import/from-import/literal-assignment payloads"
-        );
-        return Some(message);
-    }
-    None
+) -> Result<(), u64> {
+    let module_bits = match execute_compiled_module(
+        _py,
+        module_name,
+        module_name,
+        None,
+        false,
+        ExecutionMetadata::LoaderNamespace {
+            module_bits: target_module_bits,
+        },
+    ) {
+        Ok(bits) => bits,
+        Err(err) => return Err(err.into_import_error(_py, module_name)),
+    };
+    let result = if module_bits == target_module_bits {
+        Ok(())
+    } else {
+        Err(raise_exception::<_>(
+            _py,
+            "SystemError",
+            "compiled loader execution did not preserve module identity",
+        ))
+    };
+    dec_ref_bits(_py, module_bits);
+    result
+}
+
+/// Execute a compiler-admitted body without translating a catalog miss into
+/// an ImportError.  Extension loading is the sole caller with a real dynamic
+/// fallback; every admitted-body exception is propagated unchanged.
+fn importlib_try_exec_compiled_module(
+    _py: &PyToken<'_>,
+    target_module_bits: u64,
+    module_name: &str,
+) -> Result<bool, u64> {
+    let module_bits = match execute_compiled_module(
+        _py,
+        module_name,
+        module_name,
+        None,
+        false,
+        ExecutionMetadata::LoaderNamespace {
+            module_bits: target_module_bits,
+        },
+    ) {
+        Ok(bits) => bits,
+        Err(err) if err.is_missing_compiled_body() => {
+            err.discard_missing_compiled_body(_py);
+            return Ok(false);
+        }
+        Err(err) => return Err(err.into_bits()),
+    };
+    let result = if module_bits == target_module_bits {
+        Ok(true)
+    } else {
+        Err(raise_exception::<_>(
+            _py,
+            "SystemError",
+            "compiled loader execution did not preserve module identity",
+        ))
+    };
+    dec_ref_bits(_py, module_bits);
+    result
 }
 
 fn linecache_loader_get_source_impl(
@@ -1177,128 +1207,6 @@ fn traceback_exception_suppress_context_bits(
         dec_ref_bits(_py, suppress_bits);
     }
     Ok(out)
-}
-
-fn importlib_extension_shim_candidates(module_name: &str, path: &str) -> Vec<String> {
-    let sep = bootstrap_path_sep();
-    let mut out: Vec<String> = Vec::with_capacity(16);
-    let mut seen: HashSet<String> = HashSet::new();
-    append_unique_path_hashed(&mut out, &mut seen, &format!("{path}.molt.py"));
-    append_unique_path_hashed(&mut out, &mut seen, &format!("{path}.py"));
-    if let Some(stripped) = path.rsplit_once('.').map(|(prefix, _)| prefix) {
-        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.molt.py"));
-        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.py"));
-        if let Some((prefix, _)) = stripped.rsplit_once(".cpython-") {
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
-        }
-        if let Some((prefix, _)) = stripped.rsplit_once(".abi") {
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
-        }
-        if let Some((prefix, _)) = stripped.rsplit_once(".cp") {
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
-        }
-    }
-    let dirname = path_dirname_text(path, sep);
-    if path_basename_text(&dirname, sep) == "__pycache__" {
-        let parent = path_dirname_text(&dirname, sep);
-        let basename = path_basename_text(path, sep);
-        let stem = basename
-            .rsplit_once('.')
-            .map(|(value, _)| value)
-            .unwrap_or(&basename);
-        let module_stem = stem.split('.').next().unwrap_or(stem);
-        if !module_stem.is_empty() {
-            let molt_candidate =
-                path_join_text(parent.clone(), &format!("{module_stem}.molt.py"), sep);
-            append_unique_path_hashed(&mut out, &mut seen, &molt_candidate);
-            let py_candidate = path_join_text(parent, &format!("{module_stem}.py"), sep);
-            append_unique_path_hashed(&mut out, &mut seen, &py_candidate);
-        }
-    }
-    let dirname = path_dirname_text(path, sep);
-    let local_name = module_name.rsplit('.').next().unwrap_or(module_name);
-    if !local_name.is_empty() {
-        let named_molt = path_join_text(dirname.clone(), &format!("{local_name}.molt.py"), sep);
-        append_unique_path_hashed(&mut out, &mut seen, &named_molt);
-        let named_py = path_join_text(dirname, &format!("{local_name}.py"), sep);
-        append_unique_path_hashed(&mut out, &mut seen, &named_py);
-        let package_dir = path_join_text(path_dirname_text(path, sep), local_name, sep);
-        let pkg_init_molt = path_join_text(package_dir.clone(), "__init__.molt.py", sep);
-        append_unique_path_hashed(&mut out, &mut seen, &pkg_init_molt);
-        let pkg_init_py = path_join_text(package_dir, "__init__.py", sep);
-        append_unique_path_hashed(&mut out, &mut seen, &pkg_init_py);
-    }
-    let basename = path_basename_text(path, sep);
-    if basename.starts_with("__init__.") {
-        append_unique_path_hashed(
-            &mut out,
-            &mut seen,
-            &path_join_text(path_dirname_text(path, sep), "__init__.molt.py", sep),
-        );
-        append_unique_path_hashed(
-            &mut out,
-            &mut seen,
-            &path_join_text(path_dirname_text(path, sep), "__init__.py", sep),
-        );
-    }
-    out
-}
-
-fn importlib_sourceless_source_candidates(module_name: &str, path: &str) -> Vec<String> {
-    let sep = bootstrap_path_sep();
-    let mut out: Vec<String> = Vec::with_capacity(12);
-    let mut seen: HashSet<String> = HashSet::new();
-    if let Some(stripped) = path.strip_suffix(".pyc") {
-        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.molt.py"));
-        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.py"));
-        if let Some((prefix, _)) = stripped.rsplit_once(".cpython-") {
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
-        }
-        if let Some((prefix, _)) = stripped.rsplit_once(".pypy-") {
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
-            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
-        }
-    }
-    let dirname = path_dirname_text(path, sep);
-    if path_basename_text(&dirname, sep) == "__pycache__" {
-        let parent = path_dirname_text(&dirname, sep);
-        let basename = path_basename_text(path, sep);
-        let stem = basename.trim_end_matches(".pyc");
-        let module_name = stem.split('.').next().unwrap_or(stem);
-        if !module_name.is_empty() {
-            let molt_candidate =
-                path_join_text(parent.clone(), &format!("{module_name}.molt.py"), sep);
-            append_unique_path_hashed(&mut out, &mut seen, &molt_candidate);
-            let candidate = path_join_text(parent, &format!("{module_name}.py"), sep);
-            append_unique_path_hashed(&mut out, &mut seen, &candidate);
-        }
-    }
-    let dirname = path_dirname_text(path, sep);
-    let local_name = module_name.rsplit('.').next().unwrap_or(module_name);
-    if !local_name.is_empty() {
-        let named_molt = path_join_text(dirname.clone(), &format!("{local_name}.molt.py"), sep);
-        append_unique_path_hashed(&mut out, &mut seen, &named_molt);
-        let named_py = path_join_text(dirname, &format!("{local_name}.py"), sep);
-        append_unique_path_hashed(&mut out, &mut seen, &named_py);
-    }
-    let basename = path_basename_text(path, sep);
-    if basename.starts_with("__init__.") && basename.ends_with(".pyc") {
-        append_unique_path_hashed(
-            &mut out,
-            &mut seen,
-            &path_join_text(path_dirname_text(path, sep), "__init__.molt.py", sep),
-        );
-        append_unique_path_hashed(
-            &mut out,
-            &mut seen,
-            &path_join_text(path_dirname_text(path, sep), "__init__.py", sep),
-        );
-    }
-    out
 }
 
 fn bootstrap_resolve_abspath(path: &str, module_file: Option<String>) -> String {

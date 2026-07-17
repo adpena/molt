@@ -18,6 +18,8 @@ _HELPER_SPEC.loader.exec_module(_HELPERS)
 
 ROOT = _HELPERS.ROOT
 _build_and_run_with_env = _HELPERS._build_and_run_with_env
+_build_native_binary_with_env = _HELPERS._build_native_binary_with_env
+run_native_test_process = _HELPERS.run_native_test_process
 
 
 def test_native_sourcefileloader_exec_module_transaction_preserves_body_mutations(
@@ -66,3 +68,38 @@ def test_native_sourcefileloader_exec_module_transaction_preserves_body_mutation
         "True",
         "True",
     ]
+
+
+def test_native_sourcefileloader_exec_module_is_source_free_after_link(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "runtime_site" / "sealed_loader_target.py"
+    out_path, env = _build_native_binary_with_env(
+        tmp_path,
+        (
+            "import importlib.util\n"
+            f"path = {str(module_path)!r}\n"
+            "spec = importlib.util.spec_from_file_location('sealed_loader_target', path)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "print(module.value)\n"
+        ),
+        "sourcefileloader_exec_source_free",
+        session_id="pytest-native-importlib-loader-exec-source-free",
+        cache_dir=ROOT / ".molt_cache-importlib-loader-exec-source-free",
+        backend="cranelift",
+        source_relpath="main.py",
+        extra_files={"runtime_site/sealed_loader_target.py": "value = 707\n"},
+        extra_build_args=["--stdlib-profile", "full"],
+    )
+    module_path.unlink()
+    run = run_native_test_process(
+        [str(out_path)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "707"

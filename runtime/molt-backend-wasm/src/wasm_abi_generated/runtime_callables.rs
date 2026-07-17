@@ -1397,24 +1397,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_exec_extension",
-        import: WasmRuntimeImport::ImportlibExecExtension,
-        arity: 3,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_exec_restricted_source",
-        import: WasmRuntimeImport::ImportlibExecRestrictedSource,
-        arity: 3,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_exec_sourceless",
-        import: WasmRuntimeImport::ImportlibExecSourceless,
-        arity: 3,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_payload",
         import: WasmRuntimeImport::ImportlibExtensionLoaderPayload,
         arity: 3,
@@ -1823,12 +1805,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_source_exec_payload",
-        import: WasmRuntimeImport::ImportlibSourceExecPayload,
-        arity: 3,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_source_from_cache",
         import: WasmRuntimeImport::ImportlibSourceFromCache,
         arity: 1,
@@ -1877,8 +1853,8 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_zip_source_exec_payload",
-        import: WasmRuntimeImport::ImportlibZipSourceExecPayload,
+        runtime_name: "molt_importlib_zip_source_payload",
+        import: WasmRuntimeImport::ImportlibZipSourcePayload,
         arity: 4,
         result: RuntimeCallableResult::I64,
     },
@@ -8150,12 +8126,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_runpy_run_path",
         import: WasmRuntimeImport::RunpyRunPath,
         arity: 3,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_runpy_resolve_path",
-        import: WasmRuntimeImport::RunpyResolvePath,
-        arity: 2,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -15839,11 +15809,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_ensure_default_meta_path" => {
             Some(WasmRuntimeImport::ImportlibEnsureDefaultMetaPath)
         }
-        "molt_importlib_exec_extension" => Some(WasmRuntimeImport::ImportlibExecExtension),
-        "molt_importlib_exec_restricted_source" => {
-            Some(WasmRuntimeImport::ImportlibExecRestrictedSource)
-        }
-        "molt_importlib_exec_sourceless" => Some(WasmRuntimeImport::ImportlibExecSourceless),
         "molt_importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
         }
@@ -16010,7 +15975,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         }
         "molt_importlib_runtime_modules" => Some(WasmRuntimeImport::ImportlibRuntimeModules),
         "molt_importlib_set_module_state" => Some(WasmRuntimeImport::ImportlibSetModuleState),
-        "molt_importlib_source_exec_payload" => Some(WasmRuntimeImport::ImportlibSourceExecPayload),
         "molt_importlib_source_from_cache" => Some(WasmRuntimeImport::ImportlibSourceFromCache),
         "molt_importlib_source_hash" => Some(WasmRuntimeImport::ImportlibSourceHash),
         "molt_importlib_sourceless_loader_payload" => {
@@ -16027,9 +15991,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }
         "molt_importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
-        "molt_importlib_zip_source_exec_payload" => {
-            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
-        }
+        "molt_importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
         "molt_file_close" => Some(WasmRuntimeImport::FileClose),
         "molt_file_detach" => Some(WasmRuntimeImport::FileDetach),
         "molt_file_fileno" => Some(WasmRuntimeImport::FileFileno),
@@ -17267,7 +17229,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
         "molt_runpy_run_module" => Some(WasmRuntimeImport::RunpyRunModule),
         "molt_runpy_run_path" => Some(WasmRuntimeImport::RunpyRunPath),
-        "molt_runpy_resolve_path" => Some(WasmRuntimeImport::RunpyResolvePath),
         "molt_uuid_getnode" => Some(WasmRuntimeImport::UuidGetnode),
         "molt_uuid_uuid4_bytes" => Some(WasmRuntimeImport::UuidUuid4Bytes),
         "molt_uuid_uuid1_bytes" => Some(WasmRuntimeImport::UuidUuid1Bytes),
@@ -18806,9 +18767,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_coerce_module_name" => Some(3),
         "molt_importlib_decode_source" => Some(1),
         "molt_importlib_ensure_default_meta_path" => Some(1),
-        "molt_importlib_exec_extension" => Some(3),
-        "molt_importlib_exec_restricted_source" => Some(3),
-        "molt_importlib_exec_sourceless" => Some(3),
         "molt_importlib_extension_loader_payload" => Some(3),
         "molt_importlib_filefinder_find_spec" => Some(3),
         "molt_importlib_filefinder_invalidate" => Some(1),
@@ -18877,7 +18835,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_resources_resource_path_from_package_parts" => Some(4),
         "molt_importlib_runtime_modules" => Some(0),
         "molt_importlib_set_module_state" => Some(8),
-        "molt_importlib_source_exec_payload" => Some(3),
         "molt_importlib_source_from_cache" => Some(1),
         "molt_importlib_source_hash" => Some(1),
         "molt_importlib_sourceless_loader_payload" => Some(3),
@@ -18886,7 +18843,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_stabilize_module_state" => Some(6),
         "molt_importlib_validate_resource_name" => Some(1),
         "molt_importlib_zip_read_entry" => Some(2),
-        "molt_importlib_zip_source_exec_payload" => Some(4),
+        "molt_importlib_zip_source_payload" => Some(4),
         "molt_file_close" => Some(1),
         "molt_file_detach" => Some(1),
         "molt_file_fileno" => Some(1),
@@ -19932,7 +19889,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_locals_builtin" => Some(0),
         "molt_runpy_run_module" => Some(4),
         "molt_runpy_run_path" => Some(3),
-        "molt_runpy_resolve_path" => Some(2),
         "molt_uuid_getnode" => Some(0),
         "molt_uuid_uuid4_bytes" => Some(0),
         "molt_uuid_uuid1_bytes" => Some(2),

@@ -3322,24 +3322,27 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     assert public_init in functions
     assert extension_init in functions
     assert legacy_parent_init in functions
-    assert capsule_alias_init in functions
+    assert capsule_alias_init not in functions
+    assert "molt_isolate_import" not in functions
 
-    import_ops = functions["molt_isolate_import"]
-    import_const_names = [
-        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
-    ]
-    import_call_targets = [
-        op.get("s_value") for op in import_ops if op.get("kind") == "call"
-    ]
-    assert "nativepkg" in import_const_names
-    assert "nativepkg.ndimage" in import_const_names
-    assert "nativepkg.ndimage._nd_image" in import_const_names
-    assert "nativepkg.legacy" in import_const_names
-    assert "nativepkg.legacy._nd_image" in import_const_names
-    assert public_init in import_call_targets
-    assert extension_init in import_call_targets
-    assert legacy_parent_init in import_call_targets
-    assert capsule_alias_init in import_call_targets
+    registry = prepared.module_registry
+    assert registry is not None
+    init_rows = dict(prepared.ir["module_registry"]["init_rows"])
+    for module_name, init_symbol in (
+        ("nativepkg", root_init),
+        ("nativepkg.ndimage", public_init),
+        ("nativepkg.ndimage._nd_image", extension_init),
+        ("nativepkg.legacy", legacy_parent_init),
+    ):
+        row = registry.row_of(module_name)
+        assert row is not None
+        assert init_rows[row.id] == init_symbol
+    alias_row = registry.row_of("nativepkg.legacy._nd_image")
+    target_row = registry.row_of("nativepkg.ndimage._nd_image")
+    assert alias_row is not None and target_row is not None
+    assert alias_row.init_symbol == ""
+    assert alias_row.alias_target == target_row.id
+    assert alias_row.id not in init_rows
 
     extension_ops = functions[extension_init]
     invoke_ops = [op for op in extension_ops if op.get("kind") == "invoke_ffi"]
@@ -3347,7 +3350,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         {
             "kind": "invoke_ffi",
             "args": [],
-            "out": "v5",
+            "out": "v2",
             "native_callable_export": (
                 "__molt_static_pyinit__.nativepkg.ndimage._nd_image"
             ),
@@ -3362,31 +3365,17 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     assert "molt_cpython_abi_prepare_static_extension" in extension_call_targets
     assert "molt_cpython_abi_pyinit_module_to_bits" in extension_call_targets
 
-    # Every static-native init owns init-exactly-once: a module-cache guard
-    # must wrap the init body so re-entry (isolate-import dispatch or capsule
-    # alias providers) can never re-run a PyInit or replace a cached module.
-    for init_name in (root_init, public_init, extension_init, capsule_alias_init):
-        guarded_ops = functions[init_name]
-        assert [op.get("kind") for op in guarded_ops[:5]] == [
+    # Init-exactly-once is owned by the shared ModuleTable on native and WASM;
+    # generated bodies are pure executors and aliases are data-only rows.
+    for init_name in (root_init, public_init, extension_init, legacy_parent_init):
+        body_ops = functions[init_name]
+        assert [op.get("kind") for op in body_ops[:5]] != [
             "const_str",
             "module_cache_get",
             "const_none",
             "is",
             "if",
-        ], f"missing init-once guard preamble in {init_name}"
-        assert any(op.get("kind") == "end_if" for op in guarded_ops), init_name
-
-    alias_ops = functions[capsule_alias_init]
-    alias_call_targets = [
-        op.get("s_value") for op in alias_ops if op.get("kind") == "call"
-    ]
-    alias_const_names = [
-        op.get("s_value") for op in alias_ops if op.get("kind") == "const_str"
-    ]
-    assert extension_init in alias_call_targets
-    assert "nativepkg.legacy._nd_image" in alias_const_names
-    assert "nativepkg.ndimage._nd_image" in alias_const_names
-    assert not any(op.get("kind") == "invoke_ffi" for op in alias_ops)
+        ]
 
     public_ops = functions[public_init]
     public_call_targets = [
@@ -3395,7 +3384,8 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     public_const_names = [
         op.get("s_value") for op in public_ops if op.get("kind") == "const_str"
     ]
-    assert extension_init in public_call_targets
+    assert extension_init not in public_call_targets
+    assert "molt_module_ensure" in public_call_targets
     assert "nativepkg.ndimage._nd_image" in public_const_names
     assert "gaussian_filter" in public_const_names
     gaussian_attr_vars = {

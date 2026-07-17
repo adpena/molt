@@ -415,7 +415,7 @@ def _build_isolate_bootstrap_ops(
 def _build_isolate_import_ops(
     *,
     code_slot_count: int,
-    module_order: Sequence[str],
+    module_init_symbols: Sequence[tuple[str, str]],
     register_global_code_id: Callable[[str], int],
 ) -> list[dict[str, Any]]:
     # Runtime-side module imports can reach this function before either
@@ -451,8 +451,8 @@ def _build_isolate_import_ops(
         {"kind": "is", "args": [module_var, none_var], "out": is_none_var}
     )
     import_ops.append({"kind": "if", "args": [is_none_var]})
-    if module_order:
-        for idx, module_name in enumerate(module_order):
+    if module_init_symbols:
+        for idx, (module_name, init_symbol) in enumerate(module_init_symbols):
             match_name_var = import_var()
             import_ops.append(
                 {"kind": "const_str", "s_value": module_name, "out": match_name_var}
@@ -472,7 +472,6 @@ def _build_isolate_import_ops(
             # predeclare globals to None, so entering them with a stale flag
             # corrupts module publication instead of executing the real body.
             import_ops.append({"kind": "exception_clear"})
-            init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
             init_out = import_var()
             import_ops.append(
                 {
@@ -484,9 +483,9 @@ def _build_isolate_import_ops(
                 }
             )
             import_ops.append({"kind": "check_exception", "value": import_failed_label})
-            if idx < len(module_order) - 1:
+            if idx < len(module_init_symbols) - 1:
                 import_ops.append({"kind": "else"})
-        import_ops.extend({"kind": "end_if"} for _ in module_order)
+        import_ops.extend({"kind": "end_if"} for _ in module_init_symbols)
     import_ops.append({"kind": "end_if"})
     loaded_var = import_var()
     import_ops.append(
@@ -534,20 +533,21 @@ _MODULE_ENSURE_SYMBOL = "molt_module_ensure"
 
 
 def _module_registry_target_enabled(target: str) -> bool:
-    """The import-bedrock registry lane is the native lane (design doc 69 PR1).
+    """Targets that consume the canonical per-build module catalog.
 
-    WASM keeps the legacy isolate dispatch until PR3 unifies its projections;
-    the luau/rust/mlir emit lanes keep the legacy shape because their emitted
-    artifacts do not carry the native registry blob.
+    Native projects it as a relocated init table; WASM projects the same rows
+    as its app-owned import export. Source emitters do not yet ship the Molt
+    runtime/catalog ABI and retain their textual dispatch shape.
     """
-    if target in {"wasm", "wasm-freestanding", "luau", "rust", "mlir"}:
+    if target in {"luau", "rust", "mlir"}:
         return False
-    return not target.startswith("wasm32")
+    return True
 
 
-def _build_native_module_registry(
+def _build_module_registry(
     *,
     entry_module: str,
+    module_graph: Mapping[str, Path],
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
     native_module_init_specs: Sequence[_ExternalNativeModuleInitSpec],
@@ -589,9 +589,19 @@ def _build_native_module_registry(
                 init_symbol=(
                     SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
                 ),
+                is_package=module_graph[name].name == "__init__.py",
+                origin=str(module_graph[name].resolve()),
             )
         )
     generated = set(generated_native_init_modules)
+    external_package_names = {
+        spec.module
+        for spec in native_module_init_specs
+        if any(
+            other.module.startswith(f"{spec.module}.")
+            for other in native_module_init_specs
+        )
+    }
     for spec in native_module_init_specs:
         if spec.module in module_order_set or spec.module not in generated:
             # The module is compiled from source (or another spec already
@@ -603,6 +613,7 @@ def _build_native_module_registry(
                     name=spec.module,
                     kind="alias",
                     alias_of=spec.alias_of,
+                    origin=f"<static:{spec.module}>",
                 )
             )
             continue
@@ -611,6 +622,8 @@ def _build_native_module_registry(
                 name=spec.module,
                 kind="extension" if spec.is_extension else "source",
                 init_symbol=SimpleTIRGenerator.module_init_symbol(spec.module),
+                is_package=spec.module in external_package_names,
+                origin=f"<static:{spec.module}>",
                 deps=tuple(
                     sorted(
                         {export.provider_module for export in spec.module_attr_exports}
@@ -627,6 +640,7 @@ def _build_native_module_registry(
                 # compiles the entry module with __main__ semantics); there is
                 # no separate trampoline init on the registry lane.
                 init_symbol=SimpleTIRGenerator.module_init_symbol(entry_module),
+                origin=str(module_graph[entry_module].resolve()),
             )
         )
     return build_module_registry(entries)
@@ -1671,7 +1685,8 @@ def _prepare_backend_ir(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
-    registry_lane = _module_registry_target_enabled(target)
+    catalog_lane = _module_registry_target_enabled(target)
+    module_table_lane = catalog_lane
     entry_path: Path | None = None
     if entry_module != "__main__":
         entry_path = module_graph.get(entry_module)
@@ -1681,7 +1696,7 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
-        if not registry_lane:
+        if not module_table_lane:
             # Dedup: the entry module is already compiled with entry_module=
             # entry_module (giving it __main__ semantics — dynamic __name__,
             # MODULE_CACHE_SET for "__main__", etc.).  Emit a thin trampoline
@@ -1737,7 +1752,7 @@ def _prepare_backend_ir(
         functions,
         specs=native_module_init_specs,
         register_global_code_id=register_global_code_id,
-        registry_lane=registry_lane,
+        registry_lane=module_table_lane,
     )
     native_module_order = [spec.module for spec in native_module_init_specs]
     native_runtime_import_dispatch_roots = set(runtime_import_dispatch_roots)
@@ -1851,14 +1866,15 @@ def _prepare_backend_ir(
         {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
     )
     module_registry: ModuleRegistry | None = None
-    if registry_lane:
+    if catalog_lane:
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
         # molt_isolate_import string_eq dispatch chain.  Cold dispatch is the
         # MODULE_INIT_TABLE relocation column of the registry blob; literal
         # import sites lower onto molt_module_ensure(const ModuleId).
         try:
-            module_registry = _build_native_module_registry(
+            module_registry = _build_module_registry(
                 entry_module=entry_module,
+                module_graph=module_graph,
                 module_order=module_order,
                 runtime_import_dispatch_roots=native_runtime_import_dispatch_roots,
                 native_module_init_specs=native_module_init_specs,
@@ -1871,16 +1887,21 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
-        rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
-        if rewrite_issue is not None:
-            return None, fail(rewrite_issue, json_output, command="build")
+        if module_table_lane:
+            rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
+            if rewrite_issue is not None:
+                return None, fail(rewrite_issue, json_output, command="build")
     else:
+        legacy_module_order = _isolate_import_module_order(
+            module_order,
+            native_runtime_import_dispatch_roots,
+            native_module_order=native_module_order,
+        )
         import_ops = _build_isolate_import_ops(
             code_slot_count=len(global_code_ids),
-            module_order=_isolate_import_module_order(
-                module_order,
-                native_runtime_import_dispatch_roots,
-                native_module_order=native_module_order,
+            module_init_symbols=tuple(
+                (name, SimpleTIRGenerator.module_init_symbol(name))
+                for name in legacy_module_order
             ),
             register_global_code_id=register_global_code_id,
         )

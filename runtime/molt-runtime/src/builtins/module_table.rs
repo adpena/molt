@@ -19,8 +19,10 @@
 //! cached path is two loads plus an increment: `states[id]`, `slots[id]`,
 //! inc_ref — no strings, no hashing, no locks (invariant I1/§8.1).
 //!
-//! Five-state machine per row: {Uninit, Initializing, Ready, Tombstone,
-//! Replaced}.  Init-exactly-once is the `Uninit→Initializing` CAS (invariant
+//! Five observable states per row: {Uninit, Initializing, Ready, Tombstone,
+//! Replaced}, plus an internal `ExecutionReserved` custody state used only by
+//! transactional runpy/importlib re-execution. Init-exactly-once is the
+//! `Uninit→Initializing` CAS (invariant
 //! I5); publication happens before body execution (invariant I6) via the
 //! body's own `MODULE_CACHE_SET`, which mirrors into `slots[id]` while this
 //! ensure transaction is open (`publish_from_cache_set`).  The two dict-view
@@ -34,9 +36,8 @@
 //!   an adoption path (Uninit + legacy entry ⇒ adopt) and publication hooks
 //!   from `molt_module_cache_set`/`_del` so the two can never disagree about
 //!   init custody.
-//! * wasm32 keeps the legacy `molt_isolate_import` env-import until PR3 owns
-//!   the WASM projection; this whole module is native-only until then, so the
-//!   checked-in WASM runtime binaries are byte-identical.
+//! * wasm32 projects the same table through an app-owned integer ModuleId
+//!   dispatcher.  Module names never cross the app/runtime ABI.
 //! * Extension reinit-after-tombstone (CPython m_copy semantics, parity row
 //!   5.8) requires the first-init dict snapshot that lands in PR4; until then
 //!   that transition fails closed with a named diagnostic.
@@ -44,8 +45,6 @@
 //! Platform note: everything here is target-neutral by construction (atomics +
 //! GIL discipline; thread ids from `crate::concurrency::current_thread_id`);
 //! there are no host-OS branches, so Windows/macOS/Linux share one code path.
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -63,10 +62,10 @@ use crate::{
 // Structural gate: tests/test_module_registry_gates.py asserts these
 // constants equal the Python authority's. Bump both in the same arc.
 
-pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 1;
-const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD1");
+pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 2;
+const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD2");
 const MODULE_REGISTRY_HEADER_BYTES: usize = 48;
-const MODULE_REGISTRY_ROW_BYTES: usize = 32;
+const MODULE_REGISTRY_ROW_BYTES: usize = 40;
 const NO_MODULE_ID: u32 = u32::MAX;
 
 const MODULE_KIND_SOURCE: u8 = 0;
@@ -78,14 +77,26 @@ const MODULE_KIND_RUNTIME_BUILTIN: u8 = 4;
 
 #[allow(dead_code)] // consumed by the PR4 extension-snapshot reinit lane
 const MODULE_FLAG_REINIT_RESURRECT: u8 = 0x01;
+const MODULE_FLAG_PACKAGE: u8 = 0x02;
+const MODULE_FLAG_HAS_BODY: u8 = 0x04;
 
-// ─── The five-state machine (design §4.1) ────────────────────────────────────
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
+    fn molt_isolate_import(module_id: u64) -> u64;
+}
+
+// ─── Module state machine (design §4.1) ─────────────────────────────────────
 
 const STATE_UNINIT: u8 = 0;
 const STATE_INITIALIZING: u8 = 1;
 const STATE_READY: u8 = 2;
 const STATE_TOMBSTONE: u8 = 3;
 const STATE_REPLACED: u8 = 4;
+/// Transient custody for runpy/importlib fresh execution.  It reserves the row
+/// before the normal ensure dispatcher enters Initializing, preventing a
+/// free-threaded importer from winning the Tombstone race.
+const STATE_EXECUTION_RESERVED: u8 = 5;
 
 // ─── Registry (per-process, installed by the app bootstrap) ────────────────
 
@@ -104,6 +115,8 @@ pub(crate) struct ModuleRegistry {
     base: usize,
     count: u32,
     names_off: usize,
+    origins_off: usize,
+    origins_len: usize,
     digest: [u8; 16],
 }
 
@@ -145,6 +158,20 @@ impl ModuleRegistry {
         };
         // UTF-8 validity is checked once at install; fail closed on decode.
         std::str::from_utf8(bytes).expect("module registry names validated at install")
+    }
+
+    pub(crate) fn origin_of(&self, id: u32) -> &'static str {
+        debug_assert!(id < self.count);
+        let row = self.row_base(id);
+        let origin_off = Self::read_u32(row + 28) as usize;
+        let origin_len = Self::read_u32(row + 32) as usize;
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (self.base + self.origins_off + origin_off) as *const u8,
+                origin_len,
+            )
+        };
+        std::str::from_utf8(bytes).expect("module registry origins validated at install")
     }
 
     pub(crate) fn row(&self, id: u32) -> RegistryRow {
@@ -201,11 +228,15 @@ impl ModuleRegistry {
         let mut digest = [0u8; 16];
         digest.copy_from_slice(unsafe { std::slice::from_raw_parts((base + 16) as *const u8, 16) });
         let names_len = Self::read_u64(base + 32) as usize;
+        let origins_len = Self::read_u64(base + 40) as usize;
         let names_off = MODULE_REGISTRY_HEADER_BYTES + (count as usize) * MODULE_REGISTRY_ROW_BYTES;
+        let origins_off = names_off + names_len;
         let registry = Self {
             base,
             count,
             names_off,
+            origins_off,
+            origins_len,
             digest,
         };
         // Validate every row once so all later reads are infallible.
@@ -227,6 +258,21 @@ impl ModuleRegistry {
             };
             let name = std::str::from_utf8(bytes)
                 .map_err(|_| format!("module registry row {id} name is not UTF-8"))?;
+            let origin_off = Self::read_u32(row_base + 28) as usize;
+            let origin_len = Self::read_u32(row_base + 32) as usize;
+            if origin_off + origin_len > registry.origins_len {
+                return Err(format!(
+                    "module registry row {id} origin span exceeds the origin table"
+                ));
+            }
+            let origin_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    (registry.base + registry.origins_off + origin_off) as *const u8,
+                    origin_len,
+                )
+            };
+            std::str::from_utf8(origin_bytes)
+                .map_err(|_| format!("module registry row {id} origin is not UTF-8"))?;
             if let Some(previous) = previous_name
                 && previous >= name
             {
@@ -264,6 +310,24 @@ impl ModuleRegistry {
                 other => {
                     return Err(format!("module registry row {id} has unknown kind {other}"));
                 }
+            }
+        }
+        // Alias rows are generated, but the runtime still validates the full
+        // chain before accepting an artifact.  A cycle would otherwise recurse
+        // indefinitely in both normal imports and fresh-execution dispatch.
+        for id in 0..count {
+            let mut current = id;
+            for depth in 0..=count {
+                let row = registry.row(current);
+                if row.kind != MODULE_KIND_ALIAS {
+                    break;
+                }
+                if depth == count {
+                    return Err(format!(
+                        "module registry alias chain from row {id} does not terminate"
+                    ));
+                }
+                current = row.alias_target.expect("alias target validated above");
             }
         }
         Ok(registry)
@@ -305,6 +369,59 @@ pub(crate) fn module_registry() -> Option<&'static ModuleRegistry> {
 /// installed — direct-link tests and embedding hosts without compiled apps).
 pub(crate) fn module_id_of(name: &str) -> Option<u32> {
     module_registry()?.id_of(name)
+}
+
+/// Resolve a generated alias to the row that owns its initializer.  Fresh
+/// execution must release and dispatch that terminal row; alias rows own no
+/// body and remain ordinary co-publication views.
+pub(crate) fn module_execution_target_name(name: &str) -> Option<&'static str> {
+    let registry = module_registry()?;
+    let mut id = registry.id_of(name)?;
+    loop {
+        let row = registry.row(id);
+        if row.kind != MODULE_KIND_ALIAS {
+            return Some(registry.name_of(id));
+        }
+        id = row
+            .alias_target
+            .expect("alias target validated at registry install");
+    }
+}
+
+/// Catalog admission for fresh execution. `None` means no registry is
+/// installed (direct-link tests/embedding); `Some(false)` is an authoritative
+/// no-body row and must not enter the importer or allocate transaction state.
+pub(crate) fn module_execution_target_has_body(name: &str) -> Option<bool> {
+    let registry = module_registry()?;
+    let mut id = registry.id_of(name)?;
+    loop {
+        let row = registry.row(id);
+        if row.kind != MODULE_KIND_ALIAS {
+            return Some(row.flags & MODULE_FLAG_HAS_BODY != 0);
+        }
+        id = row
+            .alias_target
+            .expect("alias target validated at registry install");
+    }
+}
+
+pub(crate) fn module_catalog_is_package(name: &str) -> Option<bool> {
+    let registry = module_registry()?;
+    let id = registry.id_of(name)?;
+    Some(registry.row(id).flags & MODULE_FLAG_PACKAGE != 0)
+}
+
+pub(crate) fn module_catalog_origin(name: &str) -> Option<&'static str> {
+    let registry = module_registry()?;
+    let id = registry.id_of(name)?;
+    Some(registry.origin_of(id))
+}
+
+pub(crate) fn module_catalog_name_by_origin(origin: &str) -> Option<&'static str> {
+    let registry = module_registry()?;
+    (0..registry.count())
+        .find(|&id| registry.origin_of(id) == origin)
+        .map(|id| registry.name_of(id))
 }
 
 // ─── ModuleTable (one per isolate, design §4.1) ─────────────────────────────
@@ -478,6 +595,89 @@ pub(crate) fn module_table_view_tombstone(_py: &PyToken<'_>, id: u32) {
 
 /// Depth guard for alias chains and parent recursion; the registry validates
 /// alias chains terminate, so this is a fail-closed backstop only.
+pub(crate) struct ModuleExecutionSnapshot {
+    id: u32,
+    state: u8,
+    bits: u64,
+}
+
+/// Temporarily release one compiled row for a fresh execution transaction.
+pub(crate) fn begin_module_execution(
+    _py: &PyToken<'_>,
+    name: &str,
+) -> Result<Option<ModuleExecutionSnapshot>, u64> {
+    let Some(registry) = module_registry() else {
+        return Ok(None);
+    };
+    let Some(id) = registry.id_of(name) else {
+        return Ok(None);
+    };
+    let Some(table) = module_table(_py) else {
+        return Ok(None);
+    };
+    let idx = id as usize;
+    let self_tid = crate::concurrency::current_thread_id();
+    let state = loop {
+        let state = table.states[idx].load(Ordering::Acquire);
+        if state == STATE_INITIALIZING || state == STATE_EXECUTION_RESERVED {
+            if table.owners[idx].load(Ordering::Acquire) == self_tid {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    &format!("module {name:?} is already executing on this thread"),
+                ));
+            }
+            if wait_for_foreign_init(_py, table, id, self_tid) {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    &format!(
+                        "cannot start fresh execution of module {name:?} during a concurrent import cycle"
+                    ),
+                ));
+            }
+            continue;
+        }
+        if table.states[idx]
+            .compare_exchange(
+                state,
+                STATE_EXECUTION_RESERVED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            break state;
+        }
+    };
+    table.owners[idx].store(self_tid, Ordering::Release);
+    let bits = table.slots[idx].swap(0, Ordering::AcqRel);
+    Ok(Some(ModuleExecutionSnapshot { id, state, bits }))
+}
+
+/// Restore the exact table state displaced by `begin_module_execution`.
+pub(crate) fn restore_module_execution(
+    _py: &PyToken<'_>,
+    snapshot: Option<ModuleExecutionSnapshot>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let Some(table) = module_table(_py) else {
+        if snapshot.bits != 0 {
+            dec_ref_bits(_py, snapshot.bits);
+        }
+        return;
+    };
+    let idx = snapshot.id as usize;
+    let fresh = table.slots[idx].swap(snapshot.bits, Ordering::AcqRel);
+    table.owners[idx].store(0, Ordering::Release);
+    table.states[idx].store(snapshot.state, Ordering::Release);
+    if fresh != 0 {
+        dec_ref_bits(_py, fresh);
+    }
+}
+
 static ENSURE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 const ENSURE_MAX_DEPTH: usize = 4096;
 
@@ -611,6 +811,33 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
                 }
                 continue;
             }
+            STATE_EXECUTION_RESERVED => {
+                if table.owners[idx].load(Ordering::Acquire) == self_tid {
+                    if table.states[idx]
+                        .compare_exchange(
+                            STATE_EXECUTION_RESERVED,
+                            STATE_INITIALIZING,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    return run_init_transaction(_py, registry, table, id, row.init_ptr);
+                }
+                if wait_for_foreign_init(_py, table, id, self_tid) {
+                    let name = registry.name_of(id);
+                    return raise_exception::<_>(
+                        _py,
+                        "ImportError",
+                        &format!(
+                            "cannot import module '{name}' during a concurrent fresh-execution transaction"
+                        ),
+                    );
+                }
+                continue;
+            }
             STATE_TOMBSTONE => {
                 match row.kind {
                     MODULE_KIND_EXTENSION => {
@@ -629,6 +856,9 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
                         );
                     }
                     _ => {
+                        if !ensure_parent_ready(_py, &row) {
+                            return none_bits();
+                        }
                         // Source reinit policy: full re-execution with a NEW
                         // module object (parity row 5.3).  Take the transition
                         // and fall through to the Uninit body below.
@@ -649,6 +879,15 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
                 }
             }
             STATE_UNINIT => {
+                // Parent-first must precede the child's state transition.  If
+                // the parent imports this child while building its metadata,
+                // the recursive child ensure may win and publish it; our CAS
+                // below then loses and re-reads the completed state.  Marking
+                // the child Initializing first creates a false slot-less
+                // circular import.
+                if !ensure_parent_ready(_py, &row) {
+                    return none_bits();
+                }
                 // PR1 adoption bridge: the legacy store may already own the
                 // module (entry-module dual publication, host preloads).  The
                 // adoption is itself an ensure-owned transition.
@@ -695,6 +934,21 @@ fn module_ensure_inner(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id:
             }
         }
     }
+}
+
+fn ensure_parent_ready(_py: &PyToken<'_>, row: &RegistryRow) -> bool {
+    let Some(parent) = row.parent else {
+        return true;
+    };
+    let parent_bits = module_ensure(_py, parent);
+    if exception_pending(_py) {
+        if !is_none_bits(parent_bits) {
+            dec_ref_bits(_py, parent_bits);
+        }
+        return false;
+    }
+    dec_ref_bits(_py, parent_bits);
+    true
 }
 
 /// The Uninit→Ready init transaction body.  Caller has already won the CAS
@@ -745,7 +999,8 @@ fn run_init_transaction(
         return none_bits();
     }
 
-    if init_ptr == 0 {
+    let row = registry.row(id);
+    if row.flags & MODULE_FLAG_HAS_BODY == 0 {
         // Fail closed, exact CPython message so the importlib fallback ladder
         // (spec/runtime-roots imports) keeps its dynamic-path semantics; the
         // admission channel is the runtime import dispatch set (invariant I11).
@@ -757,26 +1012,19 @@ fn run_init_transaction(
         );
     }
 
-    // Parent-first (parity row 5.5): `import a.b` initializes `a` before `b`.
-    let row = registry.row(id);
-    if let Some(parent) = row.parent {
-        let parent_bits = module_ensure(_py, parent);
-        if exception_pending(_py) {
-            if !is_none_bits(parent_bits) {
-                dec_ref_bits(_py, parent_bits);
-            }
-            unwind(_py);
-            return none_bits();
-        }
-        dec_ref_bits(_py, parent_bits);
-    }
-
     // MODULE_INIT_TABLE dispatch: the init body allocates its module and
     // publishes it via MODULE_CACHE_SET (mirrored into slots[id] by
     // publish_from_cache_set — publish-before-exec, invariant I6), then
     // executes the module body.
-    let init: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(init_ptr as usize) };
-    let _ = unsafe { init() };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let init: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(init_ptr as usize) };
+        let _ = unsafe { init() };
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = unsafe { molt_isolate_import(u64::from(id)) };
+    }
 
     if exception_pending(_py) {
         unwind(_py);
@@ -909,8 +1157,8 @@ fn wait_for_foreign_init(
     false
 }
 
-// ─── Dynamic dispatch entry (replaces the app-owned molt_isolate_import
-//     string_eq chain on native; wasm32 keeps its env import until PR3) ─────
+// ─── Dynamic dispatch entry (name resolution is cold; both targets execute
+//     through the ModuleId table) ───────────────────────────────────────────
 
 /// Name-keyed cold dispatch for the dynamic import lanes
 /// (`molt_module_import`, runpy, thread payloads).  Registry hit → ensure;
@@ -965,7 +1213,12 @@ mod tests {
                 parent,
                 alias_target,
                 kind,
-                flags,
+                flags
+                    | if init_ptr == 0 {
+                        0
+                    } else {
+                        MODULE_FLAG_HAS_BODY
+                    },
             ));
             self
         }
@@ -1002,6 +1255,8 @@ mod tests {
                 blob.push(*kind);
                 blob.push(*flags);
                 blob.extend_from_slice(&0u16.to_le_bytes());
+                blob.extend_from_slice(&0u32.to_le_bytes());
+                blob.extend_from_slice(&0u32.to_le_bytes());
                 blob.extend_from_slice(&0u32.to_le_bytes());
             }
             blob.extend_from_slice(&names);
@@ -1335,10 +1590,39 @@ mod tests {
             assert!(!exception_pending(_py));
             let via_target = module_ensure(_py, target_id);
             assert_eq!(via_alias, via_target, "alias must resolve to its target");
+            assert_eq!(
+                module_execution_target_name("g4_alias"),
+                Some("g4_target"),
+                "fresh execution must resolve aliases to the initializer owner"
+            );
             assert!(
                 legacy_cache_lookup(_py, "g4_alias").is_some(),
                 "alias co-publication must reach the store under the alias name"
             );
+            let table = module_table(_py).expect("table");
+            let snapshot = begin_module_execution(_py, "g4_target")
+                .expect("reserve ready row")
+                .expect("registry row snapshot");
+            assert_eq!(
+                table.states[target_id as usize].load(Ordering::Acquire),
+                STATE_EXECUTION_RESERVED
+            );
+            assert_eq!(table.slots[target_id as usize].load(Ordering::Acquire), 0);
+            assert_eq!(
+                table.owners[target_id as usize].load(Ordering::Acquire),
+                crate::concurrency::current_thread_id()
+            );
+            restore_module_execution(_py, Some(snapshot));
+            assert_eq!(
+                table.states[target_id as usize].load(Ordering::Acquire),
+                STATE_READY
+            );
+            assert_eq!(
+                table.slots[target_id as usize].load(Ordering::Acquire),
+                via_target,
+                "fresh execution restoration must recover the exact displaced slot"
+            );
+            assert_eq!(table.owners[target_id as usize].load(Ordering::Acquire), 0);
             dec_ref_bits(_py, via_alias);
             dec_ref_bits(_py, via_target);
 
@@ -1519,6 +1803,8 @@ mod tests {
             blob.push(0);
             blob.extend_from_slice(&0u16.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
         }
         blob.extend_from_slice(&names);
         let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("unsorted must fail");
@@ -1530,5 +1816,118 @@ mod tests {
         blob[8..12].copy_from_slice(&(MODULE_REGISTRY_SCHEMA_VERSION + 1).to_le_bytes());
         let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("schema must fail");
         assert!(err.contains("schema"), "{err}");
+
+        // Alias cycles are artifact corruption, not a runtime recursion path.
+        let mut aliases = BlobBuilder::new();
+        aliases
+            .row("zz_alias_a", 0, None, Some(1), MODULE_KIND_ALIAS, 0)
+            .row("zz_alias_b", 0, None, Some(0), MODULE_KIND_ALIAS, 0);
+        let blob = aliases.build();
+        let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("alias cycle must fail");
+        assert!(err.contains("does not terminate"), "{err}");
+    }
+
+    #[cfg(feature = "l7-attestation-probe")]
+    #[test]
+    #[ignore = "release import-catalog performance/allocation attestation"]
+    fn import_catalog_perf_attestation() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear();
+            let registry = module_registry().expect("registry");
+            let src_id = test_registry_id("g4_src");
+            let warm = module_ensure(_py, src_id);
+            assert!(!exception_pending(_py));
+            dec_ref_bits(_py, warm);
+            let warm_snapshot = begin_module_execution(_py, "g4_src")
+                .expect("warm reexec reservation")
+                .expect("catalog row");
+            restore_module_execution(_py, Some(warm_snapshot));
+
+            const RESOLVE_ITERS: usize = 2_000_000;
+            const ENSURE_ITERS: usize = 250_000;
+            const REEXEC_ITERS: usize = 250_000;
+
+            let started = Instant::now();
+            for _ in 0..RESOLVE_ITERS {
+                black_box(registry.id_of(black_box("g4_src")));
+            }
+            let resolve_ns = started.elapsed().as_nanos() as f64 / RESOLVE_ITERS as f64;
+
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..RESOLVE_ITERS {
+                black_box(registry.id_of(black_box("g4_src")));
+            }
+            crate::attestation_probe::set_tracking(false);
+            let resolve_alloc = crate::attestation_probe::snapshot();
+
+            let started = Instant::now();
+            for _ in 0..ENSURE_ITERS {
+                let bits = black_box(module_ensure(_py, src_id));
+                dec_ref_bits(_py, bits);
+            }
+            let ensure_ns = started.elapsed().as_nanos() as f64 / ENSURE_ITERS as f64;
+
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..ENSURE_ITERS {
+                let bits = black_box(module_ensure(_py, src_id));
+                dec_ref_bits(_py, bits);
+            }
+            crate::attestation_probe::set_tracking(false);
+            let ensure_alloc = crate::attestation_probe::snapshot();
+
+            let started = Instant::now();
+            for _ in 0..REEXEC_ITERS {
+                let snapshot = begin_module_execution(_py, "g4_src")
+                    .expect("reexec reservation")
+                    .expect("catalog row");
+                restore_module_execution(_py, Some(snapshot));
+            }
+            let reexec_ns = started.elapsed().as_nanos() as f64 / REEXEC_ITERS as f64;
+
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..REEXEC_ITERS {
+                let snapshot = begin_module_execution(_py, "g4_src")
+                    .expect("reexec reservation")
+                    .expect("catalog row");
+                restore_module_execution(_py, Some(snapshot));
+            }
+            crate::attestation_probe::set_tracking(false);
+            let reexec_alloc = crate::attestation_probe::snapshot();
+
+            let parallel_started = Instant::now();
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        for _ in 0..250_000 {
+                            black_box(registry.id_of(black_box("g4_src")));
+                        }
+                    });
+                }
+            });
+            let parallel_resolve_ns = parallel_started.elapsed().as_nanos() as f64 / 2_000_000.0;
+
+            assert_eq!(resolve_alloc.allocations, 0, "resolver allocated");
+            assert_eq!(ensure_alloc.allocations, 0, "Ready ensure allocated");
+            assert_eq!(reexec_alloc.allocations, 0, "reexec reservation allocated");
+            eprintln!(
+                "IMPORT_CATALOG_ATTESTATION {{\"resolve_ns_per_op\":{resolve_ns:.3},\
+                 \"ready_ensure_ns_per_op\":{ensure_ns:.3},\
+                 \"reexec_reserve_restore_ns_per_op\":{reexec_ns:.3},\
+                 \"parallel_8x_resolve_ns_per_op\":{parallel_resolve_ns:.3},\
+                 \"resolver_allocations\":{},\"ready_ensure_allocations\":{},\
+                 \"reexec_allocations\":{}}}",
+                resolve_alloc.allocations, ensure_alloc.allocations, reexec_alloc.allocations,
+            );
+        });
     }
 }

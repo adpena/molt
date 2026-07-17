@@ -12,11 +12,10 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import builtins
 import importlib.util
+import inspect
 import sys
 import types
 
-
-calls = []
 
 builtins._molt_intrinsics = {{
     "molt_runpy_run_module": lambda mod_name, run_name, init_globals, alter_sys: {{
@@ -26,18 +25,12 @@ builtins._molt_intrinsics = {{
         "alter_sys": alter_sys,
         "seed": None if init_globals is None else init_globals.get("seed"),
     }},
-    "molt_runpy_resolve_path": lambda path, module_file: {{
-        "abspath": f"/abs/{{path}}",
-        "is_file": True,
-    }},
     "molt_runpy_run_path": lambda path, run_name, init_globals: {{
         "kind": "path",
         "path": path,
         "run_name": run_name,
         "seed": None if init_globals is None else init_globals.get("seed"),
     }},
-    "molt_capabilities_trusted": lambda: False,
-    "molt_capabilities_require": lambda cap: calls.append(cap),
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
@@ -69,22 +62,27 @@ def _load_module(name, path_text):
 runpy = _load_module("runpy", {str(STDLIB_ROOT / "runpy.py")!r})
 module_ns = runpy.run_module("demo.mod", init_globals={{"seed": 7}}, run_name="demo", alter_sys=True)
 path_ns = runpy.run_path("script.py", init_globals={{"seed": 9}}, run_name="__main__")
+bytes_path_ns = runpy.run_path(b"bytes.py")
 
 checks = {{
     "behavior": (
         module_ns == {{"kind": "module", "mod_name": "demo.mod", "run_name": "demo", "alter_sys": True, "seed": 7}}
-        and path_ns == {{"kind": "path", "path": "/abs/script.py", "run_name": "__main__", "seed": 9}}
-        and calls == ["fs.read"]
+        and path_ns == {{"kind": "path", "path": "script.py", "run_name": "__main__", "seed": 9}}
+        and bytes_path_ns == {{"kind": "path", "path": "bytes.py", "run_name": None, "seed": None}}
     ),
     "private_handles_hidden": (
         "_molt_runpy_run_module" not in runpy.__dict__
-        and "_molt_runpy_resolve_path" not in runpy.__dict__
         and "_molt_runpy_run_path" not in runpy.__dict__
-        and "_molt_capabilities_trusted" not in runpy.__dict__
-        and "_molt_capabilities_require" not in runpy.__dict__
         and "molt_runpy_run_module" not in runpy.__dict__
-        and "molt_runpy_resolve_path" not in runpy.__dict__
         and "molt_runpy_run_path" not in runpy.__dict__
+        and "_os_fspath" not in runpy.__dict__
+        and "_os_fsdecode" not in runpy.__dict__
+    ),
+    "signatures": (
+        str(inspect.signature(runpy.run_module))
+        == "(mod_name, init_globals=None, run_name=None, alter_sys=False)"
+        and str(inspect.signature(runpy.run_path))
+        == "(path_name, init_globals=None, run_name=None)"
     ),
 }}
 for key in sorted(checks):
@@ -105,4 +103,8 @@ def test_runpy_public_module_hides_intrinsic_handles() -> None:
         prefix, *rest = line.split("|")
         if prefix == "CHECK":
             checks[rest[0]] = rest[1]
-    assert checks == {"behavior": "True", "private_handles_hidden": "True"}
+    assert checks == {
+        "behavior": "True",
+        "private_handles_hidden": "True",
+        "signatures": "True",
+    }

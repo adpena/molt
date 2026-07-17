@@ -502,7 +502,6 @@ pub(crate) struct RuntimeState {
     /// Import-bedrock ModuleTable (design doc 69): dense per-ModuleId state
     /// machine + slots, one instance per isolate, sized from the installed
     /// module registry on first use. Owned by builtins::module_table.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) module_table: OnceLock<crate::builtins::module_table::ModuleTable>,
     pub(crate) importlib_default_meta_path_bootstrapped: AtomicBool,
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
@@ -605,7 +604,6 @@ impl RuntimeState {
             last_exception: AtomicPtr::new(std::ptr::null_mut()),
             last_exception_pending: AtomicBool::new(false),
             module_cache: Mutex::new(HashMap::new()),
-            #[cfg(not(target_arch = "wasm32"))]
             module_table: OnceLock::new(),
             importlib_default_meta_path_bootstrapped: AtomicBool::new(false),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),

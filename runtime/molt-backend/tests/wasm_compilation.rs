@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{FunctionIR, ModuleRegistryIR, OpIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions};
 use std::f64::consts::PI;
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
@@ -234,6 +234,68 @@ fn empty_module_compiles_to_valid_wasm() {
     // Should start with WASM magic bytes
     assert!(wasm.len() > 8, "WASM output too short");
     assert_eq!(&wasm[0..4], b"\0asm", "missing WASM magic bytes");
+}
+
+#[test]
+fn module_registry_emits_valid_dense_module_id_dispatch() {
+    let init = |name: &str| FunctionIR {
+        name: name.to_string(),
+        params: vec![],
+        ops: vec![op("ret_void")],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+    };
+    let registry = ModuleRegistryIR {
+        schema: 2,
+        registry_digest: "module-id-dispatch-test".to_string(),
+        blob: vec![1, 2, 3, 4],
+        relocs: vec![],
+        init_symbols: vec!["molt_init_alpha".to_string(), "molt_init_gamma".to_string()],
+        init_rows: vec![
+            (1, "molt_init_alpha".to_string()),
+            (3, "molt_init_gamma".to_string()),
+        ],
+    };
+    let wasm = WasmBackend::new()
+        .with_module_registry(Some(registry))
+        .compile(SimpleIR {
+            functions: vec![
+                init("molt_main"),
+                init("molt_init_alpha"),
+                init("molt_init_gamma"),
+            ],
+            profile: None,
+        });
+
+    validate_wasm(&wasm).expect("ModuleId projection must be valid WASM");
+    assert!(
+        extract_exports(&wasm)
+            .iter()
+            .any(|name| name == "molt_isolate_import")
+    );
+    let import_calls = import_call_counts(&wasm);
+    assert!(
+        wasm_contains_name_fragment(&wasm, "module_registry_install"),
+        "registry install import must survive import stripping"
+    );
+    assert_eq!(
+        count_import(&import_calls, "module_registry_install"),
+        1,
+        "host init must install the exact registry segment before runtime init: {import_calls:?}"
+    );
+    let mut br_tables = 0;
+    for payload in Parser::new(0).parse_all(&wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("valid wasm payload") {
+            let mut reader = body.get_operators_reader().expect("operators reader");
+            while !reader.eof() {
+                if matches!(reader.read().expect("valid operator"), Operator::BrTable { .. }) {
+                    br_tables += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(br_tables, 1, "one dense ModuleId dispatch table owns all rows");
 }
 
 #[test]

@@ -43,6 +43,10 @@ pub struct ModuleRegistryIR {
     /// elimination roots (init bodies are reachable ONLY through the
     /// registry's MODULE_INIT_TABLE column — invariant I5).
     pub init_symbols: Vec<String>,
+    /// `[ModuleId, init_symbol]` dispatch projection. Native applies the
+    /// pointer relocations above; WASM lowers these same rows to its dense
+    /// ModuleId jump table.
+    pub init_rows: Vec<(u32, String)>,
 }
 
 impl ModuleRegistryIR {
@@ -71,6 +75,29 @@ impl ModuleRegistryIR {
             if symbol.is_empty() {
                 return Err("module_registry init_symbols contains an empty symbol".to_string());
             }
+        }
+        let mut previous_id = None;
+        for (id, symbol) in &self.init_rows {
+            if symbol.is_empty() {
+                return Err("module_registry init_rows contains an empty symbol".to_string());
+            }
+            if previous_id.is_some_and(|previous| previous >= *id) {
+                return Err(
+                    "module_registry init_rows must be strictly ModuleId-sorted".to_string()
+                );
+            }
+            previous_id = Some(*id);
+        }
+        let row_symbols: BTreeSet<&str> = self
+            .init_rows
+            .iter()
+            .map(|(_, symbol)| symbol.as_str())
+            .collect();
+        let symbols: BTreeSet<&str> = self.init_symbols.iter().map(String::as_str).collect();
+        if row_symbols != symbols {
+            return Err(
+                "module_registry init_rows and init_symbols disagree on dispatch roots".to_string(),
+            );
         }
         Ok(())
     }
@@ -103,12 +130,32 @@ impl ModuleRegistryIR {
             relocs.push((offset, symbol.to_string()));
         }
         let init_symbols = optional_string_list(obj, "init_symbols", ctx)?.unwrap_or_default();
+        let init_rows_value = required_field(obj, "init_rows", ctx)?;
+        let init_row_values = init_rows_value
+            .as_array()
+            .ok_or_else(|| format!("{ctx}.init_rows must be an array"))?;
+        let mut init_rows = Vec::with_capacity(init_row_values.len());
+        for (idx, entry) in init_row_values.iter().enumerate() {
+            let pair = entry
+                .as_array()
+                .filter(|pair| pair.len() == 2)
+                .ok_or_else(|| format!("{ctx}.init_rows[{idx}] must be [id, symbol]"))?;
+            let id = pair[0]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| format!("{ctx}.init_rows[{idx}][0] must be a ModuleId"))?;
+            let symbol = pair[1]
+                .as_str()
+                .ok_or_else(|| format!("{ctx}.init_rows[{idx}][1] must be a symbol"))?;
+            init_rows.push((id, symbol.to_string()));
+        }
         let registry = Self {
             schema,
             registry_digest,
             blob,
             relocs,
             init_symbols,
+            init_rows,
         };
         registry.validate().map_err(|err| format!("{ctx}: {err}"))?;
         Ok(registry)

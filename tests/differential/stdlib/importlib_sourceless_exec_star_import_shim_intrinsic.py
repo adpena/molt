@@ -1,4 +1,4 @@
-"""Purpose: validate sourceless shim wildcard import lane in restricted executor."""
+"""Purpose: validate sourceless shim wildcard imports through compiled execution."""
 
 import importlib.machinery
 import importlib.util

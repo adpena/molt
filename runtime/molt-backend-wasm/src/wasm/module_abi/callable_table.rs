@@ -22,7 +22,7 @@ use crate::wasm_binary::{
 use crate::wasm_data::DataSegmentRef;
 pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 
-pub(super) struct WasmCallableTablePlan {
+pub(in crate::wasm) struct WasmCallableTablePlan {
     table_base: u32,
     table_indices: Vec<u32>,
     sentinel_func_idx: u32,
@@ -62,6 +62,10 @@ pub(super) struct WasmCallableTableElements {
 }
 
 impl WasmCallableTablePlan {
+    pub(in crate::wasm) fn function_index(&self, name: &str) -> Option<u32> {
+        self.func_to_index.get(name).copied()
+    }
+
     pub(super) fn call_site_abi<'a>(
         &'a self,
         escaped_callable_targets: &'a BTreeSet<String>,
@@ -271,7 +275,7 @@ impl WasmBackend {
             let wrapper_index = self.compile_entry_wrapper(
                 reloc_enabled,
                 main_index,
-                table_init_index,
+                Some(table_init_index),
                 plan.app_callable_resolver_table_index(),
                 manifest_segment,
                 manifest_len as u32,
@@ -282,7 +286,7 @@ impl WasmBackend {
                 let host_init_wrapper_index = self.compile_entry_wrapper(
                     reloc_enabled,
                     host_init_index,
-                    table_init_index,
+                    Some(table_init_index),
                     plan.app_callable_resolver_table_index(),
                     manifest_segment,
                     manifest_len as u32,
@@ -320,6 +324,36 @@ impl WasmBackend {
                 elements: Elements::Functions(Cow::Borrowed(&plan.table_indices)),
             });
             element_section = Some(section);
+            if self.module_registry.is_some() {
+                let main_index = self
+                    .molt_main_index
+                    .unwrap_or_else(|| panic!("molt_main missing for module registry wrapper"));
+                let wrapper_index = self.compile_entry_wrapper(
+                    reloc_enabled,
+                    main_index,
+                    None,
+                    plan.app_callable_resolver_table_index(),
+                    manifest_segment,
+                    manifest_len as u32,
+                );
+                self.exports
+                    .export("molt_main", ExportKind::Func, wrapper_index);
+                if let Some(host_init_index) = self.molt_host_init_index {
+                    let host_init_wrapper_index = self.compile_entry_wrapper(
+                        reloc_enabled,
+                        host_init_index,
+                        None,
+                        plan.app_callable_resolver_table_index(),
+                        manifest_segment,
+                        manifest_len as u32,
+                    );
+                    self.exports.export(
+                        "molt_host_init",
+                        ExportKind::Func,
+                        host_init_wrapper_index,
+                    );
+                }
+            }
         }
         WasmCallableTableElements {
             element_section,
@@ -369,7 +403,7 @@ impl WasmBackend {
         &mut self,
         reloc_enabled: bool,
         entry_index: u32,
-        table_init_index: u32,
+        table_init_index: Option<u32>,
         app_callable_resolver_table_index: Option<u32>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
@@ -398,12 +432,14 @@ impl WasmBackend {
         reloc_enabled: bool,
         func_index: u32,
         func: &mut Function,
-        table_init_index: u32,
+        table_init_index: Option<u32>,
         app_callable_resolver_table_index: Option<u32>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) {
-        emit_call(func, reloc_enabled, table_init_index);
+        if let Some(table_init_index) = table_init_index {
+            emit_call(func, reloc_enabled, table_init_index);
+        }
         if let Some(table_index) = app_callable_resolver_table_index {
             emit_table_index_i64(func, reloc_enabled, table_index);
             emit_call(
@@ -411,6 +447,16 @@ impl WasmBackend {
                 reloc_enabled,
                 self.import_ids
                     [crate::wasm_abi_generated::WasmRuntimeImport::SetAppCallableResolver],
+            );
+            func.instruction(&Instruction::Drop);
+        }
+        if let Some(registry_segment) = self.module_registry_segment {
+            self.emit_data_ptr_i32(reloc_enabled, func_index, func, registry_segment);
+            emit_call(
+                func,
+                reloc_enabled,
+                self.import_ids
+                    [crate::wasm_abi_generated::WasmRuntimeImport::ModuleRegistryInstall],
             );
             func.instruction(&Instruction::Drop);
         }

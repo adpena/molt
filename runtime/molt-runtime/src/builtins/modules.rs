@@ -4,10 +4,10 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::libc_compat as libc;
 use molt_obj_model::MoltObject;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 #[cfg(unix)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
@@ -35,23 +35,12 @@ use crate::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-// Import bedrock (design doc 69, PR1): on native targets the app-owned
-// `molt_isolate_import` string_eq dispatch chain is DELETED — cold dispatch
-// is `builtins::module_table::isolate_import_dispatch` (registry resolve →
-// `molt_module_ensure`).  wasm32 keeps the legacy `env` import until PR3
-// unifies the WASM projection; it is the only remaining consumer.
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    pub(crate) fn molt_isolate_import(name_bits: u64) -> u64;
-}
-
+mod execution;
 mod runpy;
 
-pub(crate) use runpy::runpy_exec_restricted_source;
-pub use runpy::{
-    molt_importlib_exec_restricted_source, molt_runpy_run_module, molt_runpy_run_path,
-};
+pub(crate) use execution::{ExecutionMetadata, execute_compiled_module};
+use execution::{copy_dict_entries, execution_sys_path_entries, module_dict_ptr};
+pub use runpy::{molt_runpy_run_module, molt_runpy_run_path};
 
 fn trace_module_cache() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -306,6 +295,10 @@ fn module_bits_are_module_like(bits: u64) -> bool {
 const MODULES_OBJECT_SLOT_COUNT: usize = 15;
 
 pub(crate) struct ModulesRuntimeState {
+    /// Serializes only user-visible process-state transitions made by
+    /// runpy (`sys.argv`, `sys.path`, and temporary `sys.modules` aliases).
+    /// Ordinary fresh execution is coordinated per ModuleId by ModuleTable.
+    sys_transition_lock: Mutex<()>,
     copyreg_dispatch_table_bits: AtomicU64,
     copyreg_extension_registry_bits: AtomicU64,
     copyreg_inverted_registry_bits: AtomicU64,
@@ -326,6 +319,7 @@ pub(crate) struct ModulesRuntimeState {
 impl ModulesRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            sys_transition_lock: Mutex::new(()),
             copyreg_dispatch_table_bits: AtomicU64::new(0),
             copyreg_extension_registry_bits: AtomicU64::new(0),
             copyreg_inverted_registry_bits: AtomicU64::new(0),
@@ -771,6 +765,9 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         };
+        if let Some(bits) = execution::module_new_target(_py, &_name) {
+            return bits;
+        }
         let ptr = alloc_module_obj(_py, name_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -907,10 +904,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             }
 
             trace_stage("before_isolate_import");
-            #[cfg(not(target_arch = "wasm32"))]
             let module_bits = crate::builtins::module_table::isolate_import_dispatch(_py, &name);
-            #[cfg(target_arch = "wasm32")]
-            let module_bits = unsafe { molt_isolate_import(name_key_bits) };
             trace_stage("after_isolate_import");
 
             if exception_pending(_py) {
@@ -1966,6 +1960,9 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         if trace_cache {
             eprintln!("module cache set: {name} bits=0x{module_bits:x}");
         }
+        if let Err(bits) = execution::on_module_publish(_py, &name, module_bits) {
+            return bits;
+        }
         let (sys_bits, cached_modules) = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);
             let mut guard = cache.lock().unwrap();
@@ -1999,6 +1996,9 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 // (publish-before-exec, invariant I6).
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
+                if execution::suppress_python_sys_modules_sync(_py, &name) {
+                    return existing;
+                }
                 return if let Some(sys_bits) = sys_bits_out
                     && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
@@ -2030,7 +2030,8 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         // while its ensure transaction is open (publish-before-exec, I6).
         #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::publish_from_cache_set(_py, &name, module_bits);
-        if let Some(sys_bits) = sys_bits
+        if !execution::suppress_python_sys_modules_sync(_py, &name)
+            && let Some(sys_bits) = sys_bits
             && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
         {
             if let Some(entries) = cached_modules {
@@ -2172,6 +2173,9 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
         // slot while the ensure transaction is still open.
         #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::unpublish_from_cache_del(_py, &name);
+        if execution::suppress_python_sys_modules_sync(_py, &name) {
+            return MoltObject::none().bits();
+        }
         if let Some(sys_bits) = sys_bits {
             let sys_obj = obj_from_bits(sys_bits);
             let Some(sys_ptr) = sys_obj.as_ptr() else {
@@ -2989,7 +2993,33 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
                 }
                 return MoltObject::none().bits();
             }
-            dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+            let override_value =
+                match execution::module_metadata_override_bits(_py, module_bits, attr_bits) {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            let effective_val_bits = override_value.map_or(val_bits, |(bits, _)| bits);
+            dict_set_in_place(_py, dict_ptr, attr_bits, effective_val_bits);
+            if exception_pending(_py) {
+                if let Some((bits, true)) = override_value {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            if let Err(bits) = execution::after_module_metadata_set(
+                _py,
+                module_bits,
+                attr_bits,
+                effective_val_bits,
+            ) {
+                if let Some((owned, true)) = override_value {
+                    dec_ref_bits(_py, owned);
+                }
+                return bits;
+            }
+            if let Some((bits, true)) = override_value {
+                dec_ref_bits(_py, bits);
+            }
         }
         MoltObject::none().bits()
     })

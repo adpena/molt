@@ -57,8 +57,15 @@ impl WasmBackend {
             !has_non_linear_control_flow(&func_ir.ops)
         });
 
-        // Dead function elimination: remove unreachable functions after inlining.
-        crate::eliminate_dead_functions(&mut ir);
+        // Catalog initializers are address/ModuleId reached and therefore have
+        // no ordinary SimpleIR call edge. Keep exactly the canonical catalog
+        // roots before lowering the WASM ModuleId dispatch table.
+        let module_registry_roots: std::collections::BTreeSet<String> = self
+            .module_registry
+            .as_ref()
+            .map(|registry| registry.init_symbols.iter().cloned().collect())
+            .unwrap_or_default();
+        crate::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
         crate::eliminate_dead_imports(&mut ir);
         crate::eliminate_dead_ops(&mut ir);
 
