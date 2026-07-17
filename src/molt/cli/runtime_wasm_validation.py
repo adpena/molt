@@ -118,15 +118,40 @@ def _validate_wasm_structural(path: Path) -> str | None:
     return f"wasm-tools validate failed: {detail}"
 
 
-def _is_reusable_wasm_artifact(path: Path) -> bool:
-    if inspect_wasm_binary(path) != "valid":
-        return False
+def _reusable_wasm_artifact_validation_error(path: Path) -> str | None:
+    state = inspect_wasm_binary(path)
+    if state != "valid":
+        return f"artifact is {state}"
     structural_error = _validate_wasm_structural(path)
-    return structural_error is None
+    if structural_error is not None:
+        return structural_error
+    return None
+
+
+def _runtime_wasm_artifact_validation_error(path: Path) -> str | None:
+    artifact_error = _reusable_wasm_artifact_validation_error(path)
+    if artifact_error is not None:
+        return artifact_error
+    if not has_nonempty_wasm_code_section(path):
+        return "artifact has no non-empty code section"
+    return None
+
+
+def _shared_runtime_wasm_validation_error(path: Path) -> str | None:
+    artifact_error = _runtime_wasm_artifact_validation_error(path)
+    if artifact_error is not None:
+        return artifact_error
+    if not _runtime_wasm_has_shared_import_abi(path):
+        return "artifact is missing the shared memory/table import ABI"
+    return None
+
+
+def _is_reusable_wasm_artifact(path: Path) -> bool:
+    return _reusable_wasm_artifact_validation_error(path) is None
 
 
 def _is_valid_runtime_wasm_artifact(path: Path) -> bool:
-    return _is_reusable_wasm_artifact(path) and has_nonempty_wasm_code_section(path)
+    return _runtime_wasm_artifact_validation_error(path) is None
 
 
 def _runtime_wasm_has_shared_import_abi(path: Path) -> bool:
@@ -138,9 +163,7 @@ def _runtime_wasm_has_shared_import_abi(path: Path) -> bool:
 
 
 def _is_valid_shared_runtime_wasm_artifact(path: Path) -> bool:
-    return _is_valid_runtime_wasm_artifact(
-        path
-    ) and _runtime_wasm_has_shared_import_abi(path)
+    return _shared_runtime_wasm_validation_error(path) is None
 
 
 def _runtime_wasm_exports_satisfy(
