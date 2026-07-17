@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import zipfile
-from dataclasses import replace
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -16,11 +16,14 @@ import pytest
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
+from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
+from molt.cli.source_extension_publication import (
+    _source_extension_publication_custody,
+)
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
     ScientificExtensionSpec,
-    scientific_extension_set,
 )
 
 
@@ -30,6 +33,20 @@ _MODULES = (
     "scipy.ndimage._rank_filter_1d",
     "scipy._lib._ccallback_c",
 )
+
+
+@contextmanager
+def _held_publication_custody(destination: Path):
+    lock_path = destination.parent / f".{destination.name}.producer.lock"
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=1.0,
+        timeout_message=f"cannot acquire fixture publication lock {lock_path}",
+    )
+    try:
+        yield _source_extension_publication_custody(destination, handle)
+    finally:
+        _release_file_lock(handle)
 
 
 def _write_test_extension_wheel(
@@ -100,24 +117,31 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{marker}:{module}", encoding="utf-8")
         artifact_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        source_sha256 = hashlib.sha256(f"{path.stem}.c".encode()).hexdigest()
+        manifest = {
+            "module": module,
+            "extension_sha256": artifact_sha256,
+            "wheel_sha256": f"wheel-{module}",
+            "object_closure": {
+                "closure_sha256": f"closure-{module}",
+                "objects": [
+                    {
+                        "source": f"{path.stem}.c",
+                        "object": "0.o",
+                        "source_sha256": source_sha256,
+                        "object_sha256": "a" * 64,
+                        "defined_symbols": [],
+                        "undefined_symbols": [],
+                        "compile_command": ["clang"],
+                        "symbol_command": ["llvm-nm"],
+                        "dependencies": [],
+                    }
+                ],
+            },
+        }
+        producer._compact_source_extension_manifest(manifest)
         path.with_name(path.name + ".extension_manifest.json").write_text(
-            json.dumps(
-                {
-                    "module": module,
-                    "extension_sha256": artifact_sha256,
-                    "wheel_sha256": f"wheel-{module}",
-                    "object_closure": {
-                        "closure_sha256": f"closure-{module}",
-                        "objects": [
-                            {
-                                "source": f"{path.stem}.c",
-                                "compile_command": ["clang"],
-                                "symbol_command": ["llvm-nm"],
-                            }
-                        ],
-                    },
-                }
-            ),
+            json.dumps(manifest),
             encoding="utf-8",
         )
 
@@ -195,6 +219,8 @@ def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
     assert args.module_set == "pact-witness"
     assert args.target == "wasm"
     assert args.abi_tier == "cpython-abi"
+    assert args.expected_identity_sha256 is None
+    assert args.expected_candidate_identity_sha256 is None
     assert not hasattr(args, "module")
     assert not hasattr(args, "deterministic")
 
@@ -248,6 +274,8 @@ def test_produce_set_dispatches_complete_set(
             "build_root": "build/scipy-wasm",
             "target": "wasm",
             "abi_tier": "cpython-abi",
+            "expected_identity_sha256": None,
+            "expected_candidate_identity_sha256": None,
             "json_output": False,
         }
     ]
@@ -336,9 +364,7 @@ def test_meson_installed_directory_is_recursively_materialized(
     intro.write_text(
         json.dumps(
             {
-                str(package_dir): (
-                    "C:/prefix/Lib/site-packages/numpy/_utils"
-                ),
+                str(package_dir): ("C:/prefix/Lib/site-packages/numpy/_utils"),
                 str(build / "numpy/_core/unmanaged.cp312-win_amd64.pyd"): (
                     "C:/prefix/Lib/site-packages/numpy/_core/"
                     "unmanaged.cp312-win_amd64.pyd"
@@ -361,10 +387,7 @@ def test_meson_installed_directory_is_recursively_materialized(
         ),
     )
 
-    relative = {
-        path.relative_to(publish).as_posix()
-        for path in staged
-    }
+    relative = {path.relative_to(publish).as_posix() for path in staged}
     assert relative == {
         "numpy/_utils/__init__.py",
         "numpy/_utils/_inspect.py",
@@ -703,7 +726,9 @@ def test_source_build_environment_address_is_worktree_neutral(
             encoding="utf-8",
         )
         (root / "uv.lock").write_bytes(b"same complete lock")
-    monkeypatch.setattr(build_environment, "canonical_molt_root", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        build_environment, "canonical_molt_root", lambda _root: tmp_path
+    )
     monkeypatch.setattr(
         build_environment,
         "_python_identity",
@@ -736,16 +761,22 @@ def test_source_build_environment_address_is_worktree_neutral(
     custody = first_spec[3]
     assert custody["schema_version"] == 2
     address_payload = {key: custody[key] for key in custody if key != "environment_id"}
-    assert custody["environment_id"] == hashlib.sha256(
-        json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    assert (
+        custody["environment_id"]
+        == hashlib.sha256(
+            json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     old_address_payload = dict(address_payload)
     old_address_payload["schema_version"] = 1
-    assert custody["environment_id"] != hashlib.sha256(
-        json.dumps(
-            old_address_payload, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
+    assert (
+        custody["environment_id"]
+        != hashlib.sha256(
+            json.dumps(
+                old_address_payload, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+    )
 
 
 def test_source_build_environment_failed_sync_leaves_only_provisional_record(
@@ -928,7 +959,9 @@ def test_distribution_probe_sanitizes_python_import_authority(
 
     monkeypatch.setattr(build_environment.subprocess, "run", run)
 
-    assert build_environment._probe_environment_distributions(Path(sys.executable)) == []
+    assert (
+        build_environment._probe_environment_distributions(Path(sys.executable)) == []
+    )
     assert observed["argv"][:3] == [str(Path(sys.executable)), "-P", "-c"]
     environment = observed["env"]
     assert isinstance(environment, dict)
@@ -1089,12 +1122,8 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
 
     assert not spec[2].exists()
     assert json.loads(
-        build_environment._provisioning_record_path(spec[0]).read_text(
-            encoding="utf-8"
-        )
-    ) == (
-        build_environment._provisioning_record(spec[3])
-    )
+        build_environment._provisioning_record_path(spec[0]).read_text(encoding="utf-8")
+    ) == (build_environment._provisioning_record(spec[3]))
 
 
 def test_active_source_build_environment_rejects_mutated_ambient_content(
@@ -1229,9 +1258,10 @@ def test_locked_console_tool_path_is_cross_platform_and_ordered(
     inherited: str,
     expected: str,
 ) -> None:
-    assert producer._locked_console_tool_path(
-        scripts, inherited, separator=separator
-    ) == expected
+    assert (
+        producer._locked_console_tool_path(scripts, inherited, separator=separator)
+        == expected
+    )
 
 
 def test_locked_console_tool_path_handles_absent_host_path(tmp_path: Path) -> None:
@@ -1392,6 +1422,7 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
             package="numpy",
             name="pact-witness",
             seal_name="numpy-witness",
+            expected_identity_sha256="a" * 64,
             build_dependency_group="source-build-numpy",
             meson_setup_args=(),
             use_pkg_config=False,
@@ -1469,6 +1500,7 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
             package="scipy",
             name="pact-witness",
             seal_name="scipy-witness",
+            expected_identity_sha256="a" * 64,
             build_dependency_group="source-build-scipy",
             meson_setup_args=(),
             use_pkg_config=False,
@@ -1628,10 +1660,7 @@ def test_recursive_submodule_attestation_is_canonical_path_order(
             return subprocess.CompletedProcess(
                 args=list(argv),
                 returncode=0,
-                stdout=(
-                    f"z/submodule\t{'0' * 40}\n"
-                    f"a/submodule\t{'f' * 40}\n"
-                ),
+                stdout=(f"z/submodule\t{'0' * 40}\na/submodule\t{'f' * 40}\n"),
                 stderr="",
             )
         if "submodule" in argv:
@@ -1699,6 +1728,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         package="scipy",
         name="pact-witness",
         seal_name="pact_scipy_witness",
+        expected_identity_sha256="a" * 64,
         build_dependency_group="source-build-scipy",
         meson_setup_args=(),
         use_pkg_config=True,
@@ -1889,12 +1919,12 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         item["source"] for item in staged_manifest["object_closure"]["objects"]
     ]
     expected_capsule = "numpy.core._multiarray_umath._ARRAY_API"
-    assert staged_manifest["object_closure"]["required_capsules"] == [
-        expected_capsule
-    ]
-    assert staged_manifest["object_closure"]["objects"][0][
-        "required_capsules"
-    ] == [expected_capsule]
+    assert staged_manifest["object_closure"]["required_capsules"] == [expected_capsule]
+    assert producer._manifest_sequence(
+        staged_manifest,
+        staged_manifest["object_closure"]["objects"][0],
+        "required_capsules",
+    ) == [expected_capsule]
     assert str(tmp_path) not in json.dumps(staged_manifest)
     for item in staged_manifest["object_closure"]["objects"]:
         staged_source = (
@@ -1918,6 +1948,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
         assert embedded["object_closure"]["required_capsules"] == [expected_capsule]
+        assert producer._manifest_sequence(
+            embedded,
+            embedded["object_closure"]["objects"][0],
+            "required_capsules",
+        ) == [expected_capsule]
         assert embedded["object_closure"]["objects"][0]["source"].startswith("@source/")
         assert embedded["object_closure"]["objects"][1]["source"].startswith("@build/")
         assert all(
@@ -2013,14 +2048,17 @@ def test_recover_and_prune_producer_transactions_removes_whole_abandoned_family(
         lambda root: recovered.append(root) or (),
     )
 
-    producer._recover_and_prune_producer_transactions(destination)
+    with _held_publication_custody(destination) as custody:
+        producer._recover_and_prune_producer_transactions(
+            destination, publication_custody=custody
+        )
 
     assert recovered == [root / "package-store" for root in abandoned]
     assert not any(root.exists() for root in abandoned)
     assert unrelated.is_dir()
 
 
-def test_recover_and_prune_restores_retired_destination_without_commit(
+def test_recover_and_prune_fails_closed_on_legacy_retired_destination(
     tmp_path: Path,
 ) -> None:
     destination = tmp_path / "canonical-seal"
@@ -2029,255 +2067,13 @@ def test_recover_and_prune_restores_retired_destination_without_commit(
     retired.mkdir(parents=True)
     (retired / "legacy.txt").write_text("preserved\n", encoding="utf-8")
 
-    producer._recover_and_prune_producer_transactions(destination)
-
-    assert (destination / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
-    assert not abandoned.exists()
-
-
-def test_retire_replaceable_extension_destination_rejects_non_atomic_legacy_tree(
-    tmp_path: Path,
-) -> None:
-    destination = tmp_path / "legacy"
-    transaction = tmp_path / "transaction"
-    extension_set = scientific_extension_set("scipy", "pact-witness")
-    for extension in extension_set.extensions:
-        package = destination.joinpath(*extension.module.split(".")[:-1])
-        package.mkdir(parents=True, exist_ok=True)
-        artifact = package / f"{extension.target}.molt.wasm"
-        artifact.write_bytes(b"\x00asm" + extension.target.encode())
-        artifact.with_name(artifact.name + ".extension_manifest.json").write_text(
-            json.dumps(
-                {
-                    "module": extension.module,
-                    "extension": artifact.name,
-                    "extension_sha256": hashlib.sha256(
-                        artifact.read_bytes()
-                    ).hexdigest(),
-                    "source_plan": {"target_selector": extension.target},
-                    "python_exports": list(extension.python_exports),
-                    "capabilities": list(extension.capabilities),
-                    "provided_capsules": list(extension.provided_capsules),
-                }
-            ),
-            encoding="utf-8",
-        )
-
     with pytest.raises(
         producer.SourceExtensionProducerError,
-        match="unverified non-atomic destination",
+        match="legacy producer transaction contains a retired canonical destination",
     ):
-        producer._retire_replaceable_extension_destination(
-            destination,
-            transaction_root=transaction,
-            extension_set=extension_set,
-            set_manifest={"source_head": "fixture"},
-        )
-
-    assert destination.is_dir()
-    assert not transaction.exists()
-
-
-def _stage_replaceable_extension_set_fixture(
-    tmp_path: Path,
-    *,
-    schema_version: int,
-    source_head: str,
-    old_first_capabilities: tuple[str, ...] | None = None,
-) -> tuple[ScientificExtensionSet, dict[str, object]]:
-    extension_set = scientific_extension_set("scipy", "pact-witness")
-    extensions: list[dict[str, object]] = []
-    inputs: list[producer.SourcePackageInput] = []
-    for extension in extension_set.extensions:
-        package = tmp_path.joinpath("source", *extension.module.split(".")[:-1])
-        package.mkdir(parents=True, exist_ok=True)
-        artifact = package / f"{extension.target}.molt.wasm"
-        artifact.write_bytes(b"\x00asm" + extension.target.encode())
-        artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
-        sidecar = artifact.with_name(artifact.name + ".extension_manifest.json")
-        old_capabilities = list(extension.capabilities)
-        if (
-            old_first_capabilities is not None
-            and extension.module == extension_set.extensions[0].module
-        ):
-            old_capabilities = list(old_first_capabilities)
-        sidecar.write_text(
-            json.dumps(
-                {
-                    "module": extension.module,
-                    "extension": artifact.name,
-                    "extension_sha256": artifact_sha256,
-                    "source_plan": {"target_selector": extension.target},
-                    "python_exports": list(extension.python_exports),
-                    "capabilities": old_capabilities,
-                    "provided_capsules": list(extension.provided_capsules),
-                }
-            ),
-            encoding="utf-8",
-        )
-        relative_root = Path(*extension.module.split(".")[:-1])
-        inputs.extend(
-            (
-                producer.SourcePackageInput(
-                    source=artifact,
-                    relative_path=(relative_root / artifact.name).as_posix(),
-                    role="artifact",
-                ),
-                producer.SourcePackageInput(
-                    source=sidecar,
-                    relative_path=(relative_root / sidecar.name).as_posix(),
-                    role="manifest",
-                ),
+        with _held_publication_custody(destination) as custody:
+            producer._recover_and_prune_producer_transactions(
+                destination, publication_custody=custody
             )
-        )
-        extensions.append(
-            {
-                "module": extension.module,
-                "target": extension.target,
-                "capabilities": old_capabilities,
-                "exclude_linked_static_libraries": list(
-                    extension.exclude_linked_static_libraries
-                ),
-            }
-        )
-    identity = {
-        "kind": "molt-source-extension-set",
-        "package": "scipy",
-        "name": "pact-witness",
-        "seal_name": extension_set.seal_name,
-        "source_head": source_head,
-        "target": "wasm",
-        "target_triple": "wasm32-wasip1",
-        "abi_tier": "cpython-abi",
-    }
-    set_manifest_path = tmp_path / "source/extension_set_manifest.json"
-    set_manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": schema_version,
-                **identity,
-                "extensions": extensions,
-            }
-        ),
-        encoding="utf-8",
-    )
-    inputs.append(
-        producer.SourcePackageInput(
-            source=set_manifest_path,
-            relative_path="extension_set_manifest.json",
-            role="manifest",
-        )
-    )
-    seal = producer.stage_source_package_seal(tmp_path / "package-store", inputs)
-    shutil.copytree(seal.root, tmp_path / "canonical")
-    return extension_set, identity
-
-
-@pytest.mark.parametrize(
-    ("existing_schema_version", "replaceable"),
-    ((1, True), (2, True), (3, False)),
-)
-def test_retire_replaceable_canonical_seal_allows_typed_contract_evolution(
-    tmp_path: Path, existing_schema_version: int, replaceable: bool
-) -> None:
-    destination = tmp_path / "canonical"
-    transaction = tmp_path / "transaction"
-    extension_set, identity = _stage_replaceable_extension_set_fixture(
-        tmp_path,
-        schema_version=existing_schema_version,
-        source_head="same-source",
-        old_first_capabilities=("fs.read",),
-    )
-
-    replacement_identity = {
-        "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-        **identity,
-    }
-    if not replaceable:
-        with pytest.raises(
-            producer.SourceExtensionProducerError,
-            match="unsupported existing extension-set schema_version",
-        ):
-            producer._retire_replaceable_extension_destination(
-                destination,
-                transaction_root=transaction,
-                extension_set=extension_set,
-                set_manifest=replacement_identity,
-            )
-        assert destination.is_dir()
-        assert not transaction.exists()
-        return
-
-    retired = producer._retire_replaceable_extension_destination(
-        destination,
-        transaction_root=transaction,
-        extension_set=extension_set,
-        set_manifest=replacement_identity,
-    )
-
-    assert retired == transaction / "retired-destination"
-    assert retired.is_dir()
+    assert (retired / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
     assert not destination.exists()
-
-
-def test_retire_replaceable_canonical_seal_rejects_source_identity_drift(
-    tmp_path: Path,
-) -> None:
-    destination = tmp_path / "canonical"
-    transaction = tmp_path / "transaction"
-    extension_set, identity = _stage_replaceable_extension_set_fixture(
-        tmp_path,
-        schema_version=producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-        source_head="old-source",
-    )
-
-    with pytest.raises(
-        producer.SourceExtensionProducerError,
-        match="owned by another source identity.*source_head",
-    ):
-        producer._retire_replaceable_extension_destination(
-            destination,
-            transaction_root=transaction,
-            extension_set=extension_set,
-            set_manifest={
-                "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-                **identity,
-                "source_head": "new-source",
-            },
-        )
-
-    assert destination.is_dir()
-    assert not transaction.exists()
-
-
-def test_retire_replaceable_canonical_seal_rejects_module_family_drift(
-    tmp_path: Path,
-) -> None:
-    destination = tmp_path / "canonical"
-    transaction = tmp_path / "transaction"
-    extension_set, identity = _stage_replaceable_extension_set_fixture(
-        tmp_path,
-        schema_version=producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-        source_head="same-source",
-    )
-    incomplete_set = replace(
-        extension_set,
-        extensions=extension_set.extensions[:-1],
-    )
-
-    with pytest.raises(
-        producer.SourceExtensionProducerError,
-        match="different module family",
-    ):
-        producer._retire_replaceable_extension_destination(
-            destination,
-            transaction_root=transaction,
-            extension_set=incomplete_set,
-            set_manifest={
-                "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
-                **identity,
-            },
-        )
-
-    assert destination.is_dir()
-    assert not transaction.exists()

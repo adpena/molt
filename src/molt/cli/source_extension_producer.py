@@ -61,6 +61,25 @@ from molt.cli.source_extension_reproducibility import (
     _canonicalize_location_string,
     _canonicalize_locations,
     _canonicalize_meson_metadata,
+    _require_location_neutral,
+)
+from molt.cli.source_extension_manifest_codec import (
+    _compact_source_extension_manifest,
+    _manifest_dependencies,
+    _manifest_sequence,
+    _object_unit_sha256,
+    _validate_compact_source_extension_manifest,
+)
+from molt.cli.source_extension_set_identity import (
+    _require_expected_source_extension_set_identity,
+    _source_extension_reproduction_comparison,
+    _source_extension_set_identity,
+)
+from molt.cli.source_extension_publication import (
+    SourceExtensionPublicationCustody,
+    _source_extension_publication_custody,
+    publish_source_extension_candidate,
+    recover_source_extension_publication,
 )
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
@@ -109,7 +128,6 @@ class SourceExtensionProducerError(ValueError):
 
 
 SOURCE_EXTENSION_SET_SCHEMA_VERSION = 2
-SOURCE_EXTENSION_SET_SCHEMA_MIGRATION_ORIGINS = frozenset({1})
 
 
 @dataclass(frozen=True)
@@ -496,6 +514,8 @@ def _run_locked_source_extension_producer(
     target: str,
     abi_tier: str,
     json_output: bool,
+    expected_identity_sha256: str | None = None,
+    expected_candidate_identity_sha256: str | None = None,
 ) -> int:
     argv = [
         str(environment.python_executable),
@@ -519,6 +539,15 @@ def _run_locked_source_extension_producer(
     ]
     if json_output:
         argv.append("--json")
+    if expected_identity_sha256 is not None:
+        argv.extend(("--expected-identity-sha256", expected_identity_sha256))
+    if expected_candidate_identity_sha256 is not None:
+        argv.extend(
+            (
+                "--expected-candidate-identity-sha256",
+                expected_candidate_identity_sha256,
+            )
+        )
     child_environment = os.environ.copy()
     current_src = str((_REPO_ROOT / "src").resolve())
     child_environment["PYTHONPATH"] = current_src
@@ -916,7 +945,10 @@ def _stage_installed_package_files(
 
 
 def _object_closure_digest(
-    object_closure: Mapping[str, Any], *, manifest_dir: Path | None = None
+    object_closure: Mapping[str, Any],
+    *,
+    manifest_dir: Path | None = None,
+    manifest: Mapping[str, Any] | None = None,
 ) -> str:
     objects = object_closure.get("objects")
     runtime_symbols = object_closure.get("runtime_symbols")
@@ -964,8 +996,14 @@ def _object_closure_digest(
             )
         defined_symbols = item.get("defined_symbols")
         undefined_symbols = item.get("undefined_symbols")
-        compile_command = item.get("compile_command")
-        symbol_command = item.get("symbol_command")
+        authority = (
+            manifest if manifest is not None else {"object_closure": object_closure}
+        )
+        try:
+            compile_command = _manifest_sequence(authority, item, "compile_command")
+            symbol_command = _manifest_sequence(authority, item, "symbol_command")
+        except ValueError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
         if not (
             isinstance(defined_symbols, list)
             and all(isinstance(value, str) for value in defined_symbols)
@@ -992,11 +1030,10 @@ def _object_closure_digest(
             "compile_command": compile_command,
             "symbol_command": symbol_command,
         }
-        raw_dependencies = item.get("dependencies")
-        if not isinstance(raw_dependencies, list):
-            raise SourceExtensionProducerError(
-                f"extension object_closure.objects[{index}].dependencies must be a list"
-            )
+        try:
+            raw_dependencies = _manifest_dependencies(authority, item)
+        except ValueError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
         dependencies: list[dict[str, str]] = []
         for dependency_index, raw_dependency in enumerate(raw_dependencies):
             if not isinstance(raw_dependency, Mapping):
@@ -1473,6 +1510,13 @@ def _stage_extension(
         compile_commands_path=raw_compile_commands_path,
     )
     canonical_embedded_manifest["extension"] = destination.name
+    canonical_embedded_manifest = _compact_source_extension_manifest(
+        canonical_embedded_manifest
+    )
+    _require_location_neutral(
+        canonical_embedded_manifest,
+        authority=f"embedded extension manifest for {produced.module}",
+    )
 
     staged_sources = _stage_compiled_inputs(raw_manifest, publish_root=publish_root)
     source_references = {
@@ -1571,11 +1615,19 @@ def _stage_extension(
             if isinstance(regeneration, Mapping)
         ]
     closure["closure_sha256"] = _object_closure_digest(
-        closure, manifest_dir=sidecar_path.parent
+        closure,
+        manifest_dir=sidecar_path.parent,
+        manifest=manifest,
     )
     build = manifest.get("build")
     if isinstance(build, dict):
         build["object_closure_sha256"] = closure["closure_sha256"]
+    manifest = _compact_source_extension_manifest(manifest)
+    _validate_compact_source_extension_manifest(manifest)
+    _require_location_neutral(
+        manifest,
+        authority=f"extension manifest for {produced.module}",
+    )
     try:
         wheel_sha256, _embedded_manifest = _rewrite_staged_extension_wheel(
             produced.wheel_path,
@@ -1615,12 +1667,20 @@ def _stage_canonical_metadata_file(
         payload = json.loads(text)
     except json.JSONDecodeError:
         canonical = _canonicalize_location_string(text, location_roots)
+        _require_location_neutral(
+            canonical,
+            authority=f"canonical build metadata {source}",
+        )
         _atomic_write_text(destination, canonical)
     else:
         canonical_payload = (
             _canonicalize_meson_metadata(payload, location_roots)
             if normalize_meson_dependency_ids
             else _canonicalize_locations(payload, location_roots)
+        )
+        _require_location_neutral(
+            canonical_payload,
+            authority=f"canonical build metadata {source}",
         )
         _atomic_write_json(destination, canonical_payload, sort_keys=True, indent=2)
     return destination
@@ -1696,6 +1756,10 @@ def _stage_build_metadata(
         separators=(",", ":"),
     ).encode("utf-8")
     canonical_target_metadata["digest"] = hashlib.sha256(encoded).hexdigest()
+    _require_location_neutral(
+        canonical_target_metadata,
+        authority="canonical source-extension target metadata",
+    )
     target_sidecar = (
         metadata_publish_root / "target" / "source-extension-target-metadata.json"
     )
@@ -1766,25 +1830,72 @@ def _producer_location_roots(
         (build_root, "@build"),
         (transaction_root, "@transaction"),
         (_REPO_ROOT, "@molt"),
-        (Path(sys.prefix), "@python"),
+        (Path(sys.prefix), "@python-env"),
+        (Path(sys.base_prefix), "@python-base"),
     ]
+    for scheme, token in (
+        ("include", "@python-include"),
+        ("platinclude", "@python-platform-include"),
+    ):
+        raw_path = sysconfig.get_path(scheme)
+        if raw_path:
+            roots.append((Path(raw_path), token))
+    abi = metadata_payload.get("abi")
+    raw_include_dirs = abi.get("include_dirs") if isinstance(abi, Mapping) else None
+    if isinstance(raw_include_dirs, list):
+        roots.extend(
+            (Path(raw_path), f"@molt-abi-include/{index}")
+            for index, raw_path in enumerate(raw_include_dirs)
+            if isinstance(raw_path, str) and raw_path
+        )
     toolchain = metadata_payload.get("toolchain")
     if isinstance(toolchain, Mapping):
         wasi_sysroot = toolchain.get("wasi_sysroot")
         if isinstance(wasi_sysroot, str) and wasi_sysroot:
             roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+        archives = toolchain.get("link_probe_archives")
+        compiler_builtins = (
+            archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
+        )
+        compiler_builtins_path = (
+            compiler_builtins.get("path")
+            if isinstance(compiler_builtins, Mapping)
+            else None
+        )
+        if isinstance(compiler_builtins_path, str) and compiler_builtins_path:
+            builtins_path = Path(compiler_builtins_path)
+            roots.append((builtins_path, "@compiler-builtins"))
+            roots.append((builtins_path.parent, "@rust-target-libdir"))
         tools = toolchain.get("tools")
         if isinstance(tools, Mapping):
-            tool_parents = {
-                Path(str(tool["path"])).expanduser().resolve().parent
-                for tool in tools.values()
+            tool_paths = {
+                str(role): Path(str(tool["path"])).expanduser().resolve().parent
+                for role, tool in sorted(tools.items())
                 if isinstance(tool, Mapping)
                 and isinstance(tool.get("path"), str)
                 and tool.get("path")
             }
-            roots.extend((path, "@llvm-bin") for path in sorted(tool_parents))
-    config_parents = {tool.path.resolve().parent for tool in config_tools}
-    roots.extend((path, "@python-scripts") for path in sorted(config_parents))
+            tool_parents = set(tool_paths.values())
+            if len(tool_parents) == 1:
+                parent = next(iter(tool_parents))
+                roots.extend(((parent, "@llvm-bin"), (parent.parent, "@llvm-prefix")))
+            else:
+                for role, parent in tool_paths.items():
+                    roots.extend(
+                        (
+                            (parent, f"@llvm-{role}-bin"),
+                            (parent.parent, f"@llvm-{role}-prefix"),
+                        )
+                    )
+    config_by_parent: dict[Path, list[str]] = {}
+    for tool in config_tools:
+        config_by_parent.setdefault(tool.path.resolve().parent, []).append(tool.name)
+    if len(config_by_parent) == 1:
+        roots.append((next(iter(config_by_parent)), "@python-scripts"))
+    else:
+        for parent, names in sorted(config_by_parent.items()):
+            role = "-".join(sorted(name.replace("_", "-") for name in names))
+            roots.append((parent, f"@config-{role}-bin"))
     deduped: dict[Path, str] = {}
     for path, token in roots:
         deduped.setdefault(path.resolve(), token)
@@ -2024,6 +2135,14 @@ def _validate_complete_publish_root(
             raise SourceExtensionProducerError(
                 f"published extension sidecar has wrong module: {sidecar_path}"
             )
+        try:
+            _validate_compact_source_extension_manifest(sidecar)
+            _require_location_neutral(
+                sidecar,
+                authority=f"published extension sidecar {sidecar_path}",
+            )
+        except ValueError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
         entry = entries_by_module[spec.module]
         closure = sidecar.get("object_closure")
         closure_sha256 = (
@@ -2053,8 +2172,15 @@ def _validate_complete_publish_root(
                     f"extension sidecar object[{object_index}] is invalid"
                 )
             source = closure_object.get("source")
-            compile_command = closure_object.get("compile_command")
-            symbol_command = closure_object.get("symbol_command")
+            try:
+                compile_command = _manifest_sequence(
+                    sidecar, closure_object, "compile_command"
+                )
+                symbol_command = _manifest_sequence(
+                    sidecar, closure_object, "symbol_command"
+                )
+            except ValueError as exc:
+                raise SourceExtensionProducerError(str(exc)) from exc
             compiler_role = (
                 "cpp"
                 if isinstance(source, str)
@@ -2072,6 +2198,13 @@ def _validate_complete_publish_root(
                 raise SourceExtensionProducerError(
                     f"extension sidecar object[{object_index}] for {spec.module} "
                     "did not consume the canonical compiler/nm commands"
+                )
+            if closure_object.get("unit_sha256") != _object_unit_sha256(
+                sidecar, closure_object
+            ):
+                raise SourceExtensionProducerError(
+                    f"extension sidecar object[{object_index}] for {spec.module} "
+                    "has false content-addressed unit identity"
                 )
         artifact_path = Path(str(sidecar_path).removesuffix(".extension_manifest.json"))
         if _sha256_file(artifact_path) != entry.get("artifact_sha256"):
@@ -2309,154 +2442,30 @@ def _materialize_generated_inputs(
     return tuple(sorted(missing))
 
 
-def _recover_and_prune_producer_transactions(destination: Path) -> None:
+def _recover_and_prune_producer_transactions(
+    destination: Path, *, publication_custody: SourceExtensionPublicationCustody
+) -> None:
     """Recover durable publication commits, then remove abandoned build state."""
 
     for prior in sorted(destination.parent.glob(f".{destination.name}.produce-*")):
+        recovered_publication = recover_source_extension_publication(
+            prior, custody=publication_custody
+        )
+        if (
+            recovered_publication is not None
+            and recovered_publication.get("state") != "committed"
+        ):
+            raise SourceExtensionProducerError(
+                f"identity publication recovery did not commit: {prior}"
+            )
         recover_source_package_seal_commits(prior / "package-store")
         retired = prior / "retired-destination"
         if retired.exists():
-            if destination.exists():
-                _remove_file_or_tree(retired)
-            else:
-                os.replace(retired, destination)
+            raise SourceExtensionProducerError(
+                "legacy producer transaction contains a retired canonical "
+                f"destination and requires manual custody review: {retired}"
+            )
         _remove_file_or_tree(prior)
-
-
-def _retire_replaceable_extension_destination(
-    destination: Path,
-    *,
-    transaction_root: Path,
-    extension_set: ScientificExtensionSet,
-    set_manifest: Mapping[str, Any],
-) -> Path | None:
-    """Move the same source/module authority aside for crash-safe replacement.
-
-    The incoming publish root and its seal are fully validated before this
-    function runs.  The existing seal therefore owns only two replacement
-    invariants: source identity and module-family custody.  Its capabilities,
-    exports, capsules, build selectors, and linked-library policy are the old
-    configuration being replaced, not a second configuration authority that
-    may veto an intentional canonical migration.
-    """
-
-    if not destination.exists():
-        return None
-    try:
-        existing = verify_source_package_seal(destination)
-    except (OSError, SourcePackageSealVerificationError) as exc:
-        raise SourceExtensionProducerError(
-            f"refusing to replace an unverified non-atomic destination: {exc}"
-        ) from exc
-    existing_manifest_path = existing.payload_root / "extension_set_manifest.json"
-    try:
-        existing_manifest = json.loads(
-            existing_manifest_path.read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SourceExtensionProducerError(
-            f"cannot validate existing extension-set identity: {exc}"
-        ) from exc
-    if not isinstance(existing_manifest, Mapping):
-        raise SourceExtensionProducerError(
-            "existing extension-set manifest is not an object"
-        )
-    incoming_schema_version = set_manifest.get("schema_version")
-    if incoming_schema_version != SOURCE_EXTENSION_SET_SCHEMA_VERSION:
-        raise SourceExtensionProducerError(
-            "source-extension producer constructed an unsupported extension-set "
-            f"schema_version: {incoming_schema_version!r}"
-        )
-    existing_schema_version = existing_manifest.get("schema_version")
-    if (
-        existing_schema_version != SOURCE_EXTENSION_SET_SCHEMA_VERSION
-        and existing_schema_version
-        not in SOURCE_EXTENSION_SET_SCHEMA_MIGRATION_ORIGINS
-    ):
-        raise SourceExtensionProducerError(
-            "refusing to replace a canonical seal with an unsupported existing "
-            f"extension-set schema_version: {existing_schema_version!r}"
-        )
-    identity_fields = (
-        "kind",
-        "package",
-        "name",
-        "seal_name",
-        "source_head",
-        "target",
-        "target_triple",
-        "abi_tier",
-    )
-    drift = [
-        field
-        for field in identity_fields
-        if existing_manifest.get(field) != set_manifest.get(field)
-    ]
-    if drift:
-        raise SourceExtensionProducerError(
-            "refusing to replace a canonical seal owned by another source "
-            "identity; mismatched fields: " + ", ".join(drift)
-        )
-    manifests: dict[str, Mapping[str, Any]] = {}
-    manifest_root = existing.payload_root
-    inventory_sha256 = {
-        entry.relative_path: entry.sha256 for entry in existing.files
-    }
-    for path in sorted(manifest_root.glob("**/*.molt.wasm.extension_manifest.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise SourceExtensionProducerError(
-                f"cannot validate existing extension manifest {path}: {exc}"
-            ) from exc
-        module = payload.get("module") if isinstance(payload, Mapping) else None
-        extension = payload.get("extension") if isinstance(payload, Mapping) else None
-        expected_sha256 = (
-            payload.get("extension_sha256") if isinstance(payload, Mapping) else None
-        )
-        try:
-            relative_extension = validate_source_package_relative_path(
-                extension, field=f"existing extension artifact in {path}"
-            )
-        except SourcePackageSealVerificationError as exc:
-            raise SourceExtensionProducerError(str(exc)) from exc
-        expected_extension = path.name.removesuffix(".extension_manifest.json")
-        artifact = (path.parent / relative_extension).resolve()
-        try:
-            artifact_relative = artifact.relative_to(manifest_root.resolve()).as_posix()
-        except ValueError:
-            artifact_relative = ""
-        if not (
-            isinstance(module, str)
-            and isinstance(extension, str)
-            and isinstance(expected_sha256, str)
-            and len(expected_sha256) == 64
-            and all(character in "0123456789abcdef" for character in expected_sha256)
-            and relative_extension == expected_extension
-            and inventory_sha256.get(artifact_relative) == expected_sha256
-        ):
-            raise SourceExtensionProducerError(
-                f"existing extension manifest or artifact is invalid: {path}"
-            )
-        if module in manifests:
-            raise SourceExtensionProducerError(
-                f"legacy destination contains duplicate module custody: {module}"
-            )
-        manifests[module] = payload
-    expected_modules = {extension.module for extension in extension_set.extensions}
-    if set(manifests) != expected_modules:
-        raise SourceExtensionProducerError(
-            "refusing to replace an extension set with a different module family; "
-            f"expected {sorted(expected_modules)}, found {sorted(manifests)}"
-        )
-    retired = transaction_root / "retired-destination"
-    if retired.exists():
-        raise SourceExtensionProducerError(
-            f"producer transaction already owns a retired destination: {retired}"
-        )
-    transaction_root.mkdir(parents=True, exist_ok=True)
-    os.replace(destination, retired)
-    return retired
 
 
 def produce_source_extension_set(
@@ -2467,13 +2476,18 @@ def produce_source_extension_set(
     build_root: str,
     target: str = "wasm",
     abi_tier: str = "cpython-abi",
+    expected_identity_sha256: str | None = None,
+    expected_candidate_identity_sha256: str | None = None,
     json_output: bool = False,
 ) -> int:
     source_root = Path(source).expanduser().resolve()
     resolved_build_root = Path(build_root).expanduser().resolve()
     transaction_root: Path | None = None
     producer_lock = None
+    publication_custody = None
     published = False
+    incumbent_identity: Mapping[str, Any] | None = None
+    incumbent_seal = None
     try:
         if not source_root.is_dir():
             raise SourceExtensionProducerError(
@@ -2495,6 +2509,8 @@ def produce_source_extension_set(
                 build_root=str(resolved_build_root),
                 target=target,
                 abi_tier=abi_tier,
+                expected_identity_sha256=expected_identity_sha256,
+                expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
                 json_output=json_output,
             )
         destination = scientific_extension_set_root(extension_set)
@@ -2508,7 +2524,35 @@ def produce_source_extension_set(
                 f"lock {lock_path}; another producer owns {destination}"
             ),
         )
-        _recover_and_prune_producer_transactions(destination)
+        publication_custody = _source_extension_publication_custody(
+            destination, producer_lock
+        )
+        _recover_and_prune_producer_transactions(
+            destination, publication_custody=publication_custody
+        )
+        if destination.exists():
+            if (
+                expected_identity_sha256 is None
+                or expected_candidate_identity_sha256 is None
+            ):
+                raise SourceExtensionProducerError(
+                    "canonical extension seal already exists; replacement requires "
+                    "both --expected-identity-sha256 and "
+                    "--expected-candidate-identity-sha256 so publication proves "
+                    "the complete compare-and-swap transition before mutation"
+                )
+            incumbent_seal = verify_source_package_seal(destination)
+            incumbent_identity = _require_expected_source_extension_set_identity(
+                incumbent_seal.payload_root,
+                expected_identity_sha256,
+                inventory_sha256={
+                    entry.relative_path: entry.sha256 for entry in incumbent_seal.files
+                },
+            )
+        elif expected_identity_sha256 is not None:
+            raise SourceExtensionProducerError(
+                "--expected-identity-sha256 requires an incumbent canonical seal"
+            )
         verify_source_checkout(package, source_root)
         _provision_recursive_submodules(source_root)
         submodules = _verify_recursive_submodules(source_root)
@@ -2710,6 +2754,10 @@ def produce_source_extension_set(
                 for spec, item in zip(extension_set.extensions, produced, strict=True)
             ],
         }
+        _require_location_neutral(
+            set_manifest,
+            authority="source-extension set manifest",
+        )
         _atomic_write_json(
             publish_root / "extension_set_manifest.json",
             set_manifest,
@@ -2734,12 +2782,95 @@ def produce_source_extension_set(
             ],
         )
         verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
-        _retire_replaceable_extension_destination(
-            destination,
-            transaction_root=transaction_root,
-            extension_set=extension_set,
-            set_manifest=set_manifest,
+        candidate_identity = _source_extension_set_identity(
+            seal.payload_root,
+            inventory_sha256={
+                entry.relative_path: entry.sha256 for entry in seal.files
+            },
         )
+        if expected_candidate_identity_sha256 is not None and (
+            candidate_identity["canonical_sha256"] != expected_candidate_identity_sha256
+        ):
+            evidence_path = transaction_root / "identity-comparison.json"
+            comparison = {
+                "schema_version": 1,
+                "kind": "source-extension-candidate-identity",
+                "expected_candidate_identity_sha256": (
+                    expected_candidate_identity_sha256
+                ),
+                "candidate_seal_sha256": seal.seal_sha256,
+                "candidate_identity": candidate_identity,
+                "reproduced": False,
+            }
+            _atomic_write_json(evidence_path, comparison, sort_keys=True, indent=2)
+            raise SourceExtensionProducerError(
+                "candidate extension seal does not match declared canonical "
+                f"identity {expected_candidate_identity_sha256}; incumbent "
+                f"preserved and comparison evidence written to {evidence_path}"
+            )
+        if expected_identity_sha256 is not None:
+            assert incumbent_identity is not None
+            assert incumbent_seal is not None
+            assert expected_candidate_identity_sha256 is not None
+            assert publication_custody is not None
+            comparison = _source_extension_reproduction_comparison(
+                expected_incumbent_sha256=expected_identity_sha256,
+                expected_candidate_sha256=expected_candidate_identity_sha256,
+                incumbent_seal_sha256=incumbent_seal.seal_sha256,
+                incumbent_identity=incumbent_identity,
+                candidate_seal_sha256=seal.seal_sha256,
+                candidate_identity=candidate_identity,
+            )
+            evidence_path = transaction_root / "identity-comparison.json"
+            _atomic_write_json(evidence_path, comparison, sort_keys=True, indent=2)
+            if not comparison["reproduced"]:
+                raise SourceExtensionProducerError(
+                    "candidate extension seal does not reproduce expected canonical "
+                    f"identity {expected_candidate_identity_sha256}; incumbent preserved and "
+                    f"comparison evidence written to {evidence_path}"
+                )
+            publication = publish_source_extension_candidate(
+                custody=publication_custody,
+                destination=destination,
+                candidate_seal=seal,
+                transaction_root=transaction_root,
+                expected_incumbent_identity_sha256=expected_identity_sha256,
+                expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
+            )
+            published = True
+            published_seal = verify_source_package_seal(destination)
+            data = {
+                "package": extension_set.package,
+                "module_set": extension_set.name,
+                "root": str(destination),
+                "module_root": str(published_seal.payload_root),
+                "seal_sha256": published_seal.seal_sha256,
+                "candidate_seal_sha256": seal.seal_sha256,
+                "identity_sha256": expected_candidate_identity_sha256,
+                "reproduced": True,
+                "no_op": publication["no_op"],
+                "upgraded": publication["upgraded"],
+                "modules": [item.module for item in produced],
+                "target": metadata.target_triple,
+                "abi_tier": abi_tier,
+            }
+            if json_output:
+                _emit_json(
+                    _json_payload("extension-produce-set", "ok", data=data),
+                    json_output=True,
+                )
+            else:
+                action = (
+                    "without replacement" if publication["no_op"] else "by CAS upgrade"
+                )
+                print(f"Reproduced extension set {action}: {destination}")
+                print(f"Canonical identity: {expected_candidate_identity_sha256}")
+            return 0
+        if destination.exists():
+            raise SourceExtensionProducerError(
+                "internal publication error: incumbent identity guard did not "
+                "terminate existing-destination production as a verified no-op"
+            )
         commit = prepare_source_package_seal_commit(
             package_store,
             seal,

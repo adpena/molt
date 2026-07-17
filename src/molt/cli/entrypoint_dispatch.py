@@ -490,6 +490,10 @@ def _dispatch_entrypoint_command(
                 build_root=args.build_root,
                 target=args.target,
                 abi_tier=args.abi_tier,
+                expected_identity_sha256=args.expected_identity_sha256,
+                expected_candidate_identity_sha256=(
+                    args.expected_candidate_identity_sha256
+                ),
                 json_output=args.json,
             )
         if args.extension_command == "audit":
