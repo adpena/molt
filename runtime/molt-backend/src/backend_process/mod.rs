@@ -1,3 +1,4 @@
+mod atomic_publish;
 mod cli_args;
 mod config;
 mod daemon;
@@ -10,6 +11,10 @@ mod native_batch;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;
 
+pub(crate) use atomic_publish::{
+    AtomicFilePublication, commit_existing_file_atomically, write_atomically,
+    write_bytes_atomically, write_text_atomically,
+};
 pub(crate) use cli_args::*;
 pub(crate) use config::*;
 pub(crate) use daemon::*;

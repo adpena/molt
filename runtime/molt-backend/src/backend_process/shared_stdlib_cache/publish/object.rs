@@ -1,9 +1,9 @@
 use std::io;
 use std::path::Path;
 
-use super::files::{atomic_replace_file, sync_published_file};
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::sidecars::{remove_shared_stdlib_cache_artifacts, write_shared_stdlib_cache_sidecars};
+use crate::backend_process::commit_existing_file_atomically;
 
 pub(crate) fn publish_shared_stdlib_cache_object(
     stdlib_path: &Path,
@@ -14,11 +14,7 @@ pub(crate) fn publish_shared_stdlib_cache_object(
     partition_manifest: &str,
 ) -> io::Result<()> {
     let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
-        if let Err(err) = atomic_replace_file(temp_object_path, stdlib_path) {
-            remove_shared_stdlib_cache_artifacts(stdlib_path);
-            return Err(err);
-        }
-        if let Err(err) = sync_published_file(stdlib_path) {
+        if let Err(err) = commit_existing_file_atomically(temp_object_path, stdlib_path) {
             remove_shared_stdlib_cache_artifacts(stdlib_path);
             return Err(err);
         }

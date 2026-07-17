@@ -97,111 +97,20 @@ fn publish_wasm_atomically<T>(
     output: &Path,
     publish: impl FnOnce(&mut io::BufWriter<std::fs::File>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let file_name = output
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            format!(
-                "attested wasm output has no file name: {}",
-                output.display()
-            )
-        })?;
-    let mut temporary = None;
-    for nonce in 0..1024u32 {
-        let path =
-            output.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => {
-                temporary = Some((path, file));
-                break;
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!(
-                    "cannot create atomic attested wasm output beside {}: {error}",
-                    output.display()
-                ));
-            }
-        }
-    }
-    let (temporary_path, file) = temporary.ok_or_else(|| {
+    let mut publication = AtomicFilePublication::new(output).map_err(|error| {
         format!(
-            "cannot reserve atomic attested wasm output beside {}",
+            "cannot reserve atomic attested wasm output {}: {error}",
             output.display()
         )
     })?;
-    let result = (|| {
-        let mut writer = io::BufWriter::new(file);
-        let value = publish(&mut writer)?;
-        use std::io::Write as _;
-        writer.flush().map_err(|error| {
-            format!(
-                "cannot flush atomic attested wasm output {}: {error}",
-                temporary_path.display()
-            )
-        })?;
-        writer.get_ref().sync_all().map_err(|error| {
-            format!(
-                "cannot sync atomic attested wasm output {}: {error}",
-                temporary_path.display()
-            )
-        })?;
-        drop(writer);
-        atomic_replace_wasm_file(&temporary_path, output)?;
-        Ok(value)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    result
-}
-
-#[cfg(all(feature = "wasm-backend", not(windows)))]
-fn atomic_replace_wasm_file(source: &Path, destination: &Path) -> Result<(), String> {
-    std::fs::rename(source, destination).map_err(|error| {
+    let value = publish(publication.writer())?;
+    publication.commit().map_err(|error| {
         format!(
-            "cannot atomically publish attested wasm {} -> {}: {error}",
-            source.display(),
-            destination.display()
+            "cannot commit atomic attested wasm output {}: {error}",
+            output.display()
         )
-    })
-}
-
-#[cfg(all(feature = "wasm-backend", windows))]
-fn atomic_replace_wasm_file(source: &Path, destination: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let ok = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        return Err(format!(
-            "cannot atomically publish attested wasm: {}",
-            io::Error::last_os_error()
-        ));
-    }
-    Ok(())
+    })?;
+    Ok(value)
 }
 
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
