@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
-"""Fail-closed audit: the canonical perf gate MUST be wired to fire on main.
+"""Fail-closed audit for the controlled canonical performance authority.
 
-The meta-bug this kills (the TIER-0 / sharpest finding of the verification-machinery
-audit): .github/workflows/perf-gate.yml is the ONE release-blocking CPython-floor
-scoreboard, but its triggers were workflow_dispatch + a weekly cron only -- it never
-ran on a PR or a merge to main. So every perf-green was vacuous and the
-perf-authority drift-gate certified nothing. ci.yml running tests/tools/
-test_perf_authority.py is a *unit test of the authority module* -- a PROXY for
-"the gate ran", which is the master meta-bug class: PROXY-MEASUREMENT SUBSTITUTION
-(a verifier measures a cheap proxy correlated with the real invariant on the happy
-path and decorrelated exactly where the bug lives).
+The canonical scoreboard is expensive measurement, not a shared-runner push
+smoke test. A prior push trigger combined with cancel-in-progress consumed hours
+of runner time while repeated main updates cancelled every result. This audit
+keeps one honest contract: scheduled and explicit controlled runs invoke the real
+blocking scoreboard; push/PR allocation and active-run cancellation are forbidden.
 
-This checker replaces the proxy with a check on the real thing: the canonical gate
-must (a) invoke the real scoreboard and (b) actually fire on main. It is wired into
-ci_gate tier-1 (via tests/tools/test_check_perf_gate_wiring.py) so an un-wiring
-cannot silently regress.
+It is wired into ci_gate tier-1 so trigger, queueing, and blocking semantics cannot
+silently regress while a separate fast PR performance plane is developed.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PERF_GATE = REPO / ".github" / "workflows" / "perf-gate.yml"
 SCOREBOARD_CMD = "perf_scoreboard.py"
-REQUIRED_EVENTS = {"push", "pull_request", "pull_request_target"}
+MEASUREMENT_EVENTS = {"workflow_dispatch", "schedule"}
 
 
 def _load_yaml(path: Path):
@@ -215,14 +210,13 @@ def _parse_steps(lines: list[str], start: int, end: int) -> tuple[list[dict], in
     return steps, idx
 
 
-def _triggers(doc: object) -> dict:
+def _triggers(doc: object) -> dict[str, object]:
     # YAML 1.1 coerces the bare key `on` to the boolean True; handle both spellings
     # so the audit is not itself fooled by the parse (a meta-meta-bug).
-    if isinstance(doc, dict):
-        if "on" in doc:
-            return doc["on"] or {}
-        if True in doc:
-            return doc[True] or {}
+    if isinstance(doc, Mapping):
+        value = doc.get("on", doc.get(True))
+        if isinstance(value, Mapping):
+            return {str(key): item for key, item in value.items()}
     return {}
 
 
@@ -257,10 +251,10 @@ def _if_condition_problem(value: object) -> str | None:
     event_matches = re.findall(
         r"github\.event_name\s*==\s*['\"]([^'\"]+)['\"]", normalized
     )
-    if event_matches and REQUIRED_EVENTS.isdisjoint(event_matches):
+    if event_matches and MEASUREMENT_EVENTS.isdisjoint(event_matches):
         return (
-            "is gated away from push/pull_request events, so the scoreboard "
-            "does not block the required main/PR path"
+            "is gated away from workflow_dispatch/schedule events, so the "
+            "controlled scoreboard can never execute"
         )
     return None
 
@@ -313,20 +307,31 @@ def check() -> list[str]:
             f"perf-gate.yml mentions {SCOREBOARD_CMD} but no executable run step invokes it"
         )
 
-    # (2) It must actually FIRE on main: a push to main (release gate) and/or a PR.
-    push = triggers.get("push") or {}
-    push_branches = push.get("branches") if isinstance(push, dict) else None
-    fires_on_main_push = bool(push_branches) and "main" in push_branches
-    fires_on_pr = "pull_request" in triggers
-    if not (fires_on_main_push or fires_on_pr):
+    # (2) Controlled measurement has exactly two admission paths. Push/PR events
+    # allocate noisy shared runners too often and cancel before producing evidence.
+    trigger_names = set(map(str, triggers))
+    missing_events = MEASUREMENT_EVENTS - trigger_names
+    if missing_events:
         problems.append(
-            "perf-gate.yml does not fire on a pull_request or a push to main -- its "
-            f"only triggers are {sorted(map(str, triggers))!r}. The canonical perf gate "
-            "certifies NOTHING on any merge; every perf-green is vacuous. Add "
-            "`push: {branches: [main]}` (and/or pull_request) to its `on:` block."
+            "perf-gate.yml is missing controlled measurement trigger(s) "
+            f"{sorted(missing_events)!r}; observed triggers are {sorted(trigger_names)!r}"
+        )
+    forbidden_events = {"push", "pull_request", "pull_request_target"} & trigger_names
+    if forbidden_events:
+        problems.append(
+            "perf-gate.yml allocates canonical measurement on high-churn event(s) "
+            f"{sorted(forbidden_events)!r}; use the separate fast PR plane"
         )
 
-    # (3) The scoreboard invocation itself must be blocking. A workflow that
+    # (3) Pending work may debounce before allocation, but an active canonical
+    # measurement must finish and publish its evidence.
+    if not re.search(r"(?m)^\s*cancel-in-progress:\s*false\s*$", text):
+        problems.append(
+            "perf-gate.yml must set cancel-in-progress: false so active canonical "
+            "measurements finish and publish evidence"
+        )
+
+    # (4) The scoreboard invocation itself must be blocking. A workflow that
     # invokes the scoreboard under continue-on-error or a dead `if` is still a
     # proxy: it observes the gate without letting the gate block a merge.
     for job_name, step_idx, job, step in scoreboard_steps:
@@ -356,15 +361,15 @@ def check() -> list[str]:
 def main() -> int:
     problems = check()
     if problems:
-        print("perf-gate-wiring: FAIL -- the canonical perf gate is not wired to main:")
+        print("perf-gate-wiring: FAIL -- controlled perf authority drifted:")
         for p in problems:
             print(f"  - {p}")
         print(
-            "  (a gate that never fires certifies nothing -- proxy-measurement substitution.)"
+            "  (controlled measurement must run to completion and fail honestly.)"
         )
         return 1
     print(
-        "perf-gate-wiring: OK -- canonical perf gate fires on main and runs the scoreboard."
+        "perf-gate-wiring: OK -- scheduled/manual measurement runs the blocking scoreboard without active cancellation."
     )
     return 0
 
