@@ -9,15 +9,19 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
 
+from molt import scientific_stack_versions as scientific_versions
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.source_build_environment import canonical_source_marker_environment
+from molt.cli.source_extension_set_identity import _source_extension_set_identity
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
+from molt.cli.source_package_seal import verify_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_set,
@@ -6901,9 +6905,7 @@ def test_proof_queue_diagnoses_missing_locked_source_build_environment(
         "out-of-range requirements: meson-python>=0.18.0, Cython>=3.0.6\n",
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "source-build-environment", status="failed", returncode=2
-    )
+    state._update_run(conn, "source-build-environment", status="failed", returncode=2)
 
     assert (
         cli.main(
@@ -6923,9 +6925,7 @@ def test_proof_queue_diagnoses_missing_locked_source_build_environment(
     )
     evidence = json.loads(capsys.readouterr().out)
     diagnostics = evidence[0]["diagnostics"]
-    assert diagnostics[0]["signal_id"] == (
-        "source-build-environment-custody-missing"
-    )
+    assert diagnostics[0]["signal_id"] == ("source-build-environment-custody-missing")
     assert diagnostics[0]["severity"] == "infra"
     assert "meson-python>=0.18.0" in diagnostics[0]["summary"]
     assert "configured dependency group" in diagnostics[0]["next_action"]
@@ -6970,9 +6970,7 @@ def test_proof_queue_diagnoses_locked_console_script_path_custody(
         'file specified"\n',
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "source-build-console-path", status="failed", returncode=2
-    )
+    state._update_run(conn, "source-build-console-path", status="failed", returncode=2)
 
     assert (
         cli.main(
@@ -6998,9 +6996,10 @@ def test_proof_queue_diagnoses_locked_console_script_path_custody(
     assert diagnostics[0]["severity"] == "infra"
     assert "Cython console script" in diagnostics[0]["summary"]
     assert "Scripts/bin directory first" in diagnostics[0]["next_action"]
-    assert "Never install Cython into an ambient interpreter" in diagnostics[0][
-        "next_action"
-    ]
+    assert (
+        "Never install Cython into an ambient interpreter"
+        in diagnostics[0]["next_action"]
+    )
     assert "pin an older version" in diagnostics[0]["next_action"]
     assert diagnostics[0]["artifacts"] == [str(summary_path), str(log_path)]
 
@@ -7019,9 +7018,7 @@ def test_locked_console_script_path_diagnostic_rejects_near_misses(
     near_miss: str,
 ) -> None:
     assert (
-        diagnostics_module.SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE.search(
-            near_miss
-        )
+        diagnostics_module.SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE.search(near_miss)
         is None
     )
 
@@ -9324,7 +9321,7 @@ def _write_current_scientific_seal(
     package: str = "scipy",
     missing_module: str | None = None,
     exports_override: dict[str, list[str]] | None = None,
-) -> None:
+) -> str | None:
     destination = root
     root = destination.parent / f".{destination.name}.fixture-payload"
     transaction_root = destination.parent / f".{destination.name}.fixture-transaction"
@@ -9349,7 +9346,9 @@ def _write_current_scientific_seal(
         source_path = root.joinpath(
             "provenance", "compiled-inputs", *extension.module.split("."), "source.c"
         )
-        source_reference = os.path.relpath(source_path, package_dir).replace(os.sep, "/")
+        source_reference = os.path.relpath(source_path, package_dir).replace(
+            os.sep, "/"
+        )
         object_closure: dict[str, object] = {
             "schema_version": 1,
             "root_symbol": init_symbol,
@@ -9374,7 +9373,9 @@ def _write_current_scientific_seal(
                 }
             ],
         }
-        closure_sha256 = pact._pact_object_closure_digest(object_closure)
+        closure_sha256 = pact._pact_object_closure_digest(
+            {"object_closure": object_closure}, object_closure
+        )
         assert closure_sha256 is not None
         object_closure["closure_sha256"] = closure_sha256
         set_extensions.append(
@@ -9679,6 +9680,53 @@ def _write_current_scientific_seal(
     )
     _publish_scientific_fixture_payload(root, destination, transaction_root)
     shutil.rmtree(root)
+    seal = verify_source_package_seal(destination)
+    try:
+        identity = _source_extension_set_identity(
+            seal.payload_root,
+            inventory_sha256={
+                entry.relative_path: entry.sha256 for entry in seal.files
+            },
+        )
+    except ValueError:
+        return None
+    return str(identity["canonical_sha256"])
+
+
+def _patch_pact_expected_identities(
+    monkeypatch: pytest.MonkeyPatch,
+    identities: dict[str, str],
+    *,
+    artifact_root: Path,
+) -> None:
+    real_scientific_extension_set = pact.scientific_extension_set
+
+    def resolve(package: str, name: str, *args, **kwargs):
+        extension_set = real_scientific_extension_set(package, name, *args, **kwargs)
+        expected = identities.get(package)
+        return (
+            replace(extension_set, expected_identity_sha256=expected)
+            if expected is not None
+            else extension_set
+        )
+
+    monkeypatch.setattr(pact, "scientific_extension_set", resolve)
+    monkeypatch.setattr(scientific_versions, "scientific_extension_set", resolve)
+
+    def extension_set_root(extension_set, stack=None):
+        selected = resolve_scientific_stack() if stack is None else stack
+        version = {"numpy": selected.numpy, "scipy": selected.scipy}[
+            extension_set.package
+        ]
+        return (
+            artifact_root
+            / "package-seals"
+            / extension_set.package
+            / version
+            / extension_set.seal_name
+        )
+
+    monkeypatch.setattr(pact, "scientific_extension_set_root", extension_set_root)
 
 
 def test_proof_queue_r6_target_version_parity_print_spec(
@@ -9751,8 +9799,14 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         root.mkdir(parents=True)
     for root in legacy_roots:
         root.mkdir(parents=True)
-    _write_current_scientific_seal(expected_seals[0], package="numpy")
-    _write_current_scientific_seal(expected_seals[1])
+    numpy_identity = _write_current_scientific_seal(expected_seals[0], package="numpy")
+    scipy_identity = _write_current_scientific_seal(expected_seals[1])
+    assert numpy_identity is not None and scipy_identity is not None
+    _patch_pact_expected_identities(
+        monkeypatch,
+        {"numpy": numpy_identity, "scipy": scipy_identity},
+        artifact_root=tmp_path / "artifacts",
+    )
     for root in legacy_roots[:4]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
@@ -9775,7 +9829,13 @@ def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absen
         tmp_path
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
-    _write_current_scientific_seal(durable_numpy, package="numpy")
+    numpy_identity = _write_current_scientific_seal(durable_numpy, package="numpy")
+    assert numpy_identity is not None
+    _patch_pact_expected_identities(
+        monkeypatch,
+        {"numpy": numpy_identity},
+        artifact_root=tmp_path / "artifacts",
+    )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match="canonical SciPy witness seal is absent"):
@@ -9791,9 +9851,15 @@ def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
     durable_scipy = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_scientific_seal(durable_numpy, package="numpy")
+    numpy_identity = _write_current_scientific_seal(durable_numpy, package="numpy")
     _write_current_scientific_seal(
         durable_scipy, missing_module="scipy.ndimage._rank_filter_1d"
+    )
+    assert numpy_identity is not None
+    _patch_pact_expected_identities(
+        monkeypatch,
+        {"numpy": numpy_identity},
+        artifact_root=tmp_path / "artifacts",
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
@@ -9810,15 +9876,38 @@ def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
     durable_scipy = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_scientific_seal(durable_numpy, package="numpy")
-    _write_current_scientific_seal(
+    numpy_identity = _write_current_scientific_seal(durable_numpy, package="numpy")
+    scipy_identity = _write_current_scientific_seal(
         durable_scipy,
         exports_override={"scipy.ndimage._nd_image": ["scipy.ndimage"]},
+    )
+    assert numpy_identity is not None and scipy_identity is not None
+    _patch_pact_expected_identities(
+        monkeypatch,
+        {"numpy": numpy_identity, "scipy": scipy_identity},
+        artifact_root=tmp_path / "artifacts",
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match="absent or incomplete"):
         pact._pact_witness_native_roots(repo_root=tmp_path)
+
+
+def test_proof_queue_rejects_expected_extension_identity_drift(tmp_path: Path) -> None:
+    root = tmp_path / "pact_scipy_witness"
+    identity = _write_current_scientific_seal(root)
+    assert identity is not None
+    extension_set = replace(
+        scientific_extension_set("scipy", "pact-witness"),
+        expected_identity_sha256="0" * 64,
+    )
+
+    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
+
+    assert any(
+        "expected canonical extension identity guard failed" in problem
+        for problem in problems
+    )
 
 
 @pytest.mark.parametrize(
@@ -10096,9 +10185,9 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         manifest["build_environment"]["custody"]["environment_id"] = "0" * 64
         expected = "build-environment address digest is invalid"
     elif mutation == "build_custody_python_sha256":
-        manifest["build_environment"]["custody"]["python"][
-            "base_executable_sha256"
-        ] = "z" * 64
+        manifest["build_environment"]["custody"]["python"]["base_executable_sha256"] = (
+            "z" * 64
+        )
         expected = "build Python custody is invalid"
     elif mutation == "build_custody_uv_sha256":
         manifest["build_environment"]["custody"]["uv"]["sha256"] = "z" * 64
@@ -10125,10 +10214,16 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
         tmp_path
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
-    _write_current_scientific_seal(durable_numpy, package="numpy")
+    numpy_identity = _write_current_scientific_seal(durable_numpy, package="numpy")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     artifact_root = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_scientific_seal(artifact_root)
+    scipy_identity = _write_current_scientific_seal(artifact_root)
+    assert numpy_identity is not None and scipy_identity is not None
+    _patch_pact_expected_identities(
+        monkeypatch,
+        {"numpy": numpy_identity, "scipy": scipy_identity},
+        artifact_root=tmp_path / "artifacts",
+    )
 
     roots = pact._pact_witness_native_roots(repo_root=tmp_path)
 

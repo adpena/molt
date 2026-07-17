@@ -14,6 +14,13 @@ from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
 )
+from molt.cli.source_extension_manifest_codec import (
+    _manifest_dependencies,
+    _manifest_sequence,
+)
+from molt.cli.source_extension_set_identity import (
+    _require_expected_source_extension_set_identity,
+)
 from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
     validate_source_package_relative_path,
@@ -53,7 +60,9 @@ def _sealed_inventory_digest(
     return inventory_sha256.get(relative)
 
 
-def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | None:
+def _pact_object_closure_digest(
+    manifest: Mapping[str, object], object_closure: Mapping[str, object]
+) -> str | None:
     objects = object_closure.get("objects")
     runtime_symbols = object_closure.get("runtime_symbols")
     if not isinstance(objects, list) or not objects:
@@ -68,15 +77,17 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
             return None
         digest_item = {
             key: item.get(key)
-            for key in (
-                "source",
-                "object",
-                "source_sha256",
-                "object_sha256",
-                "defined_symbols",
-                "undefined_symbols",
-            )
+            for key in ("source", "object", "source_sha256", "object_sha256")
         }
+        try:
+            digest_item["defined_symbols"] = _manifest_sequence(
+                manifest, item, "defined_symbols"
+            )
+            digest_item["undefined_symbols"] = _manifest_sequence(
+                manifest, item, "undefined_symbols"
+            )
+        except ValueError:
+            return None
         if not all(
             isinstance(digest_item[key], str) and digest_item[key]
             for key in ("source", "object", "source_sha256", "object_sha256")
@@ -88,41 +99,26 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
             for key in ("defined_symbols", "undefined_symbols")
         ):
             return None
-        if "compile_command" in item:
-            compile_command = item.get("compile_command")
-            if (
-                not isinstance(compile_command, list)
-                or not compile_command
-                or not all(
-                    isinstance(value, str) and value for value in compile_command
-                )
-            ):
+        if "compile_command" in item or "compile_command_ref" in item:
+            try:
+                compile_command = _manifest_sequence(manifest, item, "compile_command")
+            except ValueError:
+                return None
+            if compile_command is None:
                 return None
             digest_item["compile_command"] = compile_command
-        if "symbol_command" in item:
-            symbol_command = item.get("symbol_command")
-            if (
-                not isinstance(symbol_command, list)
-                or not symbol_command
-                or not all(isinstance(value, str) and value for value in symbol_command)
-            ):
+        if "symbol_command" in item or "symbol_command_ref" in item:
+            try:
+                symbol_command = _manifest_sequence(manifest, item, "symbol_command")
+            except ValueError:
+                return None
+            if symbol_command is None:
                 return None
             digest_item["symbol_command"] = symbol_command
-        if "dependencies" in item:
-            dependencies = item.get("dependencies")
-            if not isinstance(dependencies, list) or not all(
-                isinstance(dependency, Mapping)
-                and set(dependency) == {"path", "sha256"}
-                and isinstance(dependency.get("path"), str)
-                and bool(dependency.get("path"))
-                and isinstance(dependency.get("sha256"), str)
-                and bool(dependency.get("sha256"))
-                for dependency in dependencies
-            ):
-                return None
-            digest_item["dependencies"] = [
-                dict(dependency) for dependency in dependencies
-            ]
+        try:
+            digest_item["dependencies"] = _manifest_dependencies(manifest, item)
+        except ValueError:
+            return None
         digest_objects.append(digest_item)
     payload = {
         "schema_version": 1,
@@ -812,9 +808,7 @@ def _scientific_extension_set_seal_validation(
         if (
             not isinstance(wheel_sha256, str)
             or len(wheel_sha256) != 64
-            or any(
-                character not in "0123456789abcdef" for character in wheel_sha256
-            )
+            or any(character not in "0123456789abcdef" for character in wheel_sha256)
             or actual_wheel_sha256 != wheel_sha256
         ):
             problems.append(f"{extension.module}: wheel is not sealed or checksummed")
@@ -836,7 +830,16 @@ def _scientific_extension_set_seal_validation(
                 problems.append(f"{extension.module}: object_closure is empty")
             elif all(isinstance(item, Mapping) for item in objects):
                 for object_index, item in enumerate(objects):
-                    compile_command = item.get("compile_command")
+                    try:
+                        compile_command = _manifest_sequence(
+                            manifest, item, "compile_command"
+                        )
+                        symbol_command = _manifest_sequence(
+                            manifest, item, "symbol_command"
+                        )
+                    except ValueError:
+                        compile_command = None
+                        symbol_command = None
                     if (
                         not isinstance(compile_command, list)
                         or not compile_command
@@ -848,7 +851,6 @@ def _scientific_extension_set_seal_validation(
                         problems.append(
                             f"{extension.module}: object_closure compile command is invalid"
                         )
-                    symbol_command = item.get("symbol_command")
                     if (
                         not isinstance(symbol_command, list)
                         or not symbol_command
@@ -905,8 +907,9 @@ def _scientific_extension_set_seal_validation(
                             f"{extension.module}: object_closure source[{object_index}] "
                             "is not sealed or checksummed"
                         )
-                    dependencies = item.get("dependencies", [])
-                    if not isinstance(dependencies, list):
+                    try:
+                        dependencies = _manifest_dependencies(manifest, item)
+                    except ValueError:
                         problems.append(
                             f"{extension.module}: object_closure dependencies are invalid"
                         )
@@ -942,7 +945,9 @@ def _scientific_extension_set_seal_validation(
                                 "or checksummed"
                             )
             closure_sha256 = object_closure.get("closure_sha256")
-            computed_closure_sha256 = _pact_object_closure_digest(object_closure)
+            computed_closure_sha256 = _pact_object_closure_digest(
+                manifest, object_closure
+            )
             if (
                 not isinstance(closure_sha256, str)
                 or not closure_sha256
@@ -958,6 +963,14 @@ def _scientific_extension_set_seal_validation(
             inventory_sha256=inventory_sha256,
         )
     )
+    try:
+        _require_expected_source_extension_set_identity(
+            payload_root,
+            extension_set.expected_identity_sha256,
+            inventory_sha256=inventory_sha256,
+        )
+    except ValueError as exc:
+        problems.append(f"expected canonical extension identity guard failed: {exc}")
     return problems, verified_payload_root
 
 
