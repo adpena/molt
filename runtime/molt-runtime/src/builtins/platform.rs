@@ -1523,7 +1523,30 @@ fn importlib_modules_runtime_error(_py: &PyToken<'_>) -> u64 {
     )
 }
 
-fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
+struct ImportlibSystemModule<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: u64,
+}
+
+impl ImportlibSystemModule<'_, '_> {
+    #[inline]
+    fn bits(&self) -> u64 {
+        self.bits
+    }
+}
+
+impl Drop for ImportlibSystemModule<'_, '_> {
+    fn drop(&mut self) {
+        dec_ref_bits(self.py, self.bits);
+    }
+}
+
+/// Resolve one owned reference to the interpreter's canonical `sys` module.
+/// Every importlib consumer uses this authority so cached lookup, bootstrap
+/// import, validation, and release semantics cannot drift by call site.
+fn importlib_system_module<'a, 'py>(
+    _py: &'a PyToken<'py>,
+) -> Result<ImportlibSystemModule<'a, 'py>, u64> {
     let cached_sys_bits = {
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         let guard = cache.lock().unwrap();
@@ -1551,11 +1574,17 @@ fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
         dec_ref_bits(_py, sys_bits);
         return Err(importlib_modules_runtime_error(_py));
     }
-    let Some(modules_bits) = sys_modules_dict_bits(_py, sys_bits) else {
-        dec_ref_bits(_py, sys_bits);
+    Ok(ImportlibSystemModule {
+        py: _py,
+        bits: sys_bits,
+    })
+}
+
+fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
+    let sys = importlib_system_module(_py)?;
+    let Some(modules_bits) = sys_modules_dict_bits(_py, sys.bits()) else {
         return Err(importlib_modules_runtime_error(_py));
     };
-    dec_ref_bits(_py, sys_bits);
     let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
         if !obj_from_bits(modules_bits).is_none() {
             dec_ref_bits(_py, modules_bits);
@@ -3394,12 +3423,9 @@ fn importlib_try_cext_on_sys_path(
     modules_ptr: *mut u8,
 ) -> Option<u64> {
     // Retrieve sys.path as a Vec<String>.
-    let sys_bits = importlib_sys_module_bits(_py)?;
-    if obj_from_bits(sys_bits).is_none() {
-        return None;
-    }
+    let sys = importlib_system_module(_py).ok()?;
     let path_name = intern_runtime_static_name(_py, b"path");
-    let path_attr = getattr_optional_bits(_py, sys_bits, path_name).ok()??;
+    let path_attr = getattr_optional_bits(_py, sys.bits(), path_name).ok()??;
     let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path").ok()?;
     if !obj_from_bits(path_attr).is_none() {
         dec_ref_bits(_py, path_attr);

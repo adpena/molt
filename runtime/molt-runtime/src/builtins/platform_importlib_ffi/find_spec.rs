@@ -517,12 +517,6 @@ pub(super) fn importlib_find_spec_orchestrated_impl(
     out
 }
 
-pub(super) fn importlib_sys_module_bits(_py: &PyToken<'_>) -> Option<u64> {
-    let module_cache = crate::builtins::exceptions::internals::module_cache(_py);
-    let guard = module_cache.lock().unwrap();
-    guard.get("sys").copied()
-}
-
 pub(super) fn importlib_machinery_module_file(
     _py: &PyToken<'_>,
     machinery_bits: u64,
@@ -611,7 +605,11 @@ pub extern "C" fn molt_importlib_pathfinder_find_spec(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let sys_bits = importlib_sys_module_bits(_py);
+        let sys = match importlib_system_module(_py) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sys_bits = Some(sys.bits());
         let module_file = match importlib_machinery_module_file(_py, machinery_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -701,7 +699,11 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let sys_bits = importlib_sys_module_bits(_py);
+        let sys = match importlib_system_module(_py) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sys_bits = Some(sys.bits());
         let module_file = match importlib_machinery_module_file(_py, machinery_bits) {
             Ok(value) => value,
             Err(bits) => return bits,

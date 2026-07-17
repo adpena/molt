@@ -113,7 +113,7 @@ def _run_mlir_backend_pipeline(
             "\n"
             "The MLIR backend requires Molt's complete LLVM/MLIR toolchain:\n"
             "\n"
-            "  python tools/bootstrap_llvm.py\n"
+            "  python -m tools.bootstrap_llvm\n"
             "\n"
             "Molt builds the standalone backend on first use."
         )

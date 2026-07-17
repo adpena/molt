@@ -18,6 +18,7 @@ import uuid
 import pytest
 
 from molt.llvm_toolchain import (
+    llvm_bootstrap_command,
     llvm_release,
     load_llvm_architecture_contract,
     managed_llvm_paths,
@@ -30,6 +31,32 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _unique_publication_staging(destination: Path) -> Path:
     return bootstrap_llvm._publication_staging(destination, uuid.uuid4().hex)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        [sys.executable, str(ROOT / "tools" / "bootstrap_llvm.py"), "--help"],
+        [sys.executable, "-m", "tools.bootstrap_llvm", "--help"],
+    ],
+)
+def test_bootstrap_entry_paths_share_module_safe_authority(command: list[str]) -> None:
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Build and install a complete LLVM dev prefix for Molt." in result.stdout
+
+
+def test_bootstrap_command_projects_the_module_authority() -> None:
+    pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    command = llvm_bootstrap_command(pin, python="py")
+    assert command == f"py -m tools.bootstrap_llvm --version {pin.default_release}"
 
 
 def test_default_llvm_targets_follow_host_architecture() -> None:
