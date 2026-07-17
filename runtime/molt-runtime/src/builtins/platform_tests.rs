@@ -77,6 +77,53 @@ fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
 }
 
 #[test]
+fn importlib_system_module_authority_returns_and_releases_one_owner() {
+    let _guard = crate::test_mutex_guard();
+    crate::with_gil_entry_nopanic!(_py, {
+        let name_ptr = alloc_string(_py, b"sys");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let module_ptr = crate::object::builders::alloc_module_obj(_py, name_bits);
+        dec_ref_bits(_py, name_bits);
+        assert!(!module_ptr.is_null());
+        let module_bits = MoltObject::from_ptr(module_ptr).bits();
+        let refcount = || unsafe { (*crate::header_from_obj_ptr(module_ptr)).ref_count_snapshot() };
+        let baseline = refcount();
+
+        let prior = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let mut guard = cache.lock().unwrap();
+            let prior = guard.insert("sys".to_string(), module_bits);
+            inc_ref_bits(_py, module_bits);
+            prior
+        };
+        assert_eq!(refcount(), baseline + 1, "module cache owns one edge");
+        {
+            let sys = importlib_system_module(_py).expect("cached sys module");
+            assert_eq!(sys.bits(), module_bits);
+            assert_eq!(refcount(), baseline + 2, "resolver returns one owner");
+        }
+        assert_eq!(
+            refcount(),
+            baseline + 1,
+            "resolver owner releases on scope exit"
+        );
+
+        {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let mut guard = cache.lock().unwrap();
+            assert_eq!(guard.remove("sys"), Some(module_bits));
+            if let Some(prior) = prior {
+                guard.insert("sys".to_string(), prior);
+            }
+        }
+        dec_ref_bits(_py, module_bits);
+        assert_eq!(refcount(), baseline);
+        dec_ref_bits(_py, module_bits);
+    });
+}
+
+#[test]
 fn importlib_missing_module_fallback_matches_requested_module_or_parent_only() {
     assert_eq!(
         missing_module_name_from_message("No module named 'pkg.child'"),

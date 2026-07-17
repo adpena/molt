@@ -107,7 +107,7 @@ def _planned_update_steps(
                 bootstrap_command = (
                     llvm_bootstrap_command(llvm_pin)
                     if llvm_pin is not None
-                    else f"python tools/bootstrap_llvm.py --version {release}"
+                    else f"python -m tools.bootstrap_llvm --version {release}"
                 )
                 warnings.append(
                     "LLVM backend toolchain is missing; run "
