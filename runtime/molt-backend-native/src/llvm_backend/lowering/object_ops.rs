@@ -183,18 +183,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic();
-        if runtime_name == "molt_get_attr_object_ic" {
-            let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            let _ = self
-                .backend
-                .builder
-                .build_call(
-                    inc_fn,
-                    &[val.into_int_value().into()],
-                    "get_attr_object_ic_inc_ref",
-                )
-                .unwrap();
-        }
+        // Runtime getattr entry points return one owned result on every
+        // successful path, including IC hits. Preserve that single authority;
+        // a backend-side retain would leak bound-method receivers.
         self.values.insert(result_id, val);
         self.value_types.insert(result_id, TirType::DynBox);
     }

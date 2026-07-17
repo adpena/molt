@@ -37,6 +37,46 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
 }
 
 #[test]
+fn lower_generic_get_attr_trusts_runtime_owned_result() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "generic_get_attr_owned".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result = func.fresh_value();
+    let mut load = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::LoadAttr,
+        operands: vec![ValueId(0)],
+        results: vec![result],
+        attrs: {
+            let mut attrs = AttrDict::new();
+            attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("get_attr_generic_obj".into()),
+            );
+            attrs.insert("name".into(), AttrValue::Str("items".into()));
+            attrs
+        },
+        source_span: None,
+    };
+    load.set_source_op_index(17);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(load);
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    assert!(ir.contains("molt_get_attr_object_ic"), "{ir}");
+    assert!(!ir.contains("get_attr_object_ic_inc_ref"), "{ir}");
+    assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+}
+
+#[test]
 fn lower_dynamic_set_attr_name_uses_operand_name() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

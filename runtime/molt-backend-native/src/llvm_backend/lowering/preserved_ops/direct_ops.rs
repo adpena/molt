@@ -1792,15 +1792,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // a private constant (the label-carrying convention, identical to the
             // native handler and the `call_method_ic` arm above).
             //
-            // OWNERSHIP: `molt_get_attr_special` returns a BORROWED reference
-            // (the value comes from `class_attr_lookup` / a descriptor / a slot
-            // — not a fresh allocation). The native handler
-            // (`fc/attrs.rs::get_attr_special_obj`) therefore inc_refs the result
-            // via `emit_inc_ref_obj(res, molt_inc_ref_obj)` to take owned
-            // ownership; the existing LLVM `get_attr_generic_obj` arm
-            // (`molt_get_attr_object_ic`) does the same. We MUST mirror that here:
-            // binding the borrowed result without the inc_ref under-counts it and
-            // risks a premature free / use-after-free of the attribute object.
+            // OWNERSHIP: `molt_get_attr_special` returns one owned reference on
+            // every successful path, matching the other canonical getattr
+            // entry points.
             "get_attr_special_obj" => {
                 let Some(&obj_id) = op.operands.first() else {
                     return false;
@@ -1839,18 +1833,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                // Take owned ownership of the borrowed attribute result (mirrors
-                // the native get-attr ref-adjust). `molt_inc_ref_obj` is a no-op
-                // for NaN-boxed immediates, so this is safe for any tag.
-                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(
-                        inc_fn,
-                        &[self.ensure_i64(result).into()],
-                        "get_attr_special_inc_ref",
-                    )
-                    .unwrap();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
