@@ -22,6 +22,8 @@ pub use molt_ir::runtime_callable_symbols::{
     runtime_callable_symbols_from_env, runtime_callable_symbols_required,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) const GENERATED_OBJECT_ABI_ANCHOR_SYMBOL: &str = "__molt_generated_object_abi_anchor";
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) mod app_resolver_abi;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;

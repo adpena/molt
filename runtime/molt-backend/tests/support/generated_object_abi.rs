@@ -21,7 +21,7 @@ pub fn assert_exact_import_and_dead_strip_link(bytes: &[u8], producer: &str) {
         })
         .collect();
     assert!(undefined.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
-    let opposite = if molt_codegen_abi::MOLT_FLAGS_ATOMIC {
+    let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
         molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
     } else {
         molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL

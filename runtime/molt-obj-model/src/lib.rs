@@ -3,7 +3,6 @@
 
 pub mod float_bits;
 pub mod int_literal;
-pub mod refcount_semantics;
 
 use std::backtrace::Backtrace;
 use std::collections::HashMap;

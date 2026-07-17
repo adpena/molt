@@ -16,13 +16,12 @@ canonicalize.
 
 ## 0. Executive summary
 
-1. **molt is better positioned than feared.** The runtime heap refcount is
-   already atomic on native and deliberately non-atomic on wasm32
-   (`MoltRefCount`: `AtomicU32` vs `Cell<u32>`), the dec-to-zero path already
-   uses the canonical Release/Acquire discipline, heap immortality already
-   exists as a header flag, and molt has its own real, reentrant,
-   single-thread-fast GIL on native. The single-threaded fast paths are
-   structurally the right shape.
+1. **molt is better positioned than feared.** Runtime header words now share
+   one generated ABI authority but retain distinct custody policies: native
+   flags are atomic because scheduler workers touch them before the GIL;
+   refcounts use `Cell<u32>` under the deterministic GIL and `AtomicU32` only
+   under explicit native `free-threaded`; wasm32 uses cells for both. The
+   dec-to-zero path retains canonical Release/Acquire semantics in atomic mode.
 2. **The two scalability walls** are (a) molt's process-global runtime GIL
    (`PREINIT_GIL`) and (b) the process-global `GLOBAL_BRIDGE` mutex over four
    `HashMap`s. Both are *correctness-sound today* and both serialize
@@ -96,25 +95,24 @@ canonicalize.
 
 ## 2. Audit — where molt's refcount + boundary state actually lives
 
-### 2.1 Runtime heap refcount (molt objects) — SOUND, atomic on native
+### 2.1 Runtime heap refcount (molt objects) — mode-selected and ABI-bound
 
-- `runtime/molt-runtime/src/object/refcount.rs:16-22` — `MoltRefCount` is
-  `#[repr(transparent)]` `AtomicU32` on native, `Cell<u32>` on wasm32. The
-  wasm path pays zero atomic cost (charter constraint already satisfied
-  there).
-- inc: `fetch_add(1, Relaxed)` under the molt GIL
-  (`object/mod.rs:1635-1638`), guarded by a fail-closed `type_id` validity
-  check and the immortal flag.
-- dec: `fetch_sub(1, AcqRel)` (`object/mod.rs:1933`) with
-  `MoltRefCount::acquire_fence()` on the 1→0 edge (`object/mod.rs:1993`)
-  before finalization/dealloc — the canonical `Arc`-style discipline; the
-  revival window (finalizers + weakref callbacks at rc≥1) is
-  resurrection-safe.
+- `runtime/molt-codegen-abi/src/lib.rs` owns `MoltRefCount` and `MoltFlags`
+  through one generated implementation macro with separate compile-time
+  policies. Native flags remain atomic; refcounts are cell-backed under the
+  deterministic GIL and atomic only under explicit native `free-threaded`;
+  wasm32 uses cells for both. Both remain four-byte, layout-stable words and
+  the mode/version-specific link witness rejects mixed backend/runtime objects.
+- retain: one checked compare-exchange transition rejects zero resurrection,
+  terminal/deallocating state, immortality-sentinel corruption, and overflow.
+- release: one Release decrement performs an Acquire fence only on the 1→0
+  edge before finalization/deallocation — the canonical `Arc` discipline; the
+  typed revival window admits only the zero-owner or one-stable-view baseline.
 - **Immortality for heap objects already exists**: `HEADER_FLAG_IMMORTAL`
-  checked before any RC write (`object/mod.rs:1618-1620`). Value-immortality
+  checked before any ordinary RC write. Value-immortality
   (None/bool/small ints) is free: they are NaN-boxed inline values with no
-  heap cell at all (`molt-obj-model/src/lib.rs:346`).
-- Verdict: under N-thread no-GIL, the counter itself does not corrupt.
+  heap cell at all.
+- Verdict: under N-thread no-GIL, the atomic counter itself does not corrupt.
   What breaks without the GIL is **everything around it** — the objects'
   interior mutability (list/dict/str storage), which the molt GIL serializes
   today. The refcount is not the gating problem; object-state custody is.
@@ -202,15 +200,14 @@ canonicalize.
 
 ## 3. Design principles (the CPython-parity cost model)
 
-1. **Never naive atomics on the hot path.** CPython free-threading pays
+1. **Never naive atomics on the default hot path.** CPython free-threading pays
    5–10% single-threaded (3.14, documented) *with* biased RC +
    immortalization + deferred RC. A design that puts `lock xadd` on every
    inc/dec is strictly worse than the reference design and violates the
-   charter. molt's equivalent of the "owner fast path" today is the GIL's
-   `ReentrantNoop` lane + `Relaxed` atomics — on x86-64, uncontended
-   `fetch_add(Relaxed)` is already a single `lock xadd` (~a few cycles,
-   no fence); the wasm path is a plain add. The future biased design (§5.1)
-   removes even the cross-thread cost where ownership allows.
+   charter. molt's deterministic GIL and wasm paths now use plain cell
+   updates; explicit free-threaded mode keeps the atomic protocol. The future
+   biased design (§5.1) removes cross-thread cost where ownership allows if
+   measured shared-object workloads justify the extra header/state machine.
 2. **Capability tokens already model custody.** `PyToken<'gil>` /
    `CoreGilToken` prove GIL possession in signatures. Free-threading refines
    what the token *means* (from "the one global lock" to "the right to
@@ -293,12 +290,9 @@ so it rides the same lane.
 
 Decision (principal-engineer call): molt does **not** copy CPython's
 split-field biased RC into `MoltHeader` now. Reasons:
-- molt's counter is already atomic and its dec path already
-  Release/Acquire-correct; CPython needed BRC because it *started* from
-  non-atomic `ob_refcnt` and a 64-bit field. molt's `AtomicU32`
-  `fetch_add(Relaxed)` uncontended is a handful of cycles; the measured
-  single-thread molt hot path is dominated by the GIL-entry TLS check, not
-  the RMW.
+- deterministic GIL mode now uses a plain cell, while free-threaded mode keeps
+  the Release/Acquire-correct atomic path. The field remains four bytes and
+  link-witnessed across independently cached backend/runtime artifacts.
 - BRC's real win appears only under heavy cross-thread sharing; molt's
   free-threaded milestone 1 (shard the GIL) can land without any header
   change (`MoltRefCount` is `#[repr(transparent)]` — layout-stable).

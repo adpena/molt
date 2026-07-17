@@ -21,21 +21,18 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_gil_v1")]
+#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_gil_v2")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
-    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_FLAGS_ATOMIC,
+    molt_codegen_abi::MOLT_FLAGS_ATOMIC == cfg!(not(target_arch = "wasm32"))
+        && cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
     "molt-runtime/free-threaded must exactly match molt-codegen-abi/free-threaded",
-);
-const _: () = assert!(
-    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
-    "molt-runtime refcount storage must match the generated-object concurrency ABI",
 );
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v1")]
+#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v2")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 macro_rules! fn_addr {
