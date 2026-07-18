@@ -860,7 +860,6 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
 
 _COMPILER_RT_LINK_IMPORT_CLASS = "wasm_compiler_rt_link_import"
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
-_DEFAULT_SPLIT_APP_GLOBAL_BASE = 64 * 1024 * 1024
 _SYMBOL_KIND_DATA = 1
 
 
@@ -1656,8 +1655,10 @@ def _read_const_i32_init_expr(data: bytes, offset: int) -> tuple[int, int]:
     return value, offset
 
 
-def _active_data_segment_min(data: bytes) -> int | None:
-    minimum: int | None = None
+def _active_data_segment_intervals(data: bytes) -> tuple[tuple[int, int], ...]:
+    """Return validated, ordered ``[start, end)`` active data intervals."""
+
+    intervals: list[tuple[int, int]] = []
     for section_id, payload in _parse_sections(data):
         if section_id != 11:
             continue
@@ -1667,6 +1668,11 @@ def _active_data_segment_min(data: bytes) -> int | None:
             flags, offset = _read_varuint(payload, offset)
             if flags == 1:
                 size, offset = _read_varuint(payload, offset)
+                if size > len(payload) - offset:
+                    raise ValueError(
+                        "Passive data segment extends beyond the data section payload: "
+                        f"size={size}, remaining={len(payload) - offset}"
+                    )
                 offset += size
                 continue
             if flags == 2:
@@ -1674,18 +1680,84 @@ def _active_data_segment_min(data: bytes) -> int | None:
             elif flags != 0:
                 raise ValueError(f"Unsupported data segment flags: {flags}")
             data_offset, offset = _read_const_i32_init_expr(payload, offset)
+            data_offset &= 0xFFFF_FFFF
             size, offset = _read_varuint(payload, offset)
+            if size > len(payload) - offset:
+                raise ValueError(
+                    "Active data segment extends beyond the data section payload: "
+                    f"offset={data_offset}, size={size}, remaining={len(payload) - offset}"
+                )
             offset += size
-            if data_offset >= 0:
-                minimum = data_offset if minimum is None else min(minimum, data_offset)
-    return minimum
+            data_end = data_offset + size
+            if data_end > 1 << 32:
+                raise ValueError(
+                    "Active data segment exceeds the wasm32 address space: "
+                    f"offset={data_offset}, size={size}, end={data_end}"
+                )
+            if size:
+                intervals.append((data_offset, data_end))
+        if offset != len(payload):
+            raise ValueError(
+                "Data section has trailing bytes after its declared segments: "
+                f"parsed={offset}, size={len(payload)}"
+            )
+
+    intervals.sort()
+    for previous, current in zip(intervals, intervals[1:], strict=False):
+        if current[0] < previous[1]:
+            raise ValueError(
+                "Active data segments overlap: "
+                f"previous=[{previous[0]}, {previous[1]}), "
+                f"current=[{current[0]}, {current[1]})"
+            )
+    return tuple(intervals)
 
 
 def _split_app_global_base(output_data: bytes) -> int:
-    active_min = _active_data_segment_min(output_data)
-    if active_min is not None and active_min > 0:
-        return active_min
-    return _DEFAULT_SPLIT_APP_GLOBAL_BASE
+    """Place native linked data after every output-owned active data byte."""
+
+    intervals = _active_data_segment_intervals(output_data)
+    if not intervals:
+        raise ValueError("split app output has no active data placement authority")
+    active_end = max(end for _start, end in intervals)
+    aligned_end = (active_end + 15) & ~15
+    if aligned_end >= 1 << 32:
+        raise ValueError(
+            "Aligned split-app data end exceeds the wasm32 address space: "
+            f"active_end={active_end}, aligned_end={aligned_end}"
+        )
+    return aligned_end
+
+
+def _validate_split_app_data_layout(
+    output_data: bytes,
+    linked_data: bytes,
+    *,
+    planned_base: int,
+) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    """Validate and return original/final active-data intervals."""
+
+    original = _active_data_segment_intervals(output_data)
+    linked = _active_data_segment_intervals(linked_data)
+    if not original:
+        raise ValueError("split app output has no active data placement authority")
+    if not linked:
+        raise ValueError("linked split app has no active data segments")
+    original_extent = (original[0][0], max(end for _start, end in original))
+    linked_extent = (linked[0][0], max(end for _start, end in linked))
+    if planned_base != (original_extent[1] + 15) & ~15:
+        raise ValueError(
+            "split app native data base does not match the aligned output data end: "
+            f"output_end={original_extent[1]}, planned_base={planned_base}"
+        )
+    if linked_extent[0] < planned_base:
+        raise ValueError(
+            "linked split app data overlaps output-owned active data: "
+            f"output_extent=[{original_extent[0]}, {original_extent[1]}), "
+            f"linked_extent=[{linked_extent[0]}, {linked_extent[1]}), "
+            f"planned_base={planned_base}"
+        )
+    return original, linked
 
 
 def _public_output_export_symbol_map(
@@ -3656,7 +3728,11 @@ def _run_wasm_ld_with_custodied_inputs(
             temp_dir=temp_dir,
         )
         split_linked_app_path = Path(temp_dir.name) / "app_split_linked.wasm"
-        split_app_global_base = _split_app_global_base(output_data)
+        try:
+            split_app_data_base = _split_app_global_base(output_data)
+        except ValueError as exc:
+            print(f"WASM split app memory layout is invalid: {exc}", file=sys.stderr)
+            return 1
         assert output_callable_layout is not None
         assert split_callable_layout is not None
         split_app_table_base = split_callable_layout.finalized_app_base
@@ -3677,13 +3753,14 @@ def _run_wasm_ld_with_custodied_inputs(
         split_app_cmd = [
             *split_app_prefix,
             "--import-memory",
-            f"--global-base={split_app_global_base}",
+            f"--global-base={split_app_data_base}",
             f"--table-base={split_app_table_base}",
             "-o",
             str(split_linked_app_path),
             str(rewritten_path),
             *split_app_link_args,
         ]
+        operation_counts["split_app_data_base_bytes"] = split_app_data_base
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
     whole_artifact_counts_token = _WHOLE_ARTIFACT_OPERATION_COUNTS.set(operation_counts)
@@ -3924,6 +4001,46 @@ def _run_wasm_ld_with_custodied_inputs(
                         file=sys.stderr,
                     )
                     return 1
+                try:
+                    output_intervals, linked_intervals = (
+                        _validate_split_app_data_layout(
+                            output_data,
+                            rewritten_data,
+                            planned_base=split_app_data_base,
+                        )
+                    )
+                except ValueError as exc:
+                    print(
+                        f"WASM split app memory layout is invalid: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                operation_counts["split_app_output_data_segment_count"] = len(
+                    output_intervals
+                )
+                output_extent = (
+                    output_intervals[0][0],
+                    max(end for _start, end in output_intervals),
+                )
+                operation_counts["split_app_output_data_min_bytes"] = output_extent[0]
+                operation_counts["split_app_output_data_end_bytes"] = output_extent[1]
+                operation_counts["split_app_linked_data_segment_count"] = len(
+                    linked_intervals
+                )
+                linked_extent = (
+                    linked_intervals[0][0],
+                    max(end for _start, end in linked_intervals),
+                )
+                operation_counts["split_app_linked_data_min_bytes"] = linked_extent[0]
+                operation_counts["split_app_linked_data_end_bytes"] = linked_extent[1]
+                size_attestation["split_app_data_layout"] = {
+                    "alignment_bytes": 16,
+                    "planned_native_base": split_app_data_base,
+                    "output_active_intervals": output_intervals,
+                    "output_extent": output_extent,
+                    "linked_active_intervals": linked_intervals,
+                    "linked_extent": linked_extent,
+                }
                 try:
                     canonical_rewritten_data = _canonicalize_wasm_ld_output(
                         rewritten_data, description="split app linked"
