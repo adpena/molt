@@ -961,20 +961,24 @@ impl SimpleBackend {
                     }
                     continue;
                 }
-                // When is_block_filled is true, the current block has a terminator.
-                // Instead of skipping ops (which leaves variables undefined and
-                // breaks field access, exception stack, etc.), create a fresh
-                // dead block so ops can execute harmlessly for SSA variable defs.
-                // This replaces the whitelist approach that caused f.b = f.a bugs.
-                if builder.current_block().is_none()
-                    || block_has_terminator(&builder, builder.current_block().unwrap())
-                {
-                    let dead = builder.create_block();
-                    switch_to_block_materialized(&mut builder, dead);
-                    seal_block_once(&mut builder, &mut sealed_blocks, dead);
+                // A generated block leader owns the transition out of a filled
+                // predecessor. Let its lowering materialize the canonical CFG
+                // block directly; interposing a detached block here would turn
+                // an unreachable textual fallthrough into a real predecessor
+                // and inject default SSA values into the target's block params.
+                //
+                // Non-leader operations still need a detached lowering block so
+                // their definitions remain available to later structural ops.
+                if !crate::tir::op_kinds_generated::simpleir_kind_is_block_leader(&op.kind) {
+                    if builder.current_block().is_none()
+                        || block_has_terminator(&builder, builder.current_block().unwrap())
+                    {
+                        let detached = builder.create_block();
+                        switch_to_block_materialized(&mut builder, detached);
+                        seal_block_once(&mut builder, &mut sealed_blocks, detached);
+                    }
+                    is_block_filled = false;
                 }
-                is_block_filled = false;
-                // Fall through to the normal match — ops execute into the dead block
             }
             if !is_block_filled
                 && let Some(stride) = trace_stride

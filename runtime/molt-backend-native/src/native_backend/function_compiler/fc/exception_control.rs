@@ -288,10 +288,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 }
             }
             let fallthrough = builder.create_block();
-            let fallthrough_transport = if op_idx + 1 < cfg_liveness.live_after_op.len() {
-                let block_id = cfg_liveness.block_for_op(op_idx + 1);
+            let fallthrough_transport = if op_idx < cfg_liveness.live_after_op.len() {
                 BlockTransportPlan::from_live_names(
-                    &cfg_liveness.live_in_by_block[block_id],
+                    cfg_liveness.live_after(op_idx),
                     vars,
                     representation_plan,
                     slot_backed_join_slots,

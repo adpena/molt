@@ -177,6 +177,36 @@ mod tests {
     }
 
     #[test]
+    fn exception_fallthrough_carries_values_defined_inside_the_current_block() {
+        let mut define = op("const_str");
+        define.out = Some("carried".into());
+        let mut check = op("check_exception");
+        check.value = Some(9);
+        let mut consume = op("print");
+        consume.args = Some(vec!["carried".into()]);
+        let normal_return = op("ret_void");
+        let mut handler = op("label");
+        handler.value = Some(9);
+        let handler_return = op("ret_void");
+        let ops = vec![
+            define,
+            check,
+            consume,
+            normal_return,
+            handler,
+            handler_return,
+        ];
+
+        let plan = analyze_simple_cfg_liveness(&ops);
+
+        assert!(plan.live_after(1).contains("carried"));
+        assert!(
+            !plan.live_in_by_block[plan.block_for_op(1)].contains("carried"),
+            "block-entry liveness cannot represent a value defined before an intra-block exception split",
+        );
+    }
+
+    #[test]
     fn state_dispatch_use_is_live_across_resume_edge() {
         let switch = op("state_switch");
         let mut suspend = op("state_yield");
