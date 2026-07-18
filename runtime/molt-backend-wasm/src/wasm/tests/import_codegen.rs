@@ -5,25 +5,34 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
     let cases = [
         (
             "object_new_bound_unsized_selector",
+            "object_new_bound",
             None,
             "object_new_bound",
             "object_new_bound_sized",
         ),
         (
             "object_new_bound_with_static_stack_hint",
+            "object_new_bound",
+            Some(24),
+            "object_new_bound",
+            "object_new_bound_sized",
+        ),
+        (
+            "object_new_bound_stack_uses_class_owned_layout",
+            "object_new_bound_stack",
             Some(24),
             "object_new_bound",
             "object_new_bound_sized",
         ),
     ];
-    for (name, payload_size, expected_import, rejected_import) in cases {
+    for (name, kind, payload_size, expected_import, rejected_import) in cases {
         let reloc_wasm = WasmBackend::with_options(WasmCompileOptions {
             native_eh_enabled: false,
             reloc_enabled: true,
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
-        .compile(wasm_object_new_bound_ir(payload_size));
+        .compile(wasm_object_new_bound_ir(kind, payload_size));
         let reloc_imports = wasm_function_import_names(&reloc_wasm);
         assert!(
             reloc_imports.iter().any(|name| name == expected_import),
@@ -36,15 +45,25 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
-        .compile(wasm_object_new_bound_ir(payload_size));
+        .compile(wasm_object_new_bound_ir(kind, payload_size));
         let import_indices = wasm_function_import_indices(&direct_wasm);
         let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
+        let operators = wasm_operator_debug_for_export(&direct_wasm, "molt_main");
         let expected_index = *import_indices
             .get(expected_import)
             .unwrap_or_else(|| panic!("{expected_import} import must exist"));
         assert!(
             call_indices.contains(&expected_index),
             "{name} must directly call {expected_import} from molt_main; calls={call_indices:?}"
+        );
+        let call = format!("Call {{ function_index: {expected_index} }}");
+        let call_pos = operators
+            .iter()
+            .position(|operator| operator == &call)
+            .unwrap_or_else(|| panic!("{name} missing {call}; operators={operators:?}"));
+        assert!(
+            call_pos > 0 && operators[call_pos - 1].starts_with("LocalGet {"),
+            "{name} must pass only class bits to unary {expected_import}; operators={operators:?}"
         );
         if let Some(rejected_index) = import_indices.get(rejected_import) {
             assert!(

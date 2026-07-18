@@ -77,6 +77,7 @@ from molt.wasm_artifact import (
     _read_wasm_data_end,
     _read_wasm_memory_min_bytes,
     _read_wasm_table_min,
+    read_wasm_split_runtime_callable_layout,
 )
 
 
@@ -396,7 +397,7 @@ def _prepare_backend_dispatch(
     if backend_env is not None:
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
         backend_env.pop("MOLT_WASM_TABLE_BASE", None)
-        backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", None)
+        backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
     # Single source of truth (shared with the cache-key binary-identity
     # resolver): the 'llvm' feature is folded in by the helper when
     # MOLT_BACKEND == "llvm" so the backend binary is compiled with inkwell/LLVM
@@ -482,7 +483,7 @@ def _prepare_backend_dispatch(
                     json_output,
                     command="build",
                 )
-        if "MOLT_WASM_TABLE_BASE" not in backend_env:
+        if not split_runtime and "MOLT_WASM_TABLE_BASE" not in backend_env:
             table_probe_path = layout_probe_path or runtime_wasm
             if table_probe_path is not None and table_probe_path.exists():
                 table_base = _read_wasm_table_min(table_probe_path)
@@ -492,7 +493,7 @@ def _prepare_backend_dispatch(
                     warnings.append(
                         "Failed to read runtime table size; using default table base."
                     )
-        if runtime_wasm is not None and runtime_wasm.exists():
+        if not split_runtime and runtime_wasm is not None and runtime_wasm.exists():
             runtime_table_min = _read_wasm_table_min(runtime_wasm)
             if runtime_table_min is not None:
                 raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
@@ -504,36 +505,36 @@ def _prepare_backend_dispatch(
                     current_table_base = None
                 if current_table_base is None or current_table_base < runtime_table_min:
                     backend_env["MOLT_WASM_TABLE_BASE"] = str(runtime_table_min)
-        if (
-            split_runtime
-            and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
-        ):
-            split_runtime_table_probe = runtime_wasm
-            if (
-                split_runtime_table_probe is None
-                or not split_runtime_table_probe.exists()
-            ):
-                split_runtime_table_probe = layout_probe_path
-            if (
-                split_runtime_table_probe is None
-                or not split_runtime_table_probe.exists()
-            ):
+        if split_runtime:
+            if runtime_wasm is None or not runtime_wasm.exists():
                 if not ensure_runtime_wasm_shared(None):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
                         command="build",
                     )
-                split_runtime_table_probe = runtime_wasm
-            if (
-                split_runtime_table_probe is not None
-                and split_runtime_table_probe.exists()
-            ):
-                runtime_table_min = _read_wasm_table_min(split_runtime_table_probe)
-                if runtime_table_min is not None:
-                    backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] = str(
-                        runtime_table_min
-                    )
+            if runtime_wasm is None or not runtime_wasm.exists():
+                return None, _fail(
+                    "Split-runtime callable layout requires the executable shared runtime",
+                    json_output,
+                    command="build",
+                )
+            try:
+                split_callable_layout = read_wasm_split_runtime_callable_layout(
+                    runtime_wasm
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Invalid split-runtime callable layout: {exc}",
+                    json_output,
+                    command="build",
+                )
+            backend_env["MOLT_WASM_TABLE_BASE"] = str(
+                split_callable_layout.runtime_callable_base
+            )
+            backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] = str(
+                split_callable_layout.runtime_table_min
+            )
     if reloc_requested and backend_env is not None:
         backend_env["MOLT_WASM_LINK"] = "1"
 
@@ -675,13 +676,13 @@ def _execute_backend_compile(
         wasm_link = False
         wasm_data_base: int | None = None
         wasm_table_base: int | None = None
-        wasm_split_runtime_runtime_table_min: int | None = None
+        wasm_split_runtime_app_table_base: int | None = None
         if is_wasm and backend_env is not None:
             wasm_link = backend_env.get("MOLT_WASM_LINK") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
-            raw_split_runtime_runtime_table_min = backend_env.get(
-                "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"
+            raw_split_runtime_app_table_base = backend_env.get(
+                "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"
             )
             try:
                 wasm_data_base = (
@@ -696,13 +697,13 @@ def _execute_backend_compile(
             except ValueError:
                 wasm_table_base = None
             try:
-                wasm_split_runtime_runtime_table_min = (
-                    int(raw_split_runtime_runtime_table_min)
-                    if raw_split_runtime_runtime_table_min is not None
+                wasm_split_runtime_app_table_base = (
+                    int(raw_split_runtime_app_table_base)
+                    if raw_split_runtime_app_table_base is not None
                     else None
                 )
             except ValueError:
-                wasm_split_runtime_runtime_table_min = None
+                wasm_split_runtime_app_table_base = None
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -763,7 +764,7 @@ def _execute_backend_compile(
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
-                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
+                wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
                 target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
@@ -830,7 +831,7 @@ def _execute_backend_compile(
                         wasm_link=wasm_link,
                         wasm_data_base=wasm_data_base,
                         wasm_table_base=wasm_table_base,
-                        wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
+                        wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
@@ -937,7 +938,7 @@ def _execute_backend_compile(
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
-                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
+                wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
             )
             cmd_with_output = cmd + ["--output", str(backend_output)]
             # Ensure the output directory exists — --rebuild may have

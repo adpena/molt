@@ -42,15 +42,29 @@ pub fn scan_and_write_callable_table_attestation(
         ));
     }
     let entries = &facts.callable_table_entries;
-    let layout = if let Some(layout) = layout.or(facts.callable_table_layout) {
-        layout
-    } else {
-        CallableTableLayout {
+    // Final active elements are the only artifact-local entry-count authority.
+    // A pre-link app layout section can survive wasm-ld and optimization, but
+    // native objects add callable entries during the final link. Preserve the
+    // executable-runtime boundary while replacing the stale count from the
+    // final app itself; the runtime then consumes that published final layout.
+    let layout = match (layout, role) {
+        (Some(mut layout), CallableTableArtifactRole::App) => {
+            layout.app_entry_count = u32::try_from(entries.len())
+                .map_err(|_| "callable-table entry count exceeds u32")?;
+            layout
+        }
+        (Some(layout), _) => layout,
+        (None, CallableTableArtifactRole::Monolithic) => CallableTableLayout {
             fixed_prefix_base: 0,
             fixed_prefix_len: 0,
             finalized_app_base: entries.first().map_or(0, |entry| entry.slot),
             app_entry_count: u32::try_from(entries.len())
                 .map_err(|_| "callable-table entry count exceeds u32")?,
+        },
+        (None, CallableTableArtifactRole::App | CallableTableArtifactRole::Runtime) => {
+            return Err(
+                "split callable-table publication requires an explicit final layout".into(),
+            );
         }
     };
     validate_callable_table_layout(layout, entries, role)?;

@@ -108,7 +108,7 @@ def backend_command_prefix(
     wasm_link: bool = False,
     wasm_data_base: int | None = None,
     wasm_table_base: int | None = None,
-    wasm_split_runtime_runtime_table_min: int | None = None,
+    wasm_split_runtime_app_table_base: int | None = None,
 ) -> list[str]:
     cmd = [str(backend_bin)]
     if is_luau_transpile:
@@ -123,11 +123,11 @@ def backend_command_prefix(
             cmd.extend(["--wasm-data-base", str(wasm_data_base)])
         if wasm_table_base is not None:
             cmd.extend(["--wasm-table-base", str(wasm_table_base)])
-        if wasm_split_runtime_runtime_table_min is not None:
+        if wasm_split_runtime_app_table_base is not None:
             cmd.extend(
                 [
-                    "--wasm-split-runtime-runtime-table-min",
-                    str(wasm_split_runtime_runtime_table_min),
+                    "--wasm-split-runtime-app-table-base",
+                    str(wasm_split_runtime_app_table_base),
                 ]
             )
     elif target_triple:

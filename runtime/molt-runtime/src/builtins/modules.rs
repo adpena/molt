@@ -2039,7 +2039,6 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 // Import bedrock: mirror the effective publication into the
                 // ModuleTable slot while its ensure transaction is open
                 // (publish-before-exec, invariant I6).
-                #[cfg(not(target_arch = "wasm32"))]
                 crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
                 if suppress_sys_modules {
                     return existing;
@@ -2073,7 +2072,6 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         };
         // Import bedrock: mirror the publication into the ModuleTable slot
         // while its ensure transaction is open (publish-before-exec, I6).
-        #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::publish_from_cache_set(_py, &name, module_bits);
         if !suppress_sys_modules
             && let Some(sys_bits) = sys_bits
@@ -2216,7 +2214,6 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
         // Import bedrock: failed-init cleanup (module bodies emit
         // MODULE_CACHE_DEL on their exception path) unpublishes the table
         // slot while the ensure transaction is still open.
-        #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::unpublish_from_cache_del(_py, &name);
         if execution::python_sys_modules_sync_policy(_py, &name)
             != execution::PythonSysModulesSync::Normal

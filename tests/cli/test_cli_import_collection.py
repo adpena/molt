@@ -5866,7 +5866,7 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
             "status": "external_link",
             "primitive_class": "molt_cpython_abi_link_import",
             "source": "runtime_symbols+undefined_symbols",
-        }
+        },
     ]
 
 
@@ -9174,6 +9174,39 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
             "app",
         ],
     )
+    assert first is not None
+    assert second is not None
+    assert first["hash"] != second["hash"]
+
+
+def test_split_link_fingerprint_tracks_deploy_runtime_content(tmp_path: Path) -> None:
+    app = tmp_path / "output.wasm"
+    reloc_runtime = tmp_path / "molt_runtime_reloc.wasm"
+    deploy_runtime = tmp_path / "molt_runtime.wasm"
+    app.write_bytes(b"app")
+    reloc_runtime.write_bytes(b"reloc")
+    deploy_runtime.write_bytes(b"deploy-v1")
+    command = [
+        "wasm_link.py",
+        "--runtime",
+        str(reloc_runtime),
+        "--deploy-runtime",
+        str(deploy_runtime),
+    ]
+
+    first = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[app, reloc_runtime, deploy_runtime],
+        link_cmd=command,
+    )
+    deploy_runtime.write_bytes(b"deploy-v2")
+    second = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[app, reloc_runtime, deploy_runtime],
+        link_cmd=command,
+        stored_fingerprint=first,
+    )
+
     assert first is not None
     assert second is not None
     assert first["hash"] != second["hash"]
@@ -19017,7 +19050,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
 
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
+    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
     )
@@ -19039,6 +19072,14 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
         cli_backend_compile,
         "_read_wasm_table_min",
         lambda path: 1234 if path == runtime_reloc_wasm else None,
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "read_wasm_split_runtime_callable_layout",
+        lambda path: types.SimpleNamespace(
+            runtime_callable_base=1,
+            finalized_app_base=2345,
+        ),
     )
 
     def ensure_shared(required=None):
@@ -19083,7 +19124,8 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     assert calls == [("reloc", None)]
     assert prepared.backend_env is not None
     assert prepared.backend_env["MOLT_WASM_DATA_BASE"] == str(64 * 1024 * 1024 + 8192)
-    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1234"
+    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
+    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "2345"
 
 
 def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
@@ -19100,7 +19142,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
 
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
+    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
     )
@@ -19162,7 +19204,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "3867"
 
 
-def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min_when_shared_runtime_missing(
+def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_shared_runtime_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -19176,7 +19218,7 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
 
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
+    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", raising=False)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
     )
@@ -19193,9 +19235,18 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
         "_read_wasm_table_min",
         lambda path: 1234 if path == runtime_reloc_wasm else None,
     )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "read_wasm_split_runtime_callable_layout",
+        lambda path: types.SimpleNamespace(
+            runtime_callable_base=1,
+            finalized_app_base=4321,
+        ),
+    )
 
     def ensure_shared(required=None):
         calls.append(("shared", frozenset(required) if required else None))
+        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
     def ensure_reloc(required=None):
@@ -19232,13 +19283,12 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
 
     assert err is None
     assert prepared is not None
-    # The reloc runtime is always validated even when the artifact already
-    # exists on disk, so ensure_reloc is called once with None (no required
-    # module set).
-    assert calls == [("reloc", None)]
+    # Relocatable runtime custody still supplies memory placement, while the
+    # executable shared runtime is the only callable ownership authority.
+    assert calls == [("reloc", None), ("shared", None)]
     assert prepared.backend_env is not None
-    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1234"
-    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] == "1234"
+    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
+    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "4321"
 
 
 def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
@@ -19816,6 +19866,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
     )
 
     assert err is None
@@ -19854,48 +19905,30 @@ def _install_fake_wasm_link_runner(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(cli_non_native_output, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "local_python_import_closure",
+        lambda _root, _entries: (),
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "read_wasm_callable_table_attestation",
+        lambda _path: (),
+    )
 
 
 def _write_split_runtime_vfs_support(molt_root: Path) -> None:
     wasm_root = molt_root / "wasm"
     wasm_root.mkdir(parents=True, exist_ok=True)
-    vfs_support = wasm_root / "molt_vfs_browser.js"
-    vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
-    browser_embed = wasm_root / "browser_embed.js"
-    browser_embed.write_text(
-        "export const loadMoltBrowserKernel = async () => ({});\n",
-        encoding="utf-8",
-    )
-    browser_gpu_dispatch = wasm_root / "browser_gpu_dispatch.js"
-    browser_gpu_dispatch.write_text(
-        "export const createBrowserGpuHost = () => ({});\n",
-        encoding="utf-8",
-    )
-    browser_gpu_worker = wasm_root / "browser_gpu_worker.js"
-    browser_gpu_worker.write_text(
-        "export const dispatchBrowserGpuKernel = async () => ({});\n",
-        encoding="utf-8",
-    )
-    browser_target_features = wasm_root / "browser_target_features.js"
-    browser_target_features.write_text(
-        "export const assertBrowserTargetFeatureContract = () => {};\n",
-        encoding="utf-8",
-    )
-    target_feature_constants_js = wasm_root / "target_feature_constants.generated.js"
-    target_feature_constants_js.write_text(
-        'export const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";\n',
-        encoding="utf-8",
-    )
-    loader_bridge = wasm_root / "loader_bridge.js"
-    loader_bridge.write_text(
-        "globalThis.MoltWasmLoaderBridge = {};\n",
-        encoding="utf-8",
-    )
-    target_feature_manifest = wasm_root / "target_feature_manifest.json"
-    target_feature_manifest.write_text(
-        '{"schema_version":1,"targets":[],"features":[]}\n',
-        encoding="utf-8",
-    )
+    canonical_wasm_root = ROOT / "wasm"
+    graph_name = "browser_asset_graph.generated.json"
+    graph_bytes = (canonical_wasm_root / graph_name).read_bytes()
+    (wasm_root / graph_name).write_bytes(graph_bytes)
+    graph = json.loads(graph_bytes)
+    for asset in graph["assets"]:
+        destination = wasm_root / asset
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((canonical_wasm_root / asset).read_bytes())
 
 
 def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_wasm(
@@ -19932,6 +19965,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
     )
 
     assert err is None
@@ -19983,6 +20017,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "molt_root": tmp_path,
         "split_runtime": False,
         "precompile": False,
+        "wasm_facts_scanner": tmp_path / "molt-backend",
     }
 
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
@@ -20004,7 +20039,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert linked_output_arg.parent == linked_wasm.parent
     assert linked_output_arg.name.startswith(f".{linked_wasm.name}.")
     assert linked_output_arg.name.endswith(".tmp")
-    assert first_cmd[-3:] == ["--optimize", "--optimize-level", "Oz"]
+    assert first_cmd[-4:] == [
+        "--optimize",
+        "--optimize-level",
+        "Oz",
+        "--preserve-debug-sections",
+    ]
 
     second, second_err = cli_non_native_output._prepare_non_native_build_result(
         **common_kwargs
@@ -20066,6 +20106,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
     )
 
     assert err is None
@@ -20134,8 +20175,20 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     )
     shared_required: list[frozenset[str]] = []
     link_calls: list[list[str]] = []
+    link_fingerprint_inputs: list[Path] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    real_link_fingerprint = cli_link_pipeline._link_fingerprint
+
+    def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
+        link_fingerprint_inputs.extend(cast(list[Path], kwargs["inputs"]))
+        return real_link_fingerprint(**kwargs)
+
+    monkeypatch.setattr(
+        cli_link_pipeline,
+        "_link_fingerprint",
+        capture_link_fingerprint,
+    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         if module_name == "molt_runtime":
@@ -20198,6 +20251,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20206,6 +20260,8 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
+    assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
+    assert runtime_wasm in link_fingerprint_inputs
     assert "--native-object" in link_cmd
     staged_native_input = Path(link_cmd[link_cmd.index("--native-object") + 1])
     assert staged_native_input.exists()
@@ -20383,6 +20439,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20588,6 +20645,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20737,6 +20795,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20993,6 +21052,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
 
@@ -21077,6 +21137,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        wasm_facts_scanner=tmp_path / "molt-backend",
     )
 
     assert err is None
@@ -24898,6 +24959,32 @@ def test_backend_daemon_compile_request_includes_partition_env(
         env["MOLT_STDLIB_MODULE_SYMBOLS"]
         == '["importlib","importlib_machinery","importlib_util","sys"]'
     )
+
+
+def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
+    tmp_path: Path,
+) -> None:
+    request_bytes, error = cli._backend_daemon_compile_request_bytes(
+        ir={"functions": []},
+        backend_output=tmp_path / "output.wasm",
+        is_wasm=True,
+        wasm_link=True,
+        wasm_data_base=67_108_864,
+        wasm_table_base=1,
+        wasm_split_runtime_app_table_base=8_192,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+    )
+
+    assert error is None
+    assert request_bytes is not None
+    job = json.loads(request_bytes)["jobs"][0]
+    assert job["wasm_split_runtime_app_table_base"] == 8_192
+    assert "wasm_split_runtime_runtime_table_min" not in job
 
 
 def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
