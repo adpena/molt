@@ -4068,8 +4068,8 @@ mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
         PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_RuntimeError,
-        PyExc_TypeError, PyExc_ValueError, PyListObject, PyModuleDef_Base, PyModuleDef_Slot,
-        PyObject, PyTypeObject,
+        PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError, PyExc_ValueError,
+        PyListObject, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
     };
     use std::cell::UnsafeCell;
     use std::ffi::c_void;
@@ -4408,6 +4408,101 @@ mod tests {
         })
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum RuntimeValue {
+        Bytes(Vec<u8>),
+        Int(i64),
+        Str(String),
+    }
+
+    fn runtime_value(bits: u64) -> RuntimeValue {
+        let object = MoltObject::from_bits(bits);
+        if let Some(value) = object.as_int() {
+            return RuntimeValue::Int(value);
+        }
+        let ptr = object
+            .as_ptr()
+            .expect("Unicode error field must be a materialized runtime value");
+        unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_STRING => RuntimeValue::Str(
+                    String::from_utf8(
+                        std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)).to_vec(),
+                    )
+                    .expect("runtime str field must remain valid UTF-8"),
+                ),
+                TYPE_ID_BYTES => RuntimeValue::Bytes(
+                    std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)).to_vec(),
+                ),
+                type_id => panic!("unexpected Unicode error field type id {type_id}"),
+            }
+        }
+    }
+
+    fn fetch_unicode_error(expected_type: *mut PyObject) -> (Vec<RuntimeValue>, Vec<RuntimeValue>) {
+        let mut exc_type = ptr::null_mut();
+        let mut exc_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &raw mut exc_type,
+                &raw mut exc_value,
+                ptr::null_mut(),
+            )
+        };
+        assert!(std::ptr::eq(exc_type, expected_type));
+        assert!(!exc_value.is_null());
+        let args = fetched_exception_args(exc_value)
+            .into_iter()
+            .map(runtime_value)
+            .collect::<Vec<_>>();
+        let value_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(exc_value)
+            .expect("normalized Unicode error must retain its runtime identity")
+            .bits();
+        let attrs = with_gil(|_py| {
+            let value_ptr = crate::obj_from_bits(value_bits)
+                .as_ptr()
+                .expect("normalized Unicode error must remain live");
+            let dict_bits = unsafe { crate::exception_dict_bits(value_ptr) };
+            let dict_ptr = crate::obj_from_bits(dict_bits)
+                .as_ptr()
+                .expect("Unicode error attributes must have one runtime dict authority");
+            [
+                b"encoding".as_slice(),
+                b"object",
+                b"start",
+                b"end",
+                b"reason",
+            ]
+            .into_iter()
+            .map(|name| {
+                let bits = unsafe { dict_get_str_bytes_borrowed(&_py, dict_ptr, name) }
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing Unicode error attribute {}",
+                            String::from_utf8_lossy(name)
+                        )
+                    });
+                runtime_value(bits)
+            })
+            .collect::<Vec<_>>()
+        });
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
+        }
+        (args, attrs)
+    }
+
+    fn assert_unicode_error(expected_type: *mut PyObject, expected: Vec<RuntimeValue>) {
+        let (args, attrs) = fetch_unicode_error(expected_type);
+        assert_eq!(
+            args, expected,
+            "Unicode error args lost CPython field shape"
+        );
+        assert_eq!(attrs, args, "Unicode error attributes drifted from args");
+    }
+
     #[test]
     fn c_error_normalization_uses_cpython_argument_shapes() {
         let _test_guard = cpython_abi_test_guard();
@@ -4494,6 +4589,174 @@ mod tests {
             molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
             molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
         }
+    }
+
+    #[test]
+    fn c_unicode_codec_errors_preserve_cpython_args_and_attributes() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+
+        let decode_type = (&raw mut PyExc_UnicodeDecodeError).cast::<PyObject>();
+        let encode_type = (&raw mut PyExc_UnicodeEncodeError).cast::<PyObject>();
+        let decode = |encoding: &str, object: &[u8], start: i64, end: i64, reason: &str| {
+            assert_unicode_error(
+                decode_type,
+                vec![
+                    RuntimeValue::Str(encoding.to_owned()),
+                    RuntimeValue::Bytes(object.to_vec()),
+                    RuntimeValue::Int(start),
+                    RuntimeValue::Int(end),
+                    RuntimeValue::Str(reason.to_owned()),
+                ],
+            );
+        };
+        let encode = |encoding: &str, object: &str, start: i64, end: i64, reason: &str| {
+            assert_unicode_error(
+                encode_type,
+                vec![
+                    RuntimeValue::Str(encoding.to_owned()),
+                    RuntimeValue::Str(object.to_owned()),
+                    RuntimeValue::Int(start),
+                    RuntimeValue::Int(end),
+                    RuntimeValue::Str(reason.to_owned()),
+                ],
+            );
+        };
+
+        let invalid_start = [0xff_u8];
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_DecodeUTF8(
+                    invalid_start.as_ptr().cast(),
+                    invalid_start.len() as isize,
+                    ptr::null(),
+                )
+            }
+            .is_null()
+        );
+        decode("utf-8", &invalid_start, 0, 1, "invalid start byte");
+
+        let invalid_continuation = [0xf0_u8, 0x9f, b'('];
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
+                    invalid_continuation.as_ptr().cast(),
+                    invalid_continuation.len() as isize,
+                )
+            }
+            .is_null()
+        );
+        decode(
+            "utf-8",
+            &invalid_continuation,
+            0,
+            2,
+            "invalid continuation byte",
+        );
+
+        let incomplete = [0xe2_u8, 0x82];
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_DecodeUTF8(
+                    incomplete.as_ptr().cast(),
+                    incomplete.len() as isize,
+                    ptr::null(),
+                )
+            }
+            .is_null()
+        );
+        decode("utf-8", &incomplete, 0, 2, "unexpected end of data");
+
+        let invalid_ascii = [b'a', 0xff];
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_DecodeASCII(
+                    invalid_ascii.as_ptr().cast(),
+                    invalid_ascii.len() as isize,
+                    ptr::null(),
+                )
+            }
+            .is_null()
+        );
+        decode("ascii", &invalid_ascii, 1, 2, "ordinal not in range(128)");
+
+        for (object, start, end, reason) in [
+            (&[0xff, 0xfe, b'A'][..], 2, 3, "truncated data"),
+            (
+                &[0xff, 0xfe, 0x00, 0xd8][..],
+                2,
+                4,
+                "unexpected end of data",
+            ),
+            (
+                &[0xff, 0xfe, 0x00, 0xd8, b'A', 0x00][..],
+                2,
+                4,
+                "illegal UTF-16 surrogate",
+            ),
+            (&[0xff, 0xfe, 0x00, 0xdc][..], 2, 4, "illegal encoding"),
+        ] {
+            let mut byteorder = 0;
+            assert!(
+                unsafe {
+                    molt_cpython_abi::api::strings::PyUnicode_DecodeUTF16(
+                        object.as_ptr().cast(),
+                        object.len() as isize,
+                        ptr::null(),
+                        &raw mut byteorder,
+                    )
+                }
+                .is_null()
+            );
+            assert_eq!(byteorder, -1);
+            decode("utf-16-le", object, start, end, reason);
+        }
+
+        let text = "aé€z";
+        let unicode = unsafe {
+            molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
+                text.as_ptr().cast(),
+                text.len() as isize,
+            )
+        };
+        assert!(!unicode.is_null());
+
+        assert!(
+            unsafe { molt_cpython_abi::api::strings::PyUnicode_AsASCIIString(unicode) }.is_null()
+        );
+        encode("ascii", text, 1, 3, "ordinal not in range(128)");
+
+        assert!(
+            unsafe { molt_cpython_abi::api::strings::PyUnicode_AsLatin1String(unicode) }.is_null()
+        );
+        encode("latin-1", text, 2, 3, "ordinal not in range(256)");
+
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_AsEncodedString(
+                    unicode,
+                    c"ascii".as_ptr(),
+                    ptr::null(),
+                )
+            }
+            .is_null()
+        );
+        encode("ascii", text, 1, 3, "ordinal not in range(128)");
+
+        assert!(
+            unsafe {
+                molt_cpython_abi::api::strings::PyUnicode_AsEncodedString(
+                    unicode,
+                    c"latin-1".as_ptr(),
+                    ptr::null(),
+                )
+            }
+            .is_null()
+        );
+        encode("latin-1", text, 2, 3, "ordinal not in range(256)");
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(unicode) };
     }
 
     #[test]
