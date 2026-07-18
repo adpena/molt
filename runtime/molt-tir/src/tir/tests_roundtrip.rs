@@ -277,10 +277,17 @@ mod tests {
         assert!(verify_function(&tir).is_ok(), "TIR verification failed");
         let result = lower_to_simple_ir(&tir);
 
-        let ret_count = result.iter().filter(|op| op.kind == "ret").count();
-        assert_eq!(
-            ret_count, 2,
-            "both return paths must survive roundtrip: {result:?}"
+        for expected in ["ret_true", "ret_false"] {
+            assert!(
+                result
+                    .iter()
+                    .any(|op| op.kind == "ret" && op.var.as_deref() == Some(expected)),
+                "named return path {expected} must survive roundtrip: {result:?}"
+            );
+        }
+        assert!(
+            result.iter().any(|op| op.kind == "async_work_poll"),
+            "loop backedges must retain the canonical asynchronous-work observation: {result:?}"
         );
         assert!(
             result.iter().any(|op| op.kind == "loop_end"),
@@ -553,7 +560,7 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_check_exception_label_id() {
+    fn roundtrip_exception_transfer_label_id() {
         // Simulate a try/except pattern:
         //   call "foo" → result
         //   check_exception(value=100)  ← handler label ID
@@ -580,11 +587,12 @@ mod tests {
         ];
         let result = roundtrip(ops);
 
-        // The check_exception op must have a value that matches a label in the output.
-        let check_exc = result.iter().find(|o| o.kind == "check_exception");
+        // The call-return observation is promoted to the canonical asynchronous-work
+        // spelling, and its exceptional target must still match an emitted label.
+        let check_exc = result.iter().find(|o| o.kind == "async_work_poll");
         assert!(
             check_exc.is_some(),
-            "check_exception must survive round-trip"
+            "the call-return asynchronous-work observation must survive round-trip"
         );
         let exc_target = check_exc
             .unwrap()
