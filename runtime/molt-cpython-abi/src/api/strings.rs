@@ -21,22 +21,82 @@ unsafe fn str_alloc_failed() -> *mut PyObject {
     unsafe { crate::api::errors::PyErr_NoMemory() }
 }
 
+enum UnicodeCodecErrorObject<'a> {
+    Bytes(&'a [u8]),
+    Text(&'a str),
+}
+
+/// Construct a structured Unicode codec exception through the same five-field
+/// authority as CPython: ``(encoding, object, start, end, reason)``.  The
+/// runtime's Unicode error class constructor owns validation and publishes the
+/// corresponding attributes; the C ABI must never collapse this payload into
+/// the one message argument accepted by ordinary exceptions.
+unsafe fn raise_unicode_codec_error(
+    exc_type: *mut PyObject,
+    encoding: &str,
+    object: UnicodeCodecErrorObject<'_>,
+    start: usize,
+    end: usize,
+    reason: &str,
+) {
+    let encoding_obj = unsafe {
+        PyUnicode_FromStringAndSize(encoding.as_ptr().cast(), encoding.len() as Py_ssize_t)
+    };
+    let object_obj = match object {
+        UnicodeCodecErrorObject::Bytes(bytes) => unsafe {
+            PyBytes_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t)
+        },
+        UnicodeCodecErrorObject::Text(text) => unsafe {
+            PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t)
+        },
+    };
+    let start_obj = unsafe { crate::api::numbers::PyLong_FromSsize_t(start as Py_ssize_t) };
+    let end_obj = unsafe { crate::api::numbers::PyLong_FromSsize_t(end as Py_ssize_t) };
+    let reason_obj =
+        unsafe { PyUnicode_FromStringAndSize(reason.as_ptr().cast(), reason.len() as Py_ssize_t) };
+    let fields = [encoding_obj, object_obj, start_obj, end_obj, reason_obj];
+    if fields.iter().any(|field| field.is_null()) {
+        for field in fields {
+            unsafe { crate::api::refcount::Py_XDECREF(field) };
+        }
+        return;
+    }
+    let args = unsafe { crate::api::sequences::native_call_args(&fields) };
+    for field in fields {
+        unsafe { crate::api::refcount::Py_DECREF(field) };
+    }
+    if args.is_null() {
+        return;
+    }
+    unsafe {
+        crate::api::errors::PyErr_SetObject(exc_type, args);
+        crate::api::refcount::Py_DECREF(args);
+    }
+}
+
 unsafe fn raise_utf8_decode_error(bytes: &[u8], error: std::str::Utf8Error) {
     let start = error.valid_up_to();
-    let reason = if error.error_len().is_none() {
-        "unexpected end of data"
-    } else {
-        "invalid start or continuation byte"
+    let (end, reason) = match error.error_len() {
+        None => (bytes.len(), "unexpected end of data"),
+        Some(error_len) => {
+            let first = bytes.get(start).copied().unwrap_or_default();
+            let reason = if (0xc2..=0xf4).contains(&first) {
+                "invalid continuation byte"
+            } else {
+                "invalid start byte"
+            };
+            (start + error_len, reason)
+        }
     };
-    let message = format!(
-        "'utf-8' codec can't decode byte 0x{:02x} in position {start}: {reason}",
-        bytes.get(start).copied().unwrap_or_default()
-    );
     unsafe {
-        set_exc(
+        raise_unicode_codec_error(
             (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
                 .cast::<crate::abi_types::PyObject>(),
-            &message,
+            "utf-8",
+            UnicodeCodecErrorObject::Bytes(bytes),
+            start,
+            end,
+            reason,
         )
     };
 }
@@ -575,13 +635,17 @@ pub unsafe extern "C" fn PyUnicode_DecodeASCII(
         return ptr::null_mut();
     }
     let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
-    if !bytes.is_ascii() {
+    if let Some(start) = bytes.iter().position(|byte| !byte.is_ascii()) {
         unsafe {
-            crate::api::errors::PyErr_SetString(
+            raise_unicode_codec_error(
                 (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
                     .cast::<crate::abi_types::PyObject>(),
-                c"'ascii' codec can't decode byte: ordinal not in range(128)".as_ptr(),
-            );
+                "ascii",
+                UnicodeCodecErrorObject::Bytes(bytes),
+                start,
+                start + 1,
+                "ordinal not in range(128)",
+            )
         }
         return ptr::null_mut();
     }
@@ -604,7 +668,9 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
     if s.is_null() || size < 0 {
         return ptr::null_mut();
     }
-    let mut bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
+    let original_bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
+    let mut bytes = original_bytes;
+    let mut payload_offset = 0usize;
     // Resolve endianness. 0/native with a leading BOM overrides and is consumed.
     let mut big_endian = cfg!(target_endian = "big");
     let requested = if byteorder.is_null() {
@@ -621,10 +687,12 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
             (0xFF, 0xFE) => {
                 big_endian = false;
                 bytes = &bytes[2..];
+                payload_offset = 2;
             }
             (0xFE, 0xFF) => {
                 big_endian = true;
                 bytes = &bytes[2..];
+                payload_offset = 2;
             }
             _ => {}
         }
@@ -632,13 +700,19 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
     if !byteorder.is_null() {
         unsafe { *byteorder = if big_endian { 1 } else { -1 } };
     }
+    let encoding = if big_endian { "utf-16-be" } else { "utf-16-le" };
     if bytes.len() % 2 != 0 {
+        let start = original_bytes.len() - 1;
         unsafe {
-            crate::api::errors::PyErr_SetString(
+            raise_unicode_codec_error(
                 (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
                     .cast::<crate::abi_types::PyObject>(),
-                c"'utf-16' codec can't decode: truncated data".as_ptr(),
-            );
+                encoding,
+                UnicodeCodecErrorObject::Bytes(original_bytes),
+                start,
+                start + 1,
+                "truncated data",
+            )
         }
         return ptr::null_mut();
     }
@@ -652,21 +726,62 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
             }
         })
         .collect();
-    match String::from_utf16(&units) {
-        Ok(text) => unsafe {
-            PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t)
-        },
-        Err(_) => {
+    let mut index = 0usize;
+    while index < units.len() {
+        let unit = units[index];
+        if (0xd800..=0xdbff).contains(&unit) {
+            let start = payload_offset + index * 2;
+            let Some(next) = units.get(index + 1).copied() else {
+                unsafe {
+                    raise_unicode_codec_error(
+                        (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        encoding,
+                        UnicodeCodecErrorObject::Bytes(original_bytes),
+                        start,
+                        original_bytes.len(),
+                        "unexpected end of data",
+                    )
+                };
+                return ptr::null_mut();
+            };
+            if !(0xdc00..=0xdfff).contains(&next) {
+                unsafe {
+                    raise_unicode_codec_error(
+                        (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        encoding,
+                        UnicodeCodecErrorObject::Bytes(original_bytes),
+                        start,
+                        start + 2,
+                        "illegal UTF-16 surrogate",
+                    )
+                };
+                return ptr::null_mut();
+            }
+            index += 2;
+            continue;
+        }
+        if (0xdc00..=0xdfff).contains(&unit) {
+            let start = payload_offset + index * 2;
             unsafe {
-                crate::api::errors::PyErr_SetString(
+                raise_unicode_codec_error(
                     (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
                         .cast::<crate::abi_types::PyObject>(),
-                    c"'utf-16' codec can't decode: unpaired surrogate".as_ptr(),
-                );
-            }
-            ptr::null_mut()
+                    encoding,
+                    UnicodeCodecErrorObject::Bytes(original_bytes),
+                    start,
+                    start + 2,
+                    "illegal encoding",
+                )
+            };
+            return ptr::null_mut();
         }
+        index += 1;
     }
+    let text = String::from_utf16(&units)
+        .expect("surrogate validation must make the UTF-16 sequence well formed");
+    unsafe { PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t) }
 }
 
 /// CPython ``PyUnicode_IS_ASCII``: 1 when every code point of ``op`` is ASCII,
@@ -709,27 +824,31 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8String(op: *mut PyObject) -> *mut PyObj
     unsafe { PyBytes_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t) }
 }
 
-/// Raise `UnicodeEncodeError` for the first code point of `bytes` (valid UTF-8)
-/// that `pred` rejects, shaped like CPython's `unicode_encode_ucs1` message:
-/// `'<codec>' codec can't encode character '\uXXXX' in position N: <reason>`.
+/// Raise a structured `UnicodeEncodeError` for the first contiguous code-point
+/// run outside `limit`, matching CPython's `unicode_encode_ucs1` span policy.
 unsafe fn raise_unicode_encode_error(bytes: &[u8], codec: &str, reason: &str, limit: u32) {
-    let (pos, ch) = match std::str::from_utf8(bytes) {
-        Ok(text) => text
-            .chars()
-            .enumerate()
-            .find(|(_, ch)| *ch as u32 > limit)
-            .unwrap_or((0, '\u{fffd}')),
-        Err(_) => (0, '\u{fffd}'),
-    };
-    let msg = format!(
-        "'{codec}' codec can't encode character '\\u{:04x}' in position {pos}: {reason}",
-        ch as u32
-    );
+    let text =
+        std::str::from_utf8(bytes).expect("runtime Unicode storage must contain valid UTF-8");
+    let mut start = None;
+    let mut end = 0usize;
+    for (index, ch) in text.chars().enumerate() {
+        if (ch as u32) > limit {
+            start.get_or_insert(index);
+            end = index + 1;
+        } else if start.is_some() {
+            break;
+        }
+    }
+    let start = start.expect("encode error helper requires an out-of-range scalar");
     unsafe {
-        set_exc(
+        raise_unicode_codec_error(
             (&raw mut crate::abi_types::PyExc_UnicodeEncodeError)
                 .cast::<crate::abi_types::PyObject>(),
-            &msg,
+            codec,
+            UnicodeCodecErrorObject::Text(text),
+            start,
+            end,
+            reason,
         )
     };
 }
@@ -1592,18 +1711,7 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF8(
     // UnicodeDecodeError on malformed input — never silently accepts it.
     let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
     if let Err(e) = std::str::from_utf8(bytes) {
-        let pos = e.valid_up_to();
-        let byte = bytes.get(pos).copied().unwrap_or(0);
-        let msg = format!(
-            "'utf-8' codec can't decode byte 0x{byte:02x} in position {pos}: invalid start byte"
-        );
-        unsafe {
-            set_exc(
-                (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
-                    .cast::<crate::abi_types::PyObject>(),
-                &msg,
-            )
-        };
+        unsafe { raise_utf8_decode_error(bytes, e) };
         return ptr::null_mut();
     }
     unsafe { PyUnicode_FromStringAndSize(s, size) }

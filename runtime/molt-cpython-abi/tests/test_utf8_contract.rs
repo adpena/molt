@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 
 static STRINGS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
+static BYTES: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static INIT: Once = Once::new();
@@ -43,6 +44,33 @@ unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
     bytes.as_ptr()
 }
 
+unsafe extern "C" fn alloc_bytes(data: *const u8, len: usize) -> u64 {
+    let bytes = if data.is_null() || len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    let stored = Box::leak(bytes.to_vec().into_boxed_slice());
+    let handle = MoltObject::from_ptr(stored.as_ptr().cast_mut()).bits();
+    BYTES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(handle, stored);
+    handle
+}
+
+unsafe extern "C" fn bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    let bytes = BYTES.lock().unwrap();
+    let Some(value) = bytes.as_ref().and_then(|values| values.get(&bits)) else {
+        return std::ptr::null();
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = value.len() };
+    }
+    value.as_ptr()
+}
+
 unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
     if STRINGS
         .lock()
@@ -51,6 +79,13 @@ unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
         .is_some_and(|strings| strings.contains_key(&bits))
     {
         MoltTypeTag::Str as u8
+    } else if BYTES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|bytes| bytes.contains_key(&bits))
+    {
+        MoltTypeTag::Bytes as u8
     } else {
         MoltTypeTag::Other as u8
     }
@@ -63,7 +98,9 @@ fn init() {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
         hooks.alloc_str = alloc_str;
+        hooks.alloc_bytes = alloc_bytes;
         hooks.str_data = str_data;
+        hooks.bytes_data = bytes_data;
         hooks.classify_heap = classify_heap;
         hooks.inc_ref = noop_ref;
         hooks.dec_ref = noop_ref;
