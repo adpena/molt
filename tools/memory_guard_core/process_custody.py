@@ -59,6 +59,22 @@ process_identity_has_creation_marker = (
 
 
 @dataclass(frozen=True, slots=True)
+class GuardSamplingTelemetry:
+    attempts: int
+    successes: int
+    transient_failures: int
+    first_transient_failure_at: str | None = None
+    last_transient_failure_at: str | None = None
+    last_transient_error: str | None = None
+
+    @property
+    def enforcement_complete(self) -> bool:
+        """Whether every scheduled memory-enforcement observation succeeded."""
+
+        return self.transient_failures == 0 and self.attempts == self.successes
+
+
+@dataclass(frozen=True, slots=True)
 class GuardResult:
     returncode: int
     violation: RssViolation | None
@@ -74,6 +90,7 @@ class GuardResult:
     guard_signal: int | None = None
     child_process: GuardedChildProcess | None = None
     termination_reports: tuple[GuardTerminationReport, ...] = ()
+    sampling_telemetry: GuardSamplingTelemetry | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage
