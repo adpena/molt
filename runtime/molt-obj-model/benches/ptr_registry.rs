@@ -1,7 +1,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use molt_lang_obj_model::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
+use molt_lang_obj_model::{
+    MoltObject, opaque_handle_bits, register_ptr, release_ptr, reset_ptr_registry,
+    resolve_opaque_ptr, resolve_ptr,
+};
 
 fn bench_register_resolve_release(c: &mut Criterion) {
     let mut group = c.benchmark_group("ptr_registry");
@@ -53,9 +56,59 @@ fn bench_resolve_only(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_opaque_handles(c: &mut Criterion) {
+    let mut group = c.benchmark_group("opaque_handle_registry");
+    for size in [1024usize, 8192, 65536] {
+        let mut objects: Vec<Box<u64>> = (0..size).map(|i| Box::new(i as u64)).collect();
+        let ptrs: Vec<*mut u8> = objects
+            .iter_mut()
+            .map(|object| object.as_mut() as *mut u64 as *mut u8)
+            .collect();
+        group.bench_with_input(
+            BenchmarkId::new("register_resolve_release", size),
+            &ptrs,
+            |b, ptrs| {
+                b.iter(|| {
+                    for &ptr in ptrs {
+                        let handle = MoltObject::from_bits(opaque_handle_bits(ptr))
+                            .as_int()
+                            .expect("opaque handle must use the immediate-int carrier")
+                            as u64;
+                        black_box(resolve_opaque_ptr(handle));
+                        black_box(release_ptr(ptr));
+                    }
+                });
+            },
+        );
+        let handles: Vec<u64> = ptrs
+            .iter()
+            .map(|&ptr| {
+                MoltObject::from_bits(opaque_handle_bits(ptr))
+                    .as_int()
+                    .expect("opaque handle must use the immediate-int carrier")
+                    as u64
+            })
+            .collect();
+
+        group.bench_with_input(BenchmarkId::new("resolve", size), &handles, |b, handles| {
+            b.iter(|| {
+                for &handle in handles {
+                    black_box(resolve_opaque_ptr(handle));
+                }
+            });
+        });
+        for ptr in ptrs {
+            black_box(release_ptr(ptr));
+        }
+        reset_ptr_registry();
+    }
+    group.finish();
+}
+
 criterion_group!(
     ptr_registry_benches,
     bench_register_resolve_release,
-    bench_resolve_only
+    bench_resolve_only,
+    bench_opaque_handles
 );
 criterion_main!(ptr_registry_benches);

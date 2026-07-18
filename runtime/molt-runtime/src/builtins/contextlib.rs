@@ -8,13 +8,13 @@ use crate::{
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place,
     exception_materialize_traceback_bits, exception_pending, exception_stack_pop,
     exception_stack_push, exception_type_bits_from_name, has_capability, header_from_obj_ptr,
-    inc_ref_bits, is_missing_bits, is_truthy, issubclass_bits, missing_bits, molt_call_bind,
-    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new, molt_future_new,
-    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
+    inc_ref_bits, is_missing_bits, is_registered_ptr, is_truthy, issubclass_bits, missing_bits,
+    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_future_new, molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
     molt_inspect_isawaitable, molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise,
     obj_from_bits, object_class_bits, object_type_id, opaque_handle_bits, path_from_bits,
-    pending_bits_i64, ptr_from_bits, raise_exception, release_ptr, resolve_ptr,
-    string_obj_to_owned, type_of_bits,
+    pending_bits_i64, ptr_from_bits, raise_exception, release_ptr, string_obj_to_owned,
+    type_of_bits,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -153,8 +153,7 @@ fn ptr_live(ptr: *mut u8) -> bool {
     if ptr.is_null() {
         return false;
     }
-    let addr = ptr.expose_provenance() as u64;
-    resolve_ptr(addr).is_some()
+    is_registered_ptr(ptr)
 }
 
 fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
