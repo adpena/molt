@@ -1,5 +1,5 @@
 //! Native emission of the per-build module registry blob (import bedrock,
-//! `docs/design/foundation/69_import_bedrock_frozen_module_layer.md` §3).
+//! `docs/design/foundation/import_bedrock_frozen_module_layer.md` §3).
 //!
 //! The Python generator (`molt.cli.module_registry`, the checked-in layout
 //! authority) serializes the registry — header, rows, sorted name table —

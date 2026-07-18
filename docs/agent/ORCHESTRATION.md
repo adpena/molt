@@ -1012,7 +1012,7 @@ test is the durable gate), differential `python tests/molt_diff.py ... --jobs 1`
 
 ### R2. Import bedrock completion + FREEZE (owner: orchestrator; Codex preps PR2)
 
-Per `docs/design/foundation/69_import_bedrock_frozen_module_layer.md`.
+Per `docs/design/foundation/import_bedrock_frozen_module_layer.md`.
 PR1 (generated ModuleRegistry + runtime ModuleTable) is LIVE.
 - PR2: sys.modules becomes a dict VIEW over the one module store; DELETE the
   Rust mirror sync (task #14). Blocked on: R1 landing (modules.rs quiet).

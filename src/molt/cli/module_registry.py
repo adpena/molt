@@ -1,6 +1,6 @@
 """Module registry authority — the import bedrock's compile-time artifact.
 
-Design authority: ``docs/design/foundation/69_import_bedrock_frozen_module_layer.md``
+Design authority: ``docs/design/foundation/import_bedrock_frozen_module_layer.md``
 (§3 "Compile-time artifacts").  Every projection of the per-build module graph
 (the runtime registry blob, the native ``MODULE_INIT_TABLE`` relocations, the
 ``module_registry.json`` diagnostics file) is emitted from this one module and
