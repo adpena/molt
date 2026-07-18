@@ -428,6 +428,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="proof-plan-authority",
+            tier=1,
+            cmd=[sys.executable, str(TOOLS / "gen_proof_plan.py"), "--check"],
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             name="runtime-bridge-test-stubs",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py"), "--check"),
@@ -540,7 +548,7 @@ def _build_checks() -> list[Check]:
             # residual / bench number / parity) with no finding_id reference is
             # reported but does NOT fail the tier yet: molt carries an existing
             # backlog of such lines, and a fresh gate must not flip tier-1 red.
-            # NAMED strict-flip condition lives in the tools/molt_dev_gates.toml
+            # NAMED strict-flip condition lives in tools/proof_plan.toml
             # [[gate_flip]] registry (name="findings_memo_lint", strict_when =
             # "live_count == 0", count_cmd = "findings_memo_lint.py --count"), read
             # by check_gate_flips.py: burn the backlog to zero via
@@ -796,7 +804,7 @@ def _build_checks() -> list[Check]:
             # writing later) + any MEMORY.md M## not resolved by POINTERS.md.
             # required=False so it never reds the tier; the check ALWAYS exits 0
             # in --check mode. The NAMED flip condition (manual review; CI cannot
-            # see the auto-memory corpus) lives in the molt_dev_gates.toml
+            # see the auto-memory corpus) lives in tools/proof_plan.toml
             # [[gate_flip]] registry (name="memory_graph_integrity").
             name="memory-graph-integrity",
             tier=1,
@@ -882,7 +890,7 @@ def _build_checks() -> list[Check]:
             # required=False: a stale claim is FLAGGED so stale custody cannot
             # silently block a lane, but staleness alone is NOT a hard CI failure
             # (a silent worktree may be alive; CLAIMS.md 6 objective-liveness bar).
-            # The NAMED flip condition lives in tools/molt_dev_gates.toml
+            # The NAMED flip condition lives in tools/proof_plan.toml
             # [[gate_flip]] name="claims_status_stale".
             name="apparatus-claims-status-warn",
             tier=1,

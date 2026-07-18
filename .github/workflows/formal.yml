@@ -5,17 +5,23 @@ on:
     branches: [main]
     paths:
       - 'formal/**'
-      - 'runtime/molt-obj-model/src/lib.rs'
-      - 'runtime/molt-backend/src/luau.rs'
+      - 'runtime/molt-backend-luau/**'
+      - 'runtime/molt-ir/**'
+      - 'runtime/molt-tir/**'
+      - 'runtime/molt-passes/**'
       - 'tools/check_formal_methods.py'
+      - 'tools/check_correspondence.py'
       - '.github/workflows/formal.yml'
   pull_request:
     branches: [main]
     paths:
       - 'formal/**'
-      - 'runtime/molt-obj-model/src/lib.rs'
-      - 'runtime/molt-backend/src/luau.rs'
+      - 'runtime/molt-backend-luau/**'
+      - 'runtime/molt-ir/**'
+      - 'runtime/molt-tir/**'
+      - 'runtime/molt-passes/**'
       - 'tools/check_formal_methods.py'
+      - 'tools/check_correspondence.py'
       - '.github/workflows/formal.yml'
 
 env:

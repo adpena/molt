@@ -1,10 +1,18 @@
 name: Security Hardening
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_call:
+    inputs:
+      python_security:
+        description: Run the Python dependency proof selected by the proof plan.
+        required: false
+        default: true
+        type: boolean
+      rust_security:
+        description: Run the Rust dependency proof selected by the proof plan.
+        required: false
+        default: true
+        type: boolean
   workflow_dispatch:
   schedule:
     - cron: "0 8 * * 1"
@@ -16,23 +24,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  classify-changes:
-    name: Changed Path Classifier
-    runs-on: ubuntu-latest
-    outputs:
-      python_security: ${{ steps.paths.outputs.python_security }}
-      rust_security: ${{ steps.paths.outputs.rust_security }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Classify changed paths
-        id: paths
-        run: python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"
-
   python-security:
-    needs: classify-changes
-    if: needs.classify-changes.outputs.python_security == 'true'
+    if: github.event_name != 'workflow_call' || inputs.python_security
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -49,8 +42,7 @@ jobs:
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- uv run pip-audit --ignore-vuln CVE-2025-69872
 
   rust-security:
-    needs: classify-changes
-    if: needs.classify-changes.outputs.rust_security == 'true'
+    if: github.event_name != 'workflow_call' || inputs.rust_security
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

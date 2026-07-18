@@ -1,0 +1,902 @@
+{
+  "authority": "tools/proof_plan.toml",
+  "authority_sha256": "fa8cb28b08df70d80c9f080d4311e5b237caf1128b351215d794e7e613cf26c9",
+  "ci_families": [
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "python-tooling"
+      ],
+      "cache_domain": "python-dev",
+      "dependencies": [],
+      "description": "Python compiler, developer tooling, and smoke-contract proof.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/ci.yml",
+        ".pre-commit-config.yaml",
+        ".python-version",
+        "pyproject.toml",
+        "uv.lock",
+        "src/**",
+        "tests/**",
+        "tools/**"
+      ],
+      "job": "python-tooling-smoke",
+      "memory_class": "medium",
+      "name": "python_tooling",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "dev"
+      ],
+      "python_versions": [
+        "3.12"
+      ],
+      "required": true,
+      "resource_class": "python-tests",
+      "targets": [
+        "native"
+      ],
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 25,
+      "workflow": ".github/workflows/ci.yml",
+      "zero_work_policy": "fail"
+    },
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "rust",
+        "native",
+        "wasm"
+      ],
+      "cache_domain": "cargo-workspace",
+      "dependencies": [],
+      "description": "Rust workspace compile, lint, test, and target-smoke proof.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/ci.yml",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        ".cargo/**",
+        "runtime/**"
+      ],
+      "job": "rust-build-unit-smoke",
+      "memory_class": "compile-heavy",
+      "name": "rust",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "dev",
+        "release-fast"
+      ],
+      "python_versions": [
+        "3.12"
+      ],
+      "required": true,
+      "resource_class": "compiler-build-resource",
+      "targets": [
+        "native",
+        "wasm32-unknown",
+        "wasm32-wasip1",
+        "i686"
+      ],
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/ci.yml",
+      "zero_work_policy": "fail"
+    },
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "llvm",
+        "mlir"
+      ],
+      "cache_domain": "llvm-cargo",
+      "dependencies": [
+        "rust"
+      ],
+      "description": "LLVM and MLIR compiler stack build, lowering, and differential proof.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/ci.yml",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "config/llvm_toolchain_arches.toml",
+        "config/llvm_toolchain_releases.toml",
+        ".github/actions/setup-llvm/**",
+        ".github/workflows/perf-gate.yml",
+        "src/molt/cli/setup_readiness.py",
+        "src/molt/llvm_toolchain.py",
+        "tests/test_bootstrap_llvm.py",
+        "tests/test_llvm_toolchain.py",
+        "tests/tools/test_guarded_exec.py",
+        "tools/bootstrap_llvm.py",
+        "tools/guarded_exec.py",
+        "runtime/molt-backend/**",
+        "runtime/molt-backend-mlir/**",
+        "runtime/molt-backend-native/**",
+        "runtime/molt-ir/**",
+        "runtime/molt-passes/**",
+        "runtime/molt-tir/**"
+      ],
+      "job": "llvm-backend",
+      "memory_class": "compile-heavy",
+      "name": "llvm",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "release-fast"
+      ],
+      "python_versions": [
+        "3.12"
+      ],
+      "required": true,
+      "resource_class": "compiler-build-resource",
+      "targets": [
+        "native"
+      ],
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main",
+        "nightly"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/ci.yml",
+      "zero_work_policy": "fail"
+    },
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "python"
+      ],
+      "cache_domain": "python-security",
+      "dependencies": [],
+      "description": "Locked Python dependency vulnerability proof.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/security_hardening.yml",
+        ".python-version",
+        "pyproject.toml",
+        "uv.lock"
+      ],
+      "job": "python-security",
+      "memory_class": "light",
+      "name": "python_security",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "audit"
+      ],
+      "python_versions": [
+        "3.12"
+      ],
+      "required": true,
+      "resource_class": "network-audit",
+      "targets": [
+        "host"
+      ],
+      "tiers": [
+        "pr",
+        "main",
+        "weekly"
+      ],
+      "timeout_minutes": 20,
+      "workflow": ".github/workflows/security_hardening.yml",
+      "zero_work_policy": "fail"
+    },
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "rust"
+      ],
+      "cache_domain": "rust-security",
+      "dependencies": [],
+      "description": "Locked Rust dependency policy and vulnerability proof.",
+      "executor": "github-job",
+      "inputs": [
+        ".github/workflows/security_hardening.yml",
+        "Cargo.lock",
+        "Cargo.toml",
+        "deny.toml",
+        "rust-toolchain.toml"
+      ],
+      "job": "rust-security",
+      "memory_class": "medium",
+      "name": "rust_security",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "audit"
+      ],
+      "python_versions": [],
+      "required": true,
+      "resource_class": "network-audit",
+      "targets": [
+        "host"
+      ],
+      "tiers": [
+        "pr",
+        "main",
+        "weekly"
+      ],
+      "timeout_minutes": 20,
+      "workflow": ".github/workflows/security_hardening.yml",
+      "zero_work_policy": "fail"
+    },
+    {
+      "architectures": [
+        "x86_64"
+      ],
+      "artifact_schema": "molt.proof-result.v1",
+      "backends": [
+        "formal",
+        "luau"
+      ],
+      "cache_domain": "formal",
+      "dependencies": [],
+      "description": "Lean, Quint, Luau correspondence, deterministic IR, and formal-method proof.",
+      "executor": "github-workflow",
+      "inputs": [
+        "formal/**",
+        "runtime/molt-backend-luau/**",
+        "runtime/molt-ir/**",
+        "runtime/molt-tir/**",
+        "runtime/molt-passes/**",
+        "tools/check_formal_methods.py",
+        "tools/check_correspondence.py",
+        ".github/workflows/formal.yml"
+      ],
+      "job": "formal-methods",
+      "memory_class": "medium",
+      "name": "formal",
+      "operating_systems": [
+        "ubuntu"
+      ],
+      "profiles": [
+        "verification"
+      ],
+      "python_versions": [
+        "3.12"
+      ],
+      "required": true,
+      "resource_class": "formal-tools",
+      "targets": [
+        "tir",
+        "luau"
+      ],
+      "tiers": [
+        "pr",
+        "main",
+        "nightly"
+      ],
+      "timeout_minutes": 45,
+      "workflow": ".github/workflows/formal.yml",
+      "zero_work_policy": "fail"
+    }
+  ],
+  "local": {
+    "always": [
+      "python3 tools/venv_exec.py python -m ruff check .",
+      "python3 tools/venv_exec.py python -m ruff format --check .",
+      "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
+      "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed"
+    ],
+    "rules": [
+      {
+        "description": "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary.",
+        "gates": [
+          "cargo clippy -p molt-backend --features native-backend -- -D warnings",
+          "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
+        ],
+        "globs": [
+          "runtime/molt-backend/**/*.rs",
+          "runtime/molt-backend/**/Cargo.toml"
+        ],
+        "name": "backend-native",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
+        "gates": [
+          "cargo test --profile release-fast -p molt-backend-native --features llvm --lib"
+        ],
+        "globs": [
+          "runtime/molt-backend-native/Cargo.toml",
+          "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
+        ],
+        "name": "backend-llvm",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "TIR midend Rust: all-target clippy + feature-complete tests.",
+        "gates": [
+          "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings",
+          "cargo test -p molt-passes --all-features --no-fail-fast",
+          "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
+          "cargo test -p molt-tir --all-features --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-ir/**/*.rs",
+          "runtime/molt-ir/**/*.toml",
+          "runtime/molt-ir/Cargo.toml",
+          "runtime/molt-passes/**/*.rs",
+          "runtime/molt-passes/**/*.toml",
+          "runtime/molt-passes/Cargo.toml",
+          "runtime/molt-tir/**/*.rs",
+          "runtime/molt-tir/**/*.toml",
+          "runtime/molt-tir/Cargo.toml"
+        ],
+        "name": "tir-midend",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
+        "gates": [
+          "cargo clippy -p molt-wasm-host -- -D warnings",
+          "cargo build --profile release-fast -p molt-wasm-host"
+        ],
+        "globs": [
+          "runtime/molt-wasm-host/**/*.rs",
+          "runtime/molt-wasm-host/**/*.toml",
+          "runtime/molt-wasm-host/Cargo.toml"
+        ],
+        "name": "wasm-host",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "GPU acceleration Rust: all-target/all-feature clippy for FFI and renderer surfaces.",
+        "gates": [
+          "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings"
+        ],
+        "globs": [
+          "runtime/molt-gpu/**/*.rs",
+          "runtime/molt-gpu/**/*.toml",
+          "runtime/molt-gpu/Cargo.toml"
+        ],
+        "name": "runtime-gpu"
+      },
+      {
+        "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
+        "gates": [
+          "cargo clippy -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+          "cargo test -p molt-runtime-vfs --all-features --no-fail-fast",
+          "python3 -m pytest tests/test_browser_vfs.py -q"
+        ],
+        "globs": [
+          "runtime/molt-runtime-vfs/**/*.rs",
+          "runtime/molt-runtime-vfs/Cargo.toml",
+          "tests/test_browser_vfs.py",
+          "wasm/molt_vfs_browser.js"
+        ],
+        "name": "runtime-vfs",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary.",
+        "gates": [
+          "cargo test --profile release-fast -p molt-runtime --lib",
+          "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+        ],
+        "globs": [
+          "runtime/molt-runtime/**/*.rs",
+          "runtime/molt-obj-model/**/*.rs",
+          "runtime/**/Cargo.toml"
+        ],
+        "name": "runtime-lib",
+        "require_fresh_toolchain": true
+      },
+      {
+        "description": "Frontend lowering / stdlib Python: type check + verified-subset + dynamic policy.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m ty check src",
+          "python3 tools/verified_subset.py check",
+          "python3 tools/check_dynamic_policy.py"
+        ],
+        "globs": [
+          "src/molt/**/*.py"
+        ],
+        "name": "frontend-python"
+      },
+      {
+        "description": "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Bootstrap Authority).",
+        "gates": [
+          "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
+          "python3 tools/check_stdlib_intrinsics.py --critical-allowlist"
+        ],
+        "globs": [
+          "src/molt/stdlib/builtins.py",
+          "src/molt/stdlib/sys.py",
+          "src/molt/stdlib/importlib/**/*.py",
+          "src/molt/stdlib/_intrinsics.py"
+        ],
+        "name": "bootstrap-stdlib"
+      },
+      {
+        "description": "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and audit consumers.",
+        "gates": [
+          "python3 tools/gen_heap_kinds.py --check",
+          "python3 -m pytest -q tests/test_gen_heap_kinds.py"
+        ],
+        "globs": [
+          "tools/gen_heap_kinds.py",
+          "runtime/heap_kinds.toml",
+          "runtime/heap_kinds.generated.json",
+          "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
+          "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
+          "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
+          "tests/test_gen_heap_kinds.py"
+        ],
+        "name": "heap-kind-lifetime-authority"
+      },
+      {
+        "description": "Runtime process and epoch telemetry share one generated schema across Rust production and Python validation.",
+        "gates": [
+          "python3 tools/gen_runtime_profile_schema.py --check",
+          "python3 -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py"
+        ],
+        "globs": [
+          "runtime/runtime_profile_schema.toml",
+          "tools/gen_runtime_profile_schema.py",
+          "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",
+          "src/molt/_runtime_profile_schema_generated.py",
+          "src/molt/_runtime_profile_schema.py",
+          "tests/test_gen_runtime_profile_schema.py"
+        ],
+        "name": "runtime-profile-schema-authority"
+      },
+      {
+        "description": "Op-kind registry: generated-file sync + down-only emitter/registry drift.",
+        "gates": [
+          "python3 tools/gen_op_kinds.py --check",
+          "python3 tools/audit_op_kinds.py --check"
+        ],
+        "globs": [
+          "tools/gen_op_kinds.py",
+          "tools/audit_op_kinds.py",
+          "tools/op_kinds/**/*.py",
+          "runtime/molt-ir/src/tir/op_kinds.toml",
+          "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/**/*.rs",
+          "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
+          "runtime/molt-backend-native/src/llvm_backend/lowering/**/*.rs",
+          "runtime/molt-backend-wasm/src/**/*.rs"
+        ],
+        "name": "op-kind-registry"
+      },
+      {
+        "description": "Typed frontend rejection codes, generated metadata, and structural no-stub invariant.",
+        "gates": [
+          "python3 tools/gen_frontend_diagnostics.py --check",
+          "python3 -m pytest -q tests/test_frontend_diagnostics.py"
+        ],
+        "globs": [
+          "tools/gen_frontend_diagnostics.py",
+          "src/molt/frontend/frontend_diagnostics.toml",
+          "src/molt/frontend/frontend_diagnostics_generated.py",
+          "src/molt/frontend/diagnostics.py",
+          "src/molt/frontend/**/*.py",
+          "tests/test_frontend_diagnostics.py"
+        ],
+        "name": "frontend-diagnostics"
+      },
+      {
+        "description": "WASM ABI registry: manifest-owned imports, export policy, runtime-surface matchers, and generated sync.",
+        "gates": [
+          "python3 tools/gen_wasm_abi.py --check",
+          "python3 -m pytest -q tests/test_gen_wasm_abi.py"
+        ],
+        "globs": [
+          "tools/gen_wasm_abi.py",
+          "tools/wasm_allowed_imports.txt",
+          "tools/wasm_strip_unused.py",
+          "tools/wasm_link_format.py",
+          "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+          "runtime/molt-backend-wasm/src/wasm_abi.rs",
+          "runtime/molt-backend-wasm/src/wasm_abi_generated/*.rs",
+          "runtime/molt-backend-wasm/src/wasm/module_abi/**/*.rs",
+          "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
+          "src/molt/_wasm_abi_generated.py",
+          "runtime/wasm_table_layout.inc",
+          "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+          "tests/test_gen_wasm_abi.py"
+        ],
+        "name": "wasm-abi-registry"
+      },
+      {
+        "description": "tinygrad ML op-contract FACT: pin freshness + generated op_contract.toml sync (doc 67 Phase 0/1).",
+        "gates": [
+          "python3 tools/check_tinygrad_pin.py --check",
+          "python3 tools/gen_gpu_op_contract.py --check",
+          "python3 -m pytest -q tests/test_gen_gpu_op_contract.py"
+        ],
+        "globs": [
+          "tools/check_tinygrad_pin.py",
+          "tools/gen_gpu_op_contract.py",
+          "docs/spec/tinygrad_pin.md",
+          "runtime/molt-gpu/op_contract.toml",
+          "runtime/molt-gpu/src/ops.rs",
+          "tests/test_gen_gpu_op_contract.py",
+          "bench/friends/repos/tinygrad_off_the_shelf/pyproject.toml",
+          "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/uop/__init__.py",
+          "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/renderer/cstyle.py"
+        ],
+        "name": "tinygrad-op-contract"
+      },
+      {
+        "description": "Intrinsic registry: manifest/category sync + generated resolver ownership.",
+        "gates": [
+          "python3 tools/gen_intrinsics.py --check",
+          "python3 -m pytest -q tests/test_gen_intrinsics.py"
+        ],
+        "globs": [
+          "tools/gen_intrinsics.py",
+          "src/molt/_intrinsics.pyi",
+          "src/molt/_runtime_feature_gates.py",
+          "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+          "runtime/molt-runtime/src/intrinsics/categories.toml",
+          "runtime/molt-runtime/src/intrinsics/generated.rs",
+          "runtime/molt-runtime/src/intrinsics/generated_resolvers/**/*.rs",
+          "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
+          "tests/test_gen_intrinsics.py"
+        ],
+        "name": "intrinsic-registry"
+      },
+      {
+        "description": "Text codec registry and generated single-byte charmap tables.",
+        "gates": [
+          "python3 tools/gen_codecs.py --check",
+          "uv run python -m pytest -q tests/test_gen_codecs.py"
+        ],
+        "globs": [
+          "tools/gen_codecs.py",
+          "runtime/molt-runtime/src/object/ops_encoding.rs",
+          "runtime/molt-stdlib-text/src/codec_registry.rs",
+          "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
+          "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
+          "src/molt/stdlib/encodings/*.py",
+          "tests/test_gen_codecs.py"
+        ],
+        "name": "codec-tables"
+      },
+      {
+        "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
+        "gates": [
+          "cargo check --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib"
+        ],
+        "globs": [
+          "runtime/molt-runtime-stringprep/**/*.rs",
+          "runtime/molt-runtime-stringprep/Cargo.toml"
+        ],
+        "name": "stringprep-leaf"
+      },
+      {
+        "description": "StringPrep generated Rust tables: generated-file sync.",
+        "gates": [
+          "python3 tools/gen_stringprep_tables.py --check",
+          "python3 -m pytest -q tests/test_gen_stringprep_tables.py"
+        ],
+        "globs": [
+          "tools/gen_stringprep_tables.py",
+          "runtime/molt-runtime-stringprep/src/tables.rs",
+          "tests/test_gen_stringprep_tables.py"
+        ],
+        "name": "stringprep-tables"
+      },
+      {
+        "description": "LLVM preserved runtime calls: availability is not ABI authority.",
+        "gates": [
+          "python3 tools/llvm_runtime_abi_audit.py --check",
+          "python3 -m pytest -q tests/test_llvm_runtime_abi_audit.py"
+        ],
+        "globs": [
+          "tools/llvm_runtime_abi_audit.py",
+          "tests/test_llvm_runtime_abi_audit.py",
+          "src/molt/frontend/lowering/serialization.py",
+          "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+          "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
+          "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs",
+          "runtime/molt-backend-native/src/llvm_backend/runtime_imports/*.rs",
+          "runtime/molt-runtime/src/**/*.rs"
+        ],
+        "name": "llvm-runtime-abi"
+      },
+      {
+        "description": "Differential tests or the honesty manifest: suite-layout hygiene + the down-only suite-honesty ratchet.",
+        "gates": [
+          "python3 tools/check_differential_suite_layout.py",
+          "python3 tools/check_suite_honesty.py"
+        ],
+        "globs": [
+          "tests/differential/**/*.py",
+          "tools/suite_honesty/**",
+          "tools/check_suite_honesty.py",
+          "tools/check_differential_suite_layout.py"
+        ],
+        "name": "suite-honesty"
+      },
+      {
+        "description": "Dynamism-feature taxonomy or package triage: the down-only ecosystem ratchet.",
+        "gates": [
+          "python3 tools/check_ecosystem_compat.py"
+        ],
+        "globs": [
+          "tools/ecosystem/**",
+          "tools/check_ecosystem_compat.py"
+        ],
+        "name": "ecosystem-compat"
+      },
+      {
+        "description": "tinygrad UPat matcher static exec registry: fail-closed generated factory contract.",
+        "gates": [
+          "uv run python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py"
+        ],
+        "globs": [
+          "tools/tinygrad_upat_static_exec_registry.py",
+          "tests/tools/test_tinygrad_upat_static_exec_registry.py"
+        ],
+        "name": "tinygrad-upat-static-exec-registry"
+      },
+      {
+        "description": "Docs/spec or status-block generators: the docs-architecture contract.",
+        "gates": [
+          "python3 tools/update_status_blocks.py --check",
+          "python3 tools/check_docs_architecture.py"
+        ],
+        "globs": [
+          "docs/**/*.md",
+          "tools/update_status_blocks.py",
+          "tools/check_docs_architecture.py"
+        ],
+        "name": "docs-architecture"
+      },
+      {
+        "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py"
+        ],
+        "globs": [
+          "tools/dev.py",
+          "tools/check_rust_ffi_blocks.py",
+          "tools/check_rust_toolchain.py",
+          "tools/check_rustfmt.py",
+          "tools/molt_dev.py",
+          "tools/proof_plan.toml",
+          "tests/tools/test_check_rust_ffi_blocks.py",
+          "tests/tools/test_rust_toolchain_contract.py",
+          "tests/tools/test_check_rustfmt.py",
+          "tests/test_molt_dev.py"
+        ],
+        "name": "dev-tooling"
+      },
+      {
+        "description": "Rust 2024 FFI declaration blocks must be explicitly unsafe before Cargo spends a compile slot.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/check_rust_ffi_blocks.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py"
+        ],
+        "globs": [
+          "runtime/**/*.rs",
+          "src/**/*.rs",
+          "tools/**/*.rs",
+          "tests/**/*.rs",
+          "tools/check_rust_ffi_blocks.py",
+          "tests/tools/test_check_rust_ffi_blocks.py"
+        ],
+        "name": "rust-ffi-blocks"
+      },
+      {
+        "description": "Rust version/edition authority: manifests, root toolchain, CI pins, and local installed tools.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py"
+        ],
+        "globs": [
+          "rust-toolchain.toml",
+          "Cargo.toml",
+          "runtime/**/Cargo.toml",
+          "crates/**/Cargo.toml",
+          "deploy/**/Cargo.toml",
+          "fuzz/Cargo.toml",
+          ".github/workflows/**",
+          "docs/cross_platform/windows.md",
+          "tools/check_rust_toolchain.py",
+          "tests/tools/test_rust_toolchain_contract.py"
+        ],
+        "name": "rust-toolchain"
+      },
+      {
+        "description": "Hand-synced cross-language / cross-file tables (type tags, exception ordinals/names, target-Python versions): parse-both drift gate.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/check_table_drift.py --check",
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_table_drift_gate.py"
+        ],
+        "globs": [
+          "src/molt/frontend/_types.py",
+          "runtime/molt-runtime/src/object/type_ids.rs",
+          "runtime/molt-runtime/src/builtins/exceptions.rs",
+          "src/molt/cli/target_python.py",
+          "tools/stdlib_module_union.py",
+          "tools/gen_stdlib_module_union.py",
+          "tools/check_table_drift.py",
+          "tests/test_table_drift_gate.py"
+        ],
+        "name": "table-drift"
+      },
+      {
+        "description": "Findings registry / memo lint / seeded ledger (A4): run the teeth tests.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_findings_registry.py"
+        ],
+        "globs": [
+          "tools/findings_registry.py",
+          "tools/findings_memo_lint.py",
+          "tests/tools/test_findings_registry.py",
+          ".molt/state/findings_registry.jsonl"
+        ],
+        "name": "findings-registry"
+      },
+      {
+        "description": "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_memory_graph.py",
+          "python3 tools/venv_exec.py python tools/check_memory_graph.py --check"
+        ],
+        "globs": [
+          "tools/memory_graph.py",
+          "tools/check_memory_graph.py",
+          "tools/findings_memo_lint.py",
+          "tools/hooks/session_digest.py",
+          "tests/tools/test_memory_graph.py"
+        ],
+        "name": "memory-graph"
+      },
+      {
+        "description": "CI workflows or pyproject: the CI-topology contract test.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py"
+        ],
+        "globs": [
+          ".github/workflows/**",
+          ".github/proof-plan.generated.json",
+          "docs/agent/PROOF_PLAN.generated.md",
+          "pyproject.toml",
+          "tools/proof_plan.py",
+          "tools/proof_plan.toml",
+          "tools/gen_proof_plan.py",
+          "tests/test_proof_plan.py"
+        ],
+        "name": "ci-wiring"
+      },
+      {
+        "description": "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
+          "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
+          "python3 tools/venv_exec.py python tools/check_gate_flips.py --check"
+        ],
+        "globs": [
+          ".claude/settings.json",
+          "tools/hooks/**/*.py",
+          "tools/check_gate_flips.py",
+          "tools/check_gate_liveness.py",
+          "tests/tools/test_hooks_bash_guard.py",
+          "tests/tools/test_hooks_landing_gate.py",
+          "tests/tools/test_hooks_session_digest.py",
+          "tests/tools/test_hooks_fail_open.py",
+          "tests/tools/test_hooks_waivers.py",
+          "tests/tools/test_check_gate_flips.py",
+          "tests/tools/test_check_gate_liveness.py"
+        ],
+        "name": "apparatus-hooks"
+      },
+      {
+        "description": "Recurring-harm registry, forbidden-checkout policy, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+          "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
+          "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check"
+        ],
+        "globs": [
+          ".claude/settings.json",
+          "tools/forbidden_checkout_guard.py",
+          "tools/apparatus_agent_safety.py",
+          "tools/anti_recurrence_gate.py",
+          "tools/recurring_harms.toml",
+          "tools/hooks/path_guard.py",
+          "tools/hooks/session_learning.py",
+          "tools/hooks/stop_gates.py",
+          "tools/memory_graph.py",
+          "tools/check_gate_liveness.py",
+          "tests/tools/test_forbidden_checkout_guard.py",
+          "tests/tools/test_apparatus_agent_safety.py",
+          "tests/tools/test_anti_recurrence_gate.py",
+          "tests/tools/test_hooks_session_learning.py",
+          "tests/tools/test_memory_graph.py"
+        ],
+        "name": "apparatus-learning-protection"
+      },
+      {
+        "description": "Claims self-retirement terminal vocabulary + premise-verification preflight + serialized-commit primitive (M11/M20/M22/M24): teeth + falsifiable self-tests + gate-liveness canary.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
+          "python3 tools/venv_exec.py python tools/claims_status.py --check",
+          "python3 tools/venv_exec.py python tools/check_sister_landed.py --check",
+          "python3 tools/venv_exec.py python tools/commit_serializer.py --check",
+          "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check"
+        ],
+        "globs": [
+          "tools/claims_status.py",
+          "tools/check_sister_landed.py",
+          "tools/commit_serializer.py",
+          "tools/claim_lane.py",
+          "tools/subagent_contract.py",
+          "tools/dispatch_prompt.py",
+          "docs/agent/CLAIMS.md",
+          "tests/tools/test_claims_status.py",
+          "tests/tools/test_check_sister_landed.py",
+          "tests/tools/test_commit_serializer.py"
+        ],
+        "name": "apparatus-a11"
+      },
+      {
+        "description": "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
+          "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
+          "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check"
+        ],
+        "globs": [
+          "tools/lane_maturity.py",
+          "tools/powerplay_acceptance.py",
+          "tools/proof_queue.py",
+          "tools/proof_queue_pkg/runner.py",
+          "tools/disk_guard.py",
+          "tools/drift_harvest.py",
+          "tools/check_gate_liveness.py",
+          "tests/tools/test_lane_maturity.py",
+          "tests/tools/test_powerplay_acceptance.py",
+          "tests/tools/test_proof_queue_lane_maturity.py",
+          "tests/tools/test_disk_guard.py"
+        ],
+        "name": "apparatus-a8-a12-disk-reclaim"
+      }
+    ]
+  },
+  "schema": "molt.proof-plan-projection.v1"
+}

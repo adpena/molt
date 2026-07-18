@@ -46,7 +46,7 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    (`exists:<path>` / `contains:<path>::<needle>`) are checked against the
    post-rebase tree via python file ops. A mismatch fails before push.
 5. **gates (hazard 10)** — the set of touched paths selects gate commands from
-   `tools/molt_dev_gates.toml` (change-class → gates). A non-zero gate halts the
+   `tools/proof_plan.toml` (change-class → gates). A non-zero gate halts the
    run **before push**. `--extra-gate` appends arc-specific gates;
    `--no-gates` skips gating (use only when gating out-of-band).
 6. **push** — `git push origin HEAD:main`. The push command's **exit code is
@@ -74,7 +74,7 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 | 7 | **.venv interpreter flips** (3.12 ↔ 3.14t across `uv` calls) | `python-oracle --python-version 3.12` resolves a candidate (uv → PATH → `sys.executable`), and **verifies `sys.version_info`** before accepting it. An interpreter that does not self-report the requested version is **refused**, never used. |
 | 8 | **Content-marker verification** | `integrate --marker` checks declared `exists:`/`contains:` markers post-rebase, pre-push, via python file ops. |
 | 9 | **Liveness/recovery probes** | `probe --file <p> --pid <n>` reports size+mtime (`os.stat`) and pid liveness (`os.kill(pid, 0)`) — replacing ad-hoc shell one-liners. Non-zero exit if a file is missing or a pid is dead. |
-| 10 | **Gate selection by change-class** | `integrate` reads `tools/molt_dev_gates.toml` (touched-path glob → required gates) and runs exactly the gates the change demands; `always` gates run for any change; `--extra-gate` adds more. Real `**` glob semantics. |
+| 10 | **Gate selection by change-class** | `integrate` reads `tools/proof_plan.toml` (touched-path glob → required gates) and runs exactly the gates the change demands; `always` gates run for any change; `--extra-gate` adds more. Real `**` glob semantics. |
 | 11 | **Backgrounded long-runs die silently** (the harness reaps `run_in_background` process groups at detach [exit 144]; sandboxed tool calls reap even `setsid` daemons at container teardown — both lose block-buffered output: empty log, no exit status) | `detached-run` double-forks + `setsid` with **unbuffered IO** and an atomic state dir (`pid`/`sid`/`cmd.json`/`run.log`/`rc`); `detached-verify` is the **required second tool call** proving the daemon outlived the spawning call (`--min-age-s`), with a three-way verdict: `running` / `done(rc)` / **`died-silent`**. Spawn-and-verify in one call is structurally untrustable (teardown happens after the call returns), so the protocol is two-step *by design*. `detached-run` **never kills**: a live same-name daemon refuses; `--replace` only clears DEAD/finished state. |
 
 ## Subcommand surface
@@ -112,7 +112,7 @@ and the `setsid` respawn died at sandbox teardown the same way. The state-dir
 `rc` file is the only trustworthy completion signal; its absence with a dead
 pid is a *diagnosis*, not a mystery.
 
-## The gate manifest (`tools/molt_dev_gates.toml`)
+## The proof-plan manifest (`tools/proof_plan.toml`)
 
 `integrate` selects gates by matching the touched paths of the integrated
 commits against each rule's globs. `always` gates run for every non-empty

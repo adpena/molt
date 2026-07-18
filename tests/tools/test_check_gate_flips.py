@@ -89,5 +89,5 @@ def test_main_check_passes_when_all_strict(tmp_path):
 
 
 def test_committed_registry_is_clean():
-    # The shipped molt_dev_gates.toml gate_flip registry must not be in drift.
+    # The shipped proof_plan.toml gate_flip registry must not be in drift.
     assert cgf.main(["--config", str(cgf.DEFAULT_CONFIG), "--check"]) == 0
