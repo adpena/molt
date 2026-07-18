@@ -11,8 +11,8 @@ declarative authority ``tools/generator_manifest.toml``:
      structural debt by the project's own definition, gen_protocol.py:25.)
 
   2. UNGATED GENERATOR — a registered authority that does not support ``--check``
-     (``check_mode = false``), or a CI-checkable generator with no ``--check``
-     step in ``.github/workflows/ci.yml``. Closes the §4 gating holes so "a
+     (``check_mode = false``), or a CI-checkable generator with no stable
+     ``--check`` command in ``tools/proof_plan.toml``. Closes the §4 gating holes so "a
      generated file with no committed, gated generator" becomes unexpressible.
 
   3. NON-EXHAUSTIVE CLOSED-DOMAIN MATCH — a hand-written ``match`` / ``matches!``
@@ -45,7 +45,8 @@ Usage::
         # committed output equals a fresh render in THIS environment)
     python3 tools/check_generator_manifest.py --json      # machine-readable
 
-Wired into ``tools/ci_gate.py`` (tier 1) and ``.github/workflows/ci.yml``.
+Wired into ``tools/ci_gate.py`` (tier 1) and the repository-policy family in
+``tools/proof_plan.toml``.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ from pathlib import Path
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 MANIFEST_REL = "tools/generator_manifest.toml"
-CI_WORKFLOW_REL = ".github/workflows/ci.yml"
+PROOF_PLAN_REL = "tools/proof_plan.toml"
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +179,44 @@ def load_manifest(root: Path) -> Manifest:
                     f"{tool}: sync_test {sync_test!r} does not exist (declare an "
                     "existing test or use sync_test_reason)"
                 )
+
+    generator_tools = {str(row["tool"]) for row in generators}
+    generator_dependencies: dict[str, tuple[str, ...]] = {}
+    for row in generators:
+        tool = str(row["tool"])
+        upstream = row.get("upstream_generators", [])
+        if not isinstance(upstream, list) or not all(
+            isinstance(item, str) and item for item in upstream
+        ):
+            raise ManifestError(f"{tool}: upstream_generators must be a string list")
+        if len(upstream) != len(set(upstream)):
+            raise ManifestError(f"{tool}: upstream_generators must be unique")
+        unknown = set(upstream) - generator_tools
+        if unknown:
+            raise ManifestError(
+                f"{tool}: unknown upstream generators {sorted(unknown)!r}"
+            )
+        if tool in upstream:
+            raise ManifestError(f"{tool}: generator cannot depend on itself")
+        generator_dependencies[tool] = tuple(upstream)
+
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit_generator(tool: str) -> None:
+        if tool in visited:
+            return
+        if tool in visiting:
+            cycle = (*visiting[visiting.index(tool) :], tool)
+            raise ManifestError(f"generator dependency cycle: {' -> '.join(cycle)}")
+        visiting.append(tool)
+        for dependency in generator_dependencies[tool]:
+            visit_generator(dependency)
+        visiting.pop()
+        visited.add(tool)
+
+    for tool in generator_dependencies:
+        visit_generator(tool)
 
     closed_domains = data.get("closed_domain", [])
     if not isinstance(closed_domains, list):
@@ -320,8 +359,16 @@ def detect_orphans(root: Path, manifest: Manifest, sa) -> list[Violation]:
 
 def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
     violations: list[Violation] = []
-    ci_path = root / CI_WORKFLOW_REL
-    ci_text = ci_path.read_text(encoding="utf-8") if ci_path.is_file() else ""
+    plan_path = root / PROOF_PLAN_REL
+    plan_data = (
+        tomllib.loads(plan_path.read_text(encoding="utf-8"))
+        if plan_path.is_file()
+        else {}
+    )
+    plan_commands = [
+        dict(command) for command in plan_data.get("command", []) if isinstance(command, dict)
+    ]
+    gated_commands: dict[str, dict] = {}
 
     for g in manifest.generators:
         tool = g["tool"]
@@ -352,19 +399,56 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
                     ),
                 )
             )
-        # A CI-checkable generator MUST have a --check step in ci.yml.
+        # A CI-checkable generator MUST have one stable --check command in the
+        # proof plan. The workflow is executor mechanics and may not duplicate
+        # command spelling.
         if g.get("ci_checkable", True):
             needle = f"{tool} --check"
-            if needle not in ci_text:
+            matching_commands = []
+            for command in plan_commands:
+                argv = tuple(command.get("argv", []))
+                if (
+                    tool in argv
+                    and "--check" in argv
+                    and argv.index(tool) < argv.index("--check")
+                ):
+                    matching_commands.append(command)
+            if len(matching_commands) != 1:
                 violations.append(
                     Violation(
                         kind="ungated",
                         severity="high",
                         location=tool,
                         detail=(
-                            f"no `{needle}` step in {CI_WORKFLOW_REL}. Either wire "
-                            "the CI --check step, or set ci_checkable = false with a "
-                            "ci_skip_reason if its source is not reproducible in CI."
+                            f"expected exactly one `{needle}` command in "
+                            f"{PROOF_PLAN_REL}, found {len(matching_commands)}. Either "
+                            "wire one stable proof command, or set ci_checkable = false "
+                            "with a ci_skip_reason if its source is not reproducible in CI."
+                        ),
+                    )
+                )
+            else:
+                gated_commands[tool] = matching_commands[0]
+
+    for generator in manifest.generators:
+        tool = str(generator["tool"])
+        command = gated_commands.get(tool)
+        if command is None:
+            continue
+        dependencies = set(command.get("dependencies", []))
+        for upstream_tool in generator.get("upstream_generators", []):
+            upstream = gated_commands.get(upstream_tool)
+            upstream_id = None if upstream is None else upstream.get("id")
+            if not isinstance(upstream_id, str) or upstream_id not in dependencies:
+                violations.append(
+                    Violation(
+                        kind="ungated",
+                        severity="high",
+                        location=tool,
+                        detail=(
+                            f"generator depends on {upstream_tool}, but its proof-plan "
+                            f"command does not depend on {upstream_id!r}; encode the "
+                            "generator DAG so downstream freshness cannot race or drift"
                         ),
                     )
                 )
@@ -700,7 +784,8 @@ def check_idempotence(root: Path, manifest: Manifest) -> list[Violation]:
     REAL generator bug surfaced here, never silenced.
 
     Opt-in (--check-idempotence), NOT part of the default CI `--check`: the real
-    CI freshness gate is the per-generator `--check` step in ci.yml, which runs in
+    CI freshness gate is the per-generator stable `--check` command in the proof
+    plan, which runs in
     the Linux/LF CI environment. On a Windows checkout with autocrlf, a generator
     that byte-compares against an LF render can report a spurious staleness here
     (working-copy CRLF vs rendered LF); that is a host line-ending artifact, not a

@@ -147,7 +147,7 @@ def _run_backend_pipeline(
         # Diagnostics projection of the per-build ModuleRegistry (import
         # bedrock, design doc 69 §3).  Same generator run, same digest as the
         # blob embedded in the native object; checked by
-        # `tools/gen_module_registry.py --check` (gate G1).
+        # `tools/check_module_registry.py --check` (gate G1).
         _atomic_write_json(
             Path(artifacts_root) / "module_registry.json",
             prepared_backend_ir.module_registry.registry_json_payload(),

@@ -7,23 +7,126 @@
 | Metric | Before report 001 | Current |
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
-| CI selection families | 5 | 6 |
+| CI selection families | 5 | 10 |
+| Hashed executable authority inputs | 1 | 31 |
 | Local path rules | 35 | 35 |
 | Unique local commands | 73 | 74 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
 
-Execution metadata (`timeout_minutes`, memory/cache/resource classes, targets, backends, profiles, Python, OS, and architecture) is explicitly descriptive in schema v1. It is emitted for planning and telemetry but is not an admission authority until the generated dynamic matrix consumes it; workflow executor mechanics remain authoritative for those values.
+Every selected family expands to stable command IDs. Each command binds an exact OS/architecture/Python/backend/target/profile cell, timeout, resource class, cache domain, and DAG parents. CI admission requires receipts whose canonical LF-normalized authority-closure digest, source commit, command, cell, execution partition, duration, peak RSS, cache disposition, and version-constrained toolchain identities validate.
 
 | Family | Tiers | Required | Executor | Timeout | Resource | Inputs |
 |---|---|---:|---|---:|---|---:|
-| `python_tooling` | pre-push, pr, main | yes | `github-job` | 25 min | `python-tests` | 8 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | `repository-policy` | 1 |
+| `wasm` | pr, main | yes | `github-job` | 90 min | `compiler-build-resource` | 17 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | `python-static` | 8 |
+| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | `python-tests` | 7 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | `compiler-build-resource` | 9 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 60 min | `compiler-build-resource` | 6 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | `compiler-build-resource` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | `network-audit` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | `network-audit` | 5 |
-| `formal` | pr, main, nightly | no | `github-workflow` | 45 min | `formal-tools` | 8 |
+| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | `formal-tools` | 8 |
+
+## Toolchain contracts
+
+Receipts record resolved path and version text, bind their identity hash to both, and fail unless the version satisfies this authority.
+
+| Toolchain | Required version | Setup value | Setup evidence |
+|---|---|---|---:|
+| `python` | `^Python 3\.12\.` | `3.12` | 1 |
+| `uv` | `^uv 0\.11\.24\b` | `0.11.24` | 3 |
+| `node` | `^v24\.16\.0$` | `24.16.0` | 2 |
+| `rustc` | `^rustc 1\.96\.1\b` | `1.96.1` | 4 |
+| `cargo` | `^cargo 1\.96\.1\b` | `1.96.1` | 1 |
+| `clang` | `clang version 22\.1\.8\b` | `22.1.8` | 1 |
+| `llvm-config` | `^22\.1\.8$` | `22.1.8` | 1 |
+| `mlir-opt` | `version 22\.1\.8\b` | `22.1.8` | 1 |
+| `lld` | `\bLLD 22\.1\.8\b` | `22.1.8` | 1 |
+| `lean` | `version 4\.28\.0\b` | `4.28.0` | 1 |
+| `quint` | `^(?:Quint\s+)?0\.32\.0$` | `0.32.0` | 1 |
+| `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `0.20.2` | 1 |
+| `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `0.22.2` | 1 |
+| `wasm-ld` | `\bLLD 22\.1\.8\b` | `22.1.8` | 1 |
+| `wasm-tools` | `^wasm-tools 1\.253\.0$` | `1.253.0` | 1 |
+
+## Executable partitions
+
+| Command ID | Family | Cell | Timeout | Resource | Parents |
+|---|---|---|---:|---|---:|
+| `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.cargo-test.truth` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.performance-doc.freshness` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.op-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.heap-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.runtime-profile.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.cpython-slots.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.op-kinds.drift` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 1 |
+| `repository.wasm-abi.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.cpython-coverage.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.intrinsics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.codecs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.stringprep.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.frontend-protocol.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.frontend-diagnostics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.luau-support.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.differential-lanes.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.target-features.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 2 |
+| `repository.cpython-abi-layout.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 16 |
+| `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
+| `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
+| `repository.runtime-bridge-stubs` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 1200 s | `repository-policy` | 6 |
+| `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1500 s | `compiler-build-resource` | 1 |
+| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
+| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
+| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
+| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
+| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
+| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | 300 s | `python-static` | 0 |
+| `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | 900 s | `python-tests` | 0 |
+| `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | 900 s | `compiler-build-resource` | 0 |
+| `rust.check.runtime-default` | `rust` | `linux-x86_64-rust-native-dev` | 600 s | `compiler-build-resource` | 0 |
+| `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | 600 s | `compiler-build-resource` | 0 |
+| `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | 600 s | `compiler-build-resource` | 0 |
+| `rust.build.workspace` | `rust` | `linux-x86_64-rust-native-dev` | 1200 s | `compiler-build-resource` | 1 |
+| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
+| `rust.test.backend-native-feature` | `rust` | `linux-x86_64-rust-native-dev` | 1200 s | `compiler-build-resource` | 1 |
+| `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
+| `rust.clippy.backend-native` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
+| `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
+| `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 0 |
+| `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 1 |
+| `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 900 s | `compiler-build-resource` | 1 |
+| `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 1 |
+| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | 1200 s | `compiler-build-resource` | 1 |
+| `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 600 s | `python-tests` | 1 |
+| `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 900 s | `compiler-build-resource` | 1 |
+| `security.python.audit` | `python_security` | `linux-x86_64-py312-python-audit` | 900 s | `network-audit` | 0 |
+| `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | 600 s | `network-audit` | 0 |
+| `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | 600 s | `network-audit` | 1 |
+| `formal.lean.build` | `formal` | `linux-x86_64-formal-verification` | 900 s | `formal-tools` | 0 |
+| `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | 300 s | `formal-tools` | 1 |
+| `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | 1200 s | `formal-tools` | 0 |
+| `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | 300 s | `formal-tools` | 0 |
 
 ## Local integration families
 

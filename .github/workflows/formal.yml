@@ -1,28 +1,8 @@
 name: Formal Verification
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'formal/**'
-      - 'runtime/molt-backend-luau/**'
-      - 'runtime/molt-ir/**'
-      - 'runtime/molt-tir/**'
-      - 'runtime/molt-passes/**'
-      - 'tools/check_formal_methods.py'
-      - 'tools/check_correspondence.py'
-      - '.github/workflows/formal.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'formal/**'
-      - 'runtime/molt-backend-luau/**'
-      - 'runtime/molt-ir/**'
-      - 'runtime/molt-tir/**'
-      - 'runtime/molt-passes/**'
-      - 'tools/check_formal_methods.py'
-      - 'tools/check_correspondence.py'
-      - '.github/workflows/formal.yml'
+  workflow_call:
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -38,6 +18,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
 
       - name: Install elan
         run: |
@@ -55,23 +39,27 @@ jobs:
             lean-${{ runner.os }}-
 
       - name: Build proofs
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd formal/lean -- lake build
+        run: python3 tools/proof_plan.py --run-command formal.lean.build --receipt proof-receipts/formal-lean.json
         timeout-minutes: 15
 
-      - name: Check sorry count
-        working-directory: formal/lean
-        run: |
-          SORRY_COUNT=$(grep -r "\bsorry\b" --include="*.lean" -l | wc -l | tr -d ' ')
-          echo "Files with sorry: $SORRY_COUNT"
-          BASELINE=$(cat SORRY_BASELINE | tr -d '[:space:]')
-          echo "Baseline: $BASELINE"
-          if [ "$SORRY_COUNT" -gt "$BASELINE" ]; then
-            echo "::error::Sorry file count ($SORRY_COUNT) exceeds baseline ($BASELINE). Fix new sorry gaps or update SORRY_BASELINE."
-            exit 1
-          fi
-          if [ "$SORRY_COUNT" -lt "$BASELINE" ]; then
-            echo "::notice::Sorry file count ($SORRY_COUNT) is below baseline ($BASELINE). Consider lowering SORRY_BASELINE."
-          fi
+      - name: Upload Lean proof receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-formal-lean
+          path: proof-receipts/formal-lean.json
+          if-no-files-found: error
+
+      - name: Check Lean sorry baseline
+        run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean-sorry.json
+
+      - name: Upload Lean sorry receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-formal-lean-sorry
+          path: proof-receipts/formal-lean-sorry.json
+          if-no-files-found: error
 
   formal-quint:
     name: Quint Model Checking
@@ -80,9 +68,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+
       - uses: actions/setup-node@v6
         with:
-          node-version: '24.16.0'
+          node-version: "24.16.0"
           check-latest: true
 
       - name: Install Quint
@@ -103,7 +95,15 @@ jobs:
           "$evaluator_dir/quint_evaluator" --help >/dev/null
 
       - name: Verify all models
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/check_formal_methods.py --quint-only
+        run: python3 tools/proof_plan.py --run-command formal.quint.models --receipt proof-receipts/formal-quint.json
+
+      - name: Upload Quint proof receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-formal-quint
+          path: proof-receipts/formal-quint.json
+          if-no-files-found: error
 
   formal-correspondence:
     name: Proof-Code Correspondence
@@ -117,4 +117,12 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Check NaN-box and Luau builtin correspondence
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/check_formal_methods.py --check-correspondence
+        run: python3 tools/proof_plan.py --run-command formal.correspondence --receipt proof-receipts/formal-correspondence.json
+
+      - name: Upload correspondence receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-formal-correspondence
+          path: proof-receipts/formal-correspondence.json
+          if-no-files-found: error

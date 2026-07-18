@@ -4,34 +4,57 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
-import re
 import sys
 
-from proof_plan import DEFAULT_MANIFEST, ProofPlan
+from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
 JSON_OUTPUT = ROOT / ".github" / "proof-plan.generated.json"
 DOC_OUTPUT = ROOT / "docs" / "agent" / "PROOF_PLAN.generated.md"
-FORMAL_WORKFLOW = ROOT / ".github" / "workflows" / "formal.yml"
-
-
-def _authority_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _json_projection(plan: ProofPlan) -> str:
+    local_commands = {
+        **{
+            f"local.always.{index}": command
+            for index, command in enumerate(plan.always)
+        },
+        **{
+            f"local.{rule['name']}.{index}": command
+            for rule in plan.local_rules
+            for index, command in enumerate(rule.get("gates", []))
+        },
+    }
+    local_rules = [
+        {
+            **rule,
+            "command_ids": [
+                f"local.{rule['name']}.{index}"
+                for index, _command in enumerate(rule.get("gates", []))
+            ],
+        }
+        for rule in plan.local_rules
+    ]
     payload = {
-        "schema": "molt.proof-plan-projection.v1",
+        "schema": "molt.proof-plan-projection.v3",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
-        "authority_sha256": _authority_digest(plan.path),
+        "authority_inputs": list(plan.authority_inputs),
+        "authority_sha256": _authority_sha256(plan),
+        "receipt_schema": plan.receipt_schema,
         "ci_families": [family.data for family in plan.families],
+        "matrix_cells": [cell.data for cell in plan.matrix_cells],
+        "commands": [command.data for command in plan.commands],
+        "toolchain_policies": [policy.data for policy in plan.toolchain_policies],
         "local": {
             "always": list(plan.always),
-            "rules": list(plan.local_rules),
+            "always_command_ids": [
+                f"local.always.{index}" for index, _command in enumerate(plan.always)
+            ],
+            "commands": local_commands,
+            "rules": local_rules,
         },
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -53,17 +76,19 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "|---|---:|---:|",
         "| Hand-maintained path-to-proof authorities | 4 | 1 |",
         f"| CI selection families | 5 | {len(plan.families)} |",
+        f"| Hashed executable authority inputs | 1 | {len(plan.authority_inputs)} |",
         f"| Local path rules | 35 | {len(plan.local_rules)} |",
         f"| Unique local commands | 73 | {len(unique_local_commands)} |",
         "| Handwritten Python classifier rule tables | 5 | 0 |",
         "",
         "## CI families",
         "",
-        "Execution metadata (`timeout_minutes`, memory/cache/resource classes, "
-        "targets, backends, profiles, Python, OS, and architecture) is explicitly "
-        "descriptive in schema v1. It is emitted for planning and telemetry but "
-        "is not an admission authority until the generated dynamic matrix consumes "
-        "it; workflow executor mechanics remain authoritative for those values.",
+        "Every selected family expands to stable command IDs. Each command binds "
+        "an exact OS/architecture/Python/backend/target/profile cell, timeout, "
+        "resource class, cache domain, and DAG parents. CI admission requires "
+        "receipts whose canonical LF-normalized authority-closure digest, source "
+        "commit, command, cell, execution partition, duration, peak RSS, cache "
+        "disposition, and version-constrained toolchain identities validate.",
         "",
         "| Family | Tiers | Required | Executor | Timeout | Resource | Inputs |",
         "|---|---|---:|---|---:|---|---:|",
@@ -75,6 +100,40 @@ def _markdown_projection(plan: ProofPlan) -> str:
             f"{'yes' if data['required'] else 'no'} | `{data['executor']}` | "
             f"{data['timeout_minutes']} min | `{data['resource_class']}` | "
             f"{len(data['inputs'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Toolchain contracts",
+            "",
+            "Receipts record resolved path and version text, bind their identity "
+            "hash to both, and fail unless the version satisfies this authority.",
+            "",
+            "| Toolchain | Required version | Setup value | Setup evidence |",
+            "|---|---|---|---:|",
+        ]
+    )
+    for policy in plan.toolchain_policies:
+        data = policy.data
+        lines.append(
+            f"| `{policy.name}` | `{data['version_pattern']}` | "
+            f"`{data['setup_value']}` | {len(data['setup_evidence'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Executable partitions",
+            "",
+            "| Command ID | Family | Cell | Timeout | Resource | Parents |",
+            "|---|---|---|---:|---|---:|",
+        ]
+    )
+    for command in plan.commands:
+        data = command.data
+        lines.append(
+            f"| `{command.id}` | `{data['family']}` | `{data['cell']}` | "
+            f"{data['timeout_seconds']} s | `{data['resource_class']}` | "
+            f"{len(data['dependencies'])} |"
         )
     lines.extend(
         [
@@ -120,39 +179,6 @@ def _check_or_write(path: Path, content: str, *, check: bool) -> bool:
     return True
 
 
-def _formal_workflow_projection(plan: ProofPlan, *, check: bool) -> bool:
-    family = next(family for family in plan.families if family.name == "formal")
-    rendered = "".join(f"      - '{pattern}'\n" for pattern in family.inputs)
-    text = FORMAL_WORKFLOW.read_text(encoding="utf-8")
-    patterns = (
-        re.compile(
-            r"(?ms)(  push:\n    branches: \[main\]\n    paths:\n).*?(?=  pull_request:)"
-        ),
-        re.compile(
-            r"(?ms)(  pull_request:\n    branches: \[main\]\n    paths:\n).*?(?=\nenv:)"
-        ),
-    )
-    projected = text
-    for pattern in patterns:
-        projected, replacements = pattern.subn(
-            lambda match: match.group(1) + rendered, projected, count=1
-        )
-        if replacements != 1:
-            raise ValueError(
-                f"formal workflow trigger shape missing: {pattern.pattern}"
-            )
-    if check:
-        if projected != text:
-            print(
-                "proof-plan projection stale: .github/workflows/formal.yml",
-                file=sys.stderr,
-            )
-            return False
-        return True
-    FORMAL_WORKFLOW.write_text(projected, encoding="utf-8")
-    return True
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
@@ -163,13 +189,13 @@ def main(argv: list[str] | None = None) -> int:
         (
             _check_or_write(JSON_OUTPUT, _json_projection(plan), check=args.check),
             _check_or_write(DOC_OUTPUT, _markdown_projection(plan), check=args.check),
-            _formal_workflow_projection(plan, check=args.check),
         )
     )
     if ok:
         mode = "verified" if args.check else "generated"
         print(
             f"proof-plan: {mode} families={len(plan.families)} "
+            f"commands={len(plan.commands)} cells={len(plan.matrix_cells)} "
             f"local_rules={len(plan.local_rules)}"
         )
     return 0 if ok else 1

@@ -9,9 +9,10 @@ import sqlite3
 import sys
 import traceback
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from tools.proof_queue_pkg import diagnostics, state
+from tools import proof_plan
 
 
 def _notebooks_root(args: argparse.Namespace) -> Path:
@@ -22,11 +23,13 @@ def _notebooks_root(args: argparse.Namespace) -> Path:
     )
 
 
-
 def _run_payload_with_notes(
     conn: sqlite3.Connection, rows: list[sqlite3.Row]
 ) -> list[dict[str, object]]:
-    payload = [_row_to_payload(row) for row in rows]
+    receipt_contexts: dict[tuple[str, ...], dict[str, object]] = {}
+    payload = [
+        _row_to_payload(row, receipt_contexts=receipt_contexts) for row in rows
+    ]
     run_ids = [str(item["run_id"]) for item in payload]
     notes = state._notes_for_run_ids(conn, run_ids)
     edges = state._edges_for_run_ids(conn, run_ids)
@@ -43,7 +46,6 @@ def _run_payload_with_notes(
         }
         item["diagnostics"] = diagnostics._run_diagnostics(row)
     return payload
-
 
 
 def _marimo_notebook_text(run: dict[str, object]) -> str:
@@ -135,7 +137,6 @@ if __name__ == "__main__":
 '''
 
 
-
 def _write_marimo_notebook(
     args: argparse.Namespace,
     conn: sqlite3.Connection,
@@ -155,9 +156,89 @@ def _write_marimo_notebook(
     return path
 
 
+def _queue_peak_rss_bytes(summary_path: object) -> int:
+    try:
+        payload = json.loads(Path(str(summary_path)).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return 0
+    for key in ("peak_total", "peak"):
+        record = payload.get(key)
+        if isinstance(record, dict) and isinstance(record.get("rss_kb"), int):
+            return int(record["rss_kb"]) * 1024
+    return 0
 
-def _row_to_payload(row: sqlite3.Row) -> dict[str, object]:
+
+def _queue_receipt_context(
+    requested_toolchains: tuple[str, ...],
+) -> dict[str, object]:
+    plan = proof_plan.ProofPlan.load()
     return {
+        "schema": plan.receipt_schema,
+        "authority_sha256": proof_plan._authority_sha256(plan),
+        "source_commit": proof_plan._source_commit(),
+        "source_tree_state": proof_plan._source_tree_state(),
+        "environment": {
+            "os": proof_plan._normalized_os(),
+            "arch": proof_plan._normalized_arch(),
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        },
+        "toolchains": proof_plan.toolchain_fingerprints(plan, requested_toolchains),
+    }
+
+
+def _queue_proof_receipt(
+    row: sqlite3.Row | Mapping[str, Any],
+    *,
+    contexts: dict[tuple[str, ...], dict[str, object]] | None = None,
+) -> dict[str, object]:
+    status = str(row["status"])
+    returncode = row["returncode"]
+    succeeded = status == "passed" and returncode == 0
+    command_id = f"queue.{row['logical_id']}"
+    argv = json.loads(row["command_json"])
+    requested_toolchains = ["python"]
+    if any(Path(str(part)).name in {"cargo", "cargo.exe"} for part in argv):
+        requested_toolchains.extend(("cargo", "rustc"))
+    toolchain_key = tuple(requested_toolchains)
+    context = None if contexts is None else contexts.get(toolchain_key)
+    if context is None:
+        context = _queue_receipt_context(toolchain_key)
+        if contexts is not None:
+            contexts[toolchain_key] = context
+    return {
+        **context,
+        "authority_kind": "proof-queue-dynamic-command",
+        "family": "heavy_queue",
+        "commands": [
+            {
+                "id": command_id,
+                "family": "heavy_queue",
+                "cell": f"{proof_plan._normalized_os()}-{proof_plan._normalized_arch()}-dynamic",
+                "argv": argv,
+                "cwd": row["cwd"],
+                "dependencies": [],
+                "tiers": ["queued-heavy"],
+                "resource_class": row["resource_family"],
+                "timeout_seconds": None,
+                "started_at": row["started_at"],
+                "duration_seconds": row["elapsed_s"] or 0.0,
+                "peak_rss_bytes": _queue_peak_rss_bytes(row["summary_json"]),
+                "cache_disposition": "unknown",
+                "status": "success" if succeeded else status,
+                "returncode": returncode,
+            }
+        ],
+        "executed_partitions": [command_id] if succeeded else [],
+        "status": "success" if succeeded else status,
+    }
+
+
+def _row_to_payload(
+    row: sqlite3.Row,
+    *,
+    receipt_contexts: dict[tuple[str, ...], dict[str, object]] | None = None,
+) -> dict[str, object]:
+    payload = {
         "run_id": row["run_id"],
         "logical_id": row["logical_id"],
         "reason": row["reason"],
@@ -177,7 +258,8 @@ def _row_to_payload(row: sqlite3.Row) -> dict[str, object]:
         "finished_at": row["finished_at"],
         "elapsed_s": row["elapsed_s"],
     }
-
+    payload["proof_receipt"] = _queue_proof_receipt(row, contexts=receipt_contexts)
+    return payload
 
 
 def _write_failed_run_log(
@@ -203,7 +285,6 @@ def _write_failed_run_log(
         print("", file=log)
         for line in lines:
             print(line, file=log)
-
 
 
 def _write_queued_submission_log(
@@ -248,7 +329,6 @@ def _write_queued_submission_log(
         print("No proof command has launched for this queued row.", file=log)
 
 
-
 def _append_queue_infra_log(
     log_path: Path,
     *,
@@ -269,7 +349,6 @@ def _append_queue_infra_log(
         print(f"{type(exc).__name__}: {exc}", file=log)
         print("", file=log)
         traceback.print_exception(type(exc), exc, exc.__traceback__, file=log)
-
 
 
 def _try_insert_queue_infra_note(
@@ -301,7 +380,6 @@ def _try_insert_queue_infra_note(
             exc=note_exc,
             fatal=False,
         )
-
 
 
 def _try_write_marimo_notebook(
@@ -339,7 +417,6 @@ def _try_write_marimo_notebook(
             file=sys.stderr,
         )
         return None
-
 
 
 def _fail_preexecution_run(
@@ -398,7 +475,6 @@ def _fail_preexecution_run(
     print(f"failed {run_id} rc=2")
     print(f"log: {log_path}")
     return 2
-
 
 
 def _notebook_projection_expected(

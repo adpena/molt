@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Module registry generator CLI (import bedrock, design doc 69 §3).
+"""Module registry projection checker (import bedrock, design doc 69 section 3).
 
-The importable authority lives in ``src/molt/cli/module_registry.py`` — the
-build pipeline calls it directly to derive the per-build registry from the
-binary-image closure plan.  This CLI is the out-of-build projection checker
-(gate G1/G7): it re-derives the ``registry_digest`` from an emitted
-``module_registry.json`` and fails closed on any drift between projections.
+The importable authority lives in src/molt/cli/module_registry.py. The build
+pipeline calls it directly to derive the per-build registry from the binary-image
+closure plan. This CLI re-derives registry_digest from emitted
+module_registry.json artifacts and fails closed on projection drift.
 
 Usage:
-    python tools/gen_module_registry.py --check <module_registry.json> [...]
+    python tools/check_module_registry.py --check <module_registry.json> [...]
 """
 
 from __future__ import annotations
@@ -23,9 +22,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from molt.cli.module_registry import (  # noqa: E402
-    check_registry_json_payload,
-)
+from molt.cli.module_registry import check_registry_json_payload  # noqa: E402
 
 
 def _check(paths: list[Path]) -> int:

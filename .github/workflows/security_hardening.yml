@@ -33,13 +33,20 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
         with:
-          version: "latest"
+          version: "0.11.24"
       - name: Set up project Python
         run: uv python install "$(cat .python-version)"
       - name: Install dependencies
         run: uv sync --frozen --group dev
       - name: pip-audit
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- uv run pip-audit --ignore-vuln CVE-2025-69872
+        run: uv run python3 tools/proof_plan.py --run-family python_security --receipt proof-receipts/python_security.json
+      - name: Upload Python security receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-python-security
+          path: proof-receipts/python_security.json
+          if-no-files-found: error
 
   rust-security:
     if: github.event_name != 'workflow_call' || inputs.rust_security
@@ -60,11 +67,16 @@ jobs:
           workspaces: ". -> target/sessions/rust-security"
       - name: Install cargo-deny and cargo-audit
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --locked
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-audit --locked
-      - name: cargo deny check
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check
-      - name: cargo audit
-        run: |
-          rm -rf "${CARGO_HOME:-$HOME/.cargo}/advisory-db"
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo audit
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --version 0.20.2 --locked
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-audit --version 0.22.2 --locked
+      - name: Refresh advisory database
+        run: rm -rf "${CARGO_HOME:-$HOME/.cargo}/advisory-db"
+      - name: Execute Rust security partitions
+        run: python3 tools/proof_plan.py --run-family rust_security --receipt proof-receipts/rust_security.json
+      - name: Upload Rust security receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-rust-security
+          path: proof-receipts/rust_security.json
+          if-no-files-found: error

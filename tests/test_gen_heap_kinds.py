@@ -135,8 +135,8 @@ def test_runtime_visit_and_clear_dispatch_are_exhaustive_without_wildcards() -> 
     source = (
         ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs"
     ).read_text(encoding="utf-8")
-    visit = source.split("pub(crate) unsafe fn visit_owned_edges", 1)[1].split(
-        "pub(crate) unsafe fn detached_resource_count", 1
+    visit = source.split("pub(crate) unsafe fn visit_owned_values", 1)[1].split(
+        "pub(crate) unsafe fn visit_owned_edges", 1
     )[0]
     clear = source.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[1].split(
         "pub(crate) unsafe fn detach_terminal_owned_edges", 1
@@ -175,7 +175,10 @@ def test_gc_reentrancy_is_runtime_owned_and_free_thread_fails_before_snapshot() 
     assert "static GC_RUNNING" not in gc
     assert "pub(crate) gc_running: AtomicBool" in state
     assert "runtime_state(py).gc_running" in gc
-    free_thread = gc.split('if cfg!(feature = "free-threaded")', 1)[1].split(
+    collector = gc.split("pub(crate) unsafe fn collect_generation", 1)[1].split(
+        "pub(crate) unsafe fn collect_cycles", 1
+    )[0]
+    free_thread = collector.split('if cfg!(feature = "free-threaded")', 1)[1].split(
         "// Reentrancy guard", 1
     )[0]
     assert "GcCollectStatus::UnsupportedConcurrency" in free_thread
@@ -297,8 +300,8 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
     assert "generator_exception_stack_take" in generator_clear
     assert "generator_context_stack_take" in generator_clear
     assert "GEN_CONTROL_SIZE..payload_size" in generator_clear
-    delete_garbage = gc.split("pub(crate) unsafe fn collect_cycles", 1)[1].split(
-        "unsafe fn run_finalizer_once", 1
+    delete_garbage = gc.split("pub(crate) unsafe fn collect_generation", 1)[1].split(
+        "pub(crate) unsafe fn collect_cycles", 1
     )[0]
     assert "DetachedEdgeSink::try_with_capacities" in delete_garbage
     assert "clear_cycle_edges_with_sink" in delete_garbage
