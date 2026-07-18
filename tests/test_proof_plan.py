@@ -335,6 +335,43 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
     )
 
 
+def test_toolchain_content_probe_ignores_provisioner_stderr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    content = tmp_path / "canonical-tool"
+    content.write_bytes(b"canonical payload")
+    policy = proof_plan.ToolchainPolicy(
+        "probe",
+        {
+            "executable": "probe",
+            "version_args": ["--version"],
+            "version_pattern": r"probe 1\.0",
+            "content_path_command": ["probe-content"],
+        },
+    )
+
+    def fake_run(argv, **_kwargs):
+        if tuple(argv) == ("probe-content",):
+            return proof_plan.subprocess.CompletedProcess(
+                argv,
+                0,
+                f"{content}\n",
+                "info: syncing freshly provisioned toolchain\n",
+            )
+        return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
+
+    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    monkeypatch.setattr(proof_plan.subprocess, "run", fake_run)
+
+    fingerprint = proof_plan._version_fingerprint(policy)
+    assert fingerprint is not None
+    assert fingerprint["content_path"] == str(content.resolve())
+    assert (
+        fingerprint["executable_sha256"]
+        == hashlib.sha256(b"canonical payload").hexdigest()
+    )
+
+
 def test_manifest_rejects_missing_repository_command_inputs() -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.unit.harness"

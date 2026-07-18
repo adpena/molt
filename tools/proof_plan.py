@@ -1165,13 +1165,16 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 cwd=probe_directory,
                 check=False,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=5,
             )
-            candidate = resolved.stdout.strip().splitlines()[0]
-            if resolved.returncode != 0 or not candidate:
+            candidates = tuple(
+                line.strip() for line in resolved.stdout.splitlines() if line.strip()
+            )
+            if resolved.returncode != 0 or len(candidates) != 1:
                 raise OSError("toolchain content resolver failed")
+            candidate = candidates[0]
             candidate_path = Path(candidate)
             if not candidate_path.is_absolute():
                 candidate_path = probe_directory / candidate_path
