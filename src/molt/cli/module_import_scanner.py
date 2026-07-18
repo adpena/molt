@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -15,6 +15,15 @@ from molt.cli.target_python import (
 from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
     static_test_truthiness,
+)
+from molt.compiler_analysis.python_binding_facts import (
+    PythonIdentity,
+    PythonParameterRef,
+)
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingPolicy,
+    analyze_python_bindings,
+    python_ast_digest,
 )
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
@@ -317,8 +326,7 @@ def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
 def _statically_executed_boolop_values(
     node: ast.BoolOp,
     *,
-    type_checking_names: Collection[str],
-    type_checking_module_aliases: Collection[str],
+    fact_truth: Callable[[ast.expr], bool | None],
 ) -> tuple[ast.expr, ...]:
     values: list[ast.expr] = []
     if isinstance(node.op, ast.And):
@@ -326,8 +334,9 @@ def _statically_executed_boolop_values(
             values.append(value)
             value_truth = static_test_truthiness(
                 value,
-                type_checking_names=type_checking_names,
-                type_checking_module_aliases=type_checking_module_aliases,
+                type_checking_names=(),
+                type_checking_module_aliases=(),
+                fact_truth=fact_truth,
             )
             if value_truth is False:
                 return tuple(values)
@@ -340,8 +349,9 @@ def _statically_executed_boolop_values(
             values.append(value)
             value_truth = static_test_truthiness(
                 value,
-                type_checking_names=type_checking_names,
-                type_checking_module_aliases=type_checking_module_aliases,
+                type_checking_names=(),
+                type_checking_module_aliases=(),
+                fact_truth=fact_truth,
             )
             if value_truth is True:
                 return tuple(values)
@@ -350,9 +360,6 @@ def _statically_executed_boolop_values(
                 return tuple(values)
         return tuple(values)
     return tuple(node.values)
-
-
-_TYPE_CHECKING_MODULES = frozenset({"typing", "typing_extensions"})
 
 
 def _function_parameter_names_from_args(args: ast.arguments) -> list[str]:
@@ -366,61 +373,6 @@ def _function_parameter_names_from_args(args: ast.arguments) -> list[str]:
     return names
 
 
-class _StaticTruthBindings:
-    def __init__(self) -> None:
-        self.type_checking_names: set[str] = {"TYPE_CHECKING"}
-        self.type_checking_module_aliases: set[str] = set(_TYPE_CHECKING_MODULES)
-
-    def fork(self) -> "_StaticTruthBindings":
-        forked = _StaticTruthBindings()
-        forked.type_checking_names = set(self.type_checking_names)
-        forked.type_checking_module_aliases = set(self.type_checking_module_aliases)
-        return forked
-
-    def record_import_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in _TYPE_CHECKING_MODULES:
-                    self.type_checking_module_aliases.add(alias.asname or alias.name)
-            return
-        if node.level or node.module not in _TYPE_CHECKING_MODULES:
-            return
-        for alias in node.names:
-            if alias.name == "TYPE_CHECKING":
-                self.type_checking_names.add(alias.asname or alias.name)
-
-    def is_type_checking_only_import(self, node: ast.Import | ast.ImportFrom) -> bool:
-        return (
-            isinstance(node, ast.ImportFrom)
-            and not node.level
-            and node.module in _TYPE_CHECKING_MODULES
-            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
-        )
-
-    def record_rebinding_target(self, target: ast.expr) -> None:
-        if isinstance(target, ast.Name):
-            self.type_checking_names.discard(target.id)
-            self.type_checking_module_aliases.discard(target.id)
-
-    def record_assignment_target(self, target: ast.expr, value: ast.AST) -> None:
-        if (
-            isinstance(target, ast.Name)
-            and isinstance(value, ast.Constant)
-            and value.value is False
-        ):
-            self.type_checking_names.add(target.id)
-            self.type_checking_module_aliases.discard(target.id)
-            return
-        self.record_rebinding_target(target)
-
-    def static_if_live_branch(self, node: ast.If) -> list[ast.stmt] | None:
-        return static_if_live_branch(
-            node,
-            type_checking_names=self.type_checking_names,
-            type_checking_module_aliases=self.type_checking_module_aliases,
-        )
-
-
 def _static_scan_nodes(
     tree: ast.AST,
     *,
@@ -429,137 +381,123 @@ def _static_scan_nodes(
 ) -> tuple[ast.AST, ...]:
     if not isinstance(tree, ast.Module):
         return tuple(ast.walk(tree))
+    binding_index = analyze_python_bindings(
+        tree,
+        source_digest=python_ast_digest(tree),
+        policy=PythonBindingPolicy(),
+    )
     nodes: list[ast.AST] = []
     included_qualnames = frozenset(included_function_qualnames)
 
     def visit(
         node: ast.AST,
         qualname_prefix: tuple[str, ...] = (),
-        truth_bindings: _StaticTruthBindings | None = None,
     ) -> None:
-        truth_bindings = truth_bindings or _StaticTruthBindings()
         nodes.append(node)
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            truth_bindings.record_import_aliases(node)
             return
         if isinstance(node, ast.Assign):
-            visit(node.value, qualname_prefix, truth_bindings)
+            visit(node.value, qualname_prefix)
             for target in node.targets:
-                visit(target, qualname_prefix, truth_bindings)
-                truth_bindings.record_assignment_target(target, node.value)
+                visit(target, qualname_prefix)
             return
         if isinstance(node, ast.AnnAssign):
-            visit(node.annotation, qualname_prefix, truth_bindings)
+            visit(node.annotation, qualname_prefix)
             if node.value is not None:
-                visit(node.value, qualname_prefix, truth_bindings)
-            visit(node.target, qualname_prefix, truth_bindings)
-            if node.value is not None:
-                truth_bindings.record_assignment_target(node.target, node.value)
-            else:
-                truth_bindings.record_rebinding_target(node.target)
+                visit(node.value, qualname_prefix)
+            visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.AugAssign):
-            visit(node.target, qualname_prefix, truth_bindings)
-            visit(node.value, qualname_prefix, truth_bindings)
-            truth_bindings.record_rebinding_target(node.target)
+            visit(node.target, qualname_prefix)
+            visit(node.value, qualname_prefix)
             return
         if isinstance(node, ast.Delete):
             for target in node.targets:
-                visit(target, qualname_prefix, truth_bindings)
-                truth_bindings.record_rebinding_target(target)
+                visit(target, qualname_prefix)
             return
         if isinstance(node, ast.NamedExpr):
-            visit(node.value, qualname_prefix, truth_bindings)
-            visit(node.target, qualname_prefix, truth_bindings)
-            truth_bindings.record_rebinding_target(node.target)
+            visit(node.value, qualname_prefix)
+            visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.BoolOp):
             for value in _statically_executed_boolop_values(
                 node,
-                type_checking_names=truth_bindings.type_checking_names,
-                type_checking_module_aliases=(
-                    truth_bindings.type_checking_module_aliases
-                ),
+                fact_truth=binding_index.static_truth,
             ):
-                visit(value, qualname_prefix, truth_bindings)
+                visit(value, qualname_prefix)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix, truth_bindings)
+                visit(decorator, qualname_prefix)
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix, truth_bindings)
+                visit(default, qualname_prefix)
             for arg in (
                 list(node.args.posonlyargs)
                 + list(node.args.args)
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    visit(arg.annotation, qualname_prefix, truth_bindings)
+                    visit(arg.annotation, qualname_prefix)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                visit(node.args.vararg.annotation, qualname_prefix, truth_bindings)
+                visit(node.args.vararg.annotation, qualname_prefix)
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                visit(node.args.kwarg.annotation, qualname_prefix, truth_bindings)
+                visit(node.args.kwarg.annotation, qualname_prefix)
             if node.returns is not None:
-                visit(node.returns, qualname_prefix, truth_bindings)
+                visit(node.returns, qualname_prefix)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix, truth_bindings)
+                visit(type_param, qualname_prefix)
             if include_function_bodies or function_qualname in included_qualnames:
-                function_truth = truth_bindings.fork()
-                for name in _function_parameter_names_from_args(node.args):
-                    function_truth.type_checking_names.discard(name)
-                    function_truth.type_checking_module_aliases.discard(name)
                 function_prefix = _qualified_child(qualname_prefix, node.name)
                 for stmt in node.body:
-                    visit(stmt, function_prefix, function_truth)
+                    visit(stmt, function_prefix)
             return
         if isinstance(node, ast.Lambda):
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix, truth_bindings)
+                visit(default, qualname_prefix)
             if include_function_bodies:
-                lambda_truth = truth_bindings.fork()
-                for name in _function_parameter_names_from_args(node.args):
-                    lambda_truth.type_checking_names.discard(name)
-                    lambda_truth.type_checking_module_aliases.discard(name)
-                visit(node.body, qualname_prefix, lambda_truth)
+                visit(node.body, qualname_prefix)
             return
         if isinstance(node, ast.ClassDef):
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix, truth_bindings)
+                visit(decorator, qualname_prefix)
             for base in node.bases:
-                visit(base, qualname_prefix, truth_bindings)
+                visit(base, qualname_prefix)
             for keyword in node.keywords:
                 if keyword.value is not None:
-                    visit(keyword.value, qualname_prefix, truth_bindings)
+                    visit(keyword.value, qualname_prefix)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix, truth_bindings)
+                visit(type_param, qualname_prefix)
             class_prefix = _qualified_child(qualname_prefix, node.name)
-            class_truth = truth_bindings.fork()
             for stmt in node.body:
-                visit(stmt, class_prefix, class_truth)
+                visit(stmt, class_prefix)
             return
         if isinstance(node, ast.If):
-            visit(node.test, qualname_prefix, truth_bindings)
-            static_branch = truth_bindings.static_if_live_branch(node)
+            visit(node.test, qualname_prefix)
+            static_branch = static_if_live_branch(
+                node,
+                type_checking_names=(),
+                type_checking_module_aliases=(),
+                fact_truth=binding_index.static_truth,
+            )
             if static_branch is not None:
                 for stmt in static_branch:
-                    visit(stmt, qualname_prefix, truth_bindings)
+                    visit(stmt, qualname_prefix)
             else:
                 for stmt in node.body:
-                    visit(stmt, qualname_prefix, truth_bindings)
+                    visit(stmt, qualname_prefix)
                 for stmt in node.orelse:
-                    visit(stmt, qualname_prefix, truth_bindings)
+                    visit(stmt, qualname_prefix)
             return
         for child in ast.iter_child_nodes(node):
-            visit(child, qualname_prefix, truth_bindings)
+            visit(child, qualname_prefix)
 
-    truth_bindings = _StaticTruthBindings()
     for stmt in tree.body:
-        visit(stmt, truth_bindings=truth_bindings)
+        visit(stmt)
     return tuple(nodes)
 
 
@@ -614,7 +552,6 @@ def _collect_imports(
     needs_string_templatelib = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
     template_str_cls = getattr(ast, "TemplateStr", None)
-    module_string_constants: dict[str, str] = {}
     helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_import_calls: dict[
         str,
@@ -626,6 +563,17 @@ def _collect_imports(
         target_python=target_python.feature_version,
     )
     import_flow = None
+    binding_index = analyze_python_bindings(
+        cast(ast.Module, tree),
+        source_digest=python_ast_digest(tree),
+        policy=PythonBindingPolicy(
+            target_python=target_python.feature_version,
+            module_name=module_name,
+            module_spec_name=module_name,
+            module_is_package=is_package,
+            module_execution_kind="script" if module_name is None else "imported",
+        ),
+    )
 
     def _import_contexts(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         nonlocal import_flow
@@ -637,177 +585,28 @@ def _collect_imports(
         )
     module_body = list(getattr(tree, "body", []))
     function_walks: list[
-        tuple[
-            ast.FunctionDef | ast.AsyncFunctionDef,
-            tuple[ast.AST, ...],
-            "_StaticImportBindings",
-        ]
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
     ] = []
 
-    class _StaticImportBindings:
-        def __init__(self) -> None:
-            self.module_aliases: set[str] = {"importlib"}
-            self.util_aliases: set[str] = set()
-            self.import_module_aliases: set[str] = set()
-            self.find_spec_aliases: set[str] = set()
-            self.builtins_aliases: set[str] = {"builtins"}
-            self.dunder_import_aliases: set[str] = {"__import__"}
-            self.module_import_module_mutated = False
-            self.module_util_mutated = False
-            self.util_find_spec_mutated = False
-            self.builtins_dunder_import_mutated = False
-
-        def fork(self) -> "_StaticImportBindings":
-            forked = _StaticImportBindings()
-            forked.module_aliases = set(self.module_aliases)
-            forked.util_aliases = set(self.util_aliases)
-            forked.import_module_aliases = set(self.import_module_aliases)
-            forked.find_spec_aliases = set(self.find_spec_aliases)
-            forked.builtins_aliases = set(self.builtins_aliases)
-            forked.dunder_import_aliases = set(self.dunder_import_aliases)
-            forked.module_import_module_mutated = self.module_import_module_mutated
-            forked.module_util_mutated = self.module_util_mutated
-            forked.util_find_spec_mutated = self.util_find_spec_mutated
-            forked.builtins_dunder_import_mutated = self.builtins_dunder_import_mutated
-            return forked
-
-        def record_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    self.invalidate_name(alias.asname or alias.name.split(".", 1)[0])
-                    if alias.name == "importlib":
-                        self.module_aliases.add(alias.asname or "importlib")
-                    elif alias.name == "builtins":
-                        self.builtins_aliases.add(alias.asname or "builtins")
-                    elif alias.name == "importlib.util":
-                        if alias.asname:
-                            if not self.module_util_mutated:
-                                self.util_aliases.add(alias.asname)
-                        else:
-                            self.module_aliases.add("importlib")
-                    elif alias.name.startswith("importlib.") and not alias.asname:
-                        self.module_aliases.add("importlib")
-                return
-            for alias in node.names:
-                self.invalidate_name(alias.asname or alias.name)
-            if node.level:
-                return
-            if node.module == "builtins":
-                for alias in node.names:
-                    if alias.name == "__import__":
-                        self.dunder_import_aliases.add(alias.asname or alias.name)
-                return
-            if node.module == "importlib.util":
-                for alias in node.names:
-                    if alias.name == "find_spec" and not self.util_find_spec_mutated:
-                        self.find_spec_aliases.add(alias.asname or alias.name)
-                return
-            if node.module != "importlib":
-                return
-            for alias in node.names:
-                bind_name = alias.asname or alias.name
-                if alias.name == "import_module":
-                    if not self.module_import_module_mutated:
-                        self.import_module_aliases.add(bind_name)
-                elif alias.name == "util":
-                    if not self.module_util_mutated:
-                        self.util_aliases.add(bind_name)
-
-        def invalidate_name(self, name: str) -> None:
-            self.module_aliases.discard(name)
-            self.util_aliases.discard(name)
-            self.import_module_aliases.discard(name)
-            self.find_spec_aliases.discard(name)
-            self.builtins_aliases.discard(name)
-            self.dunder_import_aliases.discard(name)
-
-        def record_rebinding_target(self, target: ast.expr) -> None:
-            if isinstance(target, ast.Name):
-                self.invalidate_name(target.id)
-                return
-            if (
-                isinstance(target, ast.Attribute)
-                and isinstance(target.value, ast.Name)
-                and target.value.id in self.module_aliases
-            ):
-                if target.attr == "import_module":
-                    self.module_import_module_mutated = True
-                elif target.attr == "util":
-                    self.module_util_mutated = True
-                return
-            if not isinstance(target, ast.Attribute):
-                return
-            if (
-                target.attr == "__import__"
-                and isinstance(target.value, ast.Name)
-                and target.value.id in self.builtins_aliases
-            ):
-                self.builtins_dunder_import_mutated = True
-                return
-            if target.attr != "find_spec":
-                return
-            if (
-                isinstance(target.value, ast.Name)
-                and target.value.id in self.util_aliases
-            ) or (
-                isinstance(target.value, ast.Attribute)
-                and target.value.attr == "util"
-                and isinstance(target.value.value, ast.Name)
-                and target.value.value.id in self.module_aliases
-            ):
-                self.util_find_spec_mutated = True
-
-        def target(self, func: ast.expr) -> str | None:
-            if isinstance(func, ast.Name):
-                if func.id in self.dunder_import_aliases:
-                    if self.builtins_dunder_import_mutated:
-                        return None
-                    return "builtins.__import__"
-                if func.id in self.import_module_aliases:
-                    return "importlib.import_module"
-                if func.id in self.find_spec_aliases:
-                    if self.util_find_spec_mutated:
-                        return None
-                    return "importlib.util.find_spec"
-                return func.id
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "import_module"
-                and isinstance(func.value, ast.Name)
-                and func.value.id in self.module_aliases
-            ):
-                if self.module_import_module_mutated:
-                    return None
-                return "importlib.import_module"
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "__import__"
-                and isinstance(func.value, ast.Name)
-                and func.value.id in self.builtins_aliases
-            ):
-                if self.builtins_dunder_import_mutated:
-                    return None
+    def _static_call_target(
+        call: ast.Call, *, allow_possible: bool = False
+    ) -> str | None:
+        fact = binding_index.call_fact(call)
+        if fact is not None:
+            if fact.callee_is(PythonIdentity.BUILTINS_IMPORT):
                 return "builtins.__import__"
-            if isinstance(func, ast.Attribute) and func.attr == "find_spec":
-                if self.util_find_spec_mutated:
-                    return None
-                if (
-                    isinstance(func.value, ast.Name)
-                    and func.value.id in self.util_aliases
-                ):
+            if fact.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+                return "importlib.import_module"
+            if fact.callee_is(PythonIdentity.IMPORTLIB_FIND_SPEC):
+                return "importlib.util.find_spec"
+            if allow_possible:
+                if fact.callee_may_be(PythonIdentity.BUILTINS_IMPORT):
+                    return "builtins.__import__"
+                if fact.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+                    return "importlib.import_module"
+                if fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC):
                     return "importlib.util.find_spec"
-                if (
-                    isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "util"
-                    and isinstance(func.value.value, ast.Name)
-                    and func.value.value.id in self.module_aliases
-                ):
-                    if self.module_util_mutated:
-                        return None
-                    return "importlib.util.find_spec"
-            return None
-
-    helper_importlib_bindings = _StaticImportBindings()
+        return call.func.id if isinstance(call.func, ast.Name) else None
 
     def _is_static_import_target(target: str | None) -> bool:
         return target in {
@@ -818,21 +617,25 @@ def _collect_imports(
             "molt_importlib_import_transaction",
         }
 
+    def _bound_static_value(
+        node: ast.expr,
+        bindings: Mapping[str, object],
+    ) -> object | None:
+        value = binding_index.static_value(node)
+        if isinstance(value, PythonParameterRef):
+            return bindings.get(value.name)
+        return value
+
     def _resolve_string_sequence(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
     ) -> list[str] | None:
-        if isinstance(node, (ast.Tuple, ast.List)):
-            out: list[str] = []
-            for element in node.elts:
-                value = _resolve_string_constant(element, bindings, seen)
-                if value is None:
-                    return None
-                out.append(value)
-            return out
-        if isinstance(node, ast.Name):
-            bound = bindings.get(node.id)
-            if isinstance(bound, list) and all(isinstance(item, str) for item in bound):
-                return list(cast(list[str], bound))
+        value = _bound_static_value(node, bindings)
+        if isinstance(value, tuple) and all(
+            isinstance(item, str) for item in value
+        ):
+            return [cast(str, item) for item in value]
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return list(cast(list[str], value))
         return None
 
     def _resolve_string_constant(
@@ -842,13 +645,9 @@ def _collect_imports(
     ) -> str | None:
         bindings = bindings or {}
         seen = seen or set()
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name):
-            bound = bindings.get(node.id)
-            if isinstance(bound, str):
-                return bound
-            return module_string_constants.get(node.id)
+        value = _bound_static_value(node, bindings)
+        if isinstance(value, str):
+            return value
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _resolve_string_constant(node.left, bindings, seen)
             right = _resolve_string_constant(node.right, bindings, seen)
@@ -856,7 +655,7 @@ def _collect_imports(
                 return left + right
             return None
         if isinstance(node, ast.Call):
-            target = helper_importlib_bindings.target(node.func)
+            target = _static_call_target(node)
             if (
                 target
                 in {
@@ -973,13 +772,8 @@ def _collect_imports(
     ) -> int | None:
         if node is None:
             return None
-        if isinstance(node, ast.Constant) and isinstance(node.value, int):
-            return node.value
-        if isinstance(node, ast.Name):
-            value = bindings.get(node.id)
-            if isinstance(value, int):
-                return value
-        return None
+        value = _bound_static_value(node, bindings)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     def _static_import_call_payload(
         call: ast.Call,
@@ -1121,28 +915,9 @@ def _collect_imports(
 
     if module_import_helper_scan:
         for stmt in module_body:
-            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-                helper_importlib_bindings.record_aliases(stmt)
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target = stmt.targets[0]
-                for rebind_target in stmt.targets:
-                    helper_importlib_bindings.record_rebinding_target(rebind_target)
-                if isinstance(target, ast.Name):
-                    value = _resolve_string_constant(stmt.value)
-                    if value is not None:
-                        module_string_constants[target.id] = value
-            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                helper_importlib_bindings.record_rebinding_target(stmt.target)
-                value = _resolve_string_constant(stmt.value) if stmt.value else None
-                if value is not None:
-                    module_string_constants[stmt.target.id] = value
-            elif isinstance(stmt, ast.AugAssign):
-                helper_importlib_bindings.record_rebinding_target(stmt.target)
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 stmt_nodes = tuple(ast.walk(stmt))
-                function_walks.append(
-                    (stmt, stmt_nodes, helper_importlib_bindings.fork())
-                )
+                function_walks.append((stmt, stmt_nodes))
                 if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
                     continue
                 ret_expr = stmt.body[0].value
@@ -1160,7 +935,7 @@ def _collect_imports(
                     continue
                 helper_string_functions[stmt.name] = (params, ret_expr)
 
-        for stmt, stmt_nodes, stmt_importlib_bindings in function_walks:
+        for stmt, stmt_nodes in function_walks:
             params = [
                 arg.arg
                 for arg in (
@@ -1180,7 +955,7 @@ def _collect_imports(
             for node in stmt_nodes:
                 if not isinstance(node, ast.Call):
                     continue
-                target = stmt_importlib_bindings.target(node.func)
+                target = _static_call_target(node, allow_possible=True)
                 if not _is_static_import_target(target):
                     continue
                 assert target is not None
@@ -1219,13 +994,14 @@ def _collect_imports(
 
     def _record_import_statement(
         node: ast.Import | ast.ImportFrom,
-        bindings: _StaticImportBindings,
-        truth_bindings: _StaticTruthBindings,
     ) -> None:
-        truth_bindings.record_import_aliases(node)
-        if truth_bindings.is_type_checking_only_import(node):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and not node.level
+            and node.module in {"typing", "typing_extensions"}
+            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
+        ):
             return
-        bindings.record_aliases(node)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
@@ -1247,9 +1023,9 @@ def _collect_imports(
             _sealed_import_modules(request, _import_contexts(node))
         )
 
-    def _collect_import_call(node: ast.Call, bindings: _StaticImportBindings) -> None:
+    def _collect_import_call(node: ast.Call) -> None:
         _record_helper_call_imports(node)
-        target = bindings.target(node.func)
+        target = _static_call_target(node)
         if not _is_static_import_target(target):
             return
         assert target is not None
@@ -1264,124 +1040,89 @@ def _collect_imports(
 
     def _visit_many(
         nodes: Iterable[ast.AST],
-        bindings: _StaticImportBindings,
-        truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         for child in nodes:
-            _visit(child, bindings, truth_bindings, qualname_prefix)
+            _visit(child, qualname_prefix)
 
     def _visit(
         node: ast.AST,
-        bindings: _StaticImportBindings,
-        truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         nonlocal needs_string_templatelib, needs_typing
         if isinstance(node, ast.Module):
-            _visit_many(node.body, bindings, truth_bindings)
+            _visit_many(node.body)
             return
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            _record_import_statement(node, bindings, truth_bindings)
+            _record_import_statement(node)
             return
         if isinstance(node, ast.Assign):
-            _visit(node.value, bindings, truth_bindings, qualname_prefix)
-            _visit_many(node.targets, bindings, truth_bindings, qualname_prefix)
-            for target in node.targets:
-                bindings.record_rebinding_target(target)
-                truth_bindings.record_assignment_target(target, node.value)
+            _visit(node.value, qualname_prefix)
+            _visit_many(node.targets, qualname_prefix)
             return
         if isinstance(node, ast.AnnAssign):
-            _visit(node.annotation, bindings, truth_bindings, qualname_prefix)
+            _visit(node.annotation, qualname_prefix)
             if node.value is not None:
-                _visit(node.value, bindings, truth_bindings, qualname_prefix)
-            _visit(node.target, bindings, truth_bindings, qualname_prefix)
-            bindings.record_rebinding_target(node.target)
-            if node.value is not None:
-                truth_bindings.record_assignment_target(node.target, node.value)
-            else:
-                truth_bindings.record_rebinding_target(node.target)
+                _visit(node.value, qualname_prefix)
+            _visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.AugAssign):
-            _visit(node.target, bindings, truth_bindings, qualname_prefix)
-            _visit(node.value, bindings, truth_bindings, qualname_prefix)
-            bindings.record_rebinding_target(node.target)
-            truth_bindings.record_rebinding_target(node.target)
+            _visit(node.target, qualname_prefix)
+            _visit(node.value, qualname_prefix)
             return
         if isinstance(node, ast.Delete):
-            _visit_many(node.targets, bindings, truth_bindings, qualname_prefix)
-            for target in node.targets:
-                bindings.record_rebinding_target(target)
-                truth_bindings.record_rebinding_target(target)
+            _visit_many(node.targets, qualname_prefix)
             return
         if isinstance(node, ast.If):
-            _visit(node.test, bindings, truth_bindings, qualname_prefix)
-            static_branch = truth_bindings.static_if_live_branch(node)
+            _visit(node.test, qualname_prefix)
+            static_branch = static_if_live_branch(
+                node,
+                type_checking_names=(),
+                type_checking_module_aliases=(),
+                fact_truth=binding_index.static_truth,
+            )
             if static_branch is not None:
-                _visit_many(static_branch, bindings, truth_bindings, qualname_prefix)
+                _visit_many(static_branch, qualname_prefix)
             else:
-                _visit_many(node.body, bindings, truth_bindings, qualname_prefix)
-                _visit_many(node.orelse, bindings, truth_bindings, qualname_prefix)
+                _visit_many(node.body, qualname_prefix)
+                _visit_many(node.orelse, qualname_prefix)
             return
         if isinstance(node, ast.NamedExpr):
-            _visit(node.value, bindings, truth_bindings, qualname_prefix)
-            _visit(node.target, bindings, truth_bindings, qualname_prefix)
-            bindings.record_rebinding_target(node.target)
-            truth_bindings.record_rebinding_target(node.target)
+            _visit(node.value, qualname_prefix)
+            _visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.BoolOp):
             for value in _statically_executed_boolop_values(
                 node,
-                type_checking_names=truth_bindings.type_checking_names,
-                type_checking_module_aliases=(
-                    truth_bindings.type_checking_module_aliases
-                ),
+                fact_truth=binding_index.static_truth,
             ):
-                _visit(value, bindings, truth_bindings, qualname_prefix)
+                _visit(value, qualname_prefix)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
                 _visit_many(
-                    node.decorator_list, bindings, truth_bindings, qualname_prefix
+                    node.decorator_list, qualname_prefix
                 )
-                _visit_many(node.bases, bindings, truth_bindings, qualname_prefix)
+                _visit_many(node.bases, qualname_prefix)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
-                    bindings,
-                    truth_bindings,
                     qualname_prefix,
                 )
                 _visit_many(
                     getattr(node, "type_params", ()),
-                    bindings,
-                    truth_bindings,
                     qualname_prefix,
                 )
-                class_bindings = bindings.fork()
-                class_truth_bindings = truth_bindings.fork()
                 class_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(
-                    node.body, class_bindings, class_truth_bindings, class_prefix
-                )
-                bindings.module_import_module_mutated |= (
-                    class_bindings.module_import_module_mutated
-                )
-                bindings.module_util_mutated |= class_bindings.module_util_mutated
-                bindings.util_find_spec_mutated |= class_bindings.util_find_spec_mutated
-                bindings.builtins_dunder_import_mutated |= (
-                    class_bindings.builtins_dunder_import_mutated
-                )
+                _visit_many(node.body, class_prefix)
                 return
-            _visit_many(node.decorator_list, bindings, truth_bindings, qualname_prefix)
+            _visit_many(node.decorator_list, qualname_prefix)
             _visit_many(
-                list(node.args.defaults), bindings, truth_bindings, qualname_prefix
+                list(node.args.defaults), qualname_prefix
             )
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
-                bindings,
-                truth_bindings,
                 qualname_prefix,
             )
             for arg in (
@@ -1390,27 +1131,21 @@ def _collect_imports(
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    _visit(arg.annotation, bindings, truth_bindings, qualname_prefix)
+                    _visit(arg.annotation, qualname_prefix)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
                 _visit(
                     node.args.vararg.annotation,
-                    bindings,
-                    truth_bindings,
                     qualname_prefix,
                 )
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
                 _visit(
                     node.args.kwarg.annotation,
-                    bindings,
-                    truth_bindings,
                     qualname_prefix,
                 )
             if node.returns is not None:
-                _visit(node.returns, bindings, truth_bindings, qualname_prefix)
+                _visit(node.returns, qualname_prefix)
             _visit_many(
                 getattr(node, "type_params", ()),
-                bindings,
-                truth_bindings,
                 qualname_prefix,
             )
             function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
@@ -1418,36 +1153,19 @@ def _collect_imports(
                 import_scan_mode == "full"
                 or function_qualname in selected_static_helper_qualnames
             ):
-                function_bindings = bindings.fork()
-                function_truth_bindings = truth_bindings.fork()
-                for name in _function_parameter_names(node):
-                    function_bindings.invalidate_name(name)
-                    function_truth_bindings.record_rebinding_target(ast.Name(id=name))
                 function_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(
-                    node.body,
-                    function_bindings,
-                    function_truth_bindings,
-                    function_prefix,
-                )
+                _visit_many(node.body, function_prefix)
             return
         if isinstance(node, ast.Lambda):
             _visit_many(
-                list(node.args.defaults), bindings, truth_bindings, qualname_prefix
+                list(node.args.defaults), qualname_prefix
             )
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
-                bindings,
-                truth_bindings,
                 qualname_prefix,
             )
             if import_scan_mode == "full":
-                lambda_bindings = bindings.fork()
-                lambda_truth_bindings = truth_bindings.fork()
-                for name in _function_parameter_names(node):
-                    lambda_bindings.invalidate_name(name)
-                    lambda_truth_bindings.record_rebinding_target(ast.Name(id=name))
-                _visit(node.body, lambda_bindings, lambda_truth_bindings)
+                _visit(node.body)
             return
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             needs_typing = True
@@ -1459,11 +1177,11 @@ def _collect_imports(
             needs_string_templatelib = True
             return
         if isinstance(node, ast.Call):
-            _collect_import_call(node, bindings)
+            _collect_import_call(node)
         for child in ast.iter_child_nodes(node):
-            _visit(child, bindings, truth_bindings, qualname_prefix)
+            _visit(child, qualname_prefix)
 
-    _visit(tree, _StaticImportBindings(), _StaticTruthBindings())
+    _visit(tree)
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:

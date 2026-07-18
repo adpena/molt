@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Event, RLock
-from typing import Final, Iterable, Literal, Sequence
+from typing import Final, Iterable, Literal, Sequence, cast
 
 from molt.compiler_analysis.python_binding_facts import (
     ALL_INVALID_MEMBERS,
@@ -30,7 +31,9 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonIdentity,
     PythonMember,
     PythonNodeKey,
+    PythonParameterRef,
     PythonScopeFact,
+    PythonStaticValue,
     exact_identity,
     possible_identity,
 )
@@ -61,11 +64,14 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 1
+_ANALYSIS_SCHEMA: Final = 2
 _MAX_LOOP_FIXPOINT_STEPS: Final = 8
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+)
+_IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = (
+    ALL_INVALID_MEMBERS & ~int(PythonMember.TYPING_TYPE_CHECKING)
 )
 
 
@@ -85,6 +91,8 @@ _CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
     "builtins": PythonIdentity.BUILTINS_MODULE,
     "sys": PythonIdentity.SYS_MODULE,
     "inspect": PythonIdentity.INSPECT_MODULE,
+    "typing": PythonIdentity.TYPING_MODULE,
+    "typing_extensions": PythonIdentity.TYPING_MODULE,
 }
 
 
@@ -93,6 +101,11 @@ class PythonBindingPolicy:
     """Semantic assumptions which are part of the deterministic cache key."""
 
     target_python: tuple[int, int] = (3, 12)
+    target_sys_platform: str | None = None
+    module_name: str | None = None
+    module_spec_name: str | None = None
+    module_is_package: bool = False
+    module_execution_kind: Literal["imported", "module", "script"] = "imported"
     standard_imports_are_canonical: bool = True
 
 
@@ -102,6 +115,7 @@ class _StatePool:
         self._states: list[PythonBindingState] = [initial]
         self._ids: dict[PythonBindingState, int] = {initial: 0}
         self._binding_maps: list[dict[int, IdentityMask]] = [{}]
+        self._static_maps: list[dict[int, PythonStaticValue]] = [{}]
 
     def intern(self, state: PythonBindingState) -> int:
         known = self._ids.get(state)
@@ -132,7 +146,33 @@ class _StatePool:
                 bindings.pop(state.updated_slot, None)
             else:
                 bindings[state.updated_slot] = state.updated_value
+        if not state.parents:
+            static_values: dict[int, PythonStaticValue] = {}
+        elif len(state.parents) == 1:
+            static_values = self._static_maps[state.parents[0]]
+        else:
+            static_values = dict[int, PythonStaticValue]()
+            static_slots = {
+                slot for parent in state.parents for slot in self._static_maps[parent]
+            }
+            for slot in static_slots:
+                values = tuple(
+                    self._static_maps[parent].get(slot)
+                    for parent in state.parents
+                )
+                joined = values[0] if values else None
+                if joined is not None and all(
+                    value == joined for value in values[1:]
+                ):
+                    static_values[slot] = joined
+        if state.updated_slot >= 0:
+            static_values = static_values.copy()
+            if state.updated_static_value is None:
+                static_values.pop(state.updated_slot, None)
+            else:
+                static_values[state.updated_slot] = state.updated_static_value
         self._binding_maps.append(bindings)
+        self._static_maps.append(static_values)
         self._ids[state] = index
         return index
 
@@ -148,9 +188,21 @@ class _StatePool:
             value |= OTHER_IDENTITY
         return value
 
-    def set_binding(self, state_id: int, slot: int, value: IdentityMask) -> int:
+    def static_value(self, state_id: int, slot: int) -> PythonStaticValue:
+        if not self._states[state_id].clean_slots & (1 << slot):
+            return None
+        return self._static_maps[state_id].get(slot)
+
+    def set_binding(
+        self,
+        state_id: int,
+        slot: int,
+        value: IdentityMask,
+        static_value: PythonStaticValue = None,
+    ) -> int:
         if (
             self.binding(state_id, slot) == value
+            and self.static_value(state_id, slot) == static_value
             and self._states[state_id].clean_slots & (1 << slot)
         ):
             return state_id
@@ -160,6 +212,7 @@ class _StatePool:
                 parents=(state_id,),
                 updated_slot=slot,
                 updated_value=value,
+                updated_static_value=static_value,
                 clean_slots=state.clean_slots | (1 << slot),
                 maybe_invalidated_members=state.maybe_invalidated_members,
                 definitely_invalidated_members=state.definitely_invalidated_members,
@@ -284,6 +337,7 @@ class _StatePool:
         slots = self._binding_maps[left_id].keys() | self._binding_maps[right_id].keys()
         return all(
             self.binding(left_id, slot) == self.binding(right_id, slot)
+            and self.static_value(left_id, slot) == self.static_value(right_id, slot)
             for slot in slots
         )
 
@@ -484,6 +538,7 @@ class _ExpressionResult:
     state_id: int
     identities: IdentityMask
     effects: EffectMask
+    static_value: PythonStaticValue = None
 
 
 @dataclass(slots=True)
@@ -613,6 +668,12 @@ class _Analyzer:
                 return builtin | OTHER_IDENTITY
         return builtin
 
+    def _lookup_static_value(
+        self, state_id: int, scope: _Scope, name: str
+    ) -> PythonStaticValue:
+        slot = self._slot_for_name(scope, name)
+        return None if slot is None else self.states.static_value(state_id, slot)
+
     def _record_state(self, state_id: int) -> None:
         for observed in self._observed_stack:
             observed.append(state_id)
@@ -624,9 +685,15 @@ class _Analyzer:
         state_before: int,
         identities: IdentityMask,
         effects: EffectMask,
+        static_value: PythonStaticValue,
     ) -> None:
         self.expressions[_node_key(node)] = PythonExpressionFact(
-            _node_key(node), scope.scope_id, state_before, identities, effects
+            _node_key(node),
+            scope.scope_id,
+            state_before,
+            identities,
+            effects,
+            static_value,
         )
 
     def _widen_module_bindings(self, state_id: int) -> int:
@@ -724,6 +791,12 @@ class _Analyzer:
                 PythonMember.UTIL_FIND_SPEC,
                 PythonIdentity.IMPORTLIB_FIND_SPEC,
             )
+        elif member == "TYPE_CHECKING":
+            value |= admitted(
+                PythonIdentity.TYPING_MODULE,
+                PythonMember.TYPING_TYPE_CHECKING,
+                PythonIdentity.STATIC_FALSE,
+            )
         elif member in {"f_globals", "__globals__"}:
             owners = int(PythonIdentity.CURRENT_FRAME | PythonIdentity.USER_FUNCTION)
             if base & owners:
@@ -754,6 +827,8 @@ class _Analyzer:
             members |= int(PythonMember.MACHINERY_MODULE_SPEC)
         if base & int(PythonIdentity.IMPORTLIB_UTIL_MODULE) and member == "find_spec":
             members |= int(PythonMember.UTIL_FIND_SPEC)
+        if base & int(PythonIdentity.TYPING_MODULE) and member == "TYPE_CHECKING":
+            members |= int(PythonMember.TYPING_TYPE_CHECKING)
         if base & int(PythonIdentity.MODULE_SPEC_CLASS):
             members |= int(PythonMember.MODULE_SPEC_CLASS)
         if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
@@ -831,10 +906,20 @@ class _Analyzer:
         before = state_id
         effects = NO_EFFECTS
         identities = OTHER_IDENTITY
+        static_value: PythonStaticValue = None
         if isinstance(node, ast.Constant):
-            identities = exact_identity(PythonIdentity.INERT_VALUE)
+            identities = exact_identity(
+                PythonIdentity.STATIC_FALSE
+                if node.value is False
+                else PythonIdentity.INERT_VALUE
+            )
+            if isinstance(node.value, str) or (
+                isinstance(node.value, int) and not isinstance(node.value, bool)
+            ):
+                static_value = node.value
         elif isinstance(node, ast.Name):
             identities = self._lookup_name(state_id, scope, node.id)
+            static_value = self._lookup_static_value(state_id, scope, node.id)
         elif isinstance(node, ast.Attribute):
             base = self.eval_expr(node.value, state_id, scope)
             state_id = base.state_id
@@ -854,6 +939,22 @@ class _Analyzer:
                     identities |= OTHER_IDENTITY
             else:
                 identities = OTHER_IDENTITY
+                effects |= EXECUTES_ARBITRARY_PYTHON
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self.eval_expr(node.left, state_id, scope)
+            right = self.eval_expr(node.right, left.state_id, scope)
+            state_id = right.state_id
+            effects |= left.effects | right.effects | RAISES
+            identities = possible_identity(PythonIdentity.INERT_VALUE)
+            if isinstance(left.static_value, str) and isinstance(
+                right.static_value, str
+            ):
+                static_value = left.static_value + right.static_value
+            elif isinstance(left.static_value, int) and isinstance(
+                right.static_value, int
+            ):
+                static_value = left.static_value + right.static_value
+            else:
                 effects |= EXECUTES_ARBITRARY_PYTHON
         elif isinstance(node, ast.Call):
             callee_result = self.eval_expr(node.func, state_id, scope)
@@ -880,9 +981,16 @@ class _Analyzer:
             )
         elif isinstance(node, ast.NamedExpr):
             value = self.eval_expr(node.value, state_id, scope)
-            state_id, target_effects = self.assign_target(node.target, value.identities, value.state_id, scope)
+            state_id, target_effects = self.assign_target(
+                node.target,
+                value.identities,
+                value.state_id,
+                scope,
+                static_value=value.static_value,
+            )
             effects = value.effects | target_effects
             identities = value.identities
+            static_value = value.static_value
         elif isinstance(node, ast.Lambda):
             state_id, defaults_effect = self._eval_arguments(node.args, state_id, scope)
             effects |= defaults_effect | ALLOCATES
@@ -947,12 +1055,18 @@ class _Analyzer:
             if not isinstance(node, ast.GeneratorExp):
                 effects |= INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
         elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            element_static_values: list[PythonStaticValue] = []
             for element in node.elts:
                 result = self.eval_expr(element, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+                element_static_values.append(result.static_value)
             identities = exact_identity(PythonIdentity.INERT_VALUE) | OTHER_IDENTITY
             effects |= ALLOCATES
+            if not isinstance(node, ast.Set) and all(
+                isinstance(value, str) for value in element_static_values
+            ):
+                static_value = tuple(cast(str, value) for value in element_static_values)
         elif isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values):
                 if key is not None:
@@ -986,9 +1100,11 @@ class _Analyzer:
                 effects |= INVOKES_COMPARISON_CALLBACK
         if not isinstance(node, ast.Call):
             state_id = self._apply_effects(state_id, effects)
-        self._record_expression(node, scope, before, identities, effects)
+        self._record_expression(
+            node, scope, before, identities, effects, static_value
+        )
         self._record_state(state_id)
-        return _ExpressionResult(state_id, identities, effects)
+        return _ExpressionResult(state_id, identities, effects, static_value)
 
     def _eval_arguments(self, arguments: ast.arguments, state_id: int, scope: _Scope) -> tuple[int, EffectMask]:
         effects = NO_EFFECTS
@@ -1060,6 +1176,8 @@ class _Analyzer:
         value: IdentityMask,
         state_id: int,
         scope: _Scope,
+        *,
+        static_value: PythonStaticValue = None,
     ) -> tuple[int, EffectMask]:
         effects = NO_EFFECTS
         if isinstance(target, ast.Name):
@@ -1070,7 +1188,9 @@ class _Analyzer:
             effects |= release_effects
             if release_effects:
                 value |= OTHER_IDENTITY
-            state_id = self.states.set_binding(state_id, slot, value)
+            state_id = self.states.set_binding(
+                state_id, slot, value, static_value
+            )
             return state_id, effects
         if isinstance(target, (ast.Tuple, ast.List)):
             effects |= INVOKES_ITERATION_CALLBACK | EXECUTES_ARBITRARY_PYTHON | RAISES
@@ -1141,6 +1261,8 @@ class _Analyzer:
             ("importlib.machinery", "ModuleSpec"): PythonIdentity.MODULE_SPEC_CLASS,
             ("builtins", "__import__"): PythonIdentity.BUILTINS_IMPORT,
             ("inspect", "currentframe"): PythonIdentity.INSPECT_CURRENTFRAME,
+            ("typing", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
+            ("typing_extensions", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
         }.get((module, name))
         if identity is None:
             return OTHER_IDENTITY
@@ -1174,7 +1296,13 @@ class _Analyzer:
             state_id = result.state_id
             effects |= result.effects
             for target in node.targets:
-                state_id, target_effects = self.assign_target(target, result.identities, state_id, scope)
+                state_id, target_effects = self.assign_target(
+                    target,
+                    result.identities,
+                    state_id,
+                    scope,
+                    static_value=result.static_value,
+                )
                 effects |= target_effects
         elif isinstance(node, ast.AnnAssign):
             if self.policy.target_python < (3, 14):
@@ -1185,7 +1313,13 @@ class _Analyzer:
                 result = self.eval_expr(node.value, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
-                state_id, target_effects = self.assign_target(node.target, result.identities, state_id, scope)
+                state_id, target_effects = self.assign_target(
+                    node.target,
+                    result.identities,
+                    state_id,
+                    scope,
+                    static_value=result.static_value,
+                )
                 effects |= target_effects
         elif isinstance(node, ast.AugAssign):
             target_read = self.eval_expr(node.target, state_id, scope) if isinstance(node.target, ast.expr) else _ExpressionResult(state_id, OTHER_IDENTITY, NO_EFFECTS)
@@ -1209,7 +1343,9 @@ class _Analyzer:
                 for module in identity_modules
             )
             if not canonical_statement:
-                state_id = self._apply_effects(state_id, effects)
+                state_id = self.states.invalidate_members(
+                    state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
+                )
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".", 1)[0]
                 identity_module = alias.name if alias.asname else alias.name.split(".", 1)[0]
@@ -1238,7 +1374,9 @@ class _Analyzer:
                 )
             )
             if not canonical_statement:
-                state_id = self._apply_effects(state_id, effects)
+                state_id = self.states.invalidate_members(
+                    state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
+                )
             if any(alias.name == "*" for alias in node.names):
                 state_id = self._widen_module_bindings(state_id)
             for alias in node.names:
@@ -1258,6 +1396,8 @@ class _Analyzer:
         elif isinstance(node, ast.If):
             test = self.eval_expr(node.test, state_id, scope)
             truth = _literal_truth(node.test)
+            if truth is None and test.identities == int(PythonIdentity.STATIC_FALSE):
+                truth = False
             if truth is not None:
                 state_id, branch_effects = self.exec_statements(
                     node.body if truth else node.orelse,
@@ -1463,7 +1603,12 @@ class _Analyzer:
         for parameter in parameters:
             slot = scope.slots.get(parameter)
             if slot is not None:
-                state_id = self.states.set_binding(state_id, slot, OTHER_IDENTITY)
+                state_id = self.states.set_binding(
+                    state_id,
+                    slot,
+                    OTHER_IDENTITY,
+                    PythonParameterRef(parameter),
+                )
         scope.entry_state_id = state_id
         observed: list[int] = [state_id]
         self._observed_stack.append(observed)
@@ -1545,9 +1690,39 @@ class _Analyzer:
             )
             for scope in self.scopes
         )
+        from molt.compiler_analysis.python_imports import (
+            ModuleImportContext,
+            ModuleImportFlow,
+            _analyze_module_import_flow_uncached,
+            _module_import_flow_required,
+            context_import_state,
+        )
+
+        import_context = ModuleImportContext(
+            module_name=self.policy.module_name,
+            is_package=self.policy.module_is_package,
+            spec_name=self.policy.module_spec_name,
+            target_python=self.policy.target_python,
+            execution_kind=self.policy.module_execution_kind,
+        )
+        if _module_import_flow_required(tree):
+            module_import_flow = _analyze_module_import_flow_uncached(
+                tree, import_context
+            )
+        else:
+            import_state = context_import_state(import_context)
+            module_import_flow = ModuleImportFlow(
+                {}, (import_state,), (import_state,)
+            )
         return PythonBindingIndex.create(
             source_digest=self.source_digest,
             target_python=self.policy.target_python,
+            target_sys_platform=self.policy.target_sys_platform,
+            module_name=self.policy.module_name,
+            module_spec_name=self.policy.module_spec_name,
+            module_is_package=self.policy.module_is_package,
+            module_execution_kind=self.policy.module_execution_kind,
+            module_import_flow=module_import_flow,
             expressions=tuple(sorted(self.expressions.values(), key=lambda fact: fact.node)),
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
@@ -1578,8 +1753,7 @@ class _BindingIndexCache:
     def __init__(self, max_entries: int = 128) -> None:
         self._max_entries = max_entries
         self._lock = RLock()
-        self._ready: dict[tuple[object, ...], PythonBindingIndex] = {}
-        self._insertion_order: list[tuple[object, ...]] = []
+        self._ready: OrderedDict[tuple[object, ...], PythonBindingIndex] = OrderedDict()
         self._pending: dict[tuple[object, ...], _PendingAnalysis] = {}
 
     def get_or_compute(
@@ -1613,10 +1787,8 @@ class _BindingIndexCache:
             raise
         with self._lock:
             self._ready[key] = result
-            self._insertion_order.append(key)
-            while len(self._insertion_order) > self._max_entries:
-                oldest = self._insertion_order.pop(0)
-                self._ready.pop(oldest, None)
+            while len(self._ready) > self._max_entries:
+                self._ready.popitem(last=False)
             pending.result = result
             self._pending.pop(key, None)
             pending.ready.set()
@@ -1630,15 +1802,26 @@ def python_source_digest(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
+def python_ast_digest(tree: ast.AST) -> str:
+    """Return a filename- and object-identity-independent AST content key."""
+
+    serialized = ast.dump(tree, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def analyze_python_bindings(
     tree: ast.Module,
     *,
     source_digest: str,
     policy: PythonBindingPolicy = PythonBindingPolicy(),
 ) -> PythonBindingIndex:
-    """Analyze an AST without caching; the caller supplies its content digest."""
+    """Analyze an AST through the canonical content-addressed index cache."""
 
-    return _Analyzer(policy, source_digest).analyze(tree)
+    key = (_ANALYSIS_SCHEMA, source_digest, policy)
+    return _INDEX_CACHE.get_or_compute(
+        key,
+        lambda: _Analyzer(policy, source_digest).analyze(tree),
+    )
 
 
 def analyze_python_source_bindings(
@@ -1650,11 +1833,11 @@ def analyze_python_source_bindings(
     """Parse and analyze source through the deterministic single-flight cache."""
 
     digest = python_source_digest(source)
-    key = (_ANALYSIS_SCHEMA, digest, policy.target_python, policy.standard_imports_are_canonical)
+    key = (_ANALYSIS_SCHEMA, digest, policy)
 
     def compute() -> PythonBindingIndex:
         tree = ast.parse(source, filename=filename, feature_version=policy.target_python)
-        return analyze_python_bindings(tree, source_digest=digest, policy=policy)
+        return _Analyzer(policy, digest).analyze(tree)
 
     return _INDEX_CACHE.get_or_compute(key, compute)
 
@@ -1663,5 +1846,6 @@ __all__ = [
     "PythonBindingPolicy",
     "analyze_python_bindings",
     "analyze_python_source_bindings",
+    "python_ast_digest",
     "python_source_digest",
 ]

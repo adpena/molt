@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import ast
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from threading import Event
 
 import pytest
 
+from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_binding_facts import (
     OTHER_IDENTITY,
     PythonIdentity,
@@ -372,6 +375,109 @@ def test_content_cache_is_single_flight_and_filename_independent() -> None:
     assert all(index is indexes[0] for index in indexes)
 
 
+def test_binding_cache_evicts_fifo_in_constant_time_authority() -> None:
+    cache = python_binding_flow._BindingIndexCache(max_entries=2)
+    indexes = {
+        name: python_binding_flow.analyze_python_bindings(
+            ast.parse(f"value = {ordinal}\n"),
+            source_digest=name,
+        )
+        for ordinal, name in enumerate(("a", "b", "c"))
+    }
+    calls: Counter[str] = Counter()
+
+    def fetch(name: str):
+        def compute():
+            calls[name] += 1
+            return indexes[name]
+
+        return cache.get_or_compute((name,), compute)
+
+    assert fetch("a") is indexes["a"]
+    assert fetch("b") is indexes["b"]
+    assert fetch("c") is indexes["c"]
+    assert fetch("b") is indexes["b"]
+    assert fetch("a") is indexes["a"]
+    assert calls == Counter(a=2, b=1, c=1)
+
+
+def test_binding_cache_single_flight_exception_wakes_waiters_and_recovers() -> None:
+    cache = python_binding_flow._BindingIndexCache(max_entries=2)
+    index = python_binding_flow.analyze_python_bindings(
+        ast.parse("value = 1\n"),
+        source_digest="recovered",
+    )
+    entered = Event()
+    release = Event()
+    waiter_started = Event()
+    waiter_returned = Event()
+    attempts = 0
+
+    def compute():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            entered.set()
+            assert release.wait(5)
+            raise ValueError("first analysis failed")
+        return index
+
+    def fetch():
+        return cache.get_or_compute(("shared",), compute)
+
+    def wait_for_shared_result():
+        waiter_started.set()
+        try:
+            return fetch()
+        finally:
+            waiter_returned.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(fetch)
+        assert entered.wait(5)
+        waiter = executor.submit(wait_for_shared_result)
+        assert waiter_started.wait(5)
+        assert not waiter_returned.wait(0.05)
+        release.set()
+        for future in (owner, waiter):
+            with pytest.raises(ValueError, match="first analysis failed"):
+                future.result()
+
+    assert attempts == 1
+    assert fetch() is index
+    assert attempts == 2
+
+
+def test_policy_context_is_part_of_cache_and_index_identity() -> None:
+    source = "import importlib\n"
+    linux = analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(
+            target_sys_platform="linux",
+            module_name="pkg.mod",
+            module_spec_name="pkg.mod",
+            module_is_package=False,
+            module_execution_kind="imported",
+        ),
+    )
+    windows = analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(
+            target_sys_platform="win32",
+            module_name="pkg.mod",
+            module_spec_name="pkg.mod",
+            module_is_package=False,
+            module_execution_kind="imported",
+        ),
+    )
+
+    assert linux is not windows
+    assert linux.target_sys_platform == "linux"
+    assert windows.target_sys_platform == "win32"
+    assert linux.module_name == "pkg.mod"
+    assert linux.module_execution_kind == "imported"
+
+
 def test_reparse_query_uses_stable_source_keys_not_ast_identity() -> None:
     source = "import importlib\nimportlib.import_module('pkg.leaf')\n"
     index = analyze_python_source_bindings(source)
@@ -381,7 +487,23 @@ def test_reparse_query_uses_stable_source_keys_not_ast_identity() -> None:
     fact = index.call_fact(reparsed_call)
     assert fact is not None
     assert fact.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    reparsed_callee = reparsed_call.func
+    callee_fact = index.expression_fact(reparsed_callee)
+    assert callee_fact is not None
     assert identity_fact_is_exact(
-        index.binding_before(reparsed_call, "importlib") or 0,
-        PythonIdentity.IMPORTLIB_MODULE,
+        callee_fact.identities,
+        PythonIdentity.IMPORTLIB_IMPORT_MODULE,
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    importlib = replacement\nimportlib.import_module('live')\n",
+        "import importlib\nimport typing as t\nif t.TYPE_CHECKING:\n    importlib = replacement\nimportlib.import_module('live')\n",
+        "import importlib\nimport typing_extensions as t\nif t.TYPE_CHECKING:\n    importlib = replacement\nimportlib.import_module('live')\n",
+    ],
+)
+def test_type_checking_dead_branches_share_binding_authority(source: str) -> None:
+    call = _last_call(source)
+    assert call.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)

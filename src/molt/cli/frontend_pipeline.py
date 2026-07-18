@@ -48,6 +48,7 @@ from molt.cli.module_dependencies import (
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+from molt.compiler_analysis.python_imports import ModuleExecutionKind
 from molt.cli.models import (
     BuildProfile,
     EmitMode,
@@ -363,6 +364,7 @@ def _prepare_frontend_lowering_config(
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
+    entry_execution_kind: ModuleExecutionKind,
     namespace_module_names: Collection[str],
     module_source_catalog: _ModuleSourceCatalog,
     is_wasm: bool,
@@ -449,6 +451,7 @@ def _prepare_frontend_lowering_config(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
+        entry_execution_kind=entry_execution_kind,
         namespace_module_names=namespace_module_names,
         module_source_catalog=module_source_catalog,
         module_deps=module_deps,
@@ -913,6 +916,11 @@ def _prepare_frontend_stage_state(
                 import_plan.generated_module_source_paths
             ),
             entry_module=entry_module,
+            entry_execution_kind=(
+                import_plan.module_graph_metadata.module_execution_kind_by_module[
+                    entry_module
+                ]
+            ),
             namespace_module_names=set(import_plan.namespace_module_names),
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,

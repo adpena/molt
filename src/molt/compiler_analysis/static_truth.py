@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from typing import TypedDict
 
 DEFAULT_TYPE_CHECKING_NAMES = frozenset({"TYPE_CHECKING"})
@@ -42,6 +42,7 @@ def static_test_truthiness(
     ] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
     target_sys_platform: str | None = None,
     sys_platform_module_aliases: Collection[str] = (),
+    fact_truth: Callable[[ast.expr], bool | None] | None = None,
 ) -> bool | None:
     """Return the compile-time truth value of an if/while test, or None.
 
@@ -49,6 +50,10 @@ def static_test_truthiness(
     TYPE_CHECKING guard is therefore statically false in every compiler analysis
     that decides emitted code, import closure, or binary feature reachability.
     """
+    if fact_truth is not None:
+        truth = fact_truth(expr)
+        if truth is not None:
+            return truth
     if is_type_checking_test(
         expr,
         type_checking_names=type_checking_names,
@@ -82,6 +87,7 @@ def static_test_truthiness(
                     type_checking_module_aliases=type_checking_module_aliases,
                     target_sys_platform=target_sys_platform,
                     sys_platform_module_aliases=sys_platform_module_aliases,
+                    fact_truth=fact_truth,
                 )
                 if value_truth is False:
                     return False
@@ -97,6 +103,7 @@ def static_test_truthiness(
                     type_checking_module_aliases=type_checking_module_aliases,
                     target_sys_platform=target_sys_platform,
                     sys_platform_module_aliases=sys_platform_module_aliases,
+                    fact_truth=fact_truth,
                 )
                 if value_truth is True:
                     return True
@@ -133,6 +140,7 @@ def static_test_truthiness(
             type_checking_module_aliases=type_checking_module_aliases,
             target_sys_platform=target_sys_platform,
             sys_platform_module_aliases=sys_platform_module_aliases,
+            fact_truth=fact_truth,
         )
         if left_truth is None:
             return None
@@ -245,6 +253,7 @@ def static_if_live_branch(
     ] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
     target_sys_platform: str | None = None,
     sys_platform_module_aliases: Collection[str] = (),
+    fact_truth: Callable[[ast.expr], bool | None] | None = None,
 ) -> list[ast.stmt] | None:
     truth = static_test_truthiness(
         node.test,
@@ -252,6 +261,7 @@ def static_if_live_branch(
         type_checking_module_aliases=type_checking_module_aliases,
         target_sys_platform=target_sys_platform,
         sys_platform_module_aliases=sys_platform_module_aliases,
+        fact_truth=fact_truth,
     )
     if truth is None:
         return None
