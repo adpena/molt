@@ -46,6 +46,9 @@
 #                           justification (never a silent exemption).
 #   idempotent      bool  — gen-twice is byte-identical (the meta-gate proves it
 #                           with --check-idempotence when ci_checkable).
+#   toolchains      list  — non-Python executables consumed by the generator;
+#                           the meta-gate requires its proof command to declare
+#                           every entry for receipt fingerprinting/provisioning.
 #   sync_test       str   — the pytest pinning the output, or
 #   sync_test_reason str  — why byte-identity is not the gate.
 
@@ -111,6 +114,7 @@ outputs = [
 source = "runtime/heap_kinds.toml"
 check_mode = true
 check_command = "tools/gen_heap_kinds.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_heap_kinds.py"
 closed_domains = []
@@ -125,6 +129,7 @@ outputs = [
 source = "runtime/python_effects.toml"
 check_mode = true
 check_command = "tools/gen_python_effects.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_python_effects.py"
 closed_domains = []
@@ -139,6 +144,7 @@ outputs = [
 source = "runtime/runtime_profile_schema.toml"
 check_mode = true
 check_command = "tools/gen_runtime_profile_schema.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_runtime_profile_schema.py"
 closed_domains = []
@@ -153,6 +159,7 @@ outputs = [
 source = "runtime/molt-ir/src/tir/op_kinds.toml"
 check_mode = true
 check_command = "tools/gen_op_kinds.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_op_kinds.py"
 # The two Rust enums this generator renders as EXHAUSTIVE (no-wildcard) matches.
@@ -201,6 +208,7 @@ outputs = [
 source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_wasm_abi.py"
 closed_domains = []
@@ -251,6 +259,7 @@ outputs = [
 source = "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 check_mode = true
 check_command = "tools/gen_intrinsics.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_intrinsics.py"
 closed_domains = []
@@ -265,6 +274,7 @@ outputs = [
 source = "runtime/molt-stdlib-text/src/codec_registry.rs"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_codecs.py"
 closed_domains = []
@@ -294,6 +304,7 @@ outputs = ["runtime/molt-runtime-stringprep/src/tables.rs"]
 source = "stringprep (CPython oracle module)"
 check_mode = true
 check_command = "tools/gen_stringprep_tables.py --check"
+toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_stringprep_tables.py"
 closed_domains = []

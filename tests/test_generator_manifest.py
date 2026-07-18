@@ -310,6 +310,7 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
                     f'id = "{command_ids[g["tool"]]}"',
                     f"dependencies = {dependencies!r}".replace("'", '"'),
                     f'argv = ["python3", "{g["tool"]}", "--check"]',
+                    f"toolchains = {g.get('toolchains', [])!r}".replace("'", '"'),
                 )
             )
     (tmp_path / "tools" / "proof_plan.toml").write_text(
@@ -396,6 +397,34 @@ def test_generator_dependency_missing_from_proof_plan_fails_gate(tmp_path: Path)
         violation.kind == "ungated"
         and violation.location == "tools/gen_browser_asset_graph.py"
         and "generator DAG" in violation.detail
+        for violation in gating
+    )
+
+
+def test_generator_toolchain_missing_from_proof_receipt_fails_gate(
+    tmp_path: Path,
+) -> None:
+    root = _mirror_min_tree(tmp_path)
+    proof_plan_path = root / "tools" / "proof_plan.toml"
+    text = proof_plan_path.read_text(encoding="utf-8")
+    generator_id = next(
+        f"generator-{index}"
+        for index, generator in enumerate(CGM.load_manifest(root).generators)
+        if generator["tool"] == "tools/gen_python_effects.py"
+    )
+    marker = f'id = "{generator_id}"\n'
+    command_start = text.index(marker)
+    toolchain_start = text.index("toolchains = ", command_start) + len("toolchains = ")
+    toolchain_end = text.index("\n", toolchain_start)
+    proof_plan_path.write_text(
+        text[:toolchain_start] + "[]" + text[toolchain_end:], encoding="utf-8"
+    )
+
+    _violations, _summary, gating = CGM.run_all(root)
+    assert any(
+        violation.kind == "ungated"
+        and violation.location == "tools/gen_python_effects.py"
+        and "rustfmt" in violation.detail
         for violation in gating
     )
 
