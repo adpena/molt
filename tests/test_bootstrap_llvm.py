@@ -27,6 +27,8 @@ from tools import bootstrap_llvm
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CMAKE_TOOL = bootstrap_llvm._BuildTool(path="/tools/cmake", version="4.0.0")
+NINJA_TOOL = bootstrap_llvm._BuildTool(path="/tools/ninja", version="1.13.0")
 
 
 def _unique_publication_staging(destination: Path) -> Path:
@@ -238,6 +240,7 @@ def test_release_source_checksum_is_pinned_to_official_llvm_provenance() -> None
     assert release.url.endswith("/llvm-project-22.1.8.src.tar.xz")
     assert release.size == 167061596
     assert release.provenance_url.endswith("/releases/tags/llvmorg-22.1.8")
+    assert release.minimum_cmake == "3.20.0"
     assert re.fullmatch(r"[0-9a-f]{64}", release.record_sha256)
 
 
@@ -248,6 +251,36 @@ def test_unpinned_release_requires_explicit_development_checksum() -> None:
     assert bootstrap_llvm._source_sha256("99.0.0-dev", development) == development
     with pytest.raises(SystemExit, match="cannot override"):
         bootstrap_llvm._source_sha256("22.1.8", development)
+
+
+def test_cmake_selection_bypasses_incompatible_earlier_path_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ("C:/old/cmake.exe", "C:/current/cmake.exe")
+    versions = {paths[0]: "3.18.1", paths[1]: "4.4.0"}
+    monkeypatch.setattr(bootstrap_llvm, "_executable_candidates", lambda _name: paths)
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "_tool_version",
+        lambda path, *, role: versions[path],
+    )
+
+    selected = bootstrap_llvm._compatible_cmake("3.20.0")
+
+    assert selected == bootstrap_llvm._BuildTool(paths[1], "4.4.0")
+
+
+def test_cmake_selection_fails_before_source_work_with_observed_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = "C:/old/cmake.exe"
+    monkeypatch.setattr(bootstrap_llvm, "_executable_candidates", lambda _name: (path,))
+    monkeypatch.setattr(
+        bootstrap_llvm, "_tool_version", lambda _path, *, role: "3.18.1"
+    )
+
+    with pytest.raises(SystemExit, match=r"requires CMake >= 3\.20\.0.*3\.18\.1"):
+        bootstrap_llvm._compatible_cmake("3.20.0")
 
 
 def test_download_replaces_corrupt_cache_atomically(
@@ -341,7 +374,7 @@ def test_extraction_rejects_escaping_link(tmp_path: Path) -> None:
     assert not destination.exists()
 
 
-def test_source_reuse_rehashes_tree_and_repairs_same_size_mutation(
+def test_source_reuse_projection_detects_and_repairs_same_size_mutation(
     tmp_path: Path,
 ) -> None:
     archive = tmp_path / "source.tar.xz"
@@ -368,10 +401,42 @@ def test_source_reuse_rehashes_tree_and_repairs_same_size_mutation(
         source_contract={"release": "test"},
     )
 
-    assert first == second
+    assert first["source_tree"] == second["source_tree"]
+    assert first["source_contract"] == second["source_contract"]
     assert source.read_bytes() == b"project(LLVM)\n"
     assert original.st_size == source.stat().st_size
     assert source_stat.st_size == source.stat().st_size
+
+
+def test_source_reuse_trusted_projection_avoids_content_rehash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "source.tar.xz"
+    digest = _write_test_tar(archive)
+    destination = tmp_path / "source"
+    first = bootstrap_llvm._safe_extract_tar_xz(
+        archive,
+        destination,
+        archive_sha256=digest,
+        source_contract={"release": "test"},
+    )
+
+    def unexpected_content_hash(_destination: Path) -> dict[str, object]:
+        raise AssertionError(
+            "trusted unchanged source projection must avoid content rehash"
+        )
+
+    monkeypatch.setattr(
+        bootstrap_llvm, "_source_tree_identity", unexpected_content_hash
+    )
+    second = bootstrap_llvm._safe_extract_tar_xz(
+        archive,
+        destination,
+        archive_sha256=digest,
+        source_contract={"release": "test"},
+    )
+
+    assert first == second
 
 
 @pytest.mark.skipif(
@@ -578,6 +643,8 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         targets="X86;WebAssembly",
         projects="clang;lld;mlir;polly",
         build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
     )
     bootstrap_llvm._prepare_build_cache(build, first)
     stale = build / "stale-object.o"
@@ -589,6 +656,8 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         targets="X86;WebAssembly",
         projects="clang;lld;mlir;polly",
         build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
     )
     bootstrap_llvm._prepare_build_cache(build, second)
 
@@ -609,8 +678,22 @@ def test_build_cache_is_bound_to_source_release_and_config(tmp_path: Path) -> No
         targets="AArch64;WebAssembly",
         projects="clang;lld;mlir;polly",
         build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
     )
     assert second["digest"] != third["digest"]
+
+    newer_cmake = bootstrap_llvm._build_cache_identity(
+        release_identity={"record_sha256": "a" * 64},
+        source_identity={"source_tree": {"digest": "d" * 64}},
+        architecture_contract_sha256="c" * 64,
+        targets="X86;WebAssembly",
+        projects="clang;lld;mlir;polly",
+        build_type="Release",
+        cmake=bootstrap_llvm._BuildTool(path="/tools/cmake", version="4.1.0"),
+        ninja=NINJA_TOOL,
+    )
+    assert second["digest"] != newer_cmake["digest"]
 
 
 def test_development_build_refuses_unattested_directory_deletion(
@@ -627,6 +710,8 @@ def test_development_build_refuses_unattested_directory_deletion(
         targets="X86;WebAssembly",
         projects="clang;lld;mlir;polly",
         build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
     )
 
     with pytest.raises(SystemExit, match="unattested LLVM build"):
@@ -658,6 +743,8 @@ def test_development_build_refuses_forged_marker_as_deletion_authority(
         targets="X86;WebAssembly",
         projects="clang;lld;mlir;polly",
         build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
     )
 
     with pytest.raises(SystemExit, match="unattested LLVM build"):
@@ -952,6 +1039,8 @@ def test_development_release_requires_explicit_noncanonical_custody(
                 str(tmp_path / "llvm-dev"),
                 "--development-source-sha256",
                 "a" * 64,
+                "--development-minimum-cmake",
+                "3.20.0",
             ]
         )
 
@@ -967,6 +1056,8 @@ def test_development_release_requires_explicit_noncanonical_custody(
                 "https://llvm.example/development.tar.xz",
                 "--development-source-sha256",
                 "a" * 64,
+                "--development-minimum-cmake",
+                "3.20.0",
             ]
         )
 
@@ -1041,6 +1132,9 @@ def test_windows_arm64_activation_uses_contract_arches(
     vsdevcmd = tmp_path / "Common7" / "Tools" / "VsDevCmd.bat"
     vsdevcmd.parent.mkdir(parents=True)
     vsdevcmd.write_text("", encoding="utf-8")
+    include = tmp_path / "VC" / "Tools" / "include"
+    include.mkdir(parents=True)
+    (include / "atlbase.h").write_text("", encoding="utf-8")
     observed: list[str] = []
 
     def run(command, **_kwargs):
@@ -1048,7 +1142,9 @@ def test_windows_arm64_activation_uses_contract_arches(
         return SimpleNamespace(
             returncode=0,
             stdout=(
-                "PATH=activated\nVSCMD_ARG_TGT_ARCH=arm64\nVSCMD_ARG_HOST_ARCH=arm64\n"
+                "PATH=activated\n"
+                f"INCLUDE={include}\n"
+                "VSCMD_ARG_TGT_ARCH=arm64\nVSCMD_ARG_HOST_ARCH=arm64\n"
             ),
             stderr="",
         )
@@ -1081,9 +1177,13 @@ def test_windows_activation_executes_batch_path_with_spaces(
     install = tmp_path / "Visual Studio Build Tools"
     vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
     vsdevcmd.parent.mkdir(parents=True)
+    include = tmp_path / "VC" / "Tools" / "include"
+    include.mkdir(parents=True)
+    (include / "atlbase.h").write_text("", encoding="utf-8")
     vsdevcmd.write_text(
         "@echo off\n"
         'set "PATH=activated"\n'
+        f'set "INCLUDE={include}"\n'
         'set "VSCMD_ARG_TGT_ARCH=x64"\n'
         'set "VSCMD_ARG_HOST_ARCH=x64"\n',
         encoding="utf-8",
@@ -1107,6 +1207,42 @@ def test_windows_activation_executes_batch_path_with_spaces(
     assert env["VSCMD_ARG_TGT_ARCH"] == "x64"
     assert env["VSCMD_ARG_HOST_ARCH"] == "x64"
     assert "MOLT_LLVM_VSDEVCMD_CALL" not in env
+
+
+def test_windows_activation_fails_before_build_when_atl_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = tmp_path / "Visual Studio Build Tools"
+    vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
+    vsdevcmd.parent.mkdir(parents=True)
+    vsdevcmd.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(bootstrap_llvm.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        bootstrap_llvm, "_visual_studio_installation", lambda _component: install
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "PATH=activated\nINCLUDE=missing\n"
+                "VSCMD_ARG_TGT_ARCH=x64\nVSCMD_ARG_HOST_ARCH=x64\n"
+            ),
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm.shutil,
+        "which",
+        lambda name, path=None: (
+            "cl.exe" if name == "cl" and path == "activated" else None
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="Microsoft.VisualStudio.Component.VC.ATL"):
+        bootstrap_llvm._windows_msvc_env({"PATH": "base"}, machine="AMD64")
 
 
 def test_resource_preflight_rejects_insufficient_disk(
@@ -1146,3 +1282,45 @@ def test_resource_preflight_rejects_insufficient_memory(
             required_free_gb=40.0,
             required_memory_gb=8.0,
         )
+
+
+def test_canonical_configure_failure_removes_transaction_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    build_dir = tmp_path / "build"
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def missing_prefix(*_args, **_kwargs):
+        raise bootstrap_llvm.LlvmToolchainConfigError("missing")
+
+    def failed_configure(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, "cmake")
+
+    monkeypatch.setattr(bootstrap_llvm, "verify_llvm_toolchain_prefix", missing_prefix)
+    monkeypatch.setattr(bootstrap_llvm, "_run", failed_configure)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        bootstrap_llvm._build_and_publish(
+            SimpleNamespace(
+                version="22.1.8",
+                build_type="Release",
+                projects="clang;lld;mlir;polly",
+                configure_only=False,
+                jobs=1,
+            ),
+            prefix=prefix,
+            build_dir=build_dir,
+            llvm_source=source,
+            targets="X86;WebAssembly",
+            required_targets={"X86", "WebAssembly"},
+            project_set={"clang", "lld", "mlir", "polly"},
+            env={},
+            is_canonical=True,
+            build_identity={"schema": bootstrap_llvm.LLVM_BUILD_SCHEMA},
+            cmake=CMAKE_TOOL,
+            ninja=NINJA_TOOL,
+        )
+
+    assert not tuple(tmp_path.glob(".llvm.*.staging"))

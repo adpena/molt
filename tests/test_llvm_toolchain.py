@@ -415,6 +415,7 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
         "provenance_url": (
             "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-22.1.8"
         ),
+        "minimum_cmake": "3.20.0",
         "record_sha256": payload["release"]["record_sha256"],
     }
     assert payload["link_probe"][:2] == [
