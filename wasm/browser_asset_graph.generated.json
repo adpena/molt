@@ -352,9 +352,9 @@
     }
   },
   "scanner": {
-    "package_lock_sha256": "4d3b5314421fcf83ec9fe144af7a3181b8cd98baf158aca25e486c507c516e6d",
+    "package_lock_sha256": "48aa8d11316e983cc93be2cfe319503092bed17b4d311290bd8c60a6a70051bc",
     "path": "tools/browser_asset_graph/scan.mjs",
-    "sha256": "029749dc13cdb5d5990e434961dd6ecfdfcfb79f4e15a909388886e92081fe45"
+    "sha256": "346a692737424515c8e1350590c028aefba400cfa626512c8f58778211199c05"
   },
   "schema_version": 2
 }

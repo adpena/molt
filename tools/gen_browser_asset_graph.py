@@ -6,13 +6,17 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from molt.browser_asset_closure import canonical_wasm_loader_asset_bytes
+from molt.browser_asset_closure import (
+    canonical_text_bytes,
+    canonical_wasm_loader_asset_bytes,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -334,10 +338,10 @@ def generate_with_telemetry(
         "schema_version": 2,
         "scanner": {
             "package_lock_sha256": hashlib.sha256(
-                (SCANNER_ROOT / "package-lock.json").read_bytes()
+                canonical_text_bytes(SCANNER_ROOT / "package-lock.json")
             ).hexdigest(),
             "path": SCANNER.relative_to(ROOT).as_posix(),
-            "sha256": hashlib.sha256(SCANNER.read_bytes()).hexdigest(),
+            "sha256": hashlib.sha256(canonical_text_bytes(SCANNER)).hexdigest(),
         },
     }
     return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(), telemetry
@@ -364,7 +368,14 @@ def main() -> int:
     args = parser.parse_args()
     generated = generate()
     if args.check:
-        return 0 if generated_output_is_current(OUTPUT, generated) else 1
+        if generated_output_is_current(OUTPUT, generated):
+            return 0
+        print(
+            f"browser asset graph is stale: {OUTPUT}; "
+            "run tools/gen_browser_asset_graph.py",
+            file=sys.stderr,
+        )
+        return 1
     OUTPUT.write_bytes(generated)
     return 0
 

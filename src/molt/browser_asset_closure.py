@@ -17,13 +17,19 @@ _CANONICAL_WASM_ROOT = Path(__file__).resolve().parents[2] / "wasm"
 _CANONICAL_TEXT_SUFFIXES = frozenset({".js", ".json", ".mjs"})
 
 
+def canonical_text_bytes(path: Path) -> bytes:
+    """Read UTF-8 text with one LF wire representation on every host."""
+
+    with path.open("r", encoding="utf-8", newline=None) as handle:
+        return handle.read().encode("utf-8")
+
+
 def canonical_wasm_loader_asset_bytes(path: Path) -> bytes:
     """Read a loader asset in its deterministic publication wire form."""
 
     if path.suffix not in _CANONICAL_TEXT_SUFFIXES:
         return path.read_bytes()
-    with path.open("r", encoding="utf-8", newline=None) as handle:
-        return handle.read().encode("utf-8")
+    return canonical_text_bytes(path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +72,9 @@ def _load_verified_graph(
         if not path.is_file():
             raise FileNotFoundError(f"missing browser static asset: {path}")
         expected_hash = facts.get("sha256")
-        actual_hash = hashlib.sha256(canonical_wasm_loader_asset_bytes(path)).hexdigest()
+        actual_hash = hashlib.sha256(
+            canonical_wasm_loader_asset_bytes(path)
+        ).hexdigest()
         if expected_hash != actual_hash:
             raise ValueError(
                 f"browser asset graph hash drift for {name}: "
