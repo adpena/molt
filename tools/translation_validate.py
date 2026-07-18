@@ -53,19 +53,22 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools import harness_memory_guard, target_python_runtime  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 
 _SRC_DIR = _REPO_ROOT / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 import molt.cli as molt_cli  # noqa: E402
+from molt import python_interpreter  # noqa: E402
 from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
+
+
 def _artifact_root(env: Mapping[str, str] | None = None) -> Path:
     """Return the canonical artifact root for translation validation."""
     env_view = os.environ if env is None else env
@@ -113,10 +116,12 @@ def _resolve_target_python(
 def _target_python_command(
     target_python: molt_cli.TargetPythonVersion,
 ) -> list[str]:
-    return target_python_runtime.resolve_target_python_command(
-        target_python,
-        override=os.environ.get("MOLT_TV_PYTHON", "").strip() or None,
-        cwd=_REPO_ROOT,
+    return list(
+        python_interpreter.resolve_target_python_command(
+            target_python,
+            override=os.environ.get("MOLT_TV_PYTHON", "").strip() or None,
+            cwd=_REPO_ROOT,
+        )
     )
 
 

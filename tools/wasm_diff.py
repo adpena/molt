@@ -56,6 +56,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -197,7 +198,10 @@ def _strip_node_noise(err: str) -> str:
 
 
 def diff_wasm_test(
-    file_path: str, python_exe: str, build_profile: str, out_root: Path
+    file_path: str,
+    python_exe: Sequence[str],
+    build_profile: str,
+    out_root: Path,
 ) -> dict:
     """Compute the wasm raw status for one test, reusing molt_diff semantics.
 
@@ -285,7 +289,7 @@ def diff_wasm_test(
 molt_diff_FAILING = {"fail", "error", "oom"}
 
 
-def _worker(args: tuple[str, str, str, str]) -> dict:
+def _worker(args: tuple[str, tuple[str, ...], str, str]) -> dict:
     file_path, python_exe, build_profile, out_root = args
     try:
         return diff_wasm_test(file_path, python_exe, build_profile, Path(out_root))
@@ -347,7 +351,7 @@ def main(argv: list[str]) -> int:
         print("no test files", file=sys.stderr)
         return 2
 
-    python_exe = molt_diff._resolve_python_exe(args.python)
+    python_exe = molt_diff._resolve_python_command(args.python)
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
 

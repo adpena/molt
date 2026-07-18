@@ -37,7 +37,6 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
     memory_guard,
     process_sentinel,
     resource_pressure,
-    target_python_runtime,
 )
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
@@ -46,6 +45,7 @@ from molt.dx import (  # noqa: E402
     development_artifact_env,
 )
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt import python_interpreter  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 
@@ -81,22 +81,9 @@ except Exception:  # pragma: no cover - non-posix fallback
 PythonCommand = str | Sequence[str]
 
 
-def _resolve_python_exe(python_exe: str) -> str:
-    if not python_exe:
-        return sys.executable
-    if os.sep in python_exe or Path(python_exe).is_absolute():
-        candidate = Path(python_exe)
-        if candidate.exists():
-            return python_exe
-        base_exe = getattr(sys, "_base_executable", "")
-        if base_exe and Path(base_exe).exists():
-            return base_exe
-    return python_exe
-
-
 def _resolve_python_command(python_exe: PythonCommand) -> tuple[str, ...]:
     if isinstance(python_exe, str):
-        return (_resolve_python_exe(python_exe),)
+        return python_interpreter.resolve_python_selector(python_exe)
     command = tuple(str(part) for part in python_exe if str(part))
     return command or (sys.executable,)
 
@@ -108,9 +95,9 @@ def _python_command_display(python_exe: PythonCommand) -> str:
 def _resolve_diff_python_command(python_version: str | None) -> tuple[str, ...]:
     if not python_version:
         return (sys.executable,)
-    target_python = target_python_runtime.parse_target_python_version(python_version)
+    target_python = python_interpreter.parse_target_python_version(python_version)
     return tuple(
-        target_python_runtime.resolve_target_python_command(
+        python_interpreter.resolve_target_python_command(
             target_python,
             override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
             cwd=_repo_root(),
@@ -144,7 +131,12 @@ def _run_metadata_probe(cmd: Sequence[str]) -> subprocess.CompletedProcess[str] 
 def _resolve_molt_cli_python() -> str:
     override = os.environ.get("MOLT_DIFF_MOLT_PYTHON", "").strip()
     if override:
-        return _resolve_python_exe(override)
+        command = python_interpreter.explicit_python_command(override)
+        if len(command) != 1:
+            raise python_interpreter.PythonInterpreterError(
+                "MOLT_DIFF_MOLT_PYTHON must name one executable path"
+            )
+        return command[0]
 
     repo_root = Path(__file__).resolve().parents[1]
     if os.name == "nt":
@@ -3215,7 +3207,7 @@ def _run_molt(
         no_cache = True
     if _diff_force_rebuild():
         rebuild = True
-    env.setdefault("MOLT_SYS_EXECUTABLE", _resolve_python_exe(sys.executable))
+    env.setdefault("MOLT_SYS_EXECUTABLE", sys.executable)
     stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
     if stdlib_profile_error is not None:
         _record_rss_metrics(

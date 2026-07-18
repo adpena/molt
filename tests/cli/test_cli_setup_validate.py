@@ -734,11 +734,13 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     built_binary.write_text("")
 
     prefixes: list[object] = []
+    commands: list[list[str]] = []
 
     def fake_run_command_timed(
         cmd: list[str], **kwargs: object
     ) -> cli_commands._TimedResult:
         prefixes.append(kwargs.get("memory_guard_prefix"))
+        commands.append(list(cmd))
         if len(prefixes) == 1:
             return cli_commands._TimedResult(0, "ok\n", "", 0.01)
         if len(prefixes) == 2:
@@ -757,7 +759,10 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True
     )
     monkeypatch.setattr(
-        cli_commands, "_resolve_python_exe", lambda exe: "python3", raising=True
+        cli_commands,
+        "resolve_python_selector",
+        lambda exe, **_kwargs: ("py", "-3.14"),
+        raising=True,
     )
     monkeypatch.setattr(
         cli_commands,
@@ -769,10 +774,12 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         cli_commands, "_run_command_timed", fake_run_command_timed, raising=True
     )
 
-    rc = cli_commands.compare(str(entry), None, "python3", [])
+    rc = cli_commands.compare(str(entry), None, "3.14", [])
 
     assert rc == 0
     assert prefixes == ["MOLT_DIFF", "MOLT_DIFF", "MOLT_DIFF"]
+    assert commands[0] == ["py", "-3.14", str(entry)]
+    assert commands[1][:5] == ["py", "-3.14", "-m", "molt.cli", "build"]
 
 
 def test_cli_cross_run_uses_cross_memory_guard(

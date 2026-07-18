@@ -105,6 +105,11 @@ from molt.cli.project_roots import (
     _require_molt_root,
 )
 from molt.cli.target_python import _parse_target_python_version
+from molt.python_interpreter import (
+    PythonInterpreterError,
+    format_python_command,
+    resolve_python_selector,
+)
 from molt.cli.setup_readiness import _ensure_rustup_target
 from molt.cli.source_extension_toolchain import (
     _materialize_source_extension_target_metadata,
@@ -126,21 +131,6 @@ from molt.cli.wasm_toolchain import (
 )
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
-
-
-def _resolve_python_exe(python_exe: str | None) -> str:
-    if not python_exe:
-        return sys.executable
-    if python_exe[0].isdigit() and os.sep not in python_exe:
-        python_exe = f"python{python_exe}"
-    if os.sep in python_exe or Path(python_exe).is_absolute():
-        candidate = Path(python_exe)
-        if candidate.exists():
-            return python_exe
-        base_exe = getattr(sys, "_base_executable", "")
-        if base_exe and Path(base_exe).exists():
-            return base_exe
-    return python_exe
 
 
 def _sysroot_arg_value(args: list[str]) -> str | None:
@@ -940,11 +930,24 @@ def compare(
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
     requested_python_selector = python_exe
-    python_exe = _resolve_python_exe(python_exe)
+    requested_target_python = None
+    if requested_python_selector is not None:
+        with contextlib.suppress(ValueError):
+            requested_target_python = _parse_target_python_version(
+                requested_python_selector
+            )
+    try:
+        python_command = resolve_python_selector(
+            python_exe,
+            env=env,
+            cwd=project_root,
+        )
+    except (PythonInterpreterError, ValueError) as exc:
+        return _fail(str(exc), json_output, command="compare")
     if module:
-        cpy_cmd = [python_exe, "-m", module, *script_args]
+        cpy_cmd = [*python_command, "-m", module, *script_args]
     else:
-        cpy_cmd = [python_exe, str(source_path), *script_args]
+        cpy_cmd = [*python_command, str(source_path), *script_args]
     cpy_res = _run_command_timed(
         cpy_cmd,
         env=env,
@@ -956,16 +959,10 @@ def compare(
 
     build_args = list(build_args or [])
     if (
-        requested_python_selector is not None
+        requested_target_python is not None
         and not _build_args_has_python_version_flag(build_args)
     ):
-        with contextlib.suppress(ValueError):
-            build_args.extend(
-                [
-                    "--python-version",
-                    _parse_target_python_version(requested_python_selector).short,
-                ]
-            )
+        build_args.extend(["--python-version", requested_target_python.short])
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
         build_args.extend(["--build-profile", build_profile])
@@ -983,8 +980,11 @@ def compare(
             json_output,
             command="compare",
         )
+    build_python_command = (
+        python_command if requested_target_python is not None else (sys.executable,)
+    )
     build_cmd = [
-        sys.executable,
+        *build_python_command,
         "-m",
         "molt.cli",
         "build",
@@ -1072,7 +1072,7 @@ def compare(
     if json_output:
         data = {
             "entry": str(source_path),
-            "python": python_exe,
+            "python": format_python_command(python_command),
             "output": str(output_path),
             "returncodes": {
                 "cpython": cpy_res.returncode,
@@ -1198,11 +1198,18 @@ def parity_run(
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
 
-    python_exe = _resolve_python_exe(python_exe)
+    try:
+        python_command = resolve_python_selector(
+            python_exe,
+            env=env,
+            cwd=project_root,
+        )
+    except (PythonInterpreterError, ValueError) as exc:
+        return _fail(str(exc), json_output, command="parity-run")
     if module:
-        command = [python_exe, "-m", module, *script_args]
+        command = [*python_command, "-m", module, *script_args]
     else:
-        command = [python_exe, str(source_path), *script_args]
+        command = [*python_command, str(source_path), *script_args]
 
     if timing:
         run_res = _run_command_timed(
@@ -1215,7 +1222,7 @@ def parity_run(
         )
         if json_output:
             data: dict[str, Any] = {
-                "python": python_exe,
+                "python": format_python_command(python_command),
                 "entry": module if module is not None else str(source_path),
                 "returncode": run_res.returncode,
                 "timing": {"cpython_run_s": run_res.duration_s},

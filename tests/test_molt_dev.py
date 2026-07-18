@@ -812,29 +812,29 @@ def test_verify_toolchain_reference_detects_noop_rebuild(
 def test_python_oracle_pins_current_version(drv):
     # The running interpreter's own version must resolve+verify successfully.
     mm = "%d.%d" % sys.version_info[:2]
-    exe = drv.resolve_python(mm, prefer_uv=False)
-    ok, full = drv._verify_interpreter_version(exe, mm)
-    assert ok
-    assert full
+    target = drv.python_interpreter.parse_target_python_version(mm)
+    resolved = drv.python_interpreter.resolve_target_python(
+        target, prefer_uv=False, prefer_current=True
+    )
+    assert resolved.major_minor == mm
+    assert resolved.executable
 
 
 def test_python_oracle_refuses_unavailable_version(drv):
     # An impossible version must raise LOUDLY (never silently fall back).
-    with pytest.raises(drv.DriverError) as exc:
-        drv.resolve_python("2.0", prefer_uv=False)
-    assert "could not resolve" in str(exc.value)
+    with pytest.raises(ValueError, match="unsupported Python target version"):
+        drv.python_interpreter.parse_target_python_version("2.0")
 
 
 def test_python_oracle_rejects_bad_format(drv):
-    with pytest.raises(drv.DriverError) as exc:
-        drv.resolve_python("3.12.1", prefer_uv=False)
-    assert exc.value.code == drv.EXIT_USAGE
+    with pytest.raises(ValueError, match="invalid Python target version"):
+        drv.python_interpreter.parse_target_python_version("not-a-version")
 
 
-def test_verify_interpreter_version_mismatch(drv):
+def test_python_interpreter_identity_excludes_wrong_minor(drv):
     # The current interpreter does NOT report a wrong version.
-    ok, _ = drv._verify_interpreter_version(sys.executable, "9.99")
-    assert ok is False
+    resolved = drv.python_interpreter.probe_python_command([sys.executable])
+    assert resolved.major_minor != "9.99"
 
 
 # --------------------------------------------------------------------------
@@ -1417,7 +1417,11 @@ def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monke
     program.write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        drv, "_verify_interpreter_version", lambda _python, _version: (True, "3.12.0")
+        drv.python_interpreter,
+        "probe_python_command",
+        lambda command, **_kwargs: drv.python_interpreter.PythonInterpreter(
+            tuple(command), command[0], "3.12.0", "CPython"
+        ),
     )
 
     class Probe:
