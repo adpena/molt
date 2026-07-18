@@ -1176,6 +1176,15 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
+def test_detached_runner_never_forks_the_live_python_process(drv):
+    """Detachment stays safe under memory-guard and free-threaded callers."""
+    source = Path(drv.__file__).with_name("molt_dev_detached.py").read_text(
+        encoding="utf-8"
+    )
+    assert "os.fork(" not in source
+    assert "start_new_session" in source
+
+
 def test_detached_run_nonzero_rc_is_loud(drv, tmp_path, capsys):
     state_root = tmp_path / "detached"
     drv.cmd_detached_run(
@@ -1186,7 +1195,6 @@ def test_detached_run_nonzero_rc_is_loud(drv, tmp_path, capsys):
             [sys.executable, "-c", "import sys; sys.exit(7)"],
         )
     )
-    state = state_root / "fail-run"
     assert _wait_done(drv, capsys, "fail-run", state_root)["rc"] == 7
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "fail-run", state_root))
     assert vrc == drv.EXIT_FAIL
