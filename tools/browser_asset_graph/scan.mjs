@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import process from "node:process";
 
 import { parse } from "acorn";
@@ -263,8 +262,22 @@ const scanSource = ({ id, path, role, source, source_type: sourceType }) => {
   return { id, path, references, role };
 };
 
+const readStdinPayload = async () => {
+  const chunks = [];
+  let byteLength = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(bytes);
+    byteLength += bytes.byteLength;
+  }
+  return {
+    raw: Buffer.concat(chunks, byteLength).toString("utf8"),
+    byteLength,
+  };
+};
+
 const started = process.hrtime.bigint();
-const raw = fs.readFileSync(0, "utf8");
+const { raw, byteLength: sourceBytes } = await readStdinPayload();
 const payload = JSON.parse(raw);
 if (!Array.isArray(payload.sources)) {
   throw new Error("browser asset scanner payload has no sources array");
@@ -277,7 +290,7 @@ process.stdout.write(
     telemetry: {
       elapsed_ns: elapsedNs,
       rss_bytes: process.memoryUsage().rss,
-      source_bytes: Buffer.byteLength(raw),
+      source_bytes: sourceBytes,
       source_count: payload.sources.length,
     },
   }),

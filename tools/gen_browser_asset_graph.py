@@ -351,13 +351,20 @@ def generate(
     return generated
 
 
+def generated_output_is_current(output: Path, generated: bytes) -> bool:
+    if not output.is_file():
+        return False
+    actual = output.read_bytes()
+    return actual.replace(b"\r\n", b"\n").replace(b"\r", b"\n") == generated
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     generated = generate()
     if args.check:
-        return 0 if OUTPUT.is_file() and OUTPUT.read_bytes() == generated else 1
+        return 0 if generated_output_is_current(OUTPUT, generated) else 1
     OUTPUT.write_bytes(generated)
     return 0
 
