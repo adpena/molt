@@ -373,9 +373,34 @@ def test_proof_plan_recommends_gpu_crate_lane(tmp_path: Path) -> None:
             "proof_role": "implementer",
             "shared_target_root": "target",
             "priority": "P1",
-            "reason": "GPU primitive/runtime changes need focused crate-level Rust validation",
+            "reason": "GPU compute/render primitive changes need focused crate-level Rust validation",
             "covered_paths": ["runtime/molt-gpu/src/dtype.rs"],
             "commands": ["cargo test -p molt-gpu"],
+        }
+    ]
+
+
+def test_proof_plan_recommends_gpu_runtime_crate_lane(tmp_path: Path) -> None:
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "proof-plan",
+                "runtime/molt-gpu-runtime/src/bridge.rs",
+            ]
+        )
+    )
+
+    assert payload["recommendations"] == [
+        {
+            "lane": "molt_gpu_runtime_targeted",
+            "proof_role": "implementer",
+            "shared_target_root": "target",
+            "priority": "P1",
+            "reason": "GPU object-runtime integration changes need focused crate-level Rust validation",
+            "covered_paths": ["runtime/molt-gpu-runtime/src/bridge.rs"],
+            "commands": ["cargo test -p molt-gpu-runtime"],
         }
     ]
 

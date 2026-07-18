@@ -468,12 +468,13 @@ def test_runtime_export_sources_follow_cargo_dependency_authority() -> None:
     roots = set(manifest._runtime_crate_dependency_roots())
     assert ROOT / "runtime/molt-runtime" in roots
     assert ROOT / "runtime/molt-gpu" in roots
+    assert ROOT / "runtime/molt-gpu-runtime" in roots
     assert ROOT / "runtime/molt-runtime-core" in roots
     assert ROOT / "runtime/molt-cpython-abi" not in roots
     assert ROOT / "runtime/molt-backend-wasm" not in roots
 
     sources = set(manifest._runtime_rust_files())
-    assert ROOT / "runtime/molt-gpu/src/runtime/bridge.rs" in sources
+    assert ROOT / "runtime/molt-gpu-runtime/src/bridge.rs" in sources
     assert not any(
         path.is_relative_to(ROOT / "runtime/molt-cpython-abi") for path in sources
     )

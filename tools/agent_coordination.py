@@ -346,7 +346,16 @@ PROOF_LANE_RULES = (
         priority="P1",
         path_prefixes=("runtime/molt-gpu/src/", "runtime/molt-gpu/tests/"),
         commands=("cargo test -p molt-gpu",),
-        reason="GPU primitive/runtime changes need focused crate-level Rust validation",
+        reason="GPU compute/render primitive changes need focused crate-level Rust validation",
+    ),
+    ProofLaneRule(
+        lane="molt_gpu_runtime_targeted",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=("runtime/molt-gpu-runtime/src/",),
+        commands=("cargo test -p molt-gpu-runtime",),
+        reason="GPU object-runtime integration changes need focused crate-level Rust validation",
     ),
 )
 
