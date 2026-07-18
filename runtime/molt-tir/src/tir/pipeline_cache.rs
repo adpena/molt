@@ -361,7 +361,8 @@ pub fn rlimit_address_space_bytes() -> Option<u64> {
         if raw == libc::RLIM_INFINITY || raw == 0 {
             return None;
         }
-        Some(raw.min(u64::MAX as libc::rlim_t) as u64)
+        let widened = u128::from(raw);
+        Some(widened.min(u128::from(u64::MAX)) as u64)
     }
 }
 
