@@ -2,8 +2,6 @@
 // Owns OS fd/socket casts, socket2 borrowing, raw connect/listen/error shims, and Windows loopback pairs.
 
 #[cfg(molt_has_net_io)]
-use super::state::SocketFd;
-#[cfg(molt_has_net_io)]
 use socket2::{SockAddr, SockAddrStorage, SockRef, Socket};
 #[cfg(all(molt_has_net_io, unix))]
 use std::os::fd::BorrowedFd;
@@ -14,22 +12,39 @@ use std::os::unix::io::{AsRawFd, RawFd};
 #[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 
+/// The native descriptor identity used by the socket registry.
+///
+/// This alias belongs to the raw adapter rather than runtime state: Unix file
+/// descriptors and WinSock socket handles are OS resources, while the state
+/// layer only owns their mapping to Molt socket objects. `molt_has_net_io`
+/// guarantees that exactly one supported native representation is selected.
+#[cfg(all(molt_has_net_io, unix))]
+pub(super) type NativeSocketDescriptor = RawFd;
+#[cfg(all(molt_has_net_io, windows))]
+pub(super) type NativeSocketDescriptor = RawSocket;
+
 #[cfg(all(unix, molt_has_net_io))]
 type LibcSocket = c_int;
 #[cfg(all(windows, molt_has_net_io))]
 type LibcSocket = libc::SOCKET;
 
-#[cfg(all(unix, molt_has_net_io))]
-pub(crate) fn libc_socket(fd: RawFd) -> LibcSocket {
-    fd
-}
-#[cfg(all(windows, molt_has_net_io))]
-pub(crate) fn libc_socket(fd: RawSocket) -> LibcSocket {
-    fd as LibcSocket
+#[cfg(molt_has_net_io)]
+pub(crate) fn libc_socket(descriptor: NativeSocketDescriptor) -> LibcSocket {
+    #[cfg(unix)]
+    {
+        descriptor
+    }
+    #[cfg(windows)]
+    {
+        descriptor as LibcSocket
+    }
 }
 
 #[cfg(molt_has_net_io)]
-pub(super) fn connect_raw_socket(fd: SocketFd, sockaddr: &SockAddr) -> std::io::Result<()> {
+pub(super) fn connect_raw_socket(
+    fd: NativeSocketDescriptor,
+    sockaddr: &SockAddr,
+) -> std::io::Result<()> {
     let ret = unsafe {
         libc::connect(
             libc_socket(fd),

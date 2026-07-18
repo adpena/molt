@@ -73,7 +73,7 @@ pub(crate) use state::socket_register_peer_pair;
 #[cfg(molt_has_net_io)]
 use state::{
     MoltSocket, MoltSocketKind, socket_alloc, socket_close_ptr, socket_debug_fd, socket_detach_raw,
-    socket_mark_closed, socket_ref_dec, socket_set_timeout, trace_socket_recv, trace_socket_send,
+    socket_ref_dec, socket_set_timeout, trace_socket_recv, trace_socket_send,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use state::{SocketRuntimeState, socket_runtime_state_clear};
