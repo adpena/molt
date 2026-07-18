@@ -1,0 +1,228 @@
+# Canonical cross-language effect lattice for Python semantic analysis.
+#
+# Every effect owns one dense bit. Analysis hot paths carry only the raw mask:
+# join is bitwise OR, NO_EFFECTS is bottom, and UNKNOWN_EFFECTS is top. A
+# capability is a projection defined by the effects it forbids; it holds exactly
+# when `mask & forbidden_mask == 0`. Adding an effect can therefore only remove
+# capabilities, never manufacture one.
+
+schema_version = 1
+mask_bits = 32
+
+[[effect]]
+name = "executes_arbitrary_python"
+bit = 0
+description = "May execute arbitrary user-controlled Python code."
+
+[[effect]]
+name = "invokes_import_system"
+bit = 1
+description = "May invoke finders, loaders, import hooks, or module execution."
+
+[[effect]]
+name = "reflects_namespace"
+bit = 2
+description = "May dynamically observe or alter namespaces through reflection."
+
+[[effect]]
+name = "reads_module_metadata"
+bit = 3
+description = "Reads __name__, __package__, __spec__, or related module metadata."
+
+[[effect]]
+name = "writes_module_metadata"
+bit = 4
+description = "Writes or deletes __name__, __package__, __spec__, or related metadata."
+
+[[effect]]
+name = "reads_global_namespace"
+bit = 5
+description = "Reads a module global namespace outside statically named loads."
+
+[[effect]]
+name = "writes_global_namespace"
+bit = 6
+description = "Writes or deletes a module global namespace dynamically."
+
+[[effect]]
+name = "reads_frame_state"
+bit = 7
+description = "Observes an executing frame or its locals/globals dynamically."
+
+[[effect]]
+name = "writes_frame_state"
+bit = 8
+description = "Mutates an executing frame or its locals/globals dynamically."
+
+[[effect]]
+name = "reads_object_state"
+bit = 9
+description = "Reads object state through a path that may observe mutable identity."
+
+[[effect]]
+name = "writes_object_state"
+bit = 10
+description = "Mutates object state, including attribute or item storage."
+
+[[effect]]
+name = "allocates"
+bit = 11
+description = "May allocate an identity-bearing Python or runtime object."
+
+[[effect]]
+name = "releases_reference"
+bit = 12
+description = "May release an owned reference and cross a zero-reference boundary."
+
+[[effect]]
+name = "runs_finalizer"
+bit = 13
+description = "May run __del__ or another finalization callback."
+
+[[effect]]
+name = "runs_weakref_callback"
+bit = 14
+description = "May run a weak-reference callback."
+
+[[effect]]
+name = "invokes_descriptor"
+bit = 15
+description = "May invoke descriptor protocol code."
+
+[[effect]]
+name = "invokes_iteration_callback"
+bit = 16
+description = "May invoke iterator, generator, or asynchronous iteration code."
+
+[[effect]]
+name = "invokes_context_callback"
+bit = 17
+description = "May invoke context-manager enter or exit code."
+
+[[effect]]
+name = "invokes_comparison_callback"
+bit = 18
+description = "May invoke comparison, hashing, or truth-conversion code."
+
+[[effect]]
+name = "raises"
+bit = 19
+description = "May raise or propagate a Python exception."
+
+[[effect]]
+name = "suspends"
+bit = 20
+description = "May suspend or transfer control through yield, await, or scheduling."
+
+[[capability]]
+name = "no_python_callbacks"
+description = "Proves the operation cannot transfer control into Python or import hooks."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "runs_finalizer",
+  "runs_weakref_callback",
+  "invokes_descriptor",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "invokes_comparison_callback",
+]
+
+[[capability]]
+name = "preserves_import_state"
+description = "Proves source-order __name__/__package__/__spec__ state cannot change."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "reflects_namespace",
+  "writes_module_metadata",
+  "writes_global_namespace",
+  "writes_frame_state",
+  "runs_finalizer",
+  "runs_weakref_callback",
+  "invokes_descriptor",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "invokes_comparison_callback",
+]
+
+[[capability]]
+name = "no_namespace_reflection"
+description = "Proves no dynamic module, global, or frame namespace access occurs."
+forbidden = [
+  "reflects_namespace",
+  "reads_module_metadata",
+  "writes_module_metadata",
+  "reads_global_namespace",
+  "writes_global_namespace",
+  "reads_frame_state",
+  "writes_frame_state",
+]
+
+[[capability]]
+name = "no_reference_release"
+description = "Proves neither direct release nor callback-capable code can drop references."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "releases_reference",
+  "runs_finalizer",
+  "runs_weakref_callback",
+  "invokes_descriptor",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "invokes_comparison_callback",
+]
+
+[[capability]]
+name = "referentially_transparent"
+description = "Proves no observable Python effect; only the zero mask qualifies."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "reflects_namespace",
+  "reads_module_metadata",
+  "writes_module_metadata",
+  "reads_global_namespace",
+  "writes_global_namespace",
+  "reads_frame_state",
+  "writes_frame_state",
+  "reads_object_state",
+  "writes_object_state",
+  "allocates",
+  "releases_reference",
+  "runs_finalizer",
+  "runs_weakref_callback",
+  "invokes_descriptor",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "invokes_comparison_callback",
+  "raises",
+  "suspends",
+]
+
+[[capability]]
+name = "cannot_raise"
+description = "Proves the operation cannot raise or transfer into code that may raise."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "runs_finalizer",
+  "runs_weakref_callback",
+  "invokes_descriptor",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "invokes_comparison_callback",
+  "raises",
+]
+
+[[capability]]
+name = "cannot_suspend"
+description = "Proves the operation cannot suspend or transfer into scheduling code."
+forbidden = [
+  "executes_arbitrary_python",
+  "invokes_import_system",
+  "invokes_iteration_callback",
+  "invokes_context_callback",
+  "suspends",
+]
