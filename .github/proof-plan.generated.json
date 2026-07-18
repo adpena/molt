@@ -34,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "79f5abc9ea6e92106a1bd61c9f2088961fe438e6598bd29f45d119965103edcf",
+  "authority_sha256": "755c7b9f80cfadb497b2eff03da0cbdbda3f967d7ce61e3b25cb721e565d3265",
   "ci_families": [
     {
       "dependencies": [],
@@ -2487,7 +2487,7 @@
       "local.op-kind-registry.1": "python3 tools/audit_op_kinds.py --check",
       "local.python-effect-capability-authority.0": "python3 tools/gen_python_effects.py --check",
       "local.python-effect-capability-authority.1": "python3 -m pytest -q tests/test_gen_python_effects.py",
-      "local.python-effect-capability-authority.2": "cargo test -p molt-ir python_effects_generated",
+      "local.python-effect-capability-authority.2": "cargo test -p molt-ir --lib python_effects_generated",
       "local.runtime-gpu.0": "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
       "local.runtime-lib.0": "cargo test --profile release-fast -p molt-runtime --lib",
       "local.runtime-lib.1": "cargo clippy -p molt-backend --features native-backend -- -D warnings",
@@ -2719,7 +2719,7 @@
         "gates": [
           "python3 tools/gen_python_effects.py --check",
           "python3 -m pytest -q tests/test_gen_python_effects.py",
-          "cargo test -p molt-ir python_effects_generated"
+          "cargo test -p molt-ir --lib python_effects_generated"
         ],
         "globs": [
           "runtime/python_effects.toml",

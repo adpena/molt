@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
 SPEC = importlib.util.spec_from_file_location("check_cargo_test_truth", MODULE_PATH)
@@ -13,6 +15,44 @@ SPEC.loader.exec_module(MODULE)
 
 def test_cargo_test_topology_cannot_mask_or_skip_binaries() -> None:
     assert MODULE.violations() == []
+
+
+def test_cargo_truth_runner_custody_is_proof_plan_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = tmp_path / "proof_plan.toml"
+    plan.write_text(
+        """
+[[command]]
+id = "rust.test.renamed"
+argv = ["python3", "tools/run_cargo_test_truth.py"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "PROOF_PLAN", plan)
+
+    assert any("rust.test.default-truth" in failure for failure in MODULE.violations())
+
+
+def test_multi_executable_proof_gate_requires_complete_failure_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = tmp_path / "proof_plan.toml"
+    plan.write_text(
+        """
+[[command]]
+id = "rust.test.default-truth"
+argv = ["python3", "tools/run_cargo_test_truth.py"]
+
+[[rule]]
+name = "unsafe-filtered-package-test"
+gates = ["cargo test -p molt-ir a_test_filter"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "PROOF_PLAN", plan)
+
+    assert any("lacks --no-fail-fast" in failure for failure in MODULE.violations())
 
 
 def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
