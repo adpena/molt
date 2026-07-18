@@ -151,6 +151,7 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 [[toolchain_policy]]
 name = "lean"
 executable = "lean"
+probe_cwd = "formal/lean"
 version_args = ["--version"]
 version_pattern = 'version 4\.28\.0\b'
 setup_value = "4.28.0"

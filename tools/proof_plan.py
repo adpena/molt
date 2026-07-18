@@ -200,6 +200,36 @@ class ProofPlan:
             for field in REQUIRED_TOOLCHAIN_FIELDS:
                 if field not in policy.data:
                     errors.append(f"{policy.name}: missing toolchain field {field}")
+            probe_cwd = policy.data.get("probe_cwd", ".")
+            if not isinstance(probe_cwd, str) or not probe_cwd:
+                errors.append(f"{policy.name}: probe_cwd must be a non-empty string")
+            else:
+                normalized_probe_cwd = _normalize_path(probe_cwd)
+                probe_path = Path(normalized_probe_cwd)
+                if (
+                    normalized_probe_cwd != probe_cwd
+                    or probe_path.is_absolute()
+                    or ".." in probe_path.parts
+                ):
+                    errors.append(
+                        f"{policy.name}: probe_cwd must be a canonical "
+                        f"repository-relative directory: {probe_cwd!r}"
+                    )
+                else:
+                    try:
+                        resolved_probe_cwd = (ROOT / probe_path).resolve(strict=True)
+                        resolved_probe_cwd.relative_to(ROOT.resolve())
+                    except (OSError, ValueError):
+                        errors.append(
+                            f"{policy.name}: probe_cwd must resolve inside the "
+                            f"repository: {probe_cwd!r}"
+                        )
+                    else:
+                        if not resolved_probe_cwd.is_dir():
+                            errors.append(
+                                f"{policy.name}: probe_cwd is not a directory: "
+                                f"{probe_cwd!r}"
+                            )
             args = policy.data.get("version_args")
             if not isinstance(args, list) or not all(
                 isinstance(item, str) and item for item in args
@@ -617,6 +647,11 @@ def _normalize_path(path: str) -> str:
     return path.replace("\\", "/").removeprefix("./")
 
 
+def _toolchain_probe_cwd(policy: ToolchainPolicy) -> tuple[str, Path]:
+    relative = str(policy.data.get("probe_cwd", "."))
+    return relative, (ROOT / relative).resolve(strict=True)
+
+
 def _workflow_job_block(text: str, job: str) -> str | None:
     match = re.search(
         rf"(?ms)^  {re.escape(job)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)", text
@@ -846,6 +881,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     path = shutil.which(requested)
     if path is None:
         return None
+    probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
     command_path = Path(path).absolute()
     launcher_path = command_path.resolve()
 
@@ -863,7 +899,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         try:
             resolved = subprocess.run(
                 content_path_command,
-                cwd=ROOT,
+                cwd=probe_directory,
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -873,14 +909,17 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             candidate = resolved.stdout.strip().splitlines()[0]
             if resolved.returncode != 0 or not candidate:
                 raise OSError("toolchain content resolver failed")
-            content_path = Path(candidate).resolve(strict=True)
+            candidate_path = Path(candidate)
+            if not candidate_path.is_absolute():
+                candidate_path = probe_directory / candidate_path
+            content_path = candidate_path.resolve(strict=True)
         except (IndexError, OSError, subprocess.TimeoutExpired):
             content_path = Path("unavailable")
     executable_sha256 = content_hash(content_path)
     try:
         completed = subprocess.run(
             [path, *policy.data["version_args"]],
-            cwd=ROOT,
+            cwd=probe_directory,
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -892,7 +931,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         version = f"unavailable:{type(exc).__name__}"
     material = (
         f"{command_path}\0{launcher_path}\0{launcher_sha256}\0{content_path}\0"
-        f"{executable_sha256}\0{version}"
+        f"{executable_sha256}\0{version}\0{probe_cwd}"
     ).encode()
     return {
         "path": str(command_path),
@@ -901,6 +940,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         "content_path": str(content_path),
         "version": version,
         "version_pattern": str(policy.data["version_pattern"]),
+        "probe_cwd": probe_cwd,
         "executable_sha256": executable_sha256,
         "identity_sha256": hashlib.sha256(material).hexdigest(),
     }
@@ -1360,6 +1400,8 @@ def verify_receipts(
                         or name not in policies
                         or identity.get("version_pattern")
                         != policies[name].data["version_pattern"]
+                        or identity.get("probe_cwd")
+                        != policies[name].data.get("probe_cwd", ".")
                     ):
                         errors.append(
                             f"{command_id}: invalid {name} toolchain identity"
@@ -1382,7 +1424,8 @@ def verify_receipts(
                                 f"{identity['launcher_sha256']}\0"
                                 f"{identity['content_path']}\0"
                                 f"{identity['executable_sha256']}\0"
-                                f"{identity['version']}"
+                                f"{identity['version']}\0"
+                                f"{identity['probe_cwd']}"
                             ).encode()
                         ).hexdigest()
                     ):
