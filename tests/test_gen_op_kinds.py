@@ -24,36 +24,22 @@ import ast
 import importlib
 import importlib.util
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from tools.op_kinds.paths import OUT_RS, TABLE, tir_path
+from tools.op_kinds.paths import (
+    OUT_RS,
+    TABLE,
+    read_rust_module_cluster as _read_rs_module_cluster,
+    tir_path,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "tools" / "audit_op_kinds.py"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
-
-
-def _read_rs_module_cluster(root_file: Path) -> str:
-    parts: list[str] = []
-    module_dir = (
-        root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
-    )
-    if module_dir.is_dir():
-        for current_dir, dirnames, filenames in os.walk(module_dir):
-            dirnames[:] = sorted(name for name in dirnames if name != "tests")
-            for filename in sorted(filenames):
-                if filename == "tests.rs" or not filename.endswith(".rs"):
-                    continue
-                child = Path(current_dir) / filename
-                if child != root_file:
-                    parts.append(child.read_text(encoding="utf-8"))
-    parts.append(root_file.read_text(encoding="utf-8"))
-    return "\n".join(parts)
 
 
 def _rs_production_source(src: str) -> str:

@@ -75,7 +75,7 @@ if str(ROOT) not in sys.path:
 
 from tools.op_kinds.paths import TABLE as OP_KINDS_TOML  # noqa: E402
 from tools.op_kinds.paths import TIR_SRC as OP_KIND_TIR_SRC  # noqa: E402
-from tools.op_kinds.paths import tir_path  # noqa: E402
+from tools.op_kinds.paths import read_rust_module_cluster, tir_path  # noqa: E402
 
 SERIALIZATION_DIR = ROOT / "src/molt/frontend/lowering"
 SERIALIZATION_PY = SERIALIZATION_DIR / "serialization.py"
@@ -138,23 +138,6 @@ RUNTIME_SRC_ROOTS = tuple(
 # compiler. (LLVM arms, runtime symbols, and native/WASM SimpleIR dispatch are
 # still extracted directly from source — they are not generated.)
 BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
-
-
-def read_rust_module_cluster(root_file: Path) -> str:
-    """Read a Rust module root plus its extracted sibling module tree."""
-    parts: list[str] = []
-    module_dir = root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
-    if module_dir.is_dir():
-        for child in sorted(module_dir.rglob("*.rs")):
-            if child == root_file:
-                continue
-            if child.name == "tests.rs":
-                continue
-            if "tests" in child.relative_to(module_dir).parts:
-                continue
-            parts.append(child.read_text(encoding="utf-8"))
-    parts.append(root_file.read_text(encoding="utf-8"))
-    return "\n".join(parts)
 
 
 def _load_op_kinds_toml() -> dict:
