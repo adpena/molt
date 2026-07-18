@@ -6,14 +6,40 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v1"
+schema = "molt.proof-plan.v3"
 
 authority_inputs = [
+  ".github/actions/setup-llvm/action.yml",
+  ".github/workflows/ci.yml",
+  ".github/workflows/formal.yml",
+  ".github/workflows/molt-wasm-ci.yml",
+  ".github/workflows/security_hardening.yml",
+  ".gitignore",
+  ".python-version",
+  "config/llvm_toolchain_releases.toml",
+  "formal/lean/lean-toolchain",
+  "rust-toolchain.toml",
+  "src/molt/dx.py",
+  "src/molt/llvm_toolchain.py",
+  "tools/artifact_publish.py",
+  "tools/check_generator_manifest.py",
   "tools/proof_plan.py",
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
+  "tools/proof_queue_pkg/evidence.py",
+  "tools/proof_queue_pkg/custody.py",
+  "tools/proof_queue_pkg/diagnostics.py",
+  "tools/proof_queue_pkg/state.py",
+  "tools/check_subprocess_guard_coverage.py",
+  "tools/generator_manifest.toml",
+  "tools/guarded_exec.py",
+  "tools/harness_memory_guard.py",
+  "tools/memory_guard.py",
+  "tools/process_sentinel.py",
+  "tools/process_spawn.py",
   "tests/test_proof_plan.py",
   "tests/test_ci_workflow_topology.py",
+  "tests/test_generator_manifest.py",
 ]
 
 # Gates that run for any non-empty local integration change.
@@ -24,33 +50,339 @@ always = [
   "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
 ]
 
+receipt_schema = "molt.proof-receipt.v2"
+
+# Toolchain contracts are executable receipt policy, not advisory metadata.
+# Every command names the exact subset it consumes; setup evidence keeps the
+# workflow/file projections pinned to the same version authority.
+[[toolchain_policy]]
+name = "python"
+executable = "{python}"
+version_args = ["--version"]
+version_pattern = '^Python 3\.12\.'
+setup_value = "3.12"
+setup_evidence = [".python-version::3.12"]
+
+[[toolchain_policy]]
+name = "uv"
+executable = "uv"
+version_args = ["--version"]
+version_pattern = '^uv 0\.11\.24\b'
+setup_value = "0.11.24"
+setup_evidence = [
+  ".github/workflows/ci.yml::version: \"0.11.24\"",
+  ".github/workflows/molt-wasm-ci.yml::version: \"0.11.24\"",
+  ".github/workflows/security_hardening.yml::version: \"0.11.24\"",
+]
+
+[[toolchain_policy]]
+name = "node"
+executable = "node"
+version_args = ["--version"]
+version_pattern = '^v24\.16\.0$'
+setup_value = "24.16.0"
+setup_evidence = [
+  ".github/workflows/ci.yml::node-version: \"24.16.0\"",
+  ".github/workflows/formal.yml::node-version: \"24.16.0\"",
+]
+
+[[toolchain_policy]]
+name = "rustc"
+executable = "rustc"
+version_args = ["--version", "--verbose"]
+content_path_command = ["rustup", "which", "rustc"]
+version_pattern = '^rustc 1\.96\.1\b'
+setup_value = "1.96.1"
+setup_evidence = [
+  "rust-toolchain.toml::channel = \"1.96.1\"",
+  ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/workflows/molt-wasm-ci.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/workflows/security_hardening.yml::dtolnay/rust-toolchain@1.96.1",
+]
+
+[[toolchain_policy]]
+name = "cargo"
+executable = "cargo"
+version_args = ["--version"]
+content_path_command = ["rustup", "which", "cargo"]
+version_pattern = '^cargo 1\.96\.1\b'
+setup_value = "1.96.1"
+setup_evidence = ["rust-toolchain.toml::channel = \"1.96.1\""]
+
+[[toolchain_policy]]
+name = "clang"
+executable = "clang"
+version_args = ["--version"]
+version_pattern = 'clang version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-config"
+executable = "llvm-config"
+version_args = ["--version"]
+version_pattern = '^22\.1\.8$'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "mlir-opt"
+executable = "mlir-opt"
+version_args = ["--version"]
+version_pattern = 'version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "lld"
+executable = "ld.lld"
+version_args = ["--version"]
+version_pattern = '\bLLD 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "lean"
+executable = "lean"
+version_args = ["--version"]
+version_pattern = 'version 4\.28\.0\b'
+setup_value = "4.28.0"
+setup_evidence = ["formal/lean/lean-toolchain::leanprover/lean4:v4.28.0"]
+
+[[toolchain_policy]]
+name = "quint"
+executable = "quint"
+version_args = ["--version"]
+version_pattern = '^(?:Quint\s+)?0\.32\.0$'
+setup_value = "0.32.0"
+setup_evidence = [".github/workflows/formal.yml::@informalsystems/quint@0.32.0"]
+
+[[toolchain_policy]]
+name = "cargo-deny"
+executable = "cargo-deny"
+version_args = ["--version"]
+version_pattern = '^cargo-deny 0\.20\.2\b'
+setup_value = "0.20.2"
+setup_evidence = [".github/workflows/security_hardening.yml::cargo-deny --version 0.20.2 --locked"]
+
+[[toolchain_policy]]
+name = "cargo-audit"
+executable = "cargo-audit"
+version_args = ["--version"]
+version_pattern = '^cargo-audit 0\.22\.2\b'
+setup_value = "0.22.2"
+setup_evidence = [".github/workflows/security_hardening.yml::cargo-audit --version 0.22.2 --locked"]
+
+[[toolchain_policy]]
+name = "wasm-ld"
+executable = "wasm-ld"
+version_args = ["--version"]
+version_pattern = '\bLLD 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "wasm-tools"
+executable = "wasm-tools"
+version_args = ["--version"]
+version_pattern = '^wasm-tools 1\.253\.0$'
+setup_value = "1.253.0"
+setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"]
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-repository-policy"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "repository"
+target = "host"
+profile = "policy"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-wasm-dev"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "wasm"
+target = "wasm32-wasip1"
+profile = "dev-fast"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-static"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "python-tooling"
+target = "host"
+profile = "static"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-unit"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "python-tooling"
+target = "host"
+profile = "test"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-native-dev"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "native"
+target = "x86_64-unknown-linux-gnu"
+profile = "dev"
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-native-dev"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "x86_64-unknown-linux-gnu"
+profile = "dev"
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-wasi-dev"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "wasm32-wasip1"
+profile = "dev"
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-aarch64-dev"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "aarch64-unknown-linux-gnu"
+profile = "dev"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-llvm-release-fast"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "llvm"
+target = "x86_64-unknown-linux-gnu"
+profile = "release-fast"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-mlir-dev"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "mlir"
+target = "x86_64-unknown-linux-gnu"
+profile = "dev"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-linker-release-fast"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "linker"
+target = "elf-x86_64"
+profile = "release-fast"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-python-audit"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "python"
+target = "host"
+profile = "audit"
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-audit"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "host"
+profile = "audit"
+
+[[matrix_cell]]
+id = "linux-x86_64-formal-verification"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "formal"
+target = "tir-luau"
+profile = "verification"
+
 [[ci_family]]
-name = "python_tooling"
-description = "Python compiler, developer tooling, and smoke-contract proof."
+name = "repository_policy"
+description = "Repository-wide generated authority, architecture, drift, and policy proof."
+inputs = ["**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "docs-gates"
+tiers = ["pre-push", "pr", "main"]
+required = true
+timeout_minutes = 60
+resource_class = "repository-policy"
+dependencies = []
+
+[[ci_family]]
+name = "wasm"
+description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
+executor = "github-job"
+workflow = ".github/workflows/molt-wasm-ci.yml"
+job = "wasm-build"
+tiers = ["pr", "main"]
+required = true
+timeout_minutes = 90
+resource_class = "compiler-build-resource"
+dependencies = ["rust"]
+
+[[ci_family]]
+name = "python_static"
+description = "Python static analysis and generated-authority proof."
 inputs = [".github/workflows/ci.yml", ".pre-commit-config.yaml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/**", "tools/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
-job = "python-tooling-smoke"
+job = "python-static"
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 25
-memory_class = "medium"
-cache_domain = "python-dev"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "fail"
+timeout_minutes = 15
+resource_class = "python-static"
 dependencies = []
+
+[[ci_family]]
+name = "python_unit"
+description = "Pure Python unit and harness-contract proof."
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/**", "tools/**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "python-unit"
+tiers = ["pre-push", "pr", "main"]
+required = true
+timeout_minutes = 20
 resource_class = "python-tests"
-metadata_mode = "descriptive"
-targets = ["native"]
-backends = ["python-tooling"]
-profiles = ["dev"]
-python_versions = ["3.12"]
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = ["python_static"]
+
+[[ci_family]]
+name = "native_integration"
+description = "Native compiler/linker integration smoke isolated from pure Python proof."
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/cli/test_native_link_*.py", "runtime/**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "native-integration"
+tiers = ["pr", "main"]
+required = true
+timeout_minutes = 25
+resource_class = "compiler-build-resource"
+dependencies = ["python_unit", "rust"]
 
 [[ci_family]]
 name = "rust"
-description = "Rust workspace compile, lint, test, and target-smoke proof."
+description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
 inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
@@ -58,43 +390,21 @@ job = "rust-build-unit-smoke"
 tiers = ["pre-push", "pr", "main"]
 required = true
 timeout_minutes = 60
-memory_class = "compile-heavy"
-cache_domain = "cargo-workspace"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "fail"
-dependencies = []
 resource_class = "compiler-build-resource"
-metadata_mode = "descriptive"
-targets = ["native", "wasm32-unknown", "wasm32-wasip1", "i686"]
-backends = ["rust", "native", "wasm"]
-profiles = ["dev", "release-fast"]
-python_versions = ["3.12"]
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = []
 
 [[ci_family]]
 name = "llvm"
-description = "LLVM and MLIR compiler stack build, lowering, and differential proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/tools/test_guarded_exec.py", "tools/bootstrap_llvm.py", "tools/guarded_exec.py", "runtime/molt-backend/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
 tiers = ["pre-push", "pr", "main", "nightly"]
 required = true
 timeout_minutes = 60
-memory_class = "compile-heavy"
-cache_domain = "llvm-cargo"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "fail"
-dependencies = ["rust"]
 resource_class = "compiler-build-resource"
-metadata_mode = "descriptive"
-targets = ["native"]
-backends = ["llvm", "mlir"]
-profiles = ["release-fast"]
-python_versions = ["3.12"]
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = ["rust"]
 
 [[ci_family]]
 name = "python_security"
@@ -106,19 +416,8 @@ job = "python-security"
 tiers = ["pr", "main", "weekly"]
 required = true
 timeout_minutes = 20
-memory_class = "light"
-cache_domain = "python-security"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "fail"
-dependencies = []
 resource_class = "network-audit"
-metadata_mode = "descriptive"
-targets = ["host"]
-backends = ["python"]
-profiles = ["audit"]
-python_versions = ["3.12"]
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = []
 
 [[ci_family]]
 name = "rust_security"
@@ -130,19 +429,8 @@ job = "rust-security"
 tiers = ["pr", "main", "weekly"]
 required = true
 timeout_minutes = 20
-memory_class = "medium"
-cache_domain = "rust-security"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "fail"
-dependencies = []
 resource_class = "network-audit"
-metadata_mode = "descriptive"
-targets = ["host"]
-backends = ["rust"]
-profiles = ["audit"]
-python_versions = []
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = []
 
 [[ci_family]]
 name = "formal"
@@ -152,21 +440,886 @@ executor = "github-workflow"
 workflow = ".github/workflows/formal.yml"
 job = "formal-methods"
 tiers = ["pr", "main", "nightly"]
-required = false
+required = true
 timeout_minutes = 45
-memory_class = "medium"
-cache_domain = "formal"
-artifact_schema = "molt.proof-result.v1"
-zero_work_policy = "advisory"
-dependencies = []
 resource_class = "formal-tools"
-metadata_mode = "descriptive"
-targets = ["tir", "luau"]
-backends = ["formal", "luau"]
-profiles = ["verification"]
-python_versions = ["3.12"]
-operating_systems = ["ubuntu"]
-architectures = ["x86_64"]
+dependencies = []
+
+# Every executable partition has a stable command identity, exact matrix cell,
+# bounded timeout, resource class, and DAG parents. Workflows invoke these IDs;
+# command spelling is never duplicated in YAML.
+[[command]]
+id = "repository.status-blocks.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/update_status_blocks.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.benchmark-docs.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/bench_report.py", "--manifest", "bench/results/docs_manifest.json", "--check", "--update-status-doc"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.docs.architecture"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_docs_architecture.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.ecosystem.compatibility"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_ecosystem_compat.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.differential.layout"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_differential_suite_layout.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.suite.honesty"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_suite_honesty.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.cargo-test.truth"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_cargo_test_truth.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.performance-doc.freshness"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_perf_freshness.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.op-kinds.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_op_kinds.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.heap-kinds.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_heap_kinds.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.runtime-profile.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_runtime_profile_schema.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.cpython-slots.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_cpython_type_slots.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.op-kinds.drift"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = ["repository.op-kinds.generated"]
+argv = ["uv", "run", "python3", "tools/audit_op_kinds.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.wasm-abi.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_wasm_abi.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.cpython-coverage.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_cpython_coverage.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.intrinsics.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_intrinsics.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.codecs.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_codecs.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.stringprep.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_stringprep_tables.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.frontend-protocol.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_protocol.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.frontend-diagnostics.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_frontend_diagnostics.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.luau-support.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_luau_support_matrix.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.differential-lanes.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_diff_lanes.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.target-features.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_target_feature_manifest.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.browser-assets.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = ["repository.target-features.generated", "repository.wasm-abi.generated"]
+argv = ["uv", "run", "python3", "tools/gen_browser_asset_graph.py", "--check"]
+toolchains = ["python", "uv", "node"]
+
+[[command]]
+id = "repository.cpython-abi-layout.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_cpython_abi_layout.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.generator-manifest"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 600
+cache_domain = "uv"
+dependencies = ["repository.op-kinds.generated", "repository.heap-kinds.generated", "repository.runtime-profile.generated", "repository.cpython-slots.generated", "repository.wasm-abi.generated", "repository.cpython-coverage.generated", "repository.intrinsics.generated", "repository.codecs.generated", "repository.stringprep.generated", "repository.frontend-protocol.generated", "repository.frontend-diagnostics.generated", "repository.luau-support.generated", "repository.differential-lanes.generated", "repository.target-features.generated", "repository.browser-assets.generated", "repository.cpython-abi-layout.generated"]
+argv = ["uv", "run", "python3", "tools/check_generator_manifest.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.proof-plan.generated"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/gen_proof_plan.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.llvm-runtime-abi"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/llvm_runtime_abi_audit.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.structural-debt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 600
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/structural_audit.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.canonicalization"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 600
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/canonicalization_contract.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.runtime-bridge-stubs"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_runtime_bridge_test_stubs.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.call-fact-coverage"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 600
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/call_fact_coverage.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.docs-tests"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 1200
+cache_domain = "pytest"
+dependencies = ["repository.generator-manifest", "repository.proof-plan.generated", "repository.structural-debt", "repository.canonicalization", "repository.runtime-bridge-stubs", "repository.call-fact-coverage"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_molt_dev.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_cargo_test_truth.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "wasm.build.backend"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "build", "--profile", "dev-fast", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend"]
+toolchains = ["rustc", "cargo", "lld", "wasm-ld"]
+
+[[command]]
+id = "wasm.build.host"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["cargo", "build", "--profile", "dev-fast", "-p", "molt-wasm-host"]
+toolchains = ["rustc", "cargo", "lld"]
+
+[[command]]
+id = "wasm.build.shared-runtime"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1500
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+env = { RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.compile.hello"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_hello.wasm"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.run.hello"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "wasm-runtime"
+timeout_seconds = 300
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "none"
+dependencies = ["wasm.compile.hello"]
+env = { MOLT_WASM_HOST_DEBUG = "1" }
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_hello.wasm"]
+toolchains = ["rustc", "cargo", "wasm-tools"]
+
+[[command]]
+id = "wasm.compile.comprehension"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_comprehension.wasm"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.run.comprehension"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "wasm-runtime"
+timeout_seconds = 300
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "none"
+dependencies = ["wasm.compile.comprehension"]
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_comprehension.wasm"]
+toolchains = ["rustc", "cargo", "wasm-tools"]
+
+[[command]]
+id = "luau.compile.hello"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 900
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_hello.luau"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "luau.compile.comprehension"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 900
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_comprehension.luau"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "wasm.compile.sieve"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_sieve.wasm"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.run.sieve"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "wasm-runtime"
+timeout_seconds = 300
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "none"
+dependencies = ["wasm.compile.sieve"]
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_sieve.wasm"]
+toolchains = ["rustc", "cargo", "wasm-tools"]
+
+[[command]]
+id = "wasm.test.control-flow"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "-q"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "python.static.ty"
+family = "python_static"
+cell = "linux-x86_64-py312-static"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "python-static"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "ty", "check", "src"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "python.unit.harness"
+family = "python_unit"
+cell = "linux-x86_64-py312-unit"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 900
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "native.integration.bench-cli"
+family = "native_integration"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 900
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
+toolchains = ["python", "uv", "rustc", "cargo", "lld"]
+
+[[command]]
+id = "rust.check.runtime-default"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 600
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "check", "-p", "molt-runtime"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.check.tir-wasi32"
+family = "rust"
+cell = "linux-x86_64-rust-wasi-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 600
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "check", "--target", "wasm32-wasip1", "-p", "molt-tir"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.check.math-aarch64"
+family = "rust"
+cell = "linux-x86_64-rust-aarch64-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 600
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "check", "--target", "aarch64-unknown-linux-gnu", "-p", "molt-runtime-math"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.build.workspace"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "cargo-workspace"
+dependencies = ["rust.check.runtime-default"]
+argv = ["cargo", "build"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.test.default-truth"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1800
+cache_domain = "cargo-workspace"
+dependencies = ["rust.build.workspace"]
+argv = ["python3", "tools/run_cargo_test_truth.py"]
+toolchains = ["python", "rustc", "cargo"]
+
+[[command]]
+id = "rust.test.backend-native-feature"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "cargo-workspace"
+dependencies = ["rust.build.workspace"]
+argv = ["cargo", "test", "-p", "molt-backend", "--features", "native-backend", "--tests", "--no-fail-fast"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.clippy.workspace-default"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1800
+cache_domain = "cargo-workspace"
+dependencies = ["rust.build.workspace"]
+argv = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.clippy.backend-native"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1800
+cache_domain = "cargo-workspace"
+dependencies = ["rust.build.workspace"]
+argv = ["cargo", "clippy", "-p", "molt-backend", "--features", "native-backend", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "rust.clippy.feature-surfaces"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1800
+cache_domain = "cargo-workspace"
+dependencies = ["rust.build.workspace"]
+argv = ["cargo", "clippy", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "--all-targets", "--all-features", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "llvm.build.backend"
+family = "llvm"
+cell = "linux-x86_64-py312-llvm-release-fast"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "llvm-cargo"
+dependencies = []
+argv = ["cargo", "build", "-p", "molt-backend", "--features", "native-backend llvm"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+
+[[command]]
+id = "llvm.test.lowering"
+family = "llvm"
+cell = "linux-x86_64-py312-llvm-release-fast"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "llvm-cargo"
+dependencies = ["llvm.build.backend"]
+argv = ["cargo", "test", "-p", "molt-backend", "--features", "native-backend llvm", "--lib", "llvm_backend::lowering", "--no-fail-fast"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+
+[[command]]
+id = "linker.test.generated-object-admission"
+family = "llvm"
+cell = "linux-x86_64-py312-linker-release-fast"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 900
+cache_domain = "llvm-cargo"
+dependencies = ["llvm.build.backend"]
+argv = ["cargo", "test", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config", "lld"]
+
+[[command]]
+id = "llvm.clippy.backend"
+family = "llvm"
+cell = "linux-x86_64-py312-llvm-release-fast"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "llvm-cargo"
+dependencies = ["llvm.build.backend"]
+argv = ["cargo", "clippy", "-p", "molt-backend", "--features", "native-backend llvm", "--lib", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config"]
+
+[[command]]
+id = "mlir.test.backend"
+family = "llvm"
+cell = "linux-x86_64-py312-mlir-dev"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 1200
+cache_domain = "mlir-cargo"
+dependencies = ["llvm.build.backend"]
+cwd = "runtime/molt-backend-mlir"
+argv = ["cargo", "test", "--all-targets", "--no-fail-fast"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config", "mlir-opt"]
+
+[[command]]
+id = "linker.test.plan-authority"
+family = "llvm"
+cell = "linux-x86_64-py312-linker-release-fast"
+tiers = ["pre-push", "pr", "main", "nightly"]
+resource_class = "python-tests"
+timeout_seconds = 600
+cache_domain = "pytest"
+dependencies = ["linker.test.generated-object-admission"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/cli/test_native_link_plan.py", "tests/cli/test_native_link_command_authority.py", "tests/cli/test_native_link_fail_closed.py"]
+toolchains = ["python", "uv", "clang", "llvm-config", "lld"]
+
+[[command]]
+id = "llvm.test.differential"
+family = "llvm"
+cell = "linux-x86_64-py312-llvm-release-fast"
+tiers = ["pr", "main", "nightly"]
+resource_class = "compiler-build-resource"
+timeout_seconds = 900
+cache_domain = "llvm-cargo"
+dependencies = ["llvm.test.lowering"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_native_lir_loop_join_semantics.py", "-k", "int_accumulator_crosses_47 or int_overflows_i64 or int_sum_accumulator_overflow or non_overflowing_int_loop"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config"]
+
+[[command]]
+id = "security.python.audit"
+family = "python_security"
+cell = "linux-x86_64-py312-python-audit"
+tiers = ["pr", "main", "weekly"]
+resource_class = "network-audit"
+timeout_seconds = 900
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "pip-audit", "--ignore-vuln", "CVE-2025-69872"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "security.rust.deny"
+family = "rust_security"
+cell = "linux-x86_64-rust-audit"
+tiers = ["pr", "main", "weekly"]
+resource_class = "network-audit"
+timeout_seconds = 600
+cache_domain = "cargo-security"
+dependencies = []
+argv = ["cargo", "deny", "check"]
+toolchains = ["rustc", "cargo", "cargo-deny"]
+
+[[command]]
+id = "security.rust.audit"
+family = "rust_security"
+cell = "linux-x86_64-rust-audit"
+tiers = ["pr", "main", "weekly"]
+resource_class = "network-audit"
+timeout_seconds = 600
+cache_domain = "cargo-security"
+dependencies = ["security.rust.deny"]
+argv = ["cargo", "audit"]
+toolchains = ["rustc", "cargo", "cargo-audit"]
+
+[[command]]
+id = "formal.lean.build"
+family = "formal"
+cell = "linux-x86_64-formal-verification"
+tiers = ["pr", "main", "nightly"]
+resource_class = "formal-tools"
+timeout_seconds = 900
+cache_domain = "lean"
+dependencies = []
+cwd = "formal/lean"
+argv = ["lake", "build"]
+toolchains = ["python", "lean"]
+
+[[command]]
+id = "formal.lean.sorry-baseline"
+family = "formal"
+cell = "linux-x86_64-formal-verification"
+tiers = ["pr", "main", "nightly"]
+resource_class = "formal-tools"
+timeout_seconds = 300
+cache_domain = "none"
+dependencies = ["formal.lean.build"]
+argv = ["python3", "tools/check_lean_sorry_count.py"]
+toolchains = ["python", "lean"]
+
+[[command]]
+id = "formal.quint.models"
+family = "formal"
+cell = "linux-x86_64-formal-verification"
+tiers = ["pr", "main", "nightly"]
+resource_class = "formal-tools"
+timeout_seconds = 1200
+cache_domain = "quint"
+dependencies = []
+argv = ["python3", "tools/check_formal_methods.py", "--quint-only"]
+toolchains = ["python", "quint"]
+
+[[command]]
+id = "formal.correspondence"
+family = "formal"
+cell = "linux-x86_64-formal-verification"
+tiers = ["pr", "main", "nightly"]
+resource_class = "formal-tools"
+timeout_seconds = 300
+cache_domain = "none"
+dependencies = []
+argv = ["python3", "tools/check_formal_methods.py", "--check-correspondence"]
+toolchains = ["python"]
 
 # Local integration families retain their established command spelling below.
 # `tools/molt_dev.py integrate` reads these rules from this same authority.

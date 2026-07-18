@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Mapping
@@ -126,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cwd", type=Path, default=ROOT)
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--timeout-env", default=None)
+    parser.add_argument("--metrics-json", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = list(args.command)
@@ -162,6 +164,32 @@ def main(argv: list[str] | None = None) -> int:
         capture_output=False,
         timeout=timeout,
     )
+    if args.metrics_json is not None:
+        peak = getattr(result, "peak", None)
+        peak_total = getattr(result, "peak_total", None)
+        metrics = {
+            "schema": "molt.guarded-command-metrics.v1",
+            "returncode": int(result.returncode),
+            "duration_seconds": getattr(result, "elapsed_s", None),
+            "peak_process_rss_bytes": (
+                int(peak.rss_kb) * 1024
+                if peak is not None and getattr(peak, "rss_kb", None) is not None
+                else None
+            ),
+            "peak_tree_rss_bytes": (
+                int(peak_total.rss_kb) * 1024
+                if peak_total is not None
+                and getattr(peak_total, "rss_kb", None) is not None
+                else None
+            ),
+        }
+        metrics_path = args.metrics_json.resolve()
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = metrics_path.with_name(f".{metrics_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        temporary.replace(metrics_path)
     if result.stderr:
         sys.stderr.write(str(result.stderr))
     profile_path = harness_memory_guard.command_profile_log_path(env)

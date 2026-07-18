@@ -64,7 +64,6 @@ tool = "tools/gen_proof_plan.py"
 outputs = [
   ".github/proof-plan.generated.json",
   "docs/agent/PROOF_PLAN.generated.md",
-  ".github/workflows/formal.yml",
 ]
 source = "tools/proof_plan.toml"
 check_mode = true
@@ -197,6 +196,10 @@ discovery_only = false
 tool = "tools/gen_browser_asset_graph.py"
 outputs = ["wasm/browser_asset_graph.generated.json"]
 source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json}"
+upstream_generators = [
+  "tools/gen_target_feature_manifest.py",
+  "tools/gen_wasm_abi.py",
+]
 check_mode = true
 check_command = "tools/gen_browser_asset_graph.py --check"
 idempotent = true
@@ -383,6 +386,19 @@ ci_checkable = false
 ci_skip_reason = "needs live CPython 3.12/3.13/3.14 interpreters absent from the docs-gates CI job; baseline is an upstream snapshot, not in-repo source"
 idempotent = true
 sync_test_reason = "interpreter-gated upstream snapshot; --check runs only where all three CPython interpreters are present"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_cpython_abi_layout.py"
+outputs = [
+  "runtime/molt-cpython-abi/include/_molt_abi_layout.generated.h",
+]
+source = "runtime/molt-cpython-abi/src/abi_types.rs"
+check_mode = true
+check_command = "tools/gen_cpython_abi_layout.py --check"
+idempotent = true
+sync_test = "tests/test_gen_cpython_abi_layout.py"
 closed_domains = []
 discovery_only = false
 

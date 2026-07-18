@@ -19,6 +19,7 @@ jobs:
   docs-gates:
     name: Docs Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -27,10 +28,12 @@ jobs:
           python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.16.0"
           cache: npm
           cache-dependency-path: tools/browser_asset_graph/package-lock.json
 
@@ -40,113 +43,19 @@ jobs:
       - name: Provision browser asset parser
         run: uv run python3 tools/bootstrap_browser_asset_graph.py
 
-      - name: Type-check frontend Python (ty, zero-diagnostic ratchet)
-        run: uv run ty check src
+      - name: Fetch performance freshness reference
+        run: git fetch --no-tags --depth=1 origin main || true
 
-      - name: Check generated status blocks
-        run: uv run python3 tools/update_status_blocks.py --check
+      - name: Execute repository policy partitions
+        run: python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json
 
-      - name: Check generated benchmark docs
-        run: uv run python3 tools/bench_report.py --manifest bench/results/docs_manifest.json --check --update-status-doc
-
-      - name: Check docs architecture contract
-        run: uv run python3 tools/check_docs_architecture.py
-
-      - name: Check ecosystem compatibility ratchet (derived verdicts, down-only)
-        run: uv run python3 tools/check_ecosystem_compat.py
-
-      - name: Check differential suite layout (lane/naming hygiene)
-        run: uv run python3 tools/check_differential_suite_layout.py
-
-      - name: Check suite-honesty ratchet (tracked-fail manifest, down-only)
-        run: uv run python3 tools/check_suite_honesty.py
-
-      - name: Check Cargo test execution truth (all binaries, no masking)
-        run: uv run python3 tools/check_cargo_test_truth.py
-
-      - name: Check perf-doc freshness (no unstamped stale perf snapshot)
-        run: |
-          git fetch --no-tags --depth=1 origin main || true
-          uv run python3 tools/check_perf_freshness.py
-
-      - name: Check op-kind registry generated files are in sync
-        run: uv run python3 tools/gen_op_kinds.py --check
-
-      - name: Check heap-kind lifetime authority generated files are in sync
-        run: uv run python3 tools/gen_heap_kinds.py --check
-
-      - name: Check runtime-profile schema generated files are in sync
-        run: uv run python3 tools/gen_runtime_profile_schema.py --check
-
-      - name: Check CPython type-slot header is in sync
-        run: uv run python3 tools/gen_cpython_type_slots.py --check
-
-      - name: Check op-kind drift (frontend emitter vs registry; down-only baseline)
-        run: uv run python3 tools/audit_op_kinds.py --check
-
-      - name: Check WASM ABI generated files are in sync
-        run: uv run python3 tools/gen_wasm_abi.py --check
-
-      - name: Check CPython coverage matrix generated files are in sync
-        run: uv run python3 tools/gen_cpython_coverage.py --check
-
-      # Close the doc-59 §4 generator-gating holes: every generated authority
-      # whose source is reproducible in a vanilla checkout is --check-gated so its
-      # output cannot drift silently. (The generators whose source is NOT in the
-      # repo — the gitignored CPython doc corpus, the live 3.12/3.13/3.14
-      # interpreters, the pinned tinygrad checkout — are recorded ci_checkable =
-      # false with a ci_skip_reason in tools/generator_manifest.toml and gated by
-      # their sync tests instead; the meta-gate below enforces that distinction.)
-      - name: Check intrinsics registry generated files are in sync
-        run: uv run python3 tools/gen_intrinsics.py --check
-      - name: Check codec tables generated files are in sync
-        run: uv run python3 tools/gen_codecs.py --check
-      - name: Check stringprep tables generated file is in sync
-        run: uv run python3 tools/gen_stringprep_tables.py --check
-      - name: Check frontend Protocol shim is in sync
-        run: uv run python3 tools/gen_protocol.py --check
-      - name: Check frontend diagnostics registry is in sync
-        run: uv run python3 tools/gen_frontend_diagnostics.py --check
-      - name: Check Luau support matrix doc is in sync
-        run: uv run python3 tools/gen_luau_support_matrix.py --check
-      - name: Check differential lane manifests are in sync
-        run: uv run python3 tools/gen_diff_lanes.py --check
-      - name: Check target feature manifest generated files are in sync
-        run: uv run python3 tools/gen_target_feature_manifest.py --check
-      - name: Check browser and Node loader asset graph is in sync
-        run: uv run python3 tools/gen_browser_asset_graph.py --check
-
-      # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every generated
-      # authority is registered + --check-gated, no orphan generated files, and no
-      # NEW silent-default `match` over a closed enum domain (the dispatch-handler-
-      # mirror-hazard class). Idempotence/freshness of the in-repo generators is
-      # proven by the per-generator --check steps above; this gate enforces the
-      # registry completeness + the closed-domain exhaustiveness ratchet.
-      - name: Check generator manifest + closed-domain exhaustiveness (fact plane)
-        run: uv run python3 tools/check_generator_manifest.py --check
-
-      - name: Check proof-plan authority and generated CI projections
-        run: uv run python3 tools/gen_proof_plan.py --check
-
-      - name: Check LLVM runtime ABI drift (preserved runtime calls)
-        run: uv run python3 tools/llvm_runtime_abi_audit.py --check
-
-      - name: Check structural-debt ratchet (kitchen-sink/undecomposed/hand-classifications/debt; down-only)
-        run: uv run python3 tools/structural_audit.py --check
-
-      - name: Check canonicalization contract (crate-layer organization; layers/facades/misplacement; down-only)
-        run: uv run python3 tools/canonicalization_contract.py --check
-
-      - name: Check runtime bridge test stubs are in sync
-        run: uv run python3 tools/check_runtime_bridge_test_stubs.py --check
-
-      - name: Check call-fact representation ratchet (attached call facts; up-only + evidence fresh)
-        run: uv run python3 tools/call_fact_coverage.py --check
-
-      - name: Run docs architecture tests
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_heap_kinds.py tests/test_gen_wasm_abi.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_gen_cpython_type_slots.py tests/tools/test_perf_authority.py tests/tools/test_analysis_capsule.py tests/tools/test_runtime_bridge_test_stubs.py tests/tools/test_cargo_test_truth.py
+      - name: Upload repository policy receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-repository-policy
+          path: proof-receipts/repository_policy.json
+          if-no-files-found: error
 
       - name: Summarize guarded command hotspots
         if: always()
@@ -156,11 +65,16 @@ jobs:
     name: Changed Path Classifier
     runs-on: ubuntu-latest
     outputs:
-      python_tooling: ${{ steps.paths.outputs.python_tooling }}
+      repository_policy: ${{ steps.paths.outputs.repository_policy }}
+      wasm: ${{ steps.paths.outputs.wasm }}
+      python_static: ${{ steps.paths.outputs.python_static }}
+      python_unit: ${{ steps.paths.outputs.python_unit }}
+      native_integration: ${{ steps.paths.outputs.native_integration }}
       rust: ${{ steps.paths.outputs.rust }}
       llvm: ${{ steps.paths.outputs.llvm }}
       python_security: ${{ steps.paths.outputs.python_security }}
       rust_security: ${{ steps.paths.outputs.rust_security }}
+      formal: ${{ steps.paths.outputs.formal }}
       matrix: ${{ steps.paths.outputs.matrix }}
       selected: ${{ steps.paths.outputs.selected }}
     steps:
@@ -183,11 +97,24 @@ jobs:
       python_security: ${{ needs.classify-changes.outputs.python_security == 'true' }}
       rust_security: ${{ needs.classify-changes.outputs.rust_security == 'true' }}
 
-  python-tooling-smoke:
-    name: Python Tooling Smoke
+  formal-verification:
+    name: Formal Verification
     needs: classify-changes
-    if: needs.classify-changes.outputs.python_tooling == 'true'
+    if: needs.classify-changes.outputs.formal == 'true'
+    uses: ./.github/workflows/formal.yml
+
+  wasm-validation:
+    name: WASM Validation
+    needs: [classify-changes, rust-build-unit-smoke]
+    if: always() && needs.classify-changes.outputs.wasm == 'true' && (needs.rust-build-unit-smoke.result == 'success' || needs.rust-build-unit-smoke.result == 'skipped')
+    uses: ./.github/workflows/molt-wasm-ci.yml
+
+  python-static:
+    name: Python Static Authority
+    needs: classify-changes
+    if: needs.classify-changes.outputs.python_static == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -196,68 +123,91 @@ jobs:
           python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev
 
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Execute selected Python static partitions
+        run: python3 tools/proof_plan.py --run-family python_static --receipt proof-receipts/python_static.json
 
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install native linker
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lld
-          ld.lld --version
-
-      - name: Run Python smoke tests
-        env:
-          MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
-            uv run python3 -m pytest -q \
-            -m "not slow" \
-            tests/test_bench_harness.py \
-            tests/test_bench_tool.py \
-            tests/test_ci_workflow_topology.py \
-            tests/test_harness_conformance.py \
-            tests/test_harness_layers.py \
-            tests/test_harness_report.py \
-            tests/test_manifest_env.py \
-            tests/test_monty_conformance_runner.py
-
-      - name: Run bench CLI native smoke tests
-        env:
-          MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
-            uv run python3 -m pytest -q \
-            tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler
-
-      - name: Test capability manifest import
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            env PYTHONPATH=src uv run python3 -c \
-            "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
-
-      - name: Test harness report import
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            env PYTHONPATH=src uv run python3 -c \
-            "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
+      - name: Upload Python static receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-python-static
+          path: proof-receipts/python_static.json
+          if-no-files-found: error
 
       - name: Summarize guarded command hotspots
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20
+
+  python-unit:
+    name: Python Unit Authority
+    needs: [classify-changes, python-static]
+    if: always() && needs.classify-changes.outputs.python_unit == 'true' && (needs.python-static.result == 'success' || needs.python-static.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
+      - name: Sync Python environment
+        run: uv sync --frozen --group dev
+      - name: Execute selected Python unit partitions
+        run: python3 tools/proof_plan.py --run-family python_unit --receipt proof-receipts/python_unit.json
+      - name: Upload Python unit receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-python-unit
+          path: proof-receipts/python_unit.json
+          if-no-files-found: error
+
+  native-integration:
+    name: Native Integration Authority
+    needs: [classify-changes, python-unit, rust-build-unit-smoke]
+    if: always() && needs.classify-changes.outputs.native_integration == 'true' && (needs.python-unit.result == 'success' || needs.python-unit.result == 'skipped') && (needs.rust-build-unit-smoke.result == 'success' || needs.rust-build-unit-smoke.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Configure adaptive Rust parallelism
+        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - name: Setup canonical native linker SDK
+        uses: ./.github/actions/setup-llvm
+      - name: Sync Python environment
+        run: uv sync --frozen --group dev
+      - name: Execute selected native integration partitions
+        run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
+      - name: Upload native integration receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-native-integration
+          path: proof-receipts/native_integration.json
+          if-no-files-found: error
 
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -270,160 +220,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check molt-runtime builds under full features (P0 break guard)
-        # Fast, explicit guard: molt-runtime under its DEFAULT features
-        # (stdlib_full -> gpu/graphlib/memoryview) is the surface where recent
-        # multi-lane breaks stacked up invisibly (dangling re-exports after crate
-        # extractions, forgotten callers after an API unify, a merge-reverted
-        # lib.rs). Narrow per-lane feature builds miss these; this fails fast.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo check -p molt-runtime
-
-      - name: Check molt-tir on 32-bit WASI
-        # Byte-count policy must remain pointer-width independent. This target
-        # catches large usize constants and arithmetic before backend lowering.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo check --target wasm32-wasip1 -p molt-tir
-
-      - name: Check molt-runtime-math on aarch64 Linux
-        # Compile the cfg-gated NEON paths so unsafe-boundary and intrinsic drift
-        # cannot remain masked by the x86_64 CI host.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo check --target aarch64-unknown-linux-gnu -p molt-runtime-math
-
-      - name: Build
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build 2>&1 | tee logs/ci-cargo-build.log
-
       - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
+      - name: Execute selected Rust partitions
+        run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json
 
-      - uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Run molt-backend unit tests (native backend)
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --tests --no-fail-fast
-
-      - name: Run every default-feature workspace test binary without masking
-        # Cargo owns test-target discovery. --tests executes library/unit and
-        # integration test executables; --no-fail-fast keeps one executable from
-        # hiding failures in later executables. Feature-specific lanes stay
-        # separate, but no default test target may depend on hand enumeration.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/run_cargo_test_truth.py
-
-      - name: Clippy (molt-backend)
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
-
-      - name: Clippy (molt-ir)
-        # molt-ir owns the immutable IR/TIR vocabulary, op-kind registry, SSA
-        # op-lowering, and effect-proof facts extracted out of molt-tir (doc 21).
-        # It holds midend invariants the whole compiler depends on. `cargo clippy
-        # -p molt-tir` does NOT lint molt-ir's own code (clippy lints only the
-        # selected crate, not its dependencies), so without this step the
-        # extraction would have silently dropped the bulk of the midend off the
-        # zero-warning ratchet. Gate it identically to molt-tir/molt-backend.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-ir --all-targets --all-features -- -D warnings
-
-      - name: Clippy (molt-passes)
-        # molt-passes owns the TIR pass/fact/orchestration layer (value-range,
-        # gvn, counted-loop, strength-reduction, the inliner, representation
-        # facts) extracted out of molt-tir. These are the pass contracts the
-        # "Clippy (molt-tir)" step below was written to protect; after the
-        # extraction they live here, so this step keeps them on the same ratchet.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-passes --all-targets --all-features -- -D warnings
-
-      - name: Clippy (molt-tir)
-        # TIR owns the residual lowering/representation-planning midend; keep
-        # its test targets and feature-gated utilities on the same zero-warning
-        # ratchet as the backend that consumes them. The pass and IR-vocabulary
-        # halves of the midend are gated by the molt-passes/molt-ir steps above.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-tir --all-targets --all-features -- -D warnings
-
-      - name: Clippy (runtime satellites)
-        # The feature-gated stdlib satellite crates (molt-runtime-X) are the
-        # DEFAULT native source for their modules but were never clippy-gated, so
-        # lints drifted in silently (e.g. an unnecessary u64->u64 cast in crypto,
-        # a manual loop in regex). Gate every satellite with -D warnings so the
-        # default-tier runtime stays lint-clean alongside molt-backend.
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --all-targets \
-            -p molt-runtime-asyncio \
-            -p molt-runtime-collections \
-            -p molt-runtime-compression \
-            -p molt-runtime-core \
-            -p molt-runtime-crypto \
-            -p molt-stdlib-difflib \
-            -p molt-stdlib-graphlib \
-            -p molt-runtime-http \
-            -p molt-runtime-ipaddress \
-            -p molt-runtime-itertools \
-            -p molt-runtime-logging \
-            -p molt-runtime-math \
-            -p molt-runtime-net \
-            -p molt-runtime-path \
-            -p molt-runtime-protobuf \
-            -p molt-runtime-regex \
-            -p molt-runtime-serial \
-            -p molt-runtime-stringprep \
-            -p molt-stdlib-text \
-            -p molt-runtime-tk \
-            -p molt-runtime-vfs \
-            -p molt-runtime-xml \
-            -p molt-runtime-zoneinfo \
-            -- -D warnings
-
-      - name: Clippy (molt-gpu)
-        # The GPU acceleration crate carries renderer and FFI surfaces outside
-        # the stdlib satellite family; gate all targets/features so backend
-        # renderer drift cannot silently re-enter.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings
-
-      - name: Clippy (workspace zero-warning net — standing -D warnings gate)
-        # THE standing gate: a single workspace-wide -D-warnings clippy run that
-        # no crate can escape. The per-crate steps above give feature-specific
-        # coverage (--all-features on ir/passes/tir/gpu, native-backend on
-        # molt-backend); this net denies warnings across EVERY workspace member
-        # under default features + all targets, so a lint regression in a crate
-        # that never had its own clippy job (molt-runtime, molt-backend-wasm,
-        # molt-backend-luau, molt-lang-cpython-abi, db, snapshot, embed, ffi, ...)
-        # fails CI instead of drifting in silently — the class fix for the debt
-        # this gate was introduced to burn down. `--all-features` is intentionally
-        # NOT used: it would enable molt-backend's `llvm`/`polly` features, which
-        # need a system LLVM the default runner lacks (the +llvm lane is gated
-        # separately in the llvm-backend job); default features keep this portable
-        # across Windows/macOS/Linux dev boxes too.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test molt-snapshot
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot --no-fail-fast
-
-      - name: Test molt-embed
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-embed --no-fail-fast
-
-      - name: Test molt-harness
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-harness --no-fail-fast
-
-      - name: Test molt-runtime-protobuf
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime-protobuf --no-fail-fast
-
-      - name: Test molt-lang-cpython-abi (incl. buffer-export allocation-budget gate)
-        # Runs the crate's lib unit tests, which include
-        # buffer_export_bench::buffer_export_allocation_budget — the M10
-        # perf-regression interlock asserting EXACTLY 1 alloc of 1112 B per
-        # Py_buffer export. Without this step the gate compiles (workspace clippy)
-        # but never fires, so a per-export allocation regression could drift in
-        # silently. The wall-clock profiler in the same module is #[ignore]d.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-lang-cpython-abi --lib
-
-      - name: Verify zero warnings
-        run: |
-          WARNING_COUNT=$(grep -c 'warning\[' logs/ci-cargo-build.log || true)
-          echo "Warnings found: $WARNING_COUNT"
-          if [ "$WARNING_COUNT" -ne 0 ]; then
-            echo "::error::Build produced $WARNING_COUNT warning(s). Please fix all warnings."
-            WARNING_LINES=$(grep 'warning\[' logs/ci-cargo-build.log || true)
-            printf '%s\n' "$WARNING_LINES"
-            exit 1
-          fi
+      - name: Upload Rust receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-rust
+          path: proof-receipts/rust.json
+          if-no-files-found: error
 
       - name: Summarize guarded command hotspots
         if: always()
@@ -434,6 +243,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.llvm == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -449,83 +259,27 @@ jobs:
       - name: Setup LLVM backend SDK
         uses: ./.github/actions/setup-llvm
 
-      # Deterministic regression gate for the integer-overflow miscompile.
-      # The LLVM backend used to emit raw machine add/sub/mul on any TirType::I64
-      # and mask to 47 bits with no BigInt promotion, so integers crossing 2**47
-      # produced wrong results only on this backend. These unit tests assert the
-      # IR routes non-overflow-safe integer arithmetic through molt_add and keeps
-      # the raw path only for plan-proven overflow-safe carriers.
-      - name: Build molt-backend with the llvm feature
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo build -p molt-backend --features "native-backend llvm" 2>&1 \
-            | tee logs/ci-llvm-build.log
-
-      - name: Verify zero warnings (llvm feature)
-        run: |
-          WARNING_COUNT=$(grep -c 'warning\[' logs/ci-llvm-build.log || true)
-          echo "Warnings found: $WARNING_COUNT"
-          if [ "$WARNING_COUNT" -ne 0 ]; then
-            echo "::error::LLVM build produced $WARNING_COUNT warning(s)."
-            grep 'warning\[' logs/ci-llvm-build.log || true
-            exit 1
-          fi
-
-      # Scope to the `llvm_backend::lowering` test module so this stays a green,
-      # deterministic gate for the integer-overflow miscompile (and all LLVM
-      # lowering invariants). The broader `tests::` module contains a separate,
-      # pre-existing failing stdlib-partition test
-      # (`llvm_backend_keeps_shared_stdlib_partition_external`) tracked apart from
-      # this fix; it must not mask overflow regressions here.
-      - name: Run LLVM lowering + int-overflow regression tests
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo test -p molt-backend --features "native-backend llvm" --lib llvm_backend::lowering --no-fail-fast
-
-      - name: Verify LLVM generated-object ABI link admission
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo test -p molt-backend --features "native-backend llvm" --test llvm_generated_object_linkage --no-fail-fast
-
-      - name: Clippy (molt-backend, llvm feature)
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo clippy -p molt-backend --features "native-backend llvm" --lib -- -D warnings
-
       - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev
 
-      # End-to-end differential gate: build integer-overflow programs through the
-      # LLVM backend and compare stdout against CPython and the native backend.
-      # This is the build/run/compare gate the cross-backend audit asked for.
-      #
-      # NOTE: this step is currently `continue-on-error` because the LLVM backend
-      # has a SEPARATE, pre-existing, flaky stdlib-partition pipeline crash
-      # (`[TIR] verification failed ... entry block ^bb0 does not exist` while
-      # compiling `molt_init___future__` / `_Feature.__init__`) that intermittently
-      # aborts the build before the overflow program runs. That bug is independent
-      # of the integer-overflow fix and already has its own failing unit test
-      # (`tests::llvm_backend_keeps_shared_stdlib_partition_external`). The
-      # deterministic IR-level regression for the overflow miscompile is the hard
-      # gate above (`cargo test ... --lib llvm_backend`). Once the stdlib-partition
-      # crash is fixed, drop `continue-on-error` to make this a blocking gate.
-      - name: LLVM int-overflow differential tests (build/run vs CPython)
-        continue-on-error: true
-        env:
-          MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
-            uv run python3 -m pytest -q \
-            tests/test_native_lir_loop_join_semantics.py \
-            -k "int_accumulator_crosses_47 or int_overflows_i64 or int_sum_accumulator_overflow or non_overflowing_int_loop"
+      - name: Execute selected LLVM, MLIR, and linker partitions
+        run: python3 tools/proof_plan.py --run-family llvm --receipt proof-receipts/llvm.json
+
+      - name: Upload LLVM/MLIR/linker receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-llvm
+          path: proof-receipts/llvm.json
+          if-no-files-found: error
 
       - name: Summarize guarded command hotspots
         if: always()
@@ -535,20 +289,28 @@ jobs:
     name: Proof Plan Verdict
     if: always()
     needs:
+      - docs-gates
       - classify-changes
-      - python-tooling-smoke
+      - python-static
+      - python-unit
+      - native-integration
       - rust-build-unit-smoke
       - llvm-backend
       - security-hardening
+      - formal-verification
+      - wasm-validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Download executable proof receipts
+        if: needs.classify-changes.outputs.selected != '[]'
+        uses: actions/download-artifact@v7
+        with:
+          pattern: proof-receipt-*
+          path: proof-receipts
+          merge-multiple: true
       - name: Fail closed on missing, skipped, failed, or zero-work required proofs
         run: >-
           python3 tools/proof_plan.py
           --verify-selected '${{ needs.classify-changes.outputs.selected }}'
-          --result python_tooling=${{ needs.python-tooling-smoke.result }}:${{ needs.python-tooling-smoke.result == 'success' && 1 || 0 }}
-          --result rust=${{ needs.rust-build-unit-smoke.result }}:${{ needs.rust-build-unit-smoke.result == 'success' && 1 || 0 }}
-          --result llvm=${{ needs.llvm-backend.result }}:${{ needs.llvm-backend.result == 'success' && 1 || 0 }}
-          --result python_security=${{ needs.security-hardening.result }}:${{ needs.security-hardening.result == 'success' && 1 || 0 }}
-          --result rust_security=${{ needs.security-hardening.result }}:${{ needs.security-hardening.result == 'success' && 1 || 0 }}
+          --receipt-dir proof-receipts

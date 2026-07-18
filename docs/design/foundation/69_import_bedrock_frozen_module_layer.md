@@ -201,7 +201,7 @@ no module state.
 
 ## 3. Compile-time artifacts (the single authority)
 
-One generator (`tools/gen_module_registry.py`, new, same family as
+One projection checker (`tools/check_module_registry.py`, same family as
 `gen_wasm_abi.py`/`gen_op_kinds.py`) consumes the closure plan that
 `module_graph.py` already produces and emits **one logical artifact** with
 per-consumer projections:
@@ -769,7 +769,7 @@ is the structural signature this design was chosen for.
 
 | Gate | Enforces | Kind |
 |---|---|---|
-| G1 `test_module_registry_projection_digests` | I2, I10 | generator `--check` + const-assert compile gate (new, `tools/gen_module_registry.py --check`) |
+| G1 `test_module_registry_projection_digests` | I2, I10 | projection `--check` + const-assert compile gate (`tools/check_module_registry.py --check`) |
 | G2 `test_module_table_single_store` | I3 | runtime unit: grep-free structural gate — the only `HashMap`-of-modules symbol is gone; plus behavior: Python-side `sys.modules` mutation observed by `ensure` without any sync call |
 | G3 `test_init_reachable_only_via_table` | I5 | backend gate: no direct `call` op targets `molt_init_*` symbols except the table/INIT_ORDER emitters (mirror of the existing `canonical_lowering_default_kinds_are_natively_handled` gate style) |
 | G4 `test_ensure_state_machine` | I4, I5, I6 | synthetic runtime unit driving every transition incl. R2.4 CAS races |
@@ -783,7 +783,7 @@ is the structural signature this design was chosen for.
 
 ### 12.3 Generated-artifact authorities
 
-- `tools/gen_module_registry.py` (+ schema doc) — registry and all §3
+- `tools/check_module_registry.py` (+ schema doc) — registry and all §3
   projections; per-build output, checked by G1/G7.
 - `tools/gen_wasm_abi.py` + `wasm_abi_manifest.toml` — unchanged authority for
   the ABI import surface; the registry consumes its digest, not its contents.
