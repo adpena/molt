@@ -331,6 +331,7 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         body = _rust_fn_body(rendered, f"pub fn {fn_name}(")
         for kind, facts in expected.items():
             assert (f'"{kind}"' in body) == (field in facts)
+        assert ('"async_work_poll"' in body) == (field in expected["check_exception"])
 
     consumed_body = _rust_fn_body(
         rendered, "pub fn simpleir_kind_is_cfg_or_ssa_consumed("
@@ -430,6 +431,18 @@ def test_simpleir_control_kind_validation_rejects_drift() -> None:
     else:
         raise AssertionError("wasm resume-after without suspend was accepted")
 
+    alias_owned_control_fact = json.loads(json.dumps(data))
+    for row in alias_owned_control_fact["simpleir_control_kind"]:
+        if row["kind"] == "check_exception":
+            row["kind"] = "async_work_poll"
+            break
+    try:
+        gen._validate_simpleir_control_kinds(alias_owned_control_fact)
+    except gen.OpKindTableError as e:
+        assert "is an alias of 'check_exception'" in str(e)
+    else:
+        raise AssertionError("control facts were accepted on an alias spelling")
+
 
 # ---------------------------------------------------------------------------
 # 2. The table mirrors the Rust reality the audit extracts from source.
@@ -502,8 +515,16 @@ def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
     data = gen.load_table()
 
     rows = data["simpleir_control_kind"]
+    aliases = {
+        row["canonical"]: set(row.get("aliases", [])) for row in data["kind"]
+    }
     for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
-        expected = {row["kind"] for row in rows if row[field]}
+        expected = {
+            spelling
+            for row in rows
+            if row[field]
+            for spelling in {row["kind"], *aliases.get(row["kind"], set())}
+        }
         generated = set(
             audit.extract_matches_macro(OUT_RS, f"simpleir_kind_is_{field}")
         )
@@ -512,9 +533,10 @@ def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
         )
 
     consumed_expected = {
-        row["kind"]
+        spelling
         for row in rows
         if row["structural"] or row["pre_ssa_rewritten"] or row["ssa_only"]
+        for spelling in {row["kind"], *aliases.get(row["kind"], set())}
     }
     consumed_generated = set(
         audit.extract_matches_macro(OUT_RS, "simpleir_kind_is_cfg_or_ssa_consumed")

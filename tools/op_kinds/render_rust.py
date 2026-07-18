@@ -898,12 +898,22 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
 }
 
 
+def _simpleir_kind_aliases(data: dict) -> dict[str, tuple[str, ...]]:
+    return {
+        row["canonical"]: tuple(row.get("aliases", ()))
+        for row in data.get("kind", [])
+    }
+
+
 def _simpleir_control_members(data: dict, field: str) -> list[str]:
-    return [
-        row["kind"]
-        for row in data.get("simpleir_control_kind", [])
-        if row.get(field, False)
-    ]
+    aliases = _simpleir_kind_aliases(data)
+    members: list[str] = []
+    for row in data.get("simpleir_control_kind", []):
+        if not row.get(field, False):
+            continue
+        canonical = row["kind"]
+        members.extend((canonical, *aliases.get(canonical, ())))
+    return members
 
 
 def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) -> str:
@@ -934,11 +944,14 @@ def _render_simpleir_control_facts(data: dict) -> str:
         )
         out.append("\n")
 
-    consumed = [
-        row["kind"]
-        for row in data.get("simpleir_control_kind", [])
-        if row["structural"] or row["pre_ssa_rewritten"] or row["ssa_only"]
-    ]
+    consumed_fields = ("structural", "pre_ssa_rewritten", "ssa_only")
+    aliases = _simpleir_kind_aliases(data)
+    consumed: list[str] = []
+    for row in data.get("simpleir_control_kind", []):
+        if not any(row[field] for field in consumed_fields):
+            continue
+        canonical = row["kind"]
+        consumed.extend((canonical, *aliases.get(canonical, ())))
     out.append(
         _render_simpleir_kind_bool_fn(
             "simpleir_kind_is_cfg_or_ssa_consumed",
