@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import importlib
 import json
-from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Iterable, Mapping
 
-import molt.wasm_artifact as _wasm_artifact
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-    WASM_LEGACY_TABLE_BASE,
+    WASM_DEFAULT_APP_TABLE_BASE,
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
@@ -27,12 +24,10 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
 )
-
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 __all__ = (
     "_effective_split_worker_table_base",
-    "_export_wasm_table_refs",
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
@@ -45,101 +40,22 @@ __all__ = (
 )
 
 
-def _cli_module() -> Any:
-    return importlib.import_module("molt.cli")
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    _cli_module()._atomic_write_bytes(path, data)
-
-
-def _export_wasm_table_refs(path: Path) -> None:
-    data = path.read_bytes()
-    sections = _wasm_artifact._parse_wasm_sections(data)
-    slot_to_func = _wasm_artifact._collect_wasm_active_table_function_slots(data)
-    if not slot_to_func:
-        return
-
-    exports: list[tuple[str, int, int]] = []
-    existing_names: set[str] = set()
-    for section_id, payload in sections:
-        if section_id != 7:
-            continue
-        offset = 0
-        count, offset = _wasm_artifact._read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _wasm_artifact._read_wasm_string(payload, offset)
-            kind = payload[offset]
-            offset += 1
-            index, offset = _wasm_artifact._read_wasm_varuint(payload, offset)
-            exports.append((name, kind, index))
-            existing_names.add(name)
-
-    additions = []
-    for slot, func_index in sorted(slot_to_func.items()):
-        name = _wasm_artifact.wasm_table_ref_export_name(slot)
-        if name not in existing_names:
-            additions.append((name, 0, func_index))
-    if not additions:
-        return
-
-    export_payload = bytearray()
-    merged = exports + additions
-    export_payload.extend(_wasm_artifact._write_wasm_varuint(len(merged)))
-    for name, kind, index in merged:
-        export_payload.extend(_wasm_artifact._write_wasm_string(name))
-        export_payload.append(kind)
-        export_payload.extend(_wasm_artifact._write_wasm_varuint(index))
-
-    inserted = False
-    rebuilt_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id == 7:
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
-            continue
-        if not inserted and section_id > 7:
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
-        rebuilt_sections.append((section_id, payload))
-    if not inserted:
-        rebuilt_sections.append((7, bytes(export_payload)))
-    _atomic_write_bytes(path, _wasm_artifact._build_wasm_sections(rebuilt_sections))
-
-
 def _effective_split_worker_table_base(
     *,
     wasm_table_base: int | None,
-    app_table_ref_signatures: Mapping[str, Mapping[str, object]],
-    app_wasm: Path | None = None,
+    app_callable_table_slots: Iterable[int],
 ) -> int | None:
     if wasm_table_base is None:
         return None
-    exported_slots = _wasm_artifact.wasm_table_ref_indices_from_names(
-        app_table_ref_signatures,
-    )
-    below_base = [slot for slot in exported_slots if slot < wasm_table_base]
+    callable_slots = sorted(set(app_callable_table_slots))
+    below_base = [slot for slot in callable_slots if slot < wasm_table_base]
     if below_base:
-        first_exported_slot = min(exported_slots)
+        first_callable_slot = callable_slots[0]
         raise ValueError(
             "backend wasm_table_base "
-            f"{wasm_table_base} is above exported table-ref slot "
-            f"{below_base[0]} (first exported slot {first_exported_slot})"
+            f"{wasm_table_base} is above finalized callable-table slot "
+            f"{below_base[0]} (first callable slot {first_callable_slot})"
         )
-    if app_wasm is not None:
-        active_slots = sorted(
-            _wasm_artifact._collect_wasm_active_table_function_slots(
-                app_wasm.read_bytes()
-            )
-        )
-        active_below_base = [slot for slot in active_slots if slot < wasm_table_base]
-        if active_below_base:
-            first_active_slot = active_slots[0]
-            raise ValueError(
-                "backend wasm_table_base "
-                f"{wasm_table_base} is above active app table slot "
-                f"{active_below_base[0]} (first active slot {first_active_slot})"
-            )
     return wasm_table_base
 
 
@@ -330,7 +246,7 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
         "reserved_runtime_callables": _reserved_runtime_callables_from_manifest(),
         "runtime_import_fallbacks": _runtime_import_fallbacks_from_manifest(),
         "table_layout": {
-            "legacy_table_base": WASM_LEGACY_TABLE_BASE,
+            "default_app_table_base": WASM_DEFAULT_APP_TABLE_BASE,
             "reserved_runtime_callable_base": WASM_RESERVED_RUNTIME_CALLABLE_BASE,
             "reserved_runtime_callable_count": WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
         },
@@ -344,8 +260,6 @@ def _generate_split_worker_js(
     shared_table_base: int | None,
     runtime_import_names: Iterable[str] | None = None,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
-    app_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
-    runtime_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
@@ -387,18 +301,9 @@ def _generate_split_worker_js(
     runtime_import_fallbacks_json = json.dumps(
         _runtime_import_fallbacks_from_manifest(), sort_keys=True
     )
-    app_table_ref_signatures_json = json.dumps(
-        dict(app_table_ref_signatures or {}), sort_keys=True
-    )
-    runtime_table_ref_signatures_json = json.dumps(
-        dict(runtime_table_ref_signatures or {}), sort_keys=True
-    )
     reserved_runtime_callables_json = json.dumps(
         _reserved_runtime_callables_from_manifest(),
         sort_keys=True,
-    )
-    table_ref_export_prefix_json = json.dumps(
-        _wasm_artifact.WASM_TABLE_REF_EXPORT_PREFIX
     )
     reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
     reserved_runtime_shared_prefix_len = (
@@ -407,8 +312,18 @@ def _generate_split_worker_js(
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
+import "./callable_table_abi_generated.js";
+import "./loader_bridge.js";
 import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
+
+const {
+  callableTableFromModule,
+  callableTableSignature,
+  verifyCallableTableEntries,
+} = globalThis.MoltWasmLoaderBridge;
+const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
+const appCallableTable = callableTableFromModule(appModule, "app wasm");
 
 class ProcExit { constructor(code) { this.code = code; } }
 
@@ -494,10 +409,7 @@ export default {
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const reservedRuntimeCallables = __MOLT_RESERVED_RUNTIME_CALLABLES__;
-    const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
-    const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
-    const TABLE_REF_EXPORT_PREFIX = __MOLT_TABLE_REF_EXPORT_PREFIX__;
-    const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
+    const DEFAULT_WASM_APP_TABLE_BASE = __MOLT_DEFAULT_WASM_APP_TABLE_BASE__;
     const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
     const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
     const WEBGPU_DISPATCH_HOST_IMPORT = __MOLT_WEBGPU_DISPATCH_HOST_IMPORT__;
@@ -1045,26 +957,6 @@ export default {
       return String(value);
     };
 
-    const tableRefExportName = (index) => `${TABLE_REF_EXPORT_PREFIX}${index}`;
-
-    const parseTableRefExportName = (name) => {
-      if (!name.startsWith(TABLE_REF_EXPORT_PREFIX)) {
-        return null;
-      }
-      const raw = name.slice(TABLE_REF_EXPORT_PREFIX.length);
-      if (raw.length === 0) {
-        return null;
-      }
-      for (let i = 0; i < raw.length; i += 1) {
-        const code = raw.charCodeAt(i);
-        if (code < 48 || code > 57) {
-          return null;
-        }
-      }
-      const index = Number(raw);
-      return Number.isInteger(index) && String(index) === raw ? index : null;
-    };
-
     const callWithSignature = (fn, signature, args) => {
       if (!signature || !Array.isArray(signature.params)) {
         return fn(...args);
@@ -1076,78 +968,15 @@ export default {
       return normalizeImportResult(out, signature.result || null);
     };
 
-    const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {
-      const match = /^molt_call_indirect(\\d+)$/.exec(name);
-      if (!match) {
-        return null;
-      }
-      const arity = Number(match[1]);
-      if (!Number.isInteger(arity) || arity < 0) {
-        return null;
-      }
-      return {
-        params: Array.from({ length: arity + (includeIndex ? 1 : 0) }, () => "i64"),
-        result: "i64",
-      };
-    };
-
-    const installTableRefs = (instance, table) => {
-      if (!instance || !table) {
-        return;
-      }
-      const refs = [];
-      for (const [name, value] of Object.entries(instance.exports)) {
-        const refIndex = parseTableRefExportName(name);
-        if (refIndex === null || typeof value !== "function") {
-          continue;
-        }
-        refs.push({ index: refIndex, fn: value });
-      }
-      if (refs.length === 0) {
-        return;
-      }
-      refs.sort((a, b) => a.index - b.index);
-      const maxIndex = refs[refs.length - 1].index;
-      if (maxIndex >= table.length) {
-        table.grow(maxIndex + 1 - table.length);
-      }
-      for (const ref of refs) {
-        if (table.get(ref.index) !== null) {
-          continue;
-        }
-        table.set(ref.index, ref.fn);
-      }
-    };
-
-    const ensureTableCapacityForExportedRefs = (instance, table) => {
-      if (!instance || !table) {
-        return;
-      }
-      let maxIndex = -1;
-      for (const name of Object.keys(instance.exports)) {
-        const idx = parseTableRefExportName(name);
-        if (idx === null) {
-          continue;
-        }
-        if (Number.isInteger(idx) && idx > maxIndex) {
-          maxIndex = idx;
-        }
-      }
-      if (maxIndex < 0 || maxIndex < table.length) {
-        return;
-      }
-      table.grow(maxIndex + 1 - table.length);
-    };
-
-    const remapLegacyRuntimeSharedIdx = (idx) => {
-      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= LEGACY_WASM_TABLE_BASE) {
+    const remapDefaultAppRuntimeSharedIdx = (idx) => {
+      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= DEFAULT_WASM_APP_TABLE_BASE) {
         return idx;
       }
       if (
-        idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
-        idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
+        idx >= DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
+        idx < DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
       ) {
-        return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
+        return idx - DEFAULT_WASM_APP_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
       }
       return idx;
     };
@@ -1433,8 +1262,7 @@ export default {
     for (const indirectName of callIndirectImportNames) {
       hostEnv[indirectName] = (fnIndex, ...args) => {
         const idx = Number(fnIndex);
-        const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
-        const directName = tableRefExportName(dispatchIdx);
+        const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);
         const reservedDispatch = planReservedRuntimeDispatch({
           dispatchIdx,
         });
@@ -1451,34 +1279,10 @@ export default {
             throw new Error(`${indirectName} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
           }
         }
-        const appDirectFn = appInstance?.exports?.[directName];
-        if (typeof appDirectFn === "function") {
-          try {
-            return callWithSignature(
-              appDirectFn,
-              appTableRefSignatures[directName] || callIndirectObjectSignature(indirectName),
-              args,
-            );
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} app direct export ${directName} failed at idx=${idx}: ${detail}; fnLen=${appDirectFn.length}; argsLen=${args.length}`);
-          }
-        }
-        const indirectFn = appInstance?.exports?.[indirectName];
-        if (typeof indirectFn === "function") {
-          try {
-            return callWithSignature(
-              indirectFn,
-              callIndirectObjectSignature(indirectName, { includeIndex: true }),
-              [fnIndex, ...args],
-            );
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
-          }
-        }
         const tableFn = sharedTable.get(dispatchIdx);
-        const directSignature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+        const directSignature =
+          callableTableSignature(appCallableTable, dispatchIdx) ||
+          callableTableSignature(runtimeCallableTable, dispatchIdx);
         if (typeof tableFn === "function" && directSignature) {
           try {
             return callWithSignature(tableFn, directSignature, args);
@@ -1488,29 +1292,10 @@ export default {
             throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
           }
         }
-        if (typeof tableFn === "function") {
-          try {
-            return callWithSignature(tableFn, callIndirectObjectSignature(indirectName), args);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
-          }
-        }
-        const rtDirectFn = rtInstance?.exports?.[directName];
-        const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;
-        if (typeof rtDirectFn === "function" && runtimeDirectSignature) {
-          try {
-            return callWithSignature(rtDirectFn, runtimeDirectSignature, args);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
-          }
-        }
         if (typeof tableFn !== "function") {
           throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
         }
-        return tableFn(...args);
+        throw new Error(`${indirectName} table slot ${dispatchIdx} has no callable signature authority`);
       };
     }
 
@@ -1535,7 +1320,7 @@ export default {
       if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
         rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
       }
-      installTableRefs(rtInstance, sharedTable);
+      verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
       const appImports = {
@@ -1548,12 +1333,9 @@ export default {
         molt_runtime: buildRuntimeImports(appModule, rtInstance),
       };
       appInstance = await WebAssembly.instantiate(appModule, appImports);
-      ensureTableCapacityForExportedRefs(appInstance, sharedTable);
-
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
-      installTableRefs(appInstance, sharedTable);
+      verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
     } catch (err) {
@@ -1627,20 +1409,8 @@ export default {
             reserved_runtime_callables_json,
         )
         .replace(
-            "__MOLT_APP_TABLE_REF_SIGNATURES__",
-            app_table_ref_signatures_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
-            runtime_table_ref_signatures_json,
-        )
-        .replace(
-            "__MOLT_TABLE_REF_EXPORT_PREFIX__",
-            table_ref_export_prefix_json,
-        )
-        .replace(
-            "__MOLT_LEGACY_WASM_TABLE_BASE__",
-            str(WASM_LEGACY_TABLE_BASE),
+            "__MOLT_DEFAULT_WASM_APP_TABLE_BASE__",
+            str(WASM_DEFAULT_APP_TABLE_BASE),
         )
         .replace(
             "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
@@ -1665,10 +1435,7 @@ def _generate_split_wrangler_jsonc(
     compatibility_date: str,
     browser_asset_names: Iterable[str],
 ) -> str:
-    module_globs = json.dumps(
-        ["worker.js", *sorted(set(browser_asset_names))],
-        separators=(",", ":"),
-    )
+    es_modules = ["worker.js", *sorted(set(browser_asset_names))]
     return (
         "{\n"
         '  "name": "molt-app",\n'
@@ -1679,7 +1446,7 @@ def _generate_split_wrangler_jsonc(
         '  "rules": [\n'
         "    {\n"
         '      "type": "ESModule",\n'
-        f'      "globs": {module_globs},\n'
+        f'      "globs": {json.dumps(es_modules)},\n'
         '      "fallthrough": false\n'
         "    },\n"
         "    {\n"

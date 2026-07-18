@@ -655,7 +655,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         wasm_link: false,
         wasm_data_base: None,
         wasm_table_base: None,
-        wasm_split_runtime_runtime_table_min: None,
+        wasm_split_runtime_app_table_base: None,
         output: output.to_string_lossy().into_owned(),
         cache_key: "".to_string(),
         function_cache_key: None,

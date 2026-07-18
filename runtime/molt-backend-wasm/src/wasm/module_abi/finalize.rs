@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use wasm_encoder::{RawSection, TagKind, TagSection, TagType};
+use std::borrow::Cow;
+use wasm_encoder::{CustomSection, RawSection, TagKind, TagSection, TagType};
 
 use super::callable_table::WasmCallableTableElements;
 use crate::FunctionIR;
@@ -58,6 +59,7 @@ impl WasmBackend {
                 bytes,
                 self.data_segments.segments(),
                 self.data_segments.relocs(),
+                self.table_relocations.relocs(),
             );
         }
         WasmCompileOutput {
@@ -186,6 +188,12 @@ impl WasmBackend {
         }
 
         self.module.section(&self.exports);
+        self.module.section(&CustomSection {
+            name: Cow::Borrowed(
+                crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_SECTION_NAME,
+            ),
+            data: Cow::Borrowed(&callable_table_elements.layout_payload),
+        });
         if let Some(element_section) = callable_table_elements.element_section.as_ref() {
             self.module.section(element_section);
         }

@@ -1,7 +1,7 @@
 use wasm_encoder::Encode;
 
 use crate::CALLABLE_TABLE_LAYOUT_VERSION;
-use crate::encoding::read_u32_leb;
+use crate::encoding::AttestationDecoder;
 use crate::model::{CallableTableArtifactRole, CallableTableLayout, WasmCallableTableEntryFact};
 
 pub(crate) fn validate_callable_table_layout(
@@ -93,19 +93,17 @@ pub(crate) fn encode_callable_table_layout(layout: CallableTableLayout) -> Vec<u
 }
 
 pub(crate) fn decode_callable_table_layout(payload: &[u8]) -> Result<CallableTableLayout, String> {
-    let mut offset = 0usize;
-    if read_u32_leb(payload, &mut offset)? != CALLABLE_TABLE_LAYOUT_VERSION {
+    let mut decoder = AttestationDecoder::new(payload);
+    if decoder.read_u32()? != CALLABLE_TABLE_LAYOUT_VERSION {
         return Err("unsupported callable-table layout version".to_string());
     }
     let layout = CallableTableLayout {
-        fixed_prefix_base: read_u32_leb(payload, &mut offset)?,
-        fixed_prefix_len: read_u32_leb(payload, &mut offset)?,
-        finalized_app_base: read_u32_leb(payload, &mut offset)?,
-        app_entry_count: read_u32_leb(payload, &mut offset)?,
+        fixed_prefix_base: decoder.read_u32()?,
+        fixed_prefix_len: decoder.read_u32()?,
+        finalized_app_base: decoder.read_u32()?,
+        app_entry_count: decoder.read_u32()?,
     };
-    if offset != payload.len() {
-        return Err("callable-table layout has trailing bytes".to_string());
-    }
+    decoder.finish("callable-table layout")?;
     layout
         .fixed_prefix_base
         .checked_add(layout.fixed_prefix_len)

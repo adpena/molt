@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use wasm_encoder::Encode;
 use wasm_encoder::{
-    ArrayType, CodeSection, CompositeInnerType as EncoderCompositeInnerType,
+    ArrayType, CodeSection, Component, CompositeInnerType as EncoderCompositeInnerType,
     CompositeType as EncoderCompositeType, ConstExpr, CustomSection, DataSection, ElementMode,
     ElementSection, ElementSegment, Elements, EntityType, ExportKind, ExportSection, FieldType,
     FuncType, Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection,
@@ -380,6 +380,151 @@ fn rejects_malformed_and_truncated_wasm() {
     wasm.pop();
     assert!(scan_wasm_link_facts(&wasm).is_err());
     assert!(scan_wasm_link_facts(b"\0asm\x01\0\0").is_err());
+}
+
+#[test]
+fn rejects_component_encoding_before_scanning_or_publication() {
+    let component = Component::new().finish();
+    assert!(
+        scan_wasm_link_facts(&component)
+            .unwrap_err()
+            .contains("core WebAssembly module version 1")
+    );
+    assert!(
+        publish_callable_table_attestation(&component, None)
+            .unwrap_err()
+            .contains("core WebAssembly module version 1")
+    );
+}
+
+#[test]
+fn malformed_attestation_counts_are_bounded_by_encoded_payload() {
+    let cases = [
+        // Impossible type count.
+        {
+            let mut payload = vec![1, 1];
+            u32::MAX.encode(&mut payload);
+            payload
+        },
+        // No types and an impossible entry count.
+        {
+            let mut payload = vec![1, 1, 0];
+            u32::MAX.encode(&mut payload);
+            payload
+        },
+    ];
+    for payload in cases {
+        let mut module = Module::new();
+        module.section(&CustomSection {
+            name: Cow::Borrowed("molt.callable_table"),
+            data: Cow::Owned(payload),
+        });
+        let error = scan_wasm_link_facts(&module.finish()).unwrap_err();
+        assert!(error.contains("encoded payload bound"), "{error}");
+    }
+
+    let mut impossible_value_count = vec![1, 1, 1, 0];
+    u32::MAX.encode(&mut impossible_value_count);
+    let error =
+        scan_wasm_link_facts(&module_with_callable_table(&[impossible_value_count])).unwrap_err();
+    assert!(error.contains("encoded payload bound"), "{error}");
+}
+
+#[test]
+fn typed_function_reference_dispatch_tracks_table_provenance_and_fails_closed() {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut tables = TableSection::new();
+    tables.table(TableType {
+        element_type: RefType::FUNCREF,
+        table64: false,
+        minimum: 1,
+        maximum: None,
+        shared: false,
+    });
+    let typed_ref = RefType {
+        nullable: true,
+        heap_type: HeapType::Concrete(0),
+    };
+    tables.table(TableType {
+        element_type: typed_ref,
+        table64: false,
+        minimum: 1,
+        maximum: None,
+        shared: false,
+    });
+    module.section(&tables);
+    let mut exports = ExportSection::new();
+    exports.export("root", ExportKind::Func, 0);
+    module.section(&exports);
+    let offset = ConstExpr::i32_const(0);
+    let expressions = [ConstExpr::ref_func(0)];
+    let mut elements = ElementSection::new();
+    elements.active(
+        Some(1),
+        &offset,
+        Elements::Expressions(typed_ref, Cow::Borrowed(&expressions)),
+    );
+    module.section(&elements);
+    let mut code = CodeSection::new();
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::I32Const(0));
+    body.instruction(&Instruction::TableGet(1));
+    body.instruction(&Instruction::RefAsNonNull);
+    body.instruction(&Instruction::CallRef(0));
+    body.instruction(&Instruction::End);
+    code.function(&body);
+    module.section(&code);
+    let wasm = module.finish();
+
+    let facts = scan_wasm_link_facts(&wasm).expect("scan typed-reference dispatch");
+    assert_eq!(facts.function_reference_dispatch_functions, [0]);
+    assert!(facts.reachable_function_reference_dispatch);
+    assert_eq!(
+        facts.reachable_table_reads,
+        [WasmTableRead {
+            function_index: 0,
+            table_index: 1,
+        }]
+    );
+    assert!(
+        publish_callable_table_attestation(&wasm, None)
+            .unwrap_err()
+            .contains("function-reference dispatch can escape canonical table 0")
+    );
+}
+
+#[test]
+fn return_call_ref_is_part_of_the_same_dispatch_authority() {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("root", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut elements = ElementSection::new();
+    elements.declared(Elements::Functions(Cow::Owned(vec![0])));
+    module.section(&elements);
+    let mut code = CodeSection::new();
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::RefFunc(0));
+    body.instruction(&Instruction::ReturnCallRef(0));
+    body.instruction(&Instruction::End);
+    code.function(&body);
+    module.section(&code);
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan return_call_ref");
+    assert_eq!(facts.function_reference_dispatch_functions, [0]);
+    assert!(facts.reachable_function_reference_dispatch);
 }
 
 #[test]

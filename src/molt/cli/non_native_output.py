@@ -71,7 +71,8 @@ from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
     _wasm_import_minima,
-    wasm_table_ref_export_signatures,
+    read_wasm_callable_table_attestation,
+    wasm_callable_table_manifest_summary,
 )
 
 
@@ -285,6 +286,11 @@ def _is_reusable_split_runtime_artifacts(
         return False
     if not _is_reusable_wasm_artifact(runtime_wasm):
         return False
+    try:
+        app_callable_table = read_wasm_callable_table_attestation(app_wasm)
+        read_wasm_callable_table_attestation(runtime_wasm)
+    except (OSError, ValueError):
+        return False
     if static_native_inputs:
         if _artifact_imports_module(app_wasm, "molt_native"):
             return False
@@ -293,8 +299,7 @@ def _is_reusable_split_runtime_artifacts(
         try:
             _effective_split_worker_table_base(
                 wasm_table_base=wasm_table_base,
-                app_table_ref_signatures=wasm_table_ref_export_signatures(app_wasm),
-                app_wasm=app_wasm,
+                app_callable_table_slots=(entry.slot for entry in app_callable_table),
             )
         except (OSError, ValueError):
             return False
@@ -1208,13 +1213,27 @@ def _prepare_non_native_build_result(
                 rt_table_min or 0,
                 8192,
             )
-            app_table_ref_signatures = wasm_table_ref_export_signatures(app_wasm)
-            runtime_table_ref_signatures = wasm_table_ref_export_signatures(rt_wasm)
+            try:
+                app_callable_table = read_wasm_callable_table_attestation(app_wasm)
+                runtime_callable_table = read_wasm_callable_table_attestation(rt_wasm)
+                app_callable_table_summary = wasm_callable_table_manifest_summary(
+                    app_callable_table
+                )
+                runtime_callable_table_summary = wasm_callable_table_manifest_summary(
+                    runtime_callable_table
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(
+                    f"Split-runtime callable-table attestation invalid: {exc}",
+                    json_output,
+                    command="build",
+                )
             try:
                 effective_wasm_table_base = _effective_split_worker_table_base(
                     wasm_table_base=wasm_table_base,
-                    app_table_ref_signatures=app_table_ref_signatures,
-                    app_wasm=app_wasm,
+                    app_callable_table_slots=(
+                        entry.slot for entry in app_callable_table
+                    ),
                 )
             except ValueError as exc:
                 return None, _fail(
@@ -1282,9 +1301,9 @@ def _prepare_non_native_build_result(
                         "result_kinds": app_runtime_import_result_kinds,
                     },
                     "browser_embed": browser_embed_abi,
-                    "table_refs": {
-                        "app": app_table_ref_signatures,
-                        "runtime": runtime_table_ref_signatures,
+                    "callable_table": {
+                        "app": app_callable_table_summary,
+                        "runtime": runtime_callable_table_summary,
                     },
                 },
                 "modules": {
@@ -1325,8 +1344,6 @@ def _prepare_non_native_build_result(
                     shared_table_base=effective_wasm_table_base,
                     runtime_import_names=app_runtime_import_names,
                     runtime_export_signatures=app_runtime_export_signatures,
-                    app_table_ref_signatures=app_table_ref_signatures,
-                    runtime_table_ref_signatures=runtime_table_ref_signatures,
                 ),
             )
             try:

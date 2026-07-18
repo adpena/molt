@@ -16,17 +16,17 @@ use crate::SimpleIR;
 use crate::TrampolineSpec;
 use crate::passes::ReturnAliasSummary;
 use crate::wasm::WasmBackend;
-use crate::wasm_binary::{
-    emit_call, emit_i32_const, emit_ref_func, emit_table_index_i64, encode_u32_leb128_padded,
-};
+use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
 use crate::wasm_data::DataSegmentRef;
+use crate::wasm_table::{
+    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableTarget, WasmFunctionSymbol,
+};
 pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 
 pub(in crate::wasm) struct WasmCallableTablePlan {
     table_base: u32,
-    table_indices: Vec<u32>,
-    sentinel_func_idx: u32,
-    split_runtime_owned_slot_start: usize,
+    fixed_shared_runtime_abi_base: Option<u32>,
+    table_entries: Vec<WasmCallableTableEntry>,
     split_runtime_shared_abi_slot_end: usize,
     func_to_table_idx: BTreeMap<String, u32>,
     func_to_index: BTreeMap<String, u32>,
@@ -38,27 +38,34 @@ pub(in crate::wasm) struct WasmCallableTablePlan {
 
 pub(super) struct WasmAppCallableResolverPlan {
     resolver_func_index: u32,
-    resolver_table_index: u32,
+    resolver_target: WasmCallableTableTarget,
     entries: Vec<WasmAppCallableResolverEntry>,
 }
 
 pub(super) struct WasmAppCallableResolverEntry {
     name: String,
-    table_index: u32,
+    target: WasmCallableTableTarget,
 }
 
 pub(super) struct WasmCallableTrampolineEntry {
     name: String,
     expected_func_index: u32,
     target_func_index: u32,
-    table_index: u32,
+    target: WasmCallableTableTarget,
     spec: TrampolineSpec,
     multi_return_count: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WasmCallableTableEntry {
+    func_index: u32,
+    symbol: WasmFunctionSymbol,
 }
 
 pub(super) struct WasmCallableTableElements {
     pub(super) element_section: Option<ElementSection>,
     pub(super) element_payload: Option<Vec<u8>>,
+    pub(super) layout_payload: Vec<u8>,
 }
 
 impl WasmCallableTablePlan {
@@ -80,38 +87,42 @@ impl WasmCallableTablePlan {
         )
     }
 
-    fn table_ref_export_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
-        self.table_indices
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(slot, func_index)| {
-                *func_index != self.sentinel_func_idx && self.runtime_initializes_slot(*slot)
-            })
-    }
-
-    fn table_init_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
-        self.table_indices
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(slot, func_index)| {
-                if *slot < self.split_runtime_shared_abi_slot_end {
-                    return true;
-                }
-                *func_index != self.sentinel_func_idx
-                    && *slot >= self.split_runtime_owned_slot_start
-            })
-    }
-
-    fn runtime_initializes_slot(&self, slot: usize) -> bool {
-        slot >= self.split_runtime_owned_slot_start || slot < self.split_runtime_shared_abi_slot_end
-    }
-
-    fn app_callable_resolver_table_index(&self) -> Option<u32> {
+    fn app_callable_resolver_target(&self) -> Option<WasmCallableTableTarget> {
         self.app_callable_resolver
             .as_ref()
-            .map(|resolver| resolver.resolver_table_index)
+            .map(|resolver| resolver.resolver_target)
+    }
+
+    fn target_for_slot(&self, slot: u32, role: WasmCallableTableRole) -> WasmCallableTableTarget {
+        let entry = self
+            .table_entries
+            .get(slot as usize)
+            .unwrap_or_else(|| panic!("callable table slot outside plan: {slot}"));
+        let fixed_prefix_len = self.split_runtime_shared_abi_slot_end as u32;
+        let (current_table_index, address) = if slot < fixed_prefix_len {
+            let base = self.fixed_shared_runtime_abi_base.unwrap_or_else(|| {
+                panic!("fixed callable-table slot {slot} has no shared runtime base")
+            });
+            (
+                base.checked_add(slot)
+                    .expect("fixed callable-table address overflow"),
+                WasmCallableTableAddress::FixedSharedRuntimeAbi {
+                    finalized_app_base: self.table_base,
+                },
+            )
+        } else {
+            (
+                self.table_base
+                    .checked_add(slot - fixed_prefix_len)
+                    .expect("relocatable callable-table address overflow"),
+                WasmCallableTableAddress::Relocatable(entry.symbol),
+            )
+        };
+        WasmCallableTableTarget {
+            current_table_index,
+            address,
+            role,
+        }
     }
 
     pub(super) fn validate_ir_call_target_closure(&self, ir: &SimpleIR) {
@@ -265,18 +276,16 @@ impl WasmBackend {
     ) -> WasmCallableTableElements {
         let mut element_section = None;
         let mut element_payload = None;
+        let fixed_prefix_len = plan.split_runtime_shared_abi_slot_end;
+        let app_entries = &plan.table_entries[fixed_prefix_len..];
         if reloc_enabled {
-            let table_init_index = self.compile_table_init(reloc_enabled, plan);
-            self.exports
-                .export("molt_table_init", ExportKind::Func, table_init_index);
             let main_index = self
                 .molt_main_index
-                .unwrap_or_else(|| panic!("molt_main missing for table init wrapper"));
+                .unwrap_or_else(|| panic!("molt_main missing for entry wrapper"));
             let wrapper_index = self.compile_entry_wrapper(
                 reloc_enabled,
                 main_index,
-                Some(table_init_index),
-                plan.app_callable_resolver_table_index(),
+                plan.app_callable_resolver_target(),
                 manifest_segment,
                 manifest_len as u32,
             );
@@ -286,8 +295,7 @@ impl WasmBackend {
                 let host_init_wrapper_index = self.compile_entry_wrapper(
                     reloc_enabled,
                     host_init_index,
-                    Some(table_init_index),
-                    plan.app_callable_resolver_table_index(),
+                    plan.app_callable_resolver_target(),
                     manifest_segment,
                     manifest_len as u32,
                 );
@@ -295,22 +303,13 @@ impl WasmBackend {
                     .export("molt_host_init", ExportKind::Func, host_init_wrapper_index);
             }
 
-            let mut ref_exported = BTreeSet::new();
-            for (slot, func_index) in plan.table_ref_export_entries() {
-                let table_index = plan.table_base + slot as u32;
-                if ref_exported.insert(table_index) {
-                    let name = format!("__molt_table_ref_{table_index}");
-                    self.exports.export(&name, ExportKind::Func, func_index);
-                }
-            }
-
             let mut payload = Vec::new();
             1u32.encode(&mut payload);
             payload.push(0x01);
             payload.push(0x00);
-            (plan.table_indices.len() as u32).encode(&mut payload);
-            for func_index in &plan.table_indices {
-                encode_u32_leb128_padded(*func_index, &mut payload);
+            (app_entries.len() as u32).encode(&mut payload);
+            for entry in app_entries {
+                encode_u32_leb128_padded(entry.func_index, &mut payload);
             }
             element_payload = Some(payload);
         } else {
@@ -321,7 +320,9 @@ impl WasmBackend {
                     table: None,
                     offset: &offset,
                 },
-                elements: Elements::Functions(Cow::Borrowed(&plan.table_indices)),
+                elements: Elements::Functions(Cow::Owned(
+                    app_entries.iter().map(|entry| entry.func_index).collect(),
+                )),
             });
             element_section = Some(section);
             if self.module_registry.is_some() {
@@ -331,8 +332,7 @@ impl WasmBackend {
                 let wrapper_index = self.compile_entry_wrapper(
                     reloc_enabled,
                     main_index,
-                    None,
-                    plan.app_callable_resolver_table_index(),
+                    plan.app_callable_resolver_target(),
                     manifest_segment,
                     manifest_len as u32,
                 );
@@ -342,8 +342,7 @@ impl WasmBackend {
                     let host_init_wrapper_index = self.compile_entry_wrapper(
                         reloc_enabled,
                         host_init_index,
-                        None,
-                        plan.app_callable_resolver_table_index(),
+                        plan.app_callable_resolver_target(),
                         manifest_segment,
                         manifest_len as u32,
                     );
@@ -355,9 +354,19 @@ impl WasmBackend {
                 }
             }
         }
+        let mut layout_payload = Vec::new();
+        crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_VERSION
+            .encode(&mut layout_payload);
+        plan.fixed_shared_runtime_abi_base
+            .unwrap_or(0)
+            .encode(&mut layout_payload);
+        (fixed_prefix_len as u32).encode(&mut layout_payload);
+        plan.table_base.encode(&mut layout_payload);
+        (app_entries.len() as u32).encode(&mut layout_payload);
         WasmCallableTableElements {
             element_section,
             element_payload,
+            layout_payload,
         }
     }
 
@@ -376,35 +385,18 @@ impl WasmBackend {
             self.compile_trampoline(
                 reloc_enabled,
                 entry.target_func_index,
-                entry.table_index,
+                entry.target,
                 entry.spec,
                 entry.multi_return_count,
             );
         }
     }
 
-    fn compile_table_init(&mut self, reloc_enabled: bool, plan: &WasmCallableTablePlan) -> u32 {
-        let func_index = self.func_count;
-        self.funcs.function(8);
-        self.func_count += 1;
-        let mut func = Function::new_with_locals_types(Vec::new());
-        for (slot, target_index) in plan.table_init_entries() {
-            let table_index = plan.table_base + slot as u32;
-            emit_i32_const(&mut func, reloc_enabled, table_index as i32);
-            emit_ref_func(&mut func, reloc_enabled, target_index);
-            func.instruction(&Instruction::TableSet(0));
-        }
-        func.instruction(&Instruction::End);
-        self.codes.function(&func);
-        func_index
-    }
-
     fn compile_entry_wrapper(
         &mut self,
         reloc_enabled: bool,
         entry_index: u32,
-        table_init_index: Option<u32>,
-        app_callable_resolver_table_index: Option<u32>,
+        app_callable_resolver_target: Option<WasmCallableTableTarget>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) -> u32 {
@@ -416,8 +408,7 @@ impl WasmBackend {
             reloc_enabled,
             func_index,
             &mut func,
-            table_init_index,
-            app_callable_resolver_table_index,
+            app_callable_resolver_target,
             manifest_segment,
             manifest_len,
         );
@@ -432,16 +423,18 @@ impl WasmBackend {
         reloc_enabled: bool,
         func_index: u32,
         func: &mut Function,
-        table_init_index: Option<u32>,
-        app_callable_resolver_table_index: Option<u32>,
+        app_callable_resolver_target: Option<WasmCallableTableTarget>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) {
-        if let Some(table_init_index) = table_init_index {
-            emit_call(func, reloc_enabled, table_init_index);
-        }
-        if let Some(table_index) = app_callable_resolver_table_index {
-            emit_table_index_i64(func, reloc_enabled, table_index);
+        if let Some(target) = app_callable_resolver_target {
+            self.table_relocations.emit_i64(
+                reloc_enabled,
+                self.func_import_count,
+                func_index,
+                func,
+                &target.with_role(WasmCallableTableRole::AppCallableResolver),
+            );
             emit_call(
                 func,
                 reloc_enabled,
@@ -491,9 +484,8 @@ mod tests {
     ) -> WasmCallableTablePlan {
         WasmCallableTablePlan {
             table_base: 0,
-            table_indices: Vec::new(),
-            sentinel_func_idx: u32::MAX,
-            split_runtime_owned_slot_start: 0,
+            fixed_shared_runtime_abi_base: None,
+            table_entries: Vec::new(),
             split_runtime_shared_abi_slot_end: 0,
             func_to_table_idx,
             func_to_index,

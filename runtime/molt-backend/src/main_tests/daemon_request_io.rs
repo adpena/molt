@@ -81,7 +81,7 @@ fn daemon_request_parse_applies_boolean_defaults() {
 
     let job = request.jobs.expect("job list").pop().expect("job");
     assert!(!job.wasm_link);
-    assert_eq!(job.wasm_split_runtime_runtime_table_min, None);
+    assert_eq!(job.wasm_split_runtime_app_table_base, None);
     assert!(!job.skip_module_output_if_synced);
     assert!(!job.skip_function_output_if_synced);
     assert!(!job.probe_cache_only);
@@ -155,7 +155,7 @@ fn daemon_request_parse_reads_split_runtime_table_min() {
                     "wasm_link": true,
                     "wasm_data_base": 1048576,
                     "wasm_table_base": 4096,
-                    "wasm_split_runtime_runtime_table_min": 8192,
+                    "wasm_split_runtime_app_table_base": 8192,
                     "output": "/tmp/out.wasm",
                     "cache_key": "module"
                 }
@@ -168,7 +168,7 @@ fn daemon_request_parse_reads_split_runtime_table_min() {
     assert!(job.wasm_link);
     assert_eq!(job.wasm_data_base, Some(1048576));
     assert_eq!(job.wasm_table_base, Some(4096));
-    assert_eq!(job.wasm_split_runtime_runtime_table_min, Some(8192));
+    assert_eq!(job.wasm_split_runtime_app_table_base, Some(8192));
 }
 
 #[cfg(unix)]

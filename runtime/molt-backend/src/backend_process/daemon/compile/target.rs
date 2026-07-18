@@ -46,9 +46,8 @@ pub(crate) fn compile_daemon_job_output(
             if let Some(table_base) = job.wasm_table_base {
                 options.table_base = table_base;
             }
-            if let Some(split_runtime_runtime_table_min) = job.wasm_split_runtime_runtime_table_min
-            {
-                options.split_runtime_runtime_table_min = Some(split_runtime_runtime_table_min);
+            if let Some(split_runtime_app_table_base) = job.wasm_split_runtime_app_table_base {
+                options.split_runtime_app_table_base = Some(split_runtime_app_table_base);
             }
             let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
             Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))

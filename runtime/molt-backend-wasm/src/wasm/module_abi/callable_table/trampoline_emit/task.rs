@@ -5,6 +5,7 @@ use crate::wasm::WasmBackend;
 use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
+use crate::wasm_table::WasmCallableTableTarget;
 
 const TASK_LOCAL: u32 = 3;
 const BASE_LOCAL: u32 = 4;
@@ -19,7 +20,8 @@ pub(super) fn emit_task_trampoline(
     backend: &mut WasmBackend,
     func: &mut Function,
     reloc_enabled: bool,
-    table_idx: u32,
+    owner_func_index: u32,
+    table_target: &WasmCallableTableTarget,
     task_kind: TrampolineTaskKind,
     arity: usize,
     has_closure: bool,
@@ -28,11 +30,16 @@ pub(super) fn emit_task_trampoline(
     let layout = WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind);
     layout.validate_closure_size(closure_size, arity, has_closure);
 
+    let import_ids = &backend.import_ids;
+    let table_relocations = &mut backend.table_relocations;
     layout.emit_task_new(
         func,
-        &backend.import_ids,
+        import_ids,
+        table_relocations,
         reloc_enabled,
-        table_idx,
+        backend.func_import_count,
+        owner_func_index,
+        table_target,
         closure_size,
     );
     func.instruction(&Instruction::LocalSet(TASK_LOCAL));

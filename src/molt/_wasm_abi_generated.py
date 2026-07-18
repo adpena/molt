@@ -3082,9 +3082,14 @@ WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (
 
 WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + max((slot for slot, _name in WASM_POLL_TABLE_IMPORTS), default=0)
 
-WASM_LEGACY_TABLE_BASE: int = 256
+WASM_DEFAULT_APP_TABLE_BASE: int = 256
 
-WASM_TABLE_REF_EXPORT_PREFIX: str = '__molt_table_ref_'
+WASM_CALLABLE_TABLE_SECTION_NAME: str = 'molt.callable_table'
+WASM_CALLABLE_TABLE_SECTION_VERSION: int = 1
+WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME: str = 'molt.callable_table.layout'
+WASM_CALLABLE_TABLE_LAYOUT_VERSION: int = 1
+WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: int = 0
+WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = 1
 
 WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_types_bootstrap", "types_bootstrap", 0, "i64"),
@@ -14494,7 +14499,6 @@ WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
         "molt_scratch_free",
         "molt_string_as_ptr",
         "molt_string_from_bytes",
-        "molt_table_init",
         "molt_table",
         "molt_traceback_format_exc",
         "molt_type_tag_of_bits",

@@ -280,46 +280,48 @@ pub(super) fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option
     calls
 }
 
-pub(super) fn wasm_table_set_refs_for_export(wasm: &[u8], export_name: &str) -> BTreeMap<i32, u32> {
-    let export_index = *wasm_function_export_indices(wasm)
-        .get(export_name)
-        .unwrap_or_else(|| panic!("missing function export {export_name}"));
-    let import_count = wasm_function_import_indices(wasm).len() as u32;
-    let body_filter = export_index
-        .checked_sub(import_count)
-        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
-    let mut refs = BTreeMap::new();
-    let mut body_index = 0u32;
+pub(super) fn wasm_has_table_set(wasm: &[u8]) -> bool {
     for payload in Parser::new(0).parse_all(wasm) {
         if let Ok(Payload::CodeSectionEntry(body)) = payload
             && let Ok(mut ops) = body.get_operators_reader()
         {
-            if body_filter != body_index {
-                body_index += 1;
-                continue;
-            }
-            let mut slot = None;
-            let mut func = None;
             while let Ok(op) = ops.read() {
-                match op {
-                    wasmparser::Operator::I32Const { value } => {
-                        slot = Some(value);
-                    }
-                    wasmparser::Operator::RefFunc { function_index } => {
-                        func = Some(function_index);
-                    }
-                    wasmparser::Operator::TableSet { .. } => {
-                        if let (Some(slot), Some(func)) = (slot.take(), func.take()) {
-                            refs.insert(slot, func);
-                        }
-                    }
-                    _ => {}
+                if matches!(op, wasmparser::Operator::TableSet { .. }) {
+                    return true;
                 }
             }
-            return refs;
         }
     }
-    panic!("requested WASM body {body_filter}, but no matching code body was found")
+    false
+}
+
+pub(super) fn wasm_active_function_elements(wasm: &[u8]) -> BTreeMap<u32, u32> {
+    use wasmparser::{ElementItems, ElementKind, Operator};
+
+    let mut entries = BTreeMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        let Ok(Payload::ElementSection(reader)) = payload else {
+            continue;
+        };
+        for element in reader.into_iter().flatten() {
+            let ElementKind::Active { offset_expr, .. } = element.kind else {
+                continue;
+            };
+            let mut ops = offset_expr.get_operators_reader();
+            let base = match ops.read().expect("read active element offset") {
+                Operator::I32Const { value } if value >= 0 => value as u32,
+                other => panic!("unsupported active element offset: {other:?}"),
+            };
+            assert!(matches!(ops.read(), Ok(Operator::End)));
+            let ElementItems::Functions(functions) = element.items else {
+                panic!("expected function-index active element segment")
+            };
+            for (relative, function_index) in functions.into_iter().flatten().enumerate() {
+                entries.insert(base + relative as u32, function_index);
+            }
+        }
+    }
+    entries
 }
 
 pub(super) fn wasm_i64_consts(wasm: &[u8]) -> Vec<i64> {

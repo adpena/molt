@@ -371,7 +371,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     'validate': ('toolchain_validation', 'validate'),
     # molt.cli.wasm
     '_effective_split_worker_table_base': ('wasm', '_effective_split_worker_table_base'),
-    '_export_wasm_table_refs': ('wasm', '_export_wasm_table_refs'),
     '_generate_split_worker_js': ('wasm', '_generate_split_worker_js'),
     '_generate_split_wrangler_jsonc': ('wasm', '_generate_split_wrangler_jsonc'),
     # molt.cli.wrapper_build

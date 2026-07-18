@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn reserved_runtime_callable_function_objects_own_linked_table_slots() {
+fn reserved_runtime_callable_function_objects_own_final_active_element_slots() {
     let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
     import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
     import_transaction.value = Some(5);
@@ -17,7 +17,7 @@ fn reserved_runtime_callable_function_objects_own_linked_table_slots() {
     };
     let wasm = WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
-        reloc_enabled: true,
+        reloc_enabled: false,
         ..WasmCompileOptions::default()
     })
     .compile(ir);
@@ -57,14 +57,15 @@ fn reserved_runtime_callable_function_objects_own_linked_table_slots() {
     let trampoline_table_index =
         RELOC_TABLE_BASE_DEFAULT + reserved_trampoline_start + import_transaction_spec.index;
 
-    let table_refs = wasm_table_set_refs_for_export(&wasm, "molt_table_init");
+    let table_refs = wasm_active_function_elements(&wasm);
+    assert!(!wasm_has_table_set(&wasm));
     assert_eq!(
-        table_refs.get(&(direct_table_index as i32)),
+        table_refs.get(&direct_table_index),
         Some(&sentinel_func_idx),
         "trampoline-only reserved direct slot must be reset to the sentinel, not left for native extension element segments"
     );
     let trampoline_func_idx = *table_refs
-        .get(&(trampoline_table_index as i32))
+        .get(&trampoline_table_index)
         .expect("reachable reserved runtime trampoline slot must be initialized");
     assert_ne!(
         trampoline_func_idx, sentinel_func_idx,

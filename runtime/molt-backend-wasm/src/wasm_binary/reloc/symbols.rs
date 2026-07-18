@@ -2,8 +2,11 @@ use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE,
     wasm_runtime_export_name,
 };
+use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_data::DataSegmentInfo;
+use crate::wasm_table::WasmFunctionSymbol;
 
+use std::collections::BTreeMap;
 use wasm_encoder::{DataSymbolDefinition, SymbolTable};
 
 use super::scan::RelocScan;
@@ -13,6 +16,22 @@ pub(super) struct SymbolMaps {
     pub(super) sym_tab: SymbolTable,
     pub(super) func_symbol_map: Vec<u32>,
     pub(super) data_symbol_map: Vec<u32>,
+    pub(super) runtime_import_symbol_map: BTreeMap<WasmRuntimeImport, u32>,
+    pub(super) defined_func_symbol_map: Vec<u32>,
+}
+
+impl SymbolMaps {
+    pub(super) fn function_symbol(&self, target: &WasmFunctionSymbol) -> Option<u32> {
+        match target {
+            WasmFunctionSymbol::Defined { defined_func_index } => self
+                .defined_func_symbol_map
+                .get(*defined_func_index as usize)
+                .copied(),
+            WasmFunctionSymbol::RuntimeImport(import) => {
+                self.runtime_import_symbol_map.get(import).copied()
+            }
+        }
+    }
 }
 
 pub(super) fn is_manifest_call_indirect_import_name(name: &str) -> bool {
@@ -43,6 +62,8 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
     let total_funcs = scan.func_import_count + scan.defined_func_count;
     let mut func_symbol_map = vec![0u32; total_funcs as usize];
     let mut data_symbol_map = vec![0u32; data_segments.len()];
+    let mut runtime_import_symbol_map = BTreeMap::new();
+    let mut defined_func_symbol_map = vec![0u32; scan.defined_func_count as usize];
     let mut symbol_index = 0u32;
 
     let mut sym_tab = SymbolTable::new();
@@ -51,6 +72,15 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         let symbol_name = linker_symbol_name_for_function_import(import);
         sym_tab.function(flags, idx as u32, Some(&symbol_name));
         func_symbol_map[idx] = symbol_index;
+        if import.module == RUNTIME_IMPORT_MODULE {
+            let import_id = wasm_runtime_import(&import.name).unwrap_or_else(|| {
+                panic!(
+                    "missing generated runtime import identity for {}",
+                    import.name
+                )
+            });
+            runtime_import_symbol_map.insert(import_id, symbol_index);
+        }
         symbol_index += 1;
     }
     for def_idx in 0..scan.defined_func_count {
@@ -61,9 +91,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         // Preserve explicit call_indirect export symbols because wasm_link.py
         // resolves/aliases those by name for runtime ABI wiring.
         let name = match export_name.as_deref() {
-            Some("molt_host_init") | Some("molt_main") | Some("molt_table_init") => {
-                export_name.clone().unwrap_or_default()
-            }
+            Some("molt_host_init") | Some("molt_main") => export_name.clone().unwrap_or_default(),
             Some(exported) if is_manifest_call_indirect_import_name(exported) => {
                 exported.to_string()
             }
@@ -77,6 +105,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         };
         sym_tab.function(flags, func_index, Some(&name));
         func_symbol_map[func_index as usize] = symbol_index;
+        defined_func_symbol_map[def_idx as usize] = symbol_index;
         symbol_index += 1;
     }
 
@@ -111,5 +140,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         sym_tab,
         func_symbol_map,
         data_symbol_map,
+        runtime_import_symbol_map,
+        defined_func_symbol_map,
     }
 }

@@ -1,4 +1,5 @@
 use crate::wasm_data::{DataRelocSite, DataSegmentInfo};
+use crate::wasm_table::TableRelocSite;
 
 use wasm_encoder::LinkingSection;
 
@@ -20,6 +21,7 @@ pub(crate) fn add_reloc_sections(
     mut bytes: Vec<u8>,
     data_segments: &[DataSegmentInfo],
     data_relocs: &[DataRelocSite],
+    table_relocs: &[TableRelocSite],
 ) -> Vec<u8> {
     let mut scan = match RelocScan::collect(&bytes) {
         Some(scan) => scan,
@@ -35,7 +37,8 @@ pub(crate) fn add_reloc_sections(
         None => return bytes,
     };
 
-    scan.record_data_reloc_sites(data_relocs, code_section_start);
+    scan.record_data_reloc_sites(&bytes, data_relocs, code_section_start);
+    scan.record_table_reloc_sites(&bytes, table_relocs, code_section_start);
 
     let symbol_maps = build_symbol_maps(&scan, data_segments);
     let entries = resolve_reloc_entries(&scan, &symbol_maps);

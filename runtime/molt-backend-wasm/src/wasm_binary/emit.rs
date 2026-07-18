@@ -98,26 +98,6 @@ pub(crate) fn emit_i32_const(func: &mut Function, reloc_enabled: bool, value: i3
     }
 }
 
-pub(crate) fn emit_ref_func(func: &mut Function, reloc_enabled: bool, func_index: u32) {
-    if reloc_enabled {
-        let mut bytes = Vec::with_capacity(6);
-        bytes.push(0xD2);
-        encode_u32_leb128_padded(func_index, &mut bytes);
-        func.raw(bytes);
-    } else {
-        func.instruction(&Instruction::RefFunc(func_index));
-    }
-}
-
-fn emit_table_index_i32(func: &mut Function, reloc_enabled: bool, table_index: u32) {
-    emit_i32_const(func, reloc_enabled, table_index as i32);
-}
-
-pub(crate) fn emit_table_index_i64(func: &mut Function, reloc_enabled: bool, table_index: u32) {
-    emit_table_index_i32(func, reloc_enabled, table_index);
-    func.instruction(&Instruction::I64ExtendI32U);
-}
-
 pub(crate) fn const_expr_i32_const_padded(value: i32) -> ConstExpr {
     let mut bytes = Vec::with_capacity(6);
     bytes.push(0x41);

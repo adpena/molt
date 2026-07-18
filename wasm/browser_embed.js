@@ -1,3 +1,4 @@
+import './callable_table_abi_generated.js';
 import './loader_bridge.js';
 import {
   assertBrowserTargetFeatureContract,
@@ -21,7 +22,6 @@ const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
 const {
-  callIndirectObjectSignature,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -32,10 +32,13 @@ const {
   normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
   planReservedRuntimeDispatch,
-  remapLegacyRuntimeSharedTableIndex,
-  tableRefExportName,
+  requireWasmCallableTable,
+  remapDefaultAppRuntimeSharedTableIndex,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
+  callableTableSignature,
+  verifyCallableTableEntries,
+  verifyCallableTableManifestSummary,
 } = globalThis.MoltWasmLoaderBridge;
 
 export { parseMoltWasmImports };
@@ -197,7 +200,7 @@ const browserAbiFromManifest = (manifest) => {
     throw new Error('manifest.abi.browser_embed.runtime_import_fallbacks must be an object');
   }
   const tableLayout = abi.table_layout || {};
-  const legacyTableBase = requireIntegerField(tableLayout, 'legacy_table_base');
+  const defaultAppTableBase = requireIntegerField(tableLayout, 'default_app_table_base');
   const reservedRuntimeCallableBase = requireIntegerField(
     tableLayout,
     'reserved_runtime_callable_base',
@@ -265,7 +268,7 @@ const browserAbiFromManifest = (manifest) => {
     reservedRuntimeCallables,
     nativeCallables: nativeCallableManifestFromAbi(abi.native_callables),
     tableLayout: {
-      legacyTableBase,
+      defaultAppTableBase,
       reservedRuntimeCallableBase,
       reservedRuntimeCallableCount,
       reservedRuntimeSharedPrefixLen:
@@ -756,79 +759,6 @@ export const createMoltNativeCallableImports = (state, appImports, options = {})
   return imports;
 };
 
-const installTableRefs = (instance, table) => {
-  if (!instance || !table) {
-    return;
-  }
-  const refs = [];
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs.push({ index: Number(match[1]), fn: value });
-  }
-  refs.sort((a, b) => a.index - b.index);
-  if (refs.length === 0) {
-    return;
-  }
-  const maxIndex = refs[refs.length - 1].index;
-  if (maxIndex >= table.length) {
-    table.grow(maxIndex + 1 - table.length);
-  }
-  for (const ref of refs) {
-    if (table.get(ref.index) !== null) {
-      continue;
-    }
-    table.set(ref.index, ref.fn);
-  }
-};
-
-const snapshotTablePrefix = (table, length) => {
-  if (!table || !Number.isInteger(length) || length <= 0) {
-    return null;
-  }
-  const end = Math.min(length, table.length);
-  const entries = new Array(end);
-  for (let idx = 0; idx < end; idx += 1) {
-    entries[idx] = table.get(idx);
-  }
-  return entries;
-};
-
-const restoreTablePrefix = (table, snapshot) => {
-  if (!table || !snapshot) {
-    return;
-  }
-  const end = Math.min(snapshot.length, table.length);
-  for (let idx = 0; idx < end; idx += 1) {
-    const expected = snapshot[idx];
-    if (table.get(idx) !== expected) {
-      table.set(idx, expected);
-    }
-  }
-};
-
-const ensureTableCapacityForExportedRefs = (instance, table) => {
-  if (!instance || !table) {
-    return;
-  }
-  let maxIndex = -1;
-  for (const name of Object.keys(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match) {
-      continue;
-    }
-    const idx = Number(match[1]);
-    if (Number.isInteger(idx) && idx > maxIndex) {
-      maxIndex = idx;
-    }
-  }
-  if (maxIndex >= table.length) {
-    table.grow(maxIndex + 1 - table.length);
-  }
-};
-
 const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, options = {}) => {
   const imports = {};
   const runtimeImports = manifest?.abi?.runtime_imports || {};
@@ -1034,12 +964,12 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const gpuHost = createBrowserGpuHost(state, options);
   const sharedTableBase = manifest?.wasm_table_base ?? null;
   const tableLayout = browserAbi.tableLayout;
-  const appTableRefSignatures = manifest?.abi?.table_refs?.app || {};
-  const runtimeTableRefSignatures = manifest?.abi?.table_refs?.runtime || {};
-  const remapLegacyRuntimeSharedIdx = (idx) => {
-    return remapLegacyRuntimeSharedTableIndex(idx, {
+  const appCallableTable = options.appCallableTable;
+  const runtimeCallableTable = options.runtimeCallableTable;
+  const remapDefaultAppRuntimeSharedIdx = (idx) => {
+    return remapDefaultAppRuntimeSharedTableIndex(idx, {
       sharedTableBase,
-      legacyTableBase: tableLayout.legacyTableBase,
+      defaultAppTableBase: tableLayout.defaultAppTableBase,
       reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
       reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
       rawIndexHasInstalledEntry: (rawTableIdx) => {
@@ -1056,11 +986,10 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   };
   const callIndirect = (name) => (fnIndex, ...args) => {
     const idx = Number(fnIndex);
-    const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
-    const directName = tableRefExportName(dispatchIdx);
-    const appDirectFn = state.appInstance?.exports?.[directName];
+    const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);
     const directSignature =
-      appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+      callableTableSignature(appCallableTable, dispatchIdx) ||
+      callableTableSignature(runtimeCallableTable, dispatchIdx);
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
     const reservedDispatch = planReservedRuntimeDispatch({
       dispatchIdx,
@@ -1089,21 +1018,6 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
         throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
       }
     }
-    if (typeof appDirectFn === 'function') {
-      try {
-        return callWithSignature(
-          appDirectFn,
-          appTableRefSignatures[directName] || callIndirectObjectSignature(name),
-          args,
-        );
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        throw new Error(
-          `${name} app direct export ${directName} failed at idx=${idx}: ${detail}; ` +
-            `fnLen=${appDirectFn.length}; argsLen=${args.length}`,
-        );
-      }
-    }
     if (typeof tableFn === 'function' && directSignature) {
       try {
         return callWithSignature(tableFn, directSignature, args);
@@ -1116,48 +1030,10 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
         );
       }
     }
-    const rtDirectFn = state.runtimeInstance?.exports?.[directName];
-    const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;
-    if (typeof rtDirectFn === 'function' && runtimeDirectSignature) {
-      try {
-        return callWithSignature(rtDirectFn, runtimeDirectSignature, args);
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        throw new Error(
-          `${name} runtime direct export ${directName} failed: ${detail}; ` +
-            `fnLen=${rtDirectFn.length}; argsLen=${args.length}`,
-        );
-      }
+    if (typeof tableFn !== 'function') {
+      throw new Error(`${name} missing table entry at ${dispatchIdx}`);
     }
-    const indirectFn = state.appInstance?.exports?.[name];
-    if (typeof indirectFn === 'function') {
-      try {
-        return callWithSignature(
-          indirectFn,
-          callIndirectObjectSignature(name, { includeIndex: true }),
-          [fnIndex, ...args],
-        );
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        throw new Error(
-          `${name} app export failed at idx=${idx}: ${detail}; ` +
-            `fnLen=${indirectFn.length}; argsLen=${args.length}`,
-        );
-      }
-    }
-    if (typeof tableFn === 'function') {
-      try {
-        return callWithSignature(tableFn, callIndirectObjectSignature(name), args);
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        const fnName = tableFn.name || '<anon>';
-        throw new Error(
-          `${name} shared-table entry failed at idx=${dispatchIdx}: ${detail}; ` +
-            `fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`,
-        );
-      }
-    }
-    throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+    throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
   };
   const env = {
     memory: state.memory,
@@ -1319,6 +1195,18 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   ]);
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
+  const appCallableTable = requireWasmCallableTable(appBytes, 'app wasm');
+  const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
+  verifyCallableTableManifestSummary(
+    appCallableTable,
+    manifest?.abi?.callable_table?.app,
+    'app wasm',
+  );
+  verifyCallableTableManifestSummary(
+    runtimeCallableTable,
+    manifest?.abi?.callable_table?.runtime,
+    'runtime wasm',
+  );
   assertBrowserTargetFeatureContract(
     manifest,
     parsedImportsRequireWebGpuDispatch(appImports, runtimeImports),
@@ -1349,7 +1237,11 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     },
     table,
   };
-  const env = buildMinimalEnv(state, manifest, browserAbi, options);
+  const env = buildMinimalEnv(state, manifest, browserAbi, {
+    ...options,
+    appCallableTable,
+    runtimeCallableTable,
+  });
   const runtimeWasi = buildMinimalWasi(state, options.log || null);
   const appWasi = buildMinimalWasi(appHostState, options.log || null);
   const runtimeModule = await WebAssembly.compile(runtimeBytes);
@@ -1366,11 +1258,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       setTableBase(BigInt(manifest.wasm_table_base));
     }
   }
-  installTableRefs(runtimeInstance, table);
-  const runtimeTablePrefix = snapshotTablePrefix(
-    table,
-    runtimeImports.table ? runtimeImports.table.min : 0,
-  );
+  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
   const appModule = await WebAssembly.compile(appBytes);
   const moltNative = createMoltNativeCallableImports(appHostState, appImports, {
     ...options,
@@ -1391,13 +1279,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
   state.appInstance = appInstance;
   appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
-  ensureTableCapacityForExportedRefs(appInstance, table);
-  restoreTablePrefix(table, runtimeTablePrefix);
-  if (typeof appInstance.exports.molt_table_init === 'function') {
-    appInstance.exports.molt_table_init();
-  }
-  restoreTablePrefix(table, runtimeTablePrefix);
-  installTableRefs(appInstance, table);
+  verifyCallableTableEntries(appCallableTable, table, 'app wasm');
   return {
     appInstance,
     runtimeInstance,

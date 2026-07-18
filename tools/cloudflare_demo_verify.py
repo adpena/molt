@@ -18,6 +18,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from molt.wasm_artifact import (
+    read_wasm_callable_table_attestation,
+    wasm_callable_table_manifest_summary,
+)
+
 try:
     from tools import harness_memory_guard
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
@@ -133,6 +138,8 @@ def _validate_split_runtime_abi_manifest(
     *,
     manifest_data: dict[str, Any],
     worker_js: Path,
+    app_wasm: Path,
+    runtime_wasm: Path,
 ) -> None:
     abi = manifest_data.get("abi")
     if not isinstance(abi, dict):
@@ -164,14 +171,25 @@ def _validate_split_runtime_abi_manifest(
             "Cloudflare manifest runtime_imports names drifted from signatures"
         )
 
-    table_refs = abi.get("table_refs")
-    if not isinstance(table_refs, dict):
-        raise RuntimeError("Cloudflare manifest missing table_refs ABI")
-    app_table_refs = table_refs.get("app")
-    runtime_table_refs = table_refs.get("runtime")
-    if not isinstance(app_table_refs, dict) or not isinstance(runtime_table_refs, dict):
+    callable_table = abi.get("callable_table")
+    if not isinstance(callable_table, dict):
+        raise RuntimeError("Cloudflare manifest missing callable_table ABI")
+    try:
+        actual_callable_table = {
+            "app": wasm_callable_table_manifest_summary(
+                read_wasm_callable_table_attestation(app_wasm)
+            ),
+            "runtime": wasm_callable_table_manifest_summary(
+                read_wasm_callable_table_attestation(runtime_wasm)
+            ),
+        }
+    except ValueError as exc:
         raise RuntimeError(
-            "Cloudflare manifest table_refs app/runtime entries must be objects"
+            f"Cloudflare callable-table attestation is invalid: {exc}"
+        ) from exc
+    if callable_table != actual_callable_table:
+        raise RuntimeError(
+            "Cloudflare manifest callable_table ABI drifted from final WASM artifacts"
         )
 
     worker_source = worker_js.read_text(encoding="utf-8")
@@ -183,16 +201,12 @@ def _validate_split_runtime_abi_manifest(
         raise RuntimeError(
             "Cloudflare worker runtime import result kinds drifted from manifest"
         )
-    if _worker_json_const(worker_source, "appTableRefSignatures") != app_table_refs:
-        raise RuntimeError(
-            "Cloudflare worker app table ref signatures drifted from manifest"
-        )
     if (
-        _worker_json_const(worker_source, "runtimeTableRefSignatures")
-        != runtime_table_refs
+        "appTableRefSignatures" in worker_source
+        or "runtimeTableRefSignatures" in worker_source
     ):
         raise RuntimeError(
-            "Cloudflare worker runtime table ref signatures drifted from manifest"
+            "Cloudflare worker contains removed table-ref compatibility ABI"
         )
 
 
@@ -290,6 +304,8 @@ def validate_bundle_contract(
     _validate_split_runtime_abi_manifest(
         manifest_data=manifest_data,
         worker_js=worker_js,
+        app_wasm=app_wasm,
+        runtime_wasm=runtime_wasm,
     )
 
     return CloudflareBundleContract(

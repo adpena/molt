@@ -1355,17 +1355,41 @@ def validate_loaded_manifest(
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
         raise WasmAbiManifestError("manifest must define [table_layout]")
-    legacy_table_base = table_layout.get("legacy_table_base")
-    if not isinstance(legacy_table_base, int) or legacy_table_base <= 0:
-        raise WasmAbiManifestError("[table_layout].legacy_table_base must be positive")
-    table_ref_export_prefix = table_layout.get("table_ref_export_prefix")
-    if not isinstance(table_ref_export_prefix, str) or not table_ref_export_prefix:
+    default_app_table_base = table_layout.get("default_app_table_base")
+    if not isinstance(default_app_table_base, int) or default_app_table_base <= 0:
         raise WasmAbiManifestError(
-            "[table_layout].table_ref_export_prefix must be a non-empty string"
+            "[table_layout].default_app_table_base must be positive"
         )
-    if not table_ref_export_prefix.isascii():
+    callable_table_publication = data.get("callable_table_publication")
+    if not isinstance(callable_table_publication, dict):
         raise WasmAbiManifestError(
-            "[table_layout].table_ref_export_prefix must be ASCII"
+            "manifest must define [callable_table_publication]"
+        )
+    section_name = callable_table_publication.get("section_name")
+    if not isinstance(section_name, str) or not section_name or not section_name.isascii():
+        raise WasmAbiManifestError(
+            "[callable_table_publication].section_name must be non-empty ASCII"
+        )
+    layout_section_name = callable_table_publication.get("layout_section_name")
+    if (
+        not isinstance(layout_section_name, str)
+        or not layout_section_name
+        or not layout_section_name.isascii()
+        or layout_section_name == section_name
+    ):
+        raise WasmAbiManifestError(
+            "[callable_table_publication].layout_section_name must be distinct non-empty ASCII"
+        )
+    for field in ("version", "layout_version", "value_type_format"):
+        value = callable_table_publication.get(field)
+        if not isinstance(value, int) or value <= 0:
+            raise WasmAbiManifestError(
+                f"[callable_table_publication].{field} must be positive"
+            )
+    active_element_role = callable_table_publication.get("active_element_role")
+    if not isinstance(active_element_role, int) or active_element_role < 0:
+        raise WasmAbiManifestError(
+            "[callable_table_publication].active_element_role must be non-negative"
         )
     static_types = data.get("static_type")
     if not isinstance(static_types, list) or not static_types:
@@ -1951,7 +1975,6 @@ def validate_loaded_manifest(
         "molt_memory",
         "molt_main",
         "molt_table",
-        "molt_table_init",
         "__indirect_function_table",
     }
     missing_essential_exports = required_essential_exports - set(essential_exports)

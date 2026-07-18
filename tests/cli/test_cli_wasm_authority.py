@@ -37,14 +37,7 @@ _CLI_REEXPORTED_WASM_BINARY_READER_NAMES = (
     "_collect_wasm_module_import_names",
 )
 
-_WASM_SIGNATURE_READER_NAMES = (
-    "_wasm_export_function_signatures",
-    "is_wasm_table_ref_export_name",
-    "parse_wasm_table_ref_export_name",
-    "wasm_table_ref_export_name",
-    "wasm_table_ref_export_signatures",
-    "wasm_table_ref_indices_from_names",
-)
+_WASM_SIGNATURE_READER_NAMES = ("_wasm_export_function_signatures",)
 
 
 def _wasm_import(module: str, name: str, kind: int, payload: bytes) -> bytes:
@@ -76,6 +69,16 @@ def test_cli_wasm_binary_inspection_authority_is_single_home() -> None:
         assert not hasattr(cli_wasm, name)
         assert hasattr(wasm_artifact, name)
         assert f"def {name}(" not in cli_wasm_source
+    for removed_name in (
+        "is_wasm_table_ref_export_name",
+        "parse_wasm_table_ref_export_name",
+        "wasm_table_ref_export_name",
+        "wasm_table_ref_export_signatures",
+        "wasm_table_ref_indices_from_names",
+    ):
+        assert not hasattr(cli, removed_name)
+        assert not hasattr(cli_wasm, removed_name)
+        assert not hasattr(wasm_artifact, removed_name)
 
 
 def test_cli_wasm_binary_inspection_reads_import_minima_and_required_names(

@@ -102,6 +102,15 @@ def _referenced_function_indices(facts: dict[str, object]) -> set[int]:
     return referenced
 
 
+def _has_opaque_function_reference_dispatch(facts: dict[str, object]) -> bool:
+    """Fail closed when typed function-reference targets are not fully attributable."""
+
+    value = facts.get("reachable_function_reference_dispatch")
+    if not isinstance(value, bool):
+        return True
+    return value
+
+
 def _neutralize_dead_element_entries(
     data: bytes,
     facts: dict[str, object],
@@ -130,7 +139,9 @@ def _neutralize_dead_element_entries(
     # indices. Those targets are not statically attributable to direct call
     # edges, so element neutralization is unsound when any call_indirect
     # remains in the module.
-    if facts.get("reachable_dynamic_dispatch") is True:
+    if facts.get("reachable_dynamic_dispatch") is True or _has_opaque_function_reference_dispatch(
+        facts
+    ):
         return None
 
     exported_tables = _fact_index_set(facts, "exported_table_indices")
@@ -251,6 +262,9 @@ def _stub_dead_functions(
     try:
         sections = _parse_sections(data)
     except ValueError:
+        return None
+
+    if _has_opaque_function_reference_dispatch(facts):
         return None
 
     import_count = _count_func_imports(sections)

@@ -4,20 +4,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from molt._wasm_abi_generated import (
+    WASM_RESERVED_RUNTIME_CALLABLES,
+    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
+)
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     wasm_loader_asset_closure,
 )
-from molt._wasm_abi_generated import (
-    WASM_RESERVED_RUNTIME_CALLABLES,
-    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
-    WASM_TABLE_REF_EXPORT_PREFIX,
-)
-from molt.wasm_artifact import wasm_table_ref_export_name
-
-
-def _table_ref_export_name(index: int) -> str:
-    return wasm_table_ref_export_name(index)
 
 
 def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
@@ -294,8 +288,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
 
     root = Path(__file__).resolve().parents[1]
     browser_assets = wasm_loader_asset_closure(
-        root / "wasm",
-        BROWSER_WASM_ENTRY_ASSETS,
+        root / "wasm", BROWSER_WASM_ENTRY_ASSETS
     )
     content = _generate_split_wrangler_jsonc("2026-04-11", browser_assets)
     payload = json.loads(content)
@@ -310,68 +303,41 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     assert "output_linked.wasm" not in content
 
 
-def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper() -> (
-    None
-):
+def test_generate_split_worker_requires_final_callable_table_before_main() -> None:
     from molt.cli import _generate_split_worker_js
 
-    app_ref = _table_ref_export_name(7)
-    runtime_ref = _table_ref_export_name(3)
     content = _generate_split_worker_js(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={app_ref: {"params": ["i64"], "result": "i64"}},
-        runtime_table_ref_signatures={
-            runtime_ref: {"params": ["i32"], "result": "i32"}
-        },
     )
 
-    assert "const installTableRefs = (instance, table) => {" in content
+    assert 'import "./callable_table_abi_generated.js";' in content
+    assert 'import "./loader_bridge.js";' in content
+    assert 'callableTableFromModule(runtimeModule, "runtime wasm")' in content
+    assert 'callableTableFromModule(appModule, "app wasm")' in content
     assert (
-        "const ensureTableCapacityForExportedRefs = (instance, table) => {" in content
-    )
-    assert "installTableRefs(rtInstance, sharedTable);" in content
-    assert "if (table.get(ref.index) !== null)" in content
-    assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
-    assert (
-        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
+        'verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");'
         in content
     )
-    assert "installTableRefs(appInstance, sharedTable);" in content
-    assert content.index(
-        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
-    ) < content.index("installTableRefs(appInstance, sharedTable);")
-    assert content.index("installTableRefs(appInstance, sharedTable);") < content.index(
-        "if (appInstance.exports.molt_main) appInstance.exports.molt_main();"
-    )
     assert (
-        "App-owned table slots are initialized by the exported molt_main wrapper."
-        not in content
+        'verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");'
+        in content
     )
+    assert "molt_table_init" not in content
     assert "? [`MOLT_WASM_TABLE_BASE=${32}`]" in content
-    assert (
-        f"const TABLE_REF_EXPORT_PREFIX = {json.dumps(WASM_TABLE_REF_EXPORT_PREFIX)};"
-        in content
-    )
-    assert "const parseTableRefExportName = (name) => {" in content
-    assert "const tableRefExportName = (index) =>" in content
+    assert "installTableRefs" not in content
+    assert "__molt_table_ref_" not in content
 
 
 def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     from molt.cli import _generate_split_worker_js
     from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
 
-    app_ref = _table_ref_export_name(7)
-    runtime_ref = _table_ref_export_name(3)
     content = _generate_split_worker_js(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={app_ref: {"params": ["i64"], "result": "i64"}},
-        runtime_table_ref_signatures={
-            runtime_ref: {"params": ["i32"], "result": "i32"}
-        },
     )
 
     assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
@@ -381,82 +347,33 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "for (const indirectName of callIndirectImportNames) {" in content
     assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
-    assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
-    assert "const directName = tableRefExportName(dispatchIdx);" in content
+    assert "const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);" in content
     assert "const reservedDispatch = planReservedRuntimeDispatch({" in content
     assert (
         "const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;"
         in content
     )
     assert "return callReservedRuntimeCallable(" in content
-    assert f"/^{WASM_TABLE_REF_EXPORT_PREFIX}" not in content
-    assert (
-        "const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {"
-        in content
-    )
-    assert "const appDirectFn = appInstance?.exports?.[directName];" in content
-    assert 'if (typeof appDirectFn === "function") {' in content
-    assert (
-        "appTableRefSignatures[directName] || callIndirectObjectSignature(indirectName)"
-        in content
-    )
-    assert "app direct export ${directName} failed at idx=${idx}" in content
-    assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
-    assert (
-        "callIndirectObjectSignature(indirectName, { includeIndex: true })" in content
-    )
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert (
-        "const directSignature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
+        "const directSignature =\n"
+        "          callableTableSignature(appCallableTable, dispatchIdx) ||\n"
+        "          callableTableSignature(runtimeCallableTable, dispatchIdx);"
         in content
     )
     assert 'if (typeof tableFn === "function" && directSignature) {' in content
     assert "return callWithSignature(tableFn, directSignature, args);" in content
-    assert 'if (typeof tableFn === "function") {' in content
+    assert "has no callable signature authority" in content
+    assert "appDirectFn" not in content
+    assert "rtDirectFn" not in content
+    assert "appTableRefSignatures" not in content
+    assert "runtimeTableRefSignatures" not in content
+    assert "__molt_table_ref_" not in content
+    assert "molt_table_init" not in content
     assert (
-        "return callWithSignature(tableFn, callIndirectObjectSignature(indirectName), args);"
+        'verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");'
         in content
     )
-    assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
-    assert (
-        "const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;"
-        in content
-    )
-    assert (
-        'if (typeof rtDirectFn === "function" && runtimeDirectSignature) {' in content
-    )
-    assert (
-        "return callWithSignature(rtDirectFn, runtimeDirectSignature, args);" in content
-    )
-    assert (
-        "callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName]"
-        not in content
-    )
-    assert (
-        "runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName)"
-        not in content
-    )
-    assert content.index(
-        "const reservedDispatch = planReservedRuntimeDispatch({"
-    ) < content.index("const appDirectFn = appInstance?.exports?.[directName];")
-    assert content.index(
-        "const reservedDispatch = planReservedRuntimeDispatch({"
-    ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
-    assert content.index(
-        "const appDirectFn = appInstance?.exports?.[directName];"
-    ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
-    assert content.index(
-        "const indirectFn = appInstance?.exports?.[indirectName];"
-    ) < content.index("const tableFn = sharedTable.get(dispatchIdx);")
-    assert content.index(
-        "const tableFn = sharedTable.get(dispatchIdx);"
-    ) < content.index("const rtDirectFn = rtInstance?.exports?.[directName];")
-    assert "hasExportedTableRefs(appInstance)" not in content
-    assert (
-        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
-        in content
-    )
-    assert "installTableRefs(appInstance, sharedTable);" in content
     browser_abi = _split_runtime_browser_abi_from_manifest()
     assert browser_abi["reserved_runtime_callables"] == (
         _reserved_runtime_callable_manifest_entries()
@@ -634,12 +551,6 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
                 "result": "i64",
             },
         },
-        app_table_ref_signatures={
-            _table_ref_export_name(1): {"params": ["i64"], "result": "i64"}
-        },
-        runtime_table_ref_signatures={
-            _table_ref_export_name(2): {"params": ["i32"], "result": "i32"}
-        },
     )
 
     assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content
@@ -665,20 +576,8 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert '"strategy": "call_bind_ic"' in content
     assert '"dict_getitem": {"call_arity": null' in content
     assert '"exports": ["molt_dict_getitem_borrowed"]' in content
-    expected_app_refs = {
-        _table_ref_export_name(1): {"params": ["i64"], "result": "i64"}
-    }
-    expected_runtime_refs = {
-        _table_ref_export_name(2): {"params": ["i32"], "result": "i32"}
-    }
-    assert (
-        f"const appTableRefSignatures = {json.dumps(expected_app_refs, sort_keys=True)};"
-        in content
-    )
-    assert (
-        f"const runtimeTableRefSignatures = {json.dumps(expected_runtime_refs, sort_keys=True)};"
-        in content
-    )
+    assert "callableTableFromModule(appModule" in content
+    assert "callableTableFromModule(runtimeModule" in content
     assert "const TAG_NONE = 0x0003000000000000n;" in content
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
     assert (
@@ -834,6 +733,8 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     assert "extractWasmTableBase," in bridge
     assert "parseWasmMetadata," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
+    assert "requireWasmCallableTable," in bridge
+    assert "verifyCallableTableEntries," in bridge
     assert "reservedRuntimeCallablesFromManifest," in bridge
     assert (
         "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;"
@@ -844,10 +745,8 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         in bridge
     )
     assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
-    assert (
-        "exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer)),"
-        in run_wasm
-    )
+    assert "exportFunctionSignatures: false," in run_wasm
+    assert "requireWasmCallableTable(wasmBuffer, 'output wasm')" in run_wasm
     assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
     assert (
         "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;"
@@ -966,13 +865,7 @@ def test_effective_split_worker_table_base_uses_backend_authority() -> None:
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=4096,
-            app_table_ref_signatures={
-                _table_ref_export_name(4096): {
-                    "params": ["i64"],
-                    "result": "i64",
-                },
-                _table_ref_export_name(4189): {"params": ["i64"], "result": "i64"},
-            },
+            app_callable_table_slots=[4096, 4189],
         )
         == 4096
     )
@@ -984,43 +877,37 @@ def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=None,
-            app_table_ref_signatures={
-                _table_ref_export_name(4130): {"params": ["i64"], "result": "i64"},
-            },
+            app_callable_table_slots=[4130],
         )
         is None
     )
 
 
-def test_effective_split_worker_table_base_rejects_export_below_backend_base() -> None:
+def test_effective_split_worker_table_base_rejects_callable_below_backend_base() -> (
+    None
+):
     import pytest
 
     from molt.cli import _effective_split_worker_table_base
 
-    with pytest.raises(ValueError, match="above exported table-ref slot"):
+    with pytest.raises(ValueError, match="above finalized callable-table slot"):
         _effective_split_worker_table_base(
             wasm_table_base=4096,
-            app_table_ref_signatures={
-                _table_ref_export_name(4095): {"params": ["i64"], "result": "i64"},
-            },
+            app_callable_table_slots=[4095],
         )
 
 
-def test_effective_split_worker_table_base_rejects_active_slot_below_backend_base(
-    tmp_path: Path,
-) -> None:
+def test_effective_split_worker_table_base_rejects_final_slot_below_backend_base() -> (
+    None
+):
     import pytest
 
     from molt.cli import _effective_split_worker_table_base
 
-    app_wasm = tmp_path / "app.wasm"
-    app_wasm.write_bytes(_active_table_fixture_wasm(base_slot=1024))
-
-    with pytest.raises(ValueError, match="above active app table slot"):
+    with pytest.raises(ValueError, match="above finalized callable-table slot"):
         _effective_split_worker_table_base(
             wasm_table_base=4096,
-            app_table_ref_signatures={},
-            app_wasm=app_wasm,
+            app_callable_table_slots=[1024],
         )
 
 
@@ -1120,8 +1007,8 @@ def _signature_fixture_wasm() -> bytes:
     )
     export_payload = _wasm_vec(
         [
-            _wasm_function_export(_table_ref_export_name(7), 3),
-            _wasm_function_export(_table_ref_export_name(8), 4),
+            _wasm_function_export("callable_7", 3),
+            _wasm_function_export("callable_8", 4),
         ]
     )
     return wasm_artifact._build_wasm_sections(
@@ -1337,62 +1224,20 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
 
 
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
-    from molt.wasm_artifact import (
-        _wasm_export_function_signatures,
-        wasm_table_ref_export_signatures,
-    )
+    from molt.wasm_artifact import _wasm_export_function_signatures
 
     wasm_path = tmp_path / "runtime.wasm"
     wasm_path.write_bytes(_signature_fixture_wasm())
 
-    assert wasm_table_ref_export_signatures(wasm_path) == {
-        _table_ref_export_name(7): {"params": ["i64"], "result": "i64"},
-        _table_ref_export_name(8): {"params": ["i32", "i64", "i32"], "result": "i32"},
-    }
-    assert _wasm_export_function_signatures(
-        wasm_path, export_names={_table_ref_export_name(8)}
-    ) == {
-        _table_ref_export_name(8): {"params": ["i32", "i64", "i32"], "result": "i32"},
+    assert _wasm_export_function_signatures(wasm_path, export_names={"callable_8"}) == {
+        "callable_8": {
+            "params": ["i32", "i64", "i32"],
+            "result": "i32",
+        },
     }
 
 
-def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
-    from molt.cli import _export_wasm_table_refs
-    from molt.wasm_artifact import (
-        _build_wasm_sections,
-        _write_wasm_varuint,
-        parse_wasm_exports,
-    )
+def test_cli_does_not_expose_table_ref_export_synthesis() -> None:
+    import molt.cli as cli
 
-    type_payload = _write_wasm_varuint(1) + bytes([0x60, 0x00, 0x01, 0x7E])
-    function_payload = _write_wasm_varuint(1) + _write_wasm_varuint(0)
-    table_payload = _write_wasm_varuint(1) + bytes([0x70, 0x00, 0x04])
-    element_payload = (
-        _write_wasm_varuint(1)
-        + bytes([0x00, 0x41, 0x03, 0x0B])
-        + _write_wasm_varuint(1)
-        + _write_wasm_varuint(0)
-    )
-    code_body = bytes([0x00, 0x42, 0x00, 0x0B])
-    code_payload = (
-        _write_wasm_varuint(1) + _write_wasm_varuint(len(code_body)) + code_body
-    )
-    wasm_bytes = _build_wasm_sections(
-        [
-            (1, type_payload),
-            (3, function_payload),
-            (4, table_payload),
-            (9, element_payload),
-            (10, code_payload),
-        ]
-    )
-    wasm_path = tmp_path / "table_ref.wasm"
-    wasm_path.write_bytes(wasm_bytes)
-
-    _export_wasm_table_refs(wasm_path)
-
-    exports = {
-        export.name: (export.kind, export.index)
-        for export in parse_wasm_exports(wasm_path.read_bytes())
-    }
-    assert exports[_table_ref_export_name(3)] == (0, 0)
+    assert not hasattr(cli, "_export_wasm_table_refs")

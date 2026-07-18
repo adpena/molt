@@ -1,3 +1,4 @@
+import './callable_table_abi_generated.js';
 import './loader_bridge.js';
 import {
   assertBrowserTargetFeatureContract,
@@ -61,7 +62,7 @@ const WASI_OFLAGS_TRUNC = 8;
 const WASI_WHENCE_SET = 0;
 const WASI_WHENCE_CUR = 1;
 const WASI_WHENCE_END = 2;
-const LEGACY_WASM_TABLE_BASE = 256;
+const DEFAULT_WASM_APP_TABLE_BASE = 256;
 const RESERVED_RUNTIME_CALLABLE_BASE = 33;
 const reservedRuntimeCallables = [
   { index: 0, runtimeExport: 'molt_type_call', arity: 1 },
@@ -125,7 +126,6 @@ const traceBrowserWasi =
   process.env.MOLT_WASM_TRACE_WASI === '1';
 
 const {
-  callIndirectObjectSignature,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -137,12 +137,15 @@ const {
   normalizeValueForKind,
   parseWasmImports,
   planReservedRuntimeDispatch,
-  remapLegacyRuntimeSharedTableIndex,
+  requireWasmCallableTable,
+  remapDefaultAppRuntimeSharedTableIndex,
   reservedRuntimeCallablesFromManifest,
   resolveWasmTableBase,
-  tableRefExportName,
+  callableTableSignature,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
+  verifyCallableTableEntries,
+  verifyCallableTableManifestSummary,
 } = globalThis.MoltWasmLoaderBridge;
 
 export { parseWasmImports };
@@ -175,80 +178,6 @@ const makeTable = (limits) => {
   const descriptor = { element: 'anyfunc', initial: limits.min };
   if (limits.max !== null) descriptor.maximum = limits.max;
   return new WebAssembly.Table(descriptor);
-};
-
-const installTableRefs = (instance, table) => {
-  if (!instance || !table) {
-    return;
-  }
-  const refs = [];
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs.push({ index: Number(match[1]), fn: value });
-  }
-  if (refs.length === 0) {
-    return;
-  }
-  refs.sort((a, b) => a.index - b.index);
-  const maxIndex = refs[refs.length - 1].index;
-  if (maxIndex >= table.length) {
-    table.grow(maxIndex + 1 - table.length);
-  }
-  for (const ref of refs) {
-    if (table.get(ref.index) !== null) {
-      continue;
-    }
-    table.set(ref.index, ref.fn);
-  }
-};
-
-const snapshotTablePrefix = (table, length) => {
-  if (!table || !Number.isInteger(length) || length <= 0) {
-    return null;
-  }
-  const end = Math.min(length, table.length);
-  const entries = new Array(end);
-  for (let idx = 0; idx < end; idx += 1) {
-    entries[idx] = table.get(idx);
-  }
-  return entries;
-};
-
-const restoreTablePrefix = (table, snapshot) => {
-  if (!table || !snapshot) {
-    return;
-  }
-  const end = Math.min(snapshot.length, table.length);
-  for (let idx = 0; idx < end; idx += 1) {
-    const expected = snapshot[idx];
-    if (table.get(idx) !== expected) {
-      table.set(idx, expected);
-    }
-  }
-};
-
-const ensureTableCapacityForExportedRefs = (instance, table) => {
-  if (!instance || !table) {
-    return;
-  }
-  let maxIndex = -1;
-  for (const name of Object.keys(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match) {
-      continue;
-    }
-    const idx = Number(match[1]);
-    if (Number.isInteger(idx) && idx > maxIndex) {
-      maxIndex = idx;
-    }
-  }
-  if (maxIndex < 0 || maxIndex < table.length) {
-    return;
-  }
-  table.grow(maxIndex + 1 - table.length);
 };
 
 const UTF8_DECODER = new TextDecoder('utf-8');
@@ -3642,6 +3571,7 @@ export const loadMoltWasm = async (options = {}) => {
 
   if (linkedBytes) {
     const linkedImports = parseWasmImports(linkedBytes);
+    const linkedCallableTable = requireWasmCallableTable(linkedBytes, 'linked wasm');
     const linkedCallIndirectNames = linkedImports.funcImports
       .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
       .map((imp) => imp.name);
@@ -3681,10 +3611,7 @@ export const loadMoltWasm = async (options = {}) => {
       linkedCallIndirectFns[name] = fn;
     }
     const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
-    ensureTableCapacityForExportedRefs(instance, linkedTable);
-    if (typeof instance.exports.molt_table_init === 'function') {
-      instance.exports.molt_table_init();
-    }
+    verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
     const memoryExport =
       instance.exports.molt_memory || instance.exports.memory || env.memory || null;
     state.runtimeInstance = instance;
@@ -3719,8 +3646,6 @@ export const loadMoltWasm = async (options = {}) => {
     reservedRuntimeCallablesFromManifest(splitManifest) || reservedRuntimeCallables;
   const runtimeImportFallbacks =
     splitManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
-  const appTableRefSignatures = splitManifest?.abi?.table_refs?.app || {};
-  const runtimeTableRefSignatures = splitManifest?.abi?.table_refs?.runtime || {};
   const wasmBytes = await tryFetch(wasmUrl);
   if (!wasmBytes) {
     throw new Error(`Failed to load wasm at ${wasmUrl}`);
@@ -3731,6 +3656,18 @@ export const loadMoltWasm = async (options = {}) => {
   }
   const outputImports = parseWasmImports(wasmBytes);
   const runtimeImports = parseWasmImports(runtimeBytes);
+  const appCallableTable = requireWasmCallableTable(wasmBytes, 'app wasm');
+  const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
+  verifyCallableTableManifestSummary(
+    appCallableTable,
+    splitManifest?.abi?.callable_table?.app,
+    'app wasm',
+  );
+  verifyCallableTableManifestSummary(
+    runtimeCallableTable,
+    splitManifest?.abi?.callable_table?.runtime,
+    'runtime wasm',
+  );
   assertBrowserTargetFeatureContract(
     splitManifest,
     parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
@@ -3759,9 +3696,9 @@ export const loadMoltWasm = async (options = {}) => {
     callIndirect[name] = (...args) => {
       const rawIdx = args[0];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      const dispatchIdx = remapLegacyRuntimeSharedTableIndex(idx, {
+      const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
         sharedTableBase: detectedWasmTableBase,
-        legacyTableBase: LEGACY_WASM_TABLE_BASE,
+        defaultAppTableBase: DEFAULT_WASM_APP_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
         rawIndexHasInstalledEntry: (rawTableIdx) => {
@@ -3775,10 +3712,9 @@ export const loadMoltWasm = async (options = {}) => {
           }
         },
       });
-      const directName = tableRefExportName(dispatchIdx);
-      const appDirectFn = outputInstance?.exports?.[directName];
       const directSignature =
-        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+        callableTableSignature(appCallableTable, dispatchIdx) ||
+        callableTableSignature(runtimeCallableTable, dispatchIdx);
       const fn = table ? table.get(dispatchIdx) : null;
       const reservedDispatch = planReservedRuntimeDispatch({
         dispatchIdx,
@@ -3813,28 +3749,14 @@ export const loadMoltWasm = async (options = {}) => {
         );
       }
       if (typeof fn !== 'function') {
-        if (typeof appDirectFn !== 'function') {
-          throw new Error(`${name} missing table entry at ${dispatchIdx}`);
-        }
+        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
       }
-      const appIndirectFn = outputInstance?.exports?.[name];
-      if (typeof appDirectFn === 'function') {
-        return callWithWasmSignature(
-          appDirectFn,
-          appTableRefSignatures[directName] || callIndirectObjectSignature(name),
-          args.slice(1),
-        );
-      }
-      if (!directSignature && typeof appIndirectFn === 'function') {
-        return callWithWasmSignature(
-          appIndirectFn,
-          callIndirectObjectSignature(name, { includeIndex: true }),
-          args,
-        );
+      if (!directSignature) {
+        throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
       }
       return callWithWasmSignature(
         fn,
-        directSignature || callIndirectObjectSignature(name),
+        directSignature,
         args.slice(1),
       );
     };
@@ -3889,19 +3811,9 @@ export const loadMoltWasm = async (options = {}) => {
       setTableBase(BigInt(detectedWasmTableBase));
     }
   }
-  installTableRefs(runtimeInstance, table);
-  const runtimeTablePrefix = snapshotTablePrefix(
-    table,
-    runtimeImports.table ? runtimeImports.table.min : 0,
-  );
+  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
   state.runtimeInstance = runtimeInstance;
-  ensureTableCapacityForExportedRefs(outputInstance, table);
-  restoreTablePrefix(table, runtimeTablePrefix);
-  if (typeof outputModule.instance.exports.molt_table_init === 'function') {
-    outputModule.instance.exports.molt_table_init();
-  }
-  restoreTablePrefix(table, runtimeTablePrefix);
-  installTableRefs(outputInstance, table);
+  verifyCallableTableEntries(appCallableTable, table, 'app wasm');
   return {
     instance: outputModule.instance,
     memory,

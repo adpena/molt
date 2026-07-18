@@ -5049,24 +5049,12 @@ const generatorThrowMethod = (selfBits, excBits) => {
   return generatorPairToValueSafe(pairBits);
 };
 const generatorCloseMethod = (selfBits) => generatorClose(selfBits);
-const wrapTableFunc = (fn, arity) => {
-  if (typeof WebAssembly.Function !== 'function') return fn;
-  const params = new Array(arity).fill('i64');
-  return new WebAssembly.Function({ parameters: params, results: ['i64'] }, fn);
-};
 const getOrAddTableFunc = (fn, arity) => {
+  void arity;
   const cached = tableFuncCache.get(fn);
   if (cached !== undefined) return cached;
-  let idx;
-  if (typeof WebAssembly.Function === 'function') {
-    if (!table) return null;
-    idx = table.length;
-    table.grow(1);
-    table.set(idx, wrapTableFunc(fn, arity));
-  } else {
-    idx = hostTable.length + HOST_TABLE_FLAG;
-    hostTable.push(fn);
-  }
+  const idx = hostTable.length + HOST_TABLE_FLAG;
+  hostTable.push(fn);
   tableFuncCache.set(fn, idx);
   return idx;
 };

@@ -5,8 +5,9 @@ use crate::TrampolineTaskKind;
 use crate::wasm_abi::{
     GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, WasmRuntimeImport,
 };
-use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_table::{WasmCallableTableTarget, WasmTableRelocations};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WasmTaskCompletion {
@@ -106,11 +107,20 @@ impl WasmTaskRuntimeLayout {
         self,
         func: &mut Function,
         import_ids: &TrackedImportIds,
+        table_relocations: &mut WasmTableRelocations,
         reloc_enabled: bool,
-        table_idx: u32,
+        func_import_count: u32,
+        owner_func_index: u32,
+        table_target: &WasmCallableTableTarget,
         payload_size_bytes: i64,
     ) {
-        emit_table_index_i64(func, reloc_enabled, table_idx);
+        table_relocations.emit_i64(
+            reloc_enabled,
+            func_import_count,
+            owner_func_index,
+            func,
+            table_target,
+        );
         func.instruction(&Instruction::I64Const(payload_size_bytes));
         func.instruction(&Instruction::I64Const(self.runtime_task_kind()));
         emit_call(func, reloc_enabled, import_ids[WasmRuntimeImport::TaskNew]);
