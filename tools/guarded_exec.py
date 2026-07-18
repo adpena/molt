@@ -18,7 +18,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from molt.cli.setup_readiness import _llvm_backend_unavailable_message  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     mlir_toolchain_environment,
@@ -116,9 +115,7 @@ def _project_toolchain_environment(
     try:
         return mlir_toolchain_environment(ROOT, environ=dict(env)), None
     except LlvmToolchainConfigError as exc:
-        detail = str(exc)
-        detail = _llvm_backend_unavailable_message(ROOT) or detail
-        return dict(env), detail
+        return dict(env), str(exc)
 
 
 def main(argv: list[str] | None = None) -> int:

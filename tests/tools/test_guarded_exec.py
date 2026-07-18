@@ -134,12 +134,6 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.setattr(
         module,
-        "_llvm_backend_unavailable_message",
-        lambda _root: "LLVM backend requires LLVM 22.1 with llvm-config.",
-        raising=True,
-    )
-    monkeypatch.setattr(
-        module,
         "mlir_toolchain_environment",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             module.LlvmToolchainConfigError("missing SDK")
@@ -166,7 +160,7 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
     assert "command" not in captured
     err = capsys.readouterr().err
     assert "guarded_exec preflight" in err
-    assert "LLVM backend requires LLVM 22.1" in err
+    assert "missing SDK" in err
 
 
 def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
@@ -207,13 +201,6 @@ def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
 def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
     module = _load_guarded_exec()
     captured = _install_fake_context(module, monkeypatch)
-    monkeypatch.setattr(
-        module,
-        "_llvm_backend_unavailable_message",
-        lambda _root: "should not be queried",
-        raising=True,
-    )
-
     rc = module.main(
         [
             "--prefix",
