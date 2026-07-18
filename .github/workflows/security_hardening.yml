@@ -69,8 +69,6 @@ jobs:
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --version 0.20.2 --locked
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-audit --version 0.22.2 --locked
-      - name: Refresh advisory database
-        run: rm -rf "${CARGO_HOME:-$HOME/.cargo}/advisory-db"
       - name: Execute Rust security partitions
         run: python3 tools/proof_plan.py --run-family rust_security --receipt proof-receipts/rust_security.json
       - name: Upload Rust security receipt

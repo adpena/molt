@@ -5,6 +5,7 @@
     ".github/workflows/ci.yml",
     ".github/workflows/formal.yml",
     ".github/workflows/molt-wasm-ci.yml",
+    ".github/workflows/proof-queue-portability.yml",
     ".github/workflows/security_hardening.yml",
     ".gitignore",
     ".python-version",
@@ -33,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "0174ca2b0ab92a40f656afedf7c0d9864b026f27ecd494590071031cb559e44d",
+  "authority_sha256": "cd91e2c73c38a8d35dcf2a024456a36868eec873960bc6a31a43b83fc12975e5",
   "ci_families": [
     {
       "dependencies": [],
@@ -2164,7 +2165,7 @@
         "pytest",
         "-q",
         "tests/cli/test_native_link_plan.py",
-        "tests/cli/test_native_link_command_authority.py",
+        "tests/cli/test_cli_native_link_command_authority.py",
         "tests/cli/test_native_link_fail_closed.py"
       ],
       "cache_domain": "pytest",
@@ -2277,7 +2278,9 @@
     {
       "argv": [
         "cargo",
-        "audit"
+        "audit",
+        "--db",
+        "tmp/security/cargo-audit-advisory-db"
       ],
       "cache_domain": "cargo-security",
       "cell": "linux-x86_64-rust-audit",
@@ -3398,11 +3401,13 @@
         "rustc"
       ],
       "executable": "rustc",
+      "fingerprint_domain": "rustup",
       "name": "rustc",
       "setup_evidence": [
         "rust-toolchain.toml::channel = \"1.96.1\"",
         ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
         ".github/workflows/molt-wasm-ci.yml::dtolnay/rust-toolchain@1.96.1",
+        ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1",
         ".github/workflows/security_hardening.yml::dtolnay/rust-toolchain@1.96.1"
       ],
       "setup_value": "1.96.1",
@@ -3419,9 +3424,11 @@
         "cargo"
       ],
       "executable": "cargo",
+      "fingerprint_domain": "rustup",
       "name": "cargo",
       "setup_evidence": [
-        "rust-toolchain.toml::channel = \"1.96.1\""
+        "rust-toolchain.toml::channel = \"1.96.1\"",
+        ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1"
       ],
       "setup_value": "1.96.1",
       "version_args": [
