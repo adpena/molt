@@ -33,6 +33,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,43 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
+
+CORPUS_MANIFEST = ROOT / "config" / "reproducibility_corpus.toml"
+
+
+def _write_proof_receipt(
+    path: str | None,
+    *,
+    mode: str,
+    selected: int,
+    executed: int,
+    passed: int,
+    failed: int,
+    errors: int,
+    **evidence: object,
+) -> None:
+    """Write the same fail-closed proof contract for every invocation mode."""
+    if path is None:
+        return
+    payload = {
+        "schema": "molt.reproducibility-proof.v2",
+        "status": (
+            "success"
+            if executed > 0 and failed == 0 and errors == 0
+            else "failure"
+        ),
+        "mode": mode,
+        "selected": selected,
+        "executed": executed,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        **evidence,
+    }
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def sha256_file(path: str) -> str:
@@ -222,34 +260,132 @@ def compare_artifacts(
     return hash1 == hash2, details
 
 
-def _build_twice_and_compare(
+def _build_repeated_and_compare(
     source: str,
     profile: str,
     prefer_object: bool,
     verbose: bool,
+    runs: int,
 ) -> tuple[bool, dict]:
-    """Build a source file twice in isolated caches and compare."""
-    with (
-        tempfile.TemporaryDirectory(prefix="repro_a_") as cache_a,
-        tempfile.TemporaryDirectory(prefix="repro_b_") as cache_b,
-    ):
-        art1, err1 = _build_once(source, cache_a, profile, prefer_object)
-        if art1 is None:
-            return False, {"source": source, "error": f"build A: {err1}"}
+    """Build a source repeatedly in isolated caches and compare all outputs."""
+    if runs < 2:
+        return False, {"source": source, "error": "runs must be at least 2"}
+    hashes: list[str] = []
+    sizes: list[int] = []
+    artifacts: list[str] = []
+    for run in range(runs):
+        with tempfile.TemporaryDirectory(prefix=f"repro_{run}_") as cache:
+            artifact, error = _build_once(source, cache, profile, prefer_object)
+            if artifact is None:
+                return False, {
+                    "source": source,
+                    "error": f"build {run + 1}: {error}",
+                }
+            digest = sha256_file(artifact)
+            size = Path(artifact).stat().st_size
+            hashes.append(digest)
+            sizes.append(size)
+            artifacts.append(artifact)
+            if verbose:
+                print(
+                    f"  Build {run + 1}: {artifact}\n"
+                    f"    SHA256: {digest}  ({size} bytes)"
+                )
+    return len(set(hashes)) == 1, {
+        "source": source,
+        "runs": runs,
+        "hashes": hashes,
+        "sizes": sizes,
+        "artifacts": artifacts,
+        "unique_hashes": len(set(hashes)),
+        "match": len(set(hashes)) == 1,
+        "command": [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--profile",
+            profile,
+            "--deterministic",
+            "--json",
+            *(["--emit", "obj"] if prefer_object else []),
+            source,
+        ],
+        "environment": {
+            "PYTHONHASHSEED": "0",
+            "MOLT_DETERMINISTIC": "1",
+            "isolated_cache_per_run": True,
+        },
+        "toolchain": {"python": sys.version},
+    }
 
-        art2, err2 = _build_once(source, cache_b, profile, prefer_object)
-        if art2 is None:
-            return False, {"source": source, "error": f"build B: {err2}"}
 
-        match, details = compare_artifacts(art1, art2, label=source)
+def _compile_to_ir_json(source_text: str, run_index: int) -> str:
+    """Compile source to canonical IR JSON in a fresh Python process."""
+    script = (
+        "import json, sys; "
+        "sys.path.insert(0, {src!r}); "
+        "from molt.frontend import compile_to_tir; "
+        "print(json.dumps(compile_to_tir(sys.stdin.read()), sort_keys=True, indent=2))"
+    ).format(src=str(ROOT / "src"))
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = str(run_index)
+    with tempfile.TemporaryDirectory(prefix=f"repro_ir_{run_index}_") as cwd:
+        env["TMP"] = cwd
+        env["TEMP"] = cwd
+        result = harness_memory_guard.guarded_completed_process(
+            [sys.executable, "-c", script],
+            prefix="MOLT_TEST_SUITE",
+            input=source_text,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=cwd,
+            timeout=60,
+            limits=harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env),
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"IR compilation failed (rc={result.returncode}): {result.stderr[:1000]}"
+        )
+    return result.stdout
 
-        if verbose:
-            print(f"  Build A: {art1}")
-            print(f"    SHA256: {details['sha256_1']}  ({details['size_1']} bytes)")
-            print(f"  Build B: {art2}")
-            print(f"    SHA256: {details['sha256_2']}  ({details['size_2']} bytes)")
 
-        return match, details
+def check_ir_determinism(programs: list[Path], runs: int) -> list[dict]:
+    """Compare at least two isolated IR observations for every program."""
+    results: list[dict] = []
+    for program in programs:
+        try:
+            observations = [
+                _compile_to_ir_json(program.read_text(encoding="utf-8"), run)
+                for run in range(runs)
+            ]
+        except (OSError, RuntimeError) as exc:
+            results.append(
+                {"source": str(program), "status": "error", "error": str(exc)}
+            )
+            continue
+        digests = [hashlib.sha256(item.encode()).hexdigest() for item in observations]
+        results.append(
+            {
+                "source": str(program),
+                "status": "pass" if len(set(digests)) == 1 else "fail",
+                "runs": runs,
+                "sha256": digests,
+            }
+        )
+    return results
+
+
+def resolve_corpus(name: str) -> list[str]:
+    """Resolve a named, repository-owned reproducibility corpus."""
+    payload = tomllib.loads(CORPUS_MANIFEST.read_text(encoding="utf-8"))
+    if payload.get("schema") != "molt.reproducibility-corpus.v1":
+        raise ValueError("unsupported reproducibility corpus schema")
+    entries = payload.get("corpus", {}).get(name)
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"missing non-empty reproducibility corpus: {name}")
+    return [str(ROOT / entry) for entry in entries]
 
 
 def main() -> int:
@@ -279,9 +415,25 @@ def main() -> int:
         help="Batch mode: build each source twice and report reproducibility for all",
     )
     parser.add_argument(
+        "--corpus",
+        choices=("smoke", "full"),
+        help="Repository-owned source corpus (alternative to --batch)",
+    )
+    parser.add_argument(
         "--build-profile",
         default="dev",
         help="Molt build profile for --build/--batch modes (default: dev)",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=2,
+        help="Independent observations per source (minimum and default: 2)",
+    )
+    parser.add_argument(
+        "--audit-ir",
+        action="store_true",
+        help="Also compare canonical frontend IR across fresh processes",
     )
     parser.add_argument(
         "--verbose",
@@ -294,15 +446,20 @@ def main() -> int:
         help="Write JSON results to FILE (for CI integration)",
     )
     args = parser.parse_args()
+    if args.runs < 2:
+        parser.error("--runs must be at least 2")
+    if args.batch and args.corpus:
+        parser.error("choose only one of --batch and --corpus")
+    batch = args.batch or (resolve_corpus(args.corpus) if args.corpus else None)
 
     # Mode: --batch (multiple sources)
-    if args.batch:
+    if batch:
         results = []
         passed = 0
         failed = 0
         errors = 0
 
-        for source in args.batch:
+        for source in batch:
             if not Path(source).exists():
                 print(f"  SKIP {source} (not found)")
                 errors += 1
@@ -310,11 +467,12 @@ def main() -> int:
                 continue
 
             print(f"  Testing {source} ...")
-            match, details = _build_twice_and_compare(
+            match, details = _build_repeated_and_compare(
                 source,
                 args.build_profile,
                 args.object,
                 args.verbose,
+                args.runs,
             )
             results.append(details)
 
@@ -325,53 +483,109 @@ def main() -> int:
                 print(f"  PASS  {source}")
                 passed += 1
             else:
-                offset = details.get("first_diff_offset", "?")
-                print(f"  FAIL  {source}  (first diff at byte {offset})")
+                print(
+                    f"  FAIL  {source}  "
+                    f"({details.get('unique_hashes', '?')} distinct hashes)"
+                )
                 failed += 1
+
+        audits: list[dict] = []
+        existing_sources = [Path(source) for source in batch if Path(source).is_file()]
+        if args.audit_ir:
+            audits.extend(check_ir_determinism(existing_sources, args.runs))
+        for audit in audits:
+            status = audit["status"]
+            if status == "pass":
+                passed += 1
+            elif status == "fail":
+                failed += 1
+            else:
+                errors += 1
 
         total = passed + failed + errors
         print(
             f"\nReproducible build sweep: {total} files | {passed} pass | {failed} fail | {errors} error"
         )
 
-        if args.json_out:
-            out = {
-                "passed": passed,
-                "failed": failed,
-                "errors": errors,
-                "results": results,
-            }
-            Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.json_out).write_text(json.dumps(out, indent=2) + "\n")
+        _write_proof_receipt(
+            args.json_out,
+            mode="batch",
+            selected=total,
+            executed=passed + failed,
+            passed=passed,
+            failed=failed,
+            errors=errors,
+            runs_per_source=args.runs,
+            results=results,
+            audits=audits,
+        )
 
-        return 1 if failed > 0 else 0
+        return fail_closed_proof_exit_code(
+            executed=passed + failed,
+            failed=failed,
+            errors=errors,
+        )
 
     # Mode: --build (single source, self-contained)
     if args.build:
         source = args.build
         if not Path(source).exists():
             print(f"ERROR: Source file not found: {source}", file=sys.stderr)
+            _write_proof_receipt(
+                args.json_out,
+                mode="build",
+                selected=1,
+                executed=0,
+                passed=0,
+                failed=0,
+                errors=1,
+                runs_per_source=args.runs,
+                results=[{"source": source, "error": "not found"}],
+            )
             return 2
 
         print(f"Reproducible build test: {source}")
-        match, details = _build_twice_and_compare(
+        match, details = _build_repeated_and_compare(
             source,
             args.build_profile,
             args.object,
             verbose=True,
+            runs=args.runs,
         )
 
         if "error" in details:
             print(f"\nERROR: {details['error']}", file=sys.stderr)
+            _write_proof_receipt(
+                args.json_out,
+                mode="build",
+                selected=1,
+                executed=0,
+                passed=0,
+                failed=0,
+                errors=1,
+                runs_per_source=args.runs,
+                results=[details],
+            )
             return 2
 
+        _write_proof_receipt(
+            args.json_out,
+            mode="build",
+            selected=1,
+            executed=1,
+            passed=int(match),
+            failed=int(not match),
+            errors=0,
+            runs_per_source=args.runs,
+            results=[details],
+        )
+
         if match:
-            print("\nREPRODUCIBLE: Both builds are bit-identical.")
+            print(f"\nREPRODUCIBLE: All {args.runs} builds are bit-identical.")
             return 0
         else:
-            offset = details.get("first_diff_offset", "?")
             print(
-                f"\nFAILED: Artifacts differ! First difference at byte offset {offset}."
+                f"\nFAILED: Artifacts differ across {args.runs} independent builds."
             )
             return 1
 
@@ -385,6 +599,17 @@ def main() -> int:
     ]:
         if not Path(path).exists():
             print(f"ERROR: {label} JSON file not found: {path}", file=sys.stderr)
+            _write_proof_receipt(
+                args.json_out,
+                mode="compare",
+                selected=1,
+                executed=0,
+                passed=0,
+                failed=0,
+                errors=1,
+                inputs=args.build_jsons,
+                error=f"{label} JSON file not found",
+            )
             return 2
 
     try:
@@ -394,6 +619,17 @@ def main() -> int:
             build2 = json.load(f)
     except json.JSONDecodeError as e:
         print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)
+        _write_proof_receipt(
+            args.json_out,
+            mode="compare",
+            selected=1,
+            executed=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            inputs=args.build_jsons,
+            error=f"invalid JSON: {e}",
+        )
         return 2
 
     try:
@@ -401,16 +637,60 @@ def main() -> int:
         artifact2 = extract_artifact_path(build2, prefer_object=args.object)
     except KeyError as e:
         print(f"ERROR: {e}", file=sys.stderr)
+        _write_proof_receipt(
+            args.json_out,
+            mode="compare",
+            selected=1,
+            executed=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            inputs=args.build_jsons,
+            error=str(e),
+        )
         return 2
 
     if not Path(artifact1).exists():
         print(f"ERROR: Artifact not found: {artifact1}", file=sys.stderr)
+        _write_proof_receipt(
+            args.json_out,
+            mode="compare",
+            selected=1,
+            executed=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            inputs=args.build_jsons,
+            error=f"artifact not found: {artifact1}",
+        )
         return 2
     if not Path(artifact2).exists():
         print(f"ERROR: Artifact not found: {artifact2}", file=sys.stderr)
+        _write_proof_receipt(
+            args.json_out,
+            mode="compare",
+            selected=1,
+            executed=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            inputs=args.build_jsons,
+            error=f"artifact not found: {artifact2}",
+        )
         return 2
 
     match, details = compare_artifacts(artifact1, artifact2)
+    _write_proof_receipt(
+        args.json_out,
+        mode="compare",
+        selected=1,
+        executed=1,
+        passed=int(match),
+        failed=int(not match),
+        errors=0,
+        inputs=args.build_jsons,
+        results=[details],
+    )
 
     print(f"Build 1: {artifact1}")
     print(f"  SHA256: {details['sha256_1']}  ({details['size_1']} bytes)")

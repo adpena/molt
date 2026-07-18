@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import tempfile
 import textwrap
@@ -17,6 +18,108 @@ from tools.fuzz_compiler_execution import _build_env
 from tools.fuzz_compiler_reporting import _log
 from tools.fuzz_compiler_shrink import _shrink_program
 from tools.fuzz_compiler_types import FuzzSummary
+from tools.proof_counts import fail_closed_proof_exit_code
+
+
+def safe_fuzz_exit_code(summary: FuzzSummary) -> int:
+    """Return a fail-closed verdict for the complete safe-mode campaign."""
+    executed = summary.passed + summary.mismatches
+    classified = (
+        executed
+        + summary.build_errors
+        + summary.cpython_errors
+        + summary.molt_run_errors
+        + summary.timeouts
+    )
+    if classified != summary.total:
+        raise ValueError(
+            "safe fuzz accounting mismatch: "
+            f"classified={classified} selected={summary.total}"
+        )
+    return fail_closed_proof_exit_code(
+        executed=executed,
+        failed=summary.mismatches,
+        errors=(
+            summary.build_errors
+            + summary.cpython_errors
+            + summary.molt_run_errors
+            + summary.timeouts
+        ),
+    )
+
+
+def safe_fuzz_receipt(summary: FuzzSummary) -> dict[str, object]:
+    exit_code = safe_fuzz_exit_code(summary)
+    error_count = (
+        summary.build_errors
+        + summary.cpython_errors
+        + summary.molt_run_errors
+        + summary.timeouts
+    )
+    return {
+        "schema": "molt.fuzz-proof.v2",
+        "mode": "safe",
+        "status": "success" if exit_code == 0 else "failure",
+        "selected": summary.total,
+        "executed": summary.passed + summary.mismatches,
+        "passed": summary.passed,
+        "failed": summary.mismatches,
+        "errors": error_count,
+        "error_detail": {
+            "build": summary.build_errors,
+            "cpython": summary.cpython_errors,
+            "molt_runtime": summary.molt_run_errors,
+            "timeout": summary.timeouts,
+        },
+        "exit_code": exit_code,
+    }
+
+
+def classified_fuzz_receipt(summary: FuzzSummary, mode: str) -> dict[str, object]:
+    """Produce one counted, fail-closed receipt shape for every fuzz mode."""
+    if mode == "safe":
+        return safe_fuzz_receipt(summary)
+    if mode == "reject":
+        passed = summary.reject_pass
+        failed = summary.reject_fail
+        errors = summary.timeouts
+    elif mode == "compile-only":
+        passed = summary.compile_only_ok
+        failed = summary.compile_only_crash
+        errors = summary.timeouts + summary.generation_errors
+    else:
+        raise ValueError(f"unknown fuzz mode: {mode}")
+    if passed + failed + errors != summary.total:
+        raise ValueError(
+            f"{mode} fuzz accounting mismatch: "
+            f"classified={passed + failed + errors} selected={summary.total}"
+        )
+    exit_code = fail_closed_proof_exit_code(
+        executed=passed + failed,
+        failed=failed,
+        errors=errors,
+    )
+    return {
+        "schema": "molt.fuzz-proof.v2",
+        "mode": mode,
+        "status": "success" if exit_code == 0 else "failure",
+        "selected": summary.total,
+        "executed": passed + failed,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "timeouts": summary.timeouts,
+        "generation_errors": summary.generation_errors,
+        "exit_code": exit_code,
+    }
+
+
+def _write_json_receipt(path: str | None, payload: dict[str, object]) -> None:
+    if path is None:
+        return
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _print_summary(summary: FuzzSummary, mode: str) -> None:
@@ -105,6 +208,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument(
+        "--json-out",
+        metavar="FILE",
+        help="Write the counted campaign receipt to FILE",
+    )
+    parser.add_argument(
         "--generate-only",
         action="store_true",
         help="Only generate programs to --output-dir, do not run differential tests.",
@@ -126,8 +234,28 @@ def main() -> int:
     if args.generate_only:
         if output_dir is None:
             output_dir = Path("/tmp/fuzz_molt")
-        run_generate_only(count=args.count, seed=args.seed, output_dir=output_dir)
-        return 0
+        generated = run_generate_only(
+            count=args.count, seed=args.seed, output_dir=output_dir
+        )
+        errors = args.count - generated
+        exit_code = fail_closed_proof_exit_code(
+            executed=generated, failed=0, errors=errors
+        )
+        _write_json_receipt(
+            args.json_out,
+            {
+                "schema": "molt.fuzz-proof.v2",
+                "mode": "generate-only",
+                "status": "success" if exit_code == 0 else "failure",
+                "selected": args.count,
+                "executed": generated,
+                "passed": generated,
+                "failed": 0,
+                "errors": errors,
+                "exit_code": exit_code,
+            },
+        )
+        return exit_code
 
     if args.mode == "safe":
         summary = run_safe_fuzzer(
@@ -170,9 +298,9 @@ def main() -> int:
                         min_path.write_text(shrunk.source)
                         _log(f"    -> {min_path}")
 
-        if summary.mismatches > 0 or summary.molt_run_errors > 0:
-            return 1
-        return 0
+        receipt = classified_fuzz_receipt(summary, "safe")
+        _write_json_receipt(args.json_out, receipt)
+        return int(receipt["exit_code"])
 
     elif args.mode == "reject":
         summary = run_reject_fuzzer(
@@ -184,9 +312,9 @@ def main() -> int:
             verbose=args.verbose,
         )
         _print_summary(summary, "reject")
-        if summary.reject_fail > 0:
-            return 1
-        return 0
+        receipt = classified_fuzz_receipt(summary, "reject")
+        _write_json_receipt(args.json_out, receipt)
+        return int(receipt["exit_code"])
 
     elif args.mode == "compile-only":
         fuzzer = CompileOnlyFuzzer()
@@ -199,8 +327,8 @@ def main() -> int:
             output_dir=output_dir,
         )
         _print_summary(summary, "compile-only")
-        if summary.compile_only_crash > 0:
-            return 1
-        return 0
+        receipt = classified_fuzz_receipt(summary, "compile-only")
+        _write_json_receipt(args.json_out, receipt)
+        return int(receipt["exit_code"])
 
     return 0

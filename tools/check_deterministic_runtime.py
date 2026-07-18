@@ -17,9 +17,12 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.check_reproducible_build import resolve_corpus  # noqa: E402
+from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
 
 def _extract_binary(build_json: dict) -> str | None:
@@ -44,15 +49,43 @@ def _extract_binary(build_json: dict) -> str | None:
     return None
 
 
-def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_program(
+    source: str,
+    profile: str = "dev",
+    *,
+    deterministic: bool = True,
+    cache_dir: str | None = None,
+    cwd: str | Path | None = None,
+    hash_seed: int = 0,
+) -> tuple[str | None, str, dict[str, object] | None]:
     """Build a Molt program. Returns (binary_path, error_msg).
 
     Returns (None, error) on failure instead of sys.exit().
     """
     env = os.environ.copy()
-    env.setdefault("PYTHONPATH", "src")
-    env["PYTHONHASHSEED"] = "0"
-    env["MOLT_DETERMINISTIC"] = "1"
+    env["PYTHONPATH"] = str(ROOT / "src")
+    env["PYTHONHASHSEED"] = str(hash_seed)
+    if deterministic:
+        env["MOLT_DETERMINISTIC"] = "1"
+    else:
+        env.pop("MOLT_DETERMINISTIC", None)
+    if cache_dir is not None:
+        env["MOLT_CACHE"] = cache_dir
+    if cwd is not None:
+        root = Path(cwd)
+        env["MOLT_EXT_ROOT"] = str(root / "artifacts")
+        env["MOLT_TARGET_ROOT"] = str(root / "target-root")
+        env["CARGO_TARGET_DIR"] = str(root / "cargo-target")
+        env["MOLT_BACKEND_DAEMON"] = "0"
+        env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = str(root / "daemon-sockets")
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     cmd = [
@@ -62,8 +95,8 @@ def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
         "build",
         "--profile",
         profile,
-        "--deterministic",
         "--json",
+        *(["--deterministic"] if deterministic else []),
         source,
     ]
     try:
@@ -73,14 +106,19 @@ def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
             capture_output=True,
             text=True,
             env=env,
+            cwd=cwd,
             timeout=120,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return None, "build timed out"
+        return None, "build timed out", None
 
     if result.returncode != 0:
-        return None, f"build failed (exit {result.returncode}): {result.stderr[:1000]}"
+        return (
+            None,
+            f"build failed (exit {result.returncode}): {result.stderr[:1000]}",
+            None,
+        )
 
     stdout = result.stdout.strip()
     json_str = None
@@ -94,29 +132,44 @@ def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
         try:
             build_info = json.loads(stdout)
         except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}"
+            return None, f"invalid build JSON: {e}", None
     else:
         try:
             build_info = json.loads(json_str)
         except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}"
+            return None, f"invalid build JSON: {e}", None
 
     binary = _extract_binary(build_info)
     if binary is None:
-        return None, f"no binary in build output (keys: {list(build_info.keys())})"
-    if not Path(binary).exists():
-        return None, f"binary not found: {binary}"
+        return (
+            None,
+            f"no binary in build output (keys: {list(build_info.keys())})",
+            build_info,
+        )
+    binary_path = Path(binary)
+    if not binary_path.is_absolute() and cwd is not None:
+        binary_path = Path(cwd) / binary_path
+    if not binary_path.exists():
+        return None, f"binary not found: {binary}", build_info
 
-    return binary, ""
+    return str(binary_path), "", build_info
 
 
 def run_binary(
-    binary: str, run_index: int, timeout: int = 60
-) -> tuple[str, str, int | None]:
+    binary: str,
+    run_index: int,
+    timeout: int = 60,
+    *,
+    deterministic: bool = True,
+    cwd: str | Path | None = None,
+) -> tuple[bytes, bytes, int | None]:
     """Run a binary. Returns (stdout, stderr, returncode). returncode=None on timeout."""
     env = os.environ.copy()
-    env["MOLT_DETERMINISTIC"] = "1"
-    env["PYTHONHASHSEED"] = "0"
+    env["PYTHONHASHSEED"] = str(run_index)
+    if deterministic:
+        env["MOLT_DETERMINISTIC"] = "1"
+    else:
+        env.pop("MOLT_DETERMINISTIC", None)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     try:
@@ -124,13 +177,14 @@ def run_binary(
             [binary],
             prefix="MOLT_TEST_SUITE",
             capture_output=True,
-            text=True,
+            text=False,
             env=env,
+            cwd=cwd,
             timeout=timeout,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return "", "", None
+        return b"", b"", None
 
     return result.stdout, result.stderr, result.returncode
 
@@ -141,6 +195,7 @@ def check_determinism(
     profile: str,
     timeout: int = 60,
     verbose: bool = False,
+    deterministic_mode: bool = True,
 ) -> dict:
     """Check determinism for a single source file. Returns result dict."""
     result = {
@@ -148,54 +203,115 @@ def check_determinism(
         "runs": runs,
         "deterministic": False,
         "status": "unknown",
+        "mode": "deterministic" if deterministic_mode else "default",
+        "profile": profile,
+        "command": [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--profile",
+            profile,
+            *(["--deterministic"] if deterministic_mode else []),
+            "--json",
+            "<relocated-source>",
+        ],
+        "toolchain": {"python": sys.version},
     }
+
+    if runs < 2:
+        result["status"] = "error"
+        result["error"] = "runs must be at least 2"
+        return result
 
     if not Path(source).exists():
         result["status"] = "error"
         result["error"] = "source file not found"
         return result
 
-    if verbose:
-        print(f"Building {source} with --profile {profile} --deterministic")
+    source_path = Path(source).resolve()
+    outputs: list[tuple[bytes, bytes, int | None]] = []
+    observations: list[dict[str, object]] = []
+    for i in range(runs):
+        with tempfile.TemporaryDirectory(prefix=f"runtime_repeat_{i}_") as run_root:
+            relocated_source = Path(run_root) / source_path.name
+            shutil.copyfile(source_path, relocated_source)
+            cache = Path(run_root) / "cache"
+            binary, error, build_receipt = build_program(
+                str(relocated_source),
+                profile,
+                deterministic=deterministic_mode,
+                cache_dir=str(cache),
+                cwd=run_root,
+                hash_seed=0,
+            )
+            if binary is None:
+                result["status"] = "build_error"
+                result["error"] = f"observation {i + 1}: {error}"
+                return result
+            binary_path = Path(binary)
+            if not binary_path.is_absolute():
+                binary_path = Path(run_root) / binary_path
+            binary_hash = _sha256_file(binary_path)
+            stdout, stderr, rc = run_binary(
+                str(binary_path),
+                i + 1,
+                timeout,
+                deterministic=deterministic_mode,
+                cwd=run_root,
+            )
+            outputs.append((stdout, stderr, rc))
+            digest = hashlib.sha256()
+            digest.update(len(stdout).to_bytes(8, "big"))
+            digest.update(stdout)
+            digest.update(len(stderr).to_bytes(8, "big"))
+            digest.update(stderr)
+            digest.update((-1 if rc is None else rc).to_bytes(8, "big", signed=True))
+            observations.append(
+                {
+                    "index": i + 1,
+                    "logical_cwd": f"isolated-{i + 1}",
+                    "source": source_path.name,
+                    "binary_sha256": binary_hash,
+                    "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+                    "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+                    "returncode": rc,
+                    "observable_sha256": digest.hexdigest(),
+                    "environment": {
+                        "PYTHONHASHSEED": "0",
+                        "MOLT_DETERMINISTIC": "1" if deterministic_mode else None,
+                        "isolated_cache": True,
+                        "isolated_artifact_root": True,
+                        "isolated_target_root": True,
+                        "backend_daemon": "disabled",
+                    },
+                    "build_receipt": build_receipt,
+                }
+            )
+            if verbose:
+                print(
+                    f"  Observation {i + 1}: {digest.hexdigest()[:16]} "
+                    f"(stdout={len(stdout)}, stderr={len(stderr)}) rc={rc}"
+                )
 
-    binary, err = build_program(source, profile)
-    if binary is None:
-        result["status"] = "build_error"
-        result["error"] = err
-        if verbose:
-            print(f"  BUILD ERROR: {err[:200]}", file=sys.stderr)
+    result["observations"] = observations
+    if any(rc is None for _, _, rc in outputs):
+        result["status"] = "timeout"
+        result["error"] = "one or more runtime observations timed out"
+        return result
+    if any(rc != 0 for _, _, rc in outputs):
+        result["status"] = "run_error"
+        result["error"] = "one or more runtime observations returned non-zero"
         return result
 
-    result["binary"] = binary
-    result["binary_hash"] = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
-
-    if verbose:
-        print(f"Binary: {binary}  (SHA256: {result['binary_hash'][:16]}...)")
-
-    outputs: list[tuple[str, str, int | None]] = []
-    for i in range(runs):
-        stdout, stderr, rc = run_binary(binary, i + 1, timeout)
-        outputs.append((stdout, stderr, rc))
-        h = hashlib.sha256(stdout.encode()).hexdigest()[:16]
-        if verbose:
-            print(f"  Run {i + 1}: stdout hash={h} ({len(stdout)} chars) rc={rc}")
-
-        if rc is None:
-            result["status"] = "timeout"
-            result["error"] = f"run {i + 1} timed out"
-            return result
-
-        if rc != 0:
-            result["status"] = "run_error"
-            result["error"] = f"run {i + 1} exited with rc={rc}: {stderr[:500]}"
-            return result
-
-    ref_stdout, ref_stderr, _ = outputs[0]
+    reference = outputs[0]
     all_match = True
     diff_details = []
 
-    for i, (stdout, stderr, _) in enumerate(outputs[1:], 2):
-        if stdout != ref_stdout:
+    for i, observable in enumerate(outputs[1:], 2):
+        stdout, stderr, rc = observable
+        ref_stdout, ref_stderr, ref_rc = reference
+        if observable != reference:
             all_match = False
             lines_ref = ref_stdout.splitlines()
             lines_cur = stdout.splitlines()
@@ -210,21 +326,19 @@ def check_determinism(
                 {
                     "run": i,
                     "first_diff_line": first_diff_line,
-                    "ref_line": lines_ref[first_diff_line - 1][:200]
-                    if first_diff_line and first_diff_line <= len(lines_ref)
-                    else None,
-                    "cur_line": lines_cur[first_diff_line - 1][:200]
-                    if first_diff_line and first_diff_line <= len(lines_cur)
-                    else None,
+                    "stdout_changed": stdout != ref_stdout,
+                    "stderr_changed": stderr != ref_stderr,
+                    "returncode": rc,
+                    "reference_returncode": ref_rc,
                 }
             )
 
-        if stderr != ref_stderr and verbose:
-            print(f"\n  WARNING: Run {i} stderr differs from run 1 (non-fatal)")
-
     result["deterministic"] = all_match
     result["status"] = "pass" if all_match else "fail"
-    result["stdout_hash"] = hashlib.sha256(ref_stdout.encode()).hexdigest()
+    result["observable_hash"] = observations[0]["observable_sha256"]
+    result["stdout_hash"] = hashlib.sha256(reference[0]).hexdigest()
+    result["stderr_hash"] = hashlib.sha256(reference[1]).hexdigest()
+    result["returncode"] = reference[2]
     if diff_details:
         result["diffs"] = diff_details
 
@@ -247,6 +361,11 @@ def main() -> int:
         help="Test multiple source files for determinism",
     )
     parser.add_argument(
+        "--corpus",
+        choices=("smoke", "full"),
+        help="Repository-owned corpus from config/reproducibility_corpus.toml",
+    )
+    parser.add_argument(
         "--runs",
         type=int,
         default=3,
@@ -256,6 +375,12 @@ def main() -> int:
         "--build-profile",
         default="dev",
         help="Molt build profile (default: dev)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("both", "default", "deterministic"),
+        default="both",
+        help="Runtime contract cells to prove (default: both)",
     )
     parser.add_argument(
         "--timeout",
@@ -274,88 +399,78 @@ def main() -> int:
         help="Write JSON results to FILE (for CI integration)",
     )
     args = parser.parse_args()
+    if args.runs < 2:
+        parser.error("--runs must be at least 2")
 
-    # Batch mode
-    if args.batch:
-        t0 = time.monotonic()
-        results = []
-        passed = 0
-        failed = 0
-        errors = 0
+    selected_modes = sum(value is not None for value in (args.batch, args.corpus, args.source))
+    if selected_modes > 1:
+        parser.error("choose exactly one source, --batch, or --corpus")
+    sources = (
+        args.batch
+        or (resolve_corpus(args.corpus) if args.corpus else None)
+        or ([args.source] if args.source else [])
+    )
+    if not sources:
+        parser.error("Either provide a source file or use --batch")
+    modes = (
+        [False, True]
+        if args.mode == "both"
+        else [args.mode == "deterministic"]
+    )
+    tasks = [(source, mode) for source in sources for mode in modes]
+    started = time.monotonic()
 
-        for source in args.batch:
-            r = check_determinism(
-                source,
-                args.runs,
-                args.build_profile,
-                args.timeout,
-                args.verbose,
-            )
-            results.append(r)
-
-            if r["status"] == "pass":
-                passed += 1
-                print(f"  PASS  {source}  (stdout hash: {r['stdout_hash'][:16]})")
-            elif r["status"] == "fail":
-                failed += 1
-                print(f"  FAIL  {source}")
-                for d in r.get("diffs", []):
-                    print(
-                        f"        run {d['run']} differs at line {d['first_diff_line']}"
-                    )
-            else:
-                errors += 1
-                print(f"  ERROR {source}: {r.get('error', 'unknown')[:100]}")
-
-        elapsed = time.monotonic() - t0
-        total = passed + failed + errors
-        print(
-            f"\nDeterminism sweep: {total} files | {passed} pass | {failed} fail | {errors} error  ({elapsed:.1f}s)"
+    def run_cell(task: tuple[str, bool]) -> dict:
+        source, deterministic_mode = task
+        return check_determinism(
+            source,
+            args.runs,
+            args.build_profile,
+            args.timeout,
+            args.verbose,
+            deterministic_mode,
         )
 
-        if args.json_out:
-            out = {
-                "passed": passed,
-                "failed": failed,
-                "errors": errors,
-                "elapsed_s": round(elapsed, 1),
-                "results": results,
-            }
-            Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.json_out).write_text(json.dumps(out, indent=2) + "\n")
-            print(f"JSON report written to {args.json_out}")
-
-        return 1 if failed > 0 else 0
-
-    # Single source mode
-    if not args.source:
-        parser.error("Either provide a source file or use --batch")
-
-    r = check_determinism(
-        args.source,
-        args.runs,
-        args.build_profile,
-        args.timeout,
-        verbose=True,
+    with ThreadPoolExecutor(max_workers=min(2, len(tasks))) as executor:
+        results = list(executor.map(run_cell, tasks))
+    passed = sum(result["status"] == "pass" for result in results)
+    failed = sum(result["status"] == "fail" for result in results)
+    errors = len(results) - passed - failed
+    for result in results:
+        label = f"{result['source']} [{result['mode']}]"
+        if result["status"] == "pass":
+            print(f"  PASS  {label} ({str(result['observable_hash'])[:16]})")
+        elif result["status"] == "fail":
+            print(f"  FAIL  {label}")
+        else:
+            print(f"  ERROR {label}: {result.get('error', 'unknown')}")
+    payload = {
+        "schema": "molt.deterministic-runtime-proof.v2",
+        "status": (
+            "success" if passed > 0 and failed == 0 and errors == 0 else "failure"
+        ),
+        "selected": len(tasks),
+        "executed": passed + failed,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "runs_per_cell": args.runs,
+        "profile": args.build_profile,
+        "toolchain": {"python": sys.version},
+        "elapsed_s": round(time.monotonic() - started, 3),
+        "results": results,
+    }
+    if args.json_out:
+        receipt = Path(args.json_out)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    return fail_closed_proof_exit_code(
+        executed=passed + failed,
+        failed=failed,
+        errors=errors,
     )
-
-    if r["status"] == "pass":
-        print(f"\nDETERMINISTIC: All {args.runs} runs produced identical stdout.")
-        print(f"  stdout hash: {r['stdout_hash']}")
-        print(f"  binary hash: {r['binary_hash']}")
-        return 0
-    elif r["status"] == "fail":
-        print(f"\nFAILED: Nondeterministic output detected across {args.runs} runs.")
-        for d in r.get("diffs", []):
-            print(f"  Run {d['run']} first diff at line {d['first_diff_line']}:")
-            if d.get("ref_line"):
-                print(f"    Run 1: {d['ref_line']}")
-            if d.get("cur_line"):
-                print(f"    Run {d['run']}: {d['cur_line']}")
-        return 1
-    else:
-        print(f"\nERROR: {r.get('error', 'unknown')}", file=sys.stderr)
-        return 2
 
 
 if __name__ == "__main__":

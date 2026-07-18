@@ -43,7 +43,7 @@ def parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
         if stripped.startswith("deriving"):
             break
         if re.match(
-            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section)\b",
+            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section|mutual|private)\b",
             stripped,
         ):
             break
@@ -51,6 +51,26 @@ def parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
             name = normalize_lean_variant_name(variant_match.group(1))
             if name not in variants:
                 variants.append(name)
+    return variants
+
+
+def parse_rust_enum_variants(text: str, enum_name: str) -> list[str]:
+    """Parse top-level variants from a Rust enum declaration."""
+    match = re.search(rf"(?:pub\s+)?enum\s+{re.escape(enum_name)}\s*\{{", text)
+    if not match:
+        return []
+    variants: list[str] = []
+    depth = 1
+    for line in text[match.end() :].splitlines():
+        depth += line.count("{") - line.count("}")
+        if depth <= 0:
+            break
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "#")):
+            continue
+        variant = re.match(r"([A-Z][A-Za-z0-9_]*)\b", stripped)
+        if variant:
+            variants.append(variant.group(1))
     return variants
 
 

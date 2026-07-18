@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 41 |
+| Hashed executable authority inputs | 1 | 44 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -43,7 +43,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | 23 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | 25 |
 
 ## Matrix cells
 
@@ -76,16 +76,16 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | Toolchain | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---:|
 | `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
-| `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 3 |
+| `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
 | `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 4 |
+| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 2 |
 | `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 2 |
 | `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
 | `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 4 |
+| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 3 |
 | `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
 | `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
@@ -99,6 +99,9 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
 | `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | 600 s | `python-tests` | 0 |
 | `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
+| `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | 120 s | `python-tests` | 0 |
+| `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | 120 s | `python-tests` | 0 |
+| `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 120 s | `repository-policy` | 0 |
 | `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
@@ -204,7 +207,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `table-drift` | 8 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 16 | 2 | no |
+| `ci-wiring` | 37 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

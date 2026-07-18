@@ -20,26 +20,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup project Python and Lean cache
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
+          uv: "false"
+          cache-uv: "false"
+          cache-lean: "true"
 
       - name: Setup exact Lean toolchain
         uses: ./.github/actions/setup-lean
-
-      - name: Cache Lean build
-        uses: actions/cache@v5
-        with:
-          path: |
-            formal/lean/.lake
-            formal/lean/lake-packages
-          key: lean-${{ runner.os }}-${{ hashFiles('formal/lean/lean-toolchain', 'formal/lean/lakefile.lean') }}
-          restore-keys: |
-            lean-${{ runner.os }}-
 
       - name: Build proofs
         run: python3 tools/proof_plan.py --run-command formal.lean.build --receipt proof-receipts/formal-lean.json
@@ -47,7 +40,7 @@ jobs:
 
       - name: Upload Lean proof receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-lean
           path: proof-receipts/formal-lean.json
@@ -58,7 +51,7 @@ jobs:
 
       - name: Upload Lean sorry receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-lean-sorry
           path: proof-receipts/formal-lean-sorry.json
@@ -69,18 +62,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup project Python and Node
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - uses: actions/setup-node@v6
-        with:
+          uv: "false"
+          cache-uv: "false"
           node-version: "24.16.0"
-          check-latest: true
 
       - name: Install Quint
         run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"
@@ -104,7 +95,7 @@ jobs:
 
       - name: Upload Quint proof receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-quint
           path: proof-receipts/formal-quint.json
@@ -115,21 +106,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup project Python
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
+          uv: "false"
+          cache-uv: "false"
 
-      - name: Check NaN-box and Luau builtin correspondence
+      - name: Check comprehensive source correspondence
         run: python3 tools/proof_plan.py --run-command formal.correspondence --receipt proof-receipts/formal-correspondence.json
 
       - name: Upload correspondence receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-correspondence
-          path: proof-receipts/formal-correspondence.json
+          path: |
+            proof-receipts/formal-correspondence.json
+            proof-receipts/evidence/formal-correspondence.json
           if-no-files-found: error

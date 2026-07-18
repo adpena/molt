@@ -122,7 +122,7 @@ def builtinMapping : List (String × String) :=
     ("min", "math.min"),
     ("max", "math.max"),
     ("type", "molt_type"),
-    ("list", "molt_list"),
+    ("list", "molt_pack_list"),
     ("dict", "molt_dict"),
     ("enumerate", "molt_enumerate"),
     ("zip", "molt_zip"),
@@ -132,7 +132,7 @@ def builtinMapping : List (String × String) :=
     ("any", "molt_any"),
     ("all", "molt_all"),
     ("isinstance", "molt_isinstance"),
-    ("list_append", "molt_list_append"),
+    ("list_append", "rawset"),
     ("dict_get", "molt_dict_get"),
     ("dict_set", "molt_dict_set") ]
 
