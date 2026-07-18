@@ -44,7 +44,8 @@ def test_ci_push_path_is_cheap_only() -> None:
     rustfmt_setup = docs_gate.index("uses: dtolnay/rust-toolchain@1.96.1")
     repository_executor = docs_gate.index("Execute repository policy partitions")
     assert rustfmt_setup < repository_executor
-    assert "components: rustfmt" in docs_gate
+    assert "components: rustfmt, clippy" in docs_gate
+    assert "targets: wasm32-wasip1" in docs_gate
 
     assert "concurrency:" in ci_text
     assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text

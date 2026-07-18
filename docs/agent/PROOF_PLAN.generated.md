@@ -55,7 +55,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
 | `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 5 |
 | `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 2 |
-| `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 2 |
+| `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
 | `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |

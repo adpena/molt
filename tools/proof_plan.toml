@@ -159,7 +159,8 @@ version_pattern = '^rustfmt 1\.9\.0-stable\b'
 setup_value = "1.9.0"
 setup_evidence = [
   "rust-toolchain.toml::components = [\"rustfmt\", \"clippy\"]",
-  ".github/workflows/ci.yml::components: rustfmt",
+  ".github/workflows/ci.yml::components: rustfmt, clippy",
+  ".github/workflows/ci.yml::targets: wasm32-wasip1",
 ]
 
 [[toolchain_policy]]

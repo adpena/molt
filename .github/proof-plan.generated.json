@@ -34,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "c51417e21bf8898490666bb28f71014c836b38bf0704d85a270bf50f361831ae",
+  "authority_sha256": "e75c507806e87a56b3c650aa40fa9ddaa8d9a82676286523f4bd31abf65800dc",
   "ci_families": [
     {
       "dependencies": [],
@@ -3625,7 +3625,8 @@
       "name": "rustfmt",
       "setup_evidence": [
         "rust-toolchain.toml::components = [\"rustfmt\", \"clippy\"]",
-        ".github/workflows/ci.yml::components: rustfmt"
+        ".github/workflows/ci.yml::components: rustfmt, clippy",
+        ".github/workflows/ci.yml::targets: wasm32-wasip1"
       ],
       "setup_value": "1.9.0",
       "version_args": [
