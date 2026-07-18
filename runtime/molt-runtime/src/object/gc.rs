@@ -1543,16 +1543,25 @@ fn scratch_push(storage: &mut Vec<usize>, value: usize) {
     storage.push(value);
 }
 
+struct GcDeductionWorkspace<'a> {
+    candidates: &'a [GcCandidate],
+    index: &'a HashMap<u64, usize>,
+    refs: &'a mut [i64],
+    marks: &'a mut [u8],
+    queue: &'a mut Vec<usize>,
+}
+
 unsafe fn deduce_subset(
     py: &PyToken<'_>,
-    candidates: &[GcCandidate],
-    index: &HashMap<u64, usize>,
-    refs: &mut [i64],
-    marks: &mut [u8],
-    queue: &mut Vec<usize>,
+    workspace: &mut GcDeductionWorkspace<'_>,
     subset: Option<&[usize]>,
     output: &mut Vec<usize>,
 ) {
+    let candidates = workspace.candidates;
+    let index = workspace.index;
+    let refs = &mut *workspace.refs;
+    let marks = &mut *workspace.marks;
+    let queue = &mut *workspace.queue;
     marks.fill(0);
     queue.clear();
     output.clear();
@@ -1650,18 +1659,14 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) {
         first_unreachable_ptrs,
         ..
     } = scratch;
-    unsafe {
-        deduce_subset(
-            py,
-            candidates,
-            index,
-            refs,
-            marks,
-            queue,
-            None,
-            first_unreachable,
-        )
+    let mut workspace = GcDeductionWorkspace {
+        candidates,
+        index,
+        refs,
+        marks,
+        queue,
     };
+    unsafe { deduce_subset(py, &mut workspace, None, first_unreachable) };
     first_unreachable_ptrs.clear();
     for &candidate_index in first_unreachable.iter() {
         if first_unreachable_ptrs.len() >= first_unreachable_ptrs.capacity() {
@@ -1683,14 +1688,17 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
         final_unreachable,
         ..
     } = scratch;
+    let mut workspace = GcDeductionWorkspace {
+        candidates,
+        index,
+        refs,
+        marks,
+        queue,
+    };
     unsafe {
         deduce_subset(
             py,
-            candidates,
-            index,
-            refs,
-            marks,
-            queue,
+            &mut workspace,
             Some(first_unreachable.as_slice()),
             final_unreachable,
         )

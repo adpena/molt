@@ -2995,7 +2995,13 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
 
 /// Enumerate the Python edges owned by a typed itertools payload without
 /// consulting global class caches.
-pub fn itertools_visit_owned_edges(shape_id: u16, ptr: *mut u8, mut visit: impl FnMut(u64)) {
+///
+/// # Safety
+///
+/// `shape_id` must identify the itertools layout allocated at `ptr`. `ptr`
+/// must be non-null, properly aligned, and live for the entire call while the
+/// caller holds the GIL. `visit` must not mutate or release that allocation.
+pub unsafe fn itertools_visit_owned_edges(shape_id: u16, ptr: *mut u8, mut visit: impl FnMut(u64)) {
     let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
     unsafe {
         match shape {
@@ -3103,7 +3109,18 @@ pub fn itertools_visit_owned_edges(shape_id: u16, ptr: *mut u8, mut visit: impl 
 
 /// Publish an empty typed payload and move every mutable cycle edge to the
 /// caller's pre-reserved detach transaction. No Python destructor runs here.
-pub fn itertools_detach_owned_edges(shape_id: u16, ptr: *mut u8, mut detach: impl FnMut(u64)) {
+///
+/// # Safety
+///
+/// `shape_id` must identify the itertools layout allocated at `ptr`. `ptr`
+/// must be non-null, properly aligned, live, and exclusively owned by the
+/// lifecycle transaction while the caller holds the GIL. `detach` must not
+/// invalidate the allocation before this function returns.
+pub unsafe fn itertools_detach_owned_edges(
+    shape_id: u16,
+    ptr: *mut u8,
+    mut detach: impl FnMut(u64),
+) {
     let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
     let none = MoltObject::none().bits();
     unsafe {
@@ -3273,7 +3290,19 @@ unsafe fn drop_detached_box<T>(pointer: *mut ()) {
     }
 }
 
-pub fn itertools_detach_typed_resources(shape_id: u16, ptr: *mut u8) -> DetachedItertoolsResource {
+/// Detach the non-Python resource owned by a typed itertools payload.
+///
+/// # Safety
+///
+/// `shape_id` must identify the itertools layout allocated at `ptr`. `ptr`
+/// must be non-null, properly aligned, live, and exclusively owned by the
+/// lifecycle transaction while the caller holds the GIL. All Python edges
+/// must already be detached. The returned resource must be released exactly
+/// once with [`itertools_release_typed_resources`].
+pub unsafe fn itertools_detach_typed_resources(
+    shape_id: u16,
+    ptr: *mut u8,
+) -> DetachedItertoolsResource {
     let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
     unsafe {
         match shape {

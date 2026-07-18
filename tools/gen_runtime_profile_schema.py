@@ -210,11 +210,11 @@ def render_rust(schema: dict[str, Any]) -> str:
     epoch_values = {
         "start": "start",
         "end": "end",
-        "current_rss_delta_bytes": "current_rss_delta_bytes",
+        "current_rss_delta_bytes": "serde_json::Value::from(current_rss_delta_bytes)",
     }
     for field in epoch["memory_fields"]:
         lines.append(
-            f"    memory.insert({_rust_string(field)}.to_owned(), serde_json::Value::from({epoch_values[field]}));\n"
+            f"    memory.insert({_rust_string(field)}.to_owned(), {epoch_values[field]});\n"
         )
     lines.extend(
         [

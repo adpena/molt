@@ -1530,17 +1530,15 @@ pub extern "C" fn molt_gc_get_stats() -> u64 {
         // consistency contract for get_stats().
         let stats = crate::runtime_state(_py).gc.generation_stats();
         let mut dicts = [0u64; crate::object::gc::NUM_GENERATIONS];
-        let mut initialized = 0usize;
         for (index, generation) in stats.into_iter().enumerate() {
             let dict_ptr = gc_stats_dict(_py, generation);
             if dict_ptr.is_null() {
-                for bits in &dicts[..initialized] {
+                for bits in &dicts[..index] {
                     dec_ref_bits(_py, *bits);
                 }
                 return MoltObject::none().bits();
             }
             dicts[index] = MoltObject::from_ptr(dict_ptr).bits();
-            initialized += 1;
         }
         let list_ptr = alloc_list(_py, &dicts);
         for bits in dicts {

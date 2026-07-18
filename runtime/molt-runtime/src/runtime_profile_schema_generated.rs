@@ -498,8 +498,8 @@ pub(crate) fn runtime_profile_epoch_memory_payload(
     current_rss_delta_bytes: Option<i64>,
 ) -> serde_json::Value {
     let mut memory = serde_json::Map::new();
-    memory.insert("start".to_owned(), serde_json::Value::from(start));
-    memory.insert("end".to_owned(), serde_json::Value::from(end));
+    memory.insert("start".to_owned(), start);
+    memory.insert("end".to_owned(), end);
     memory.insert(
         "current_rss_delta_bytes".to_owned(),
         serde_json::Value::from(current_rss_delta_bytes),

@@ -20,6 +20,12 @@ pub(crate) struct DetachedNativeHandle(*mut NativeHandlePayload);
 /// Safety contract for opaque Rust payloads admitted to `TYPE_ID_NATIVE_HANDLE`.
 /// Implementors must not own MoltObject/NaN-boxed reference edges. Such edges must
 /// use a traced heap kind instead; the native handle is intentionally GREEN.
+///
+/// # Safety
+///
+/// Implementors must contain no direct or indirect Molt-managed reference edges.
+/// They must also uphold the `Send + Sync + 'static` bounds for the entire time
+/// their type-erased payload is owned by the runtime.
 pub(crate) unsafe trait NativeHandleNoMoltEdges:
     sealed::Sealed + Send + Sync + 'static
 {
