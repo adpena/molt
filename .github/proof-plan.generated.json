@@ -1,6 +1,7 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    ".gitattributes",
     ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
     ".github/workflows/ci.yml",
@@ -19,6 +20,7 @@
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
     "tools/check_generator_manifest.py",
+    "tools/ff_land.py",
     "tools/proof_plan.py",
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
@@ -38,7 +40,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "4a063f7b9facee1499f8b1b49aa81b0627fa56ebc1f55007a0c6d4d73139b9c7",
+  "authority_sha256": "07340213f9325a227ad2511312a2feec408cab6e9a1e20d65d0919f901c570e7",
   "ci_families": [
     {
       "dependencies": [],

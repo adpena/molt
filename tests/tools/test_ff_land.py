@@ -88,6 +88,25 @@ def test_non_fast_forward_refused(work: Path, tmp_path: Path) -> None:
     assert _git(work, "rev-parse", "HEAD") != _git(work, "rev-parse", "origin/main")
 
 
+def test_stale_proof_plan_projection_is_refused_before_push(work: Path) -> None:
+    generator = work / "tools" / "gen_proof_plan.py"
+    generator.parent.mkdir()
+    generator.write_text(
+        "import sys\nprint('proof-plan projection stale: generated.json')\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    _init_commit(work, "b.txt")
+    before = _git(work, "rev-parse", "origin/main")
+
+    res = _run(work)
+
+    assert res.returncode == 4, res.stdout
+    assert "REFUSED (GENERATED DRIFT)" in res.stdout
+    assert "proof-plan projection stale" in res.stdout
+    _git(work, "fetch", "origin", "--quiet")
+    assert _git(work, "rev-parse", "origin/main") == before
+
+
 def test_dry_run_does_not_push(work: Path) -> None:
     _init_commit(work, "d.txt")
     before = _git(work, "rev-parse", "origin/main")

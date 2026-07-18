@@ -18,6 +18,8 @@ It fails CLOSED (never lands) when any of these hold, naming the reason:
   * there is nothing to land (HEAD has no commits ahead of the remote branch);
   * ``<remote>/<branch>`` is NOT an ancestor of HEAD -- i.e. it advanced under
     you and landing would require a non-fast-forward (rebase first).
+  * the canonical proof-plan projection is stale relative to its declared
+    authority inputs.
 
 Only a genuine, clean fast-forward is pushed. A fast-forward cannot trample the
 remote branch, so a successful land here is trample-safe by construction.
@@ -65,6 +67,25 @@ def _tracked_dirty(root: Path) -> list[str]:
             path = path.split(" -> ", 1)[1]
         dirty.append(path)
     return dirty
+
+
+def _proof_plan_fresh(root: Path) -> tuple[bool, str]:
+    """Run the repository's fast generated-proof authority check when present."""
+
+    generator = root / "tools" / "gen_proof_plan.py"
+    if not generator.is_file():
+        return True, ""
+    result = subprocess.run(
+        [sys.executable, str(generator), "--check"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -115,6 +136,18 @@ def main(argv: list[str] | None = None) -> int:
             for line in _out(root, "log", "--oneline", f"HEAD..{target}").splitlines()[:15]:
                 print(f"  ~ (theirs) {line}")
         return 1
+
+    proof_plan_fresh, proof_plan_output = _proof_plan_fresh(root)
+    if not proof_plan_fresh:
+        print(
+            "FF-LAND REFUSED (GENERATED DRIFT): proof-plan projection is stale; "
+            "run `python tools/gen_proof_plan.py`, commit both generated outputs, "
+            "and re-verify."
+        )
+        if proof_plan_output and not args.quiet:
+            for line in proof_plan_output.splitlines()[:20]:
+                print(f"  ! {line}")
+        return 4
 
     # Clean fast-forward: safe to land.
     if args.dry_run:
