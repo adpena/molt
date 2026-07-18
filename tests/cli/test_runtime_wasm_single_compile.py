@@ -21,6 +21,15 @@ import pytest
 
 import molt.cli.runtime_build as rb
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.models import (
+    _ExternalNativeAbiSymbol,
+    _ExternalNativeCapiSymbol,
+    _ExternalPackageNativeArtifactPlan,
+)
+from molt.cli.runtime_wasm_build_timings import (
+    _reset_runtime_wasm_build_timings,
+    _runtime_wasm_build_timings_snapshot,
+)
 
 
 _COMMON = dict(
@@ -69,6 +78,242 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     # Shared link flags carry the split-runtime import ABI.
     for flag in ("--import-memory", "--import-table", "--growable-table"):
         assert flag in shared.link_flags
+
+
+def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:
+    artifact = type(
+        "Artifact",
+        (),
+        {
+            "c_api_symbols": (
+                _ExternalNativeCapiSymbol(
+                    symbol="PyTuple_New",
+                    status="cpython_abi_link",
+                    primitive_class="cpython_abi",
+                    source="required_c_api_symbols",
+                ),
+                _ExternalNativeCapiSymbol(
+                    symbol="PyArray_NDIM",
+                    status="project_generated",
+                    primitive_class="project_generated",
+                    source="required_c_api_symbols",
+                ),
+            ),
+            "abi_symbols": (
+                _ExternalNativeAbiSymbol(
+                    symbol="PyExc_TypeError",
+                    status="external_link",
+                    primitive_class="molt_cpython_abi_link_import",
+                    source="undefined_symbols",
+                ),
+                _ExternalNativeAbiSymbol(
+                    symbol="memcpy",
+                    status="external_link",
+                    primitive_class="wasm_libc_link_import",
+                    source="undefined_symbols",
+                ),
+            ),
+        },
+    )()
+    plan = _ExternalPackageNativeArtifactPlan(artifacts=(artifact,))  # type: ignore[arg-type]
+
+    assert plan.runtime_export_symbols() == frozenset(
+        {"PyTuple_New", "PyExc_TypeError"}
+    )
+
+
+def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _compiler_root()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    common = {
+        **_COMMON,
+        "cargo_profile": "release-fast",
+        "stdlib_profile": "full",
+    }
+    early = rb._compute_runtime_wasm_build_spec(
+        root,
+        tmp_path / "early_reloc.wasm",
+        reloc=True,
+        **{**common, "required_exports": {"add"}},
+    )
+    final = rb._compute_runtime_wasm_build_spec(
+        root,
+        tmp_path / "final_reloc.wasm",
+        reloc=True,
+        **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
+    )
+    assert early.fingerprint is not None and final.fingerprint is not None
+    assert early.staticlib_fingerprint is not None
+    assert early.fingerprint["meta_digest"] != final.fingerprint["meta_digest"]
+    assert early.staticlib_fingerprint == final.staticlib_fingerprint
+
+    final = final._replace(target_root=target_root)
+    staticlib = rb._wasm_runtime_staticlib_path(target_root, final.profile_dir)
+    staticlib.parent.mkdir(parents=True, exist_ok=True)
+    staticlib.write_bytes(b"!<arch>\n")
+    state_root = target_root / ".molt_state"
+    staticlib_sidecar = rb._runtime_target_fingerprint_path(
+        state_root,
+        staticlib,
+        cargo_profile=final.cargo_profile,
+        target_label="wasm32-wasip1",
+    )
+    staticlib_sidecar.parent.mkdir(parents=True, exist_ok=True)
+    rb._write_runtime_fingerprint(
+        staticlib_sidecar,
+        early.staticlib_fingerprint,
+        artifact=staticlib,
+    )
+
+    linked: list[tuple[Path, str]] = []
+    monkeypatch.setattr(rb, "_compute_runtime_wasm_build_spec", lambda *a, **k: final)
+    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
+    monkeypatch.setattr(rb, "_hydrate_runtime_wasm_from_shared_cache", lambda **k: False)
+    monkeypatch.setattr(rb, "_build_reuse_compatible_enabled", lambda: False)
+    monkeypatch.setattr(
+        rb,
+        "_run_runtime_wasm_cargo_build",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("cross-export staticlib reuse must not invoke Cargo")
+        ),
+    )
+
+    def _relink(
+        *,
+        staticlib_path: Path,
+        output_path: Path,
+        json_output: bool,
+        link_timeout: float | None,
+        export_link_args: str,
+        long_double_required: bool,
+    ) -> bool:
+        del json_output, link_timeout, long_double_required
+        linked.append((staticlib_path, export_link_args))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\0asm\x01\0\0\0relinked")
+        return True
+
+    monkeypatch.setattr(rb, "_link_runtime_staticlib_to_reloc_wasm", _relink)
+    monkeypatch.setattr(
+        rb,
+        "_write_runtime_wasm_integrity_sidecar",
+        lambda _path, *, integrity_key: None,
+    )
+    output = tmp_path / "molt_runtime_reloc.wasm"
+    assert rb._ensure_runtime_wasm(
+        output,
+        reloc=True,
+        json_output=True,
+        cargo_profile="release-fast",
+        cargo_timeout=1.0,
+        project_root=root,
+        stdlib_profile="full",
+        required_exports={"add", "abc_abstractmethod_check"},
+    )
+    assert linked and linked[0][0] == staticlib
+    assert "--export-if-defined=molt_abc_abstractmethod_check" in linked[0][1]
+
+
+def test_cross_export_prepopulation_reports_one_cargo_compile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _compiler_root()
+    target_root = tmp_path / "target"
+    state_root = tmp_path / "state"
+    common = {
+        **_COMMON,
+        "cargo_profile": "release-fast",
+        "stdlib_profile": "full",
+    }
+
+    def _pair(label: str, required_exports: set[str]):
+        shared = rb._compute_runtime_wasm_build_spec(
+            root,
+            tmp_path / f"{label}_shared.wasm",
+            reloc=False,
+            **{**common, "required_exports": required_exports},
+        )
+        reloc = rb._compute_runtime_wasm_build_spec(
+            root,
+            tmp_path / f"{label}_reloc.wasm",
+            reloc=True,
+            **{**common, "required_exports": required_exports},
+        )
+        return (
+            shared._replace(target_root=target_root),
+            reloc._replace(target_root=target_root),
+        )
+
+    early_shared, early_reloc = _pair("early", {"add"})
+    final_shared, final_reloc = _pair(
+        "final", {"add", "abc_abstractmethod_check"}
+    )
+    assert early_shared.fingerprint == final_shared.fingerprint
+    assert early_reloc.fingerprint != final_reloc.fingerprint
+    assert early_reloc.staticlib_fingerprint == final_reloc.staticlib_fingerprint
+
+    profile_root = target_root / "wasm32-wasip1" / early_shared.profile_dir
+    cdylib = profile_root / "deps" / "molt_runtime-feedface.wasm"
+    staticlib = profile_root / "deps" / "libmolt_runtime-feedface.a"
+    cargo_calls: list[list[str]] = []
+
+    def _fake_build(**kwargs):  # noqa: ANN003
+        cmd = list(kwargs["cmd"])
+        cargo_calls.append(cmd)
+        cdylib.parent.mkdir(parents=True, exist_ok=True)
+        cdylib.write_bytes(b"\0asm\x01\0\0\0")
+        staticlib.write_bytes(b"!<arch>\n")
+        stdout = json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "package_id": "path+file:///repo/runtime/molt-runtime#0.0.1",
+                "target": {"name": "molt_runtime"},
+                "filenames": [str(cdylib), str(staticlib)],
+            }
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout, ""), cdylib
+
+    monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
+    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
+    monkeypatch.setattr(rb, "_inspect_wasm_binary", lambda _path: "valid")
+    monkeypatch.setattr(
+        rb, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+    )
+    monkeypatch.setattr(
+        rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: tmp_path
+    )
+
+    _reset_runtime_wasm_build_timings()
+    try:
+        assert rb._prepopulate_combined_runtime_wasm_target(
+            shared_spec=early_shared,
+            reloc_spec=early_reloc,
+            json_output=True,
+            cargo_timeout=None,
+            project_root=root,
+            simd_enabled=True,
+            freestanding=False,
+        )
+        assert rb._prepopulate_combined_runtime_wasm_target(
+            shared_spec=final_shared,
+            reloc_spec=final_reloc,
+            json_output=True,
+            cargo_timeout=None,
+            project_root=root,
+            simd_enabled=True,
+            freestanding=False,
+        )
+        snapshot = _runtime_wasm_build_timings_snapshot()
+        assert snapshot is not None
+        assert snapshot["cargo_compile_builds"] == 1
+        assert len(cargo_calls) == 1
+    finally:
+        _reset_runtime_wasm_build_timings()
 
 
 def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
@@ -292,10 +537,6 @@ def _run_app_ensure_routing(
         nno, "_collect_wasm_module_import_names", lambda *a, **k: {"molt_PyA"}
     )
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda *a, **k: None)
-    monkeypatch.setattr(
-        nno, "_staged_artifact_runtime_export_symbols", lambda *a, **k: set()
-    )
-
     output_wasm = tmp_path / "app_out.wasm"
     output_wasm.write_bytes(b"\0asm")
     runtime_reloc = tmp_path / "molt_runtime_reloc.wasm"
@@ -325,6 +566,7 @@ def _run_app_ensure_routing(
         runtime_cargo_profile="release",
         molt_root=tmp_path,
         split_runtime=True,
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
     )
     # Every configured scenario short-circuits before a successful build.
     assert err is not None

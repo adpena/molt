@@ -749,8 +749,9 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
         json_output: bool,
         link_timeout: float | None,
         export_link_args: str = "",
+        long_double_required: bool = False,
     ) -> bool:
-        del json_output, link_timeout, export_link_args
+        del json_output, link_timeout, export_link_args, long_double_required
         linked["staticlib_path"] = staticlib_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
@@ -841,8 +842,9 @@ def test_ensure_runtime_wasm_reloc_relinks_from_hashed_current_target_staticlib(
         json_output: bool,
         link_timeout: float | None,
         export_link_args: str = "",
+        long_double_required: bool = False,
     ) -> bool:
-        del json_output, link_timeout, export_link_args
+        del json_output, link_timeout, export_link_args, long_double_required
         linked["staticlib_path"] = staticlib_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
@@ -1060,8 +1062,9 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
         json_output: bool,
         link_timeout: float | None,
         export_link_args: str = "",
+        long_double_required: bool = False,
     ) -> bool:
-        del json_output, link_timeout, export_link_args
+        del json_output, link_timeout, export_link_args, long_double_required
         linked.append(staticlib_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(

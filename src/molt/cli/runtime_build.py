@@ -2380,6 +2380,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     target_root: Path
     stored_fingerprint: dict[str, Any] | None
     fingerprint: dict[str, Any] | None
+    staticlib_fingerprint: dict[str, Any] | None
 
 
 def _compute_runtime_wasm_build_spec(
@@ -2519,6 +2520,42 @@ def _compute_runtime_wasm_build_spec(
         runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
+    # Cargo's staticlib is a pre-link compile product.  Its bytes depend on the
+    # source/feature/codegen plan and on the exact CPython-ABI anchors emitted
+    # by build.rs, but NOT on reloc export flags or long-double archives that
+    # are consumed only by the later wasm-ld publication step.  Keying the
+    # target staticlib with the final reloc fingerprint made every change from
+    # the early native-object closure to the final app import subset look like
+    # a codegen miss and caused a second full Cargo compile.  Keep a distinct
+    # compile identity while the published reloc wasm retains the complete
+    # link identity above.
+    requested_function_anchors = wasm_cpython_abi_requested_export_names(
+        required_exports
+    )
+    requested_data_anchors = wasm_cpython_abi_requested_data_export_names(
+        required_exports
+    )
+    anchor_payload = json.dumps(
+        {
+            "functions": requested_function_anchors,
+            "data": requested_data_anchors,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    anchor_digest = hashlib.sha256(anchor_payload.encode("utf-8")).hexdigest()
+    staticlib_identity_rustflags = _append_rustflags_text(
+        cargo_rustflags,
+        f'--cfg molt_staticlib_anchor_plan="{anchor_digest}"',
+    )
+    staticlib_fingerprint = _runtime_fingerprint(
+        root,
+        cargo_profile=cargo_profile,
+        target_triple="wasm32-wasip1",
+        rustflags=staticlib_identity_rustflags,
+        runtime_features=fingerprint_features,
+        stored_fingerprint=None,
+    )
     return _RuntimeWasmBuildSpec(
         requested_cargo_profile=requested_cargo_profile,
         cargo_profile=cargo_profile,
@@ -2537,6 +2574,7 @@ def _compute_runtime_wasm_build_spec(
         target_root=target_root,
         stored_fingerprint=stored_fingerprint,
         fingerprint=fingerprint,
+        staticlib_fingerprint=staticlib_fingerprint,
     )
 
 
@@ -2617,6 +2655,7 @@ def _ensure_runtime_wasm(
         target_root,
         stored_fingerprint,
         fingerprint,
+        staticlib_fingerprint,
     ) = _compute_runtime_wasm_build_spec(
         root,
         runtime_wasm,
@@ -2632,6 +2671,13 @@ def _ensure_runtime_wasm(
     if fingerprint is None:
         if not json_output:
             print("Failed to compute runtime wasm fingerprint.", file=sys.stderr)
+        return False
+    if staticlib_fingerprint is None:
+        if not json_output:
+            print(
+                "Failed to compute runtime wasm staticlib fingerprint.",
+                file=sys.stderr,
+            )
         return False
     # FAIL LOUD for the witness/CPython-ABI tier: when this reloc runtime links
     # numpy/scipy long double, the long-double formatter + compiler-rt builtins
@@ -2694,6 +2740,48 @@ def _ensure_runtime_wasm(
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         target_label = "wasm32-wasip1"
         target_build_state_root = _build_state_root(root)
+        # The published artifact is the exact final-identity authority.  Prefer
+        # it before consulting Cargo target candidates: a target cdylib may
+        # share the compile identity while lacking the final export set, and
+        # must never overwrite an already-satisfied publication.
+        needs_rebuild = not _runtime_artifact_fingerprint_matches(
+            runtime_wasm,
+            fingerprint,
+            fingerprint_path,
+            require_artifact_digest=True,
+        )
+        if (
+            not needs_rebuild
+            and (
+                _is_valid_runtime_wasm_artifact(runtime_wasm)
+                if reloc
+                else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
+            )
+            and (
+                not validate_exports
+                or _runtime_exports_satisfy_for_mode(
+                    runtime_wasm,
+                    required_exports,
+                    reloc=reloc,
+                )
+            )
+        ):
+            try:
+                _publish_runtime_integrity_pin()
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to update runtime wasm integrity sidecar.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
         target_runtime_wasm_current = _current_runtime_target_artifact(
             _wasm_runtime_wasm_candidates(target_root, profile_dir),
             build_state_root=target_build_state_root,
@@ -2872,7 +2960,7 @@ def _ensure_runtime_wasm(
             build_state_root=target_build_state_root,
             cargo_profile=cargo_profile,
             target_label=target_label,
-            fingerprint=fingerprint,
+            fingerprint=staticlib_fingerprint,
         )
         if reloc and target_runtime_staticlib_current is not None:
             assert fingerprint is not None
@@ -2910,7 +2998,7 @@ def _ensure_runtime_wasm(
                 )
                 _write_runtime_fingerprint(
                     target_runtime_staticlib_fingerprint_path,
-                    fingerprint,
+                    staticlib_fingerprint,
                     artifact=target_runtime_staticlib,
                 )
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2928,45 +3016,6 @@ def _ensure_runtime_wasm(
                 return False
             return True
 
-        needs_rebuild = not _runtime_artifact_fingerprint_matches(
-            runtime_wasm,
-            fingerprint,
-            fingerprint_path,
-            require_artifact_digest=True,
-        )
-        if (
-            not needs_rebuild
-            and (
-                _is_valid_runtime_wasm_artifact(runtime_wasm)
-                if reloc
-                else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
-            )
-            and (
-                not validate_exports
-                or _runtime_exports_satisfy_for_mode(
-                    runtime_wasm,
-                    required_exports,
-                    reloc=reloc,
-                )
-            )
-        ):
-            assert fingerprint is not None
-            try:
-                _publish_runtime_integrity_pin()
-                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(
-                    fingerprint_path,
-                    fingerprint,
-                    artifact=runtime_wasm,
-                )
-            except OSError:
-                if not json_output:
-                    print(
-                        "Failed to update runtime wasm integrity sidecar.",
-                        file=sys.stderr,
-                    )
-                return False
-            return True
         if (
             not needs_rebuild
             and validate_exports
@@ -3139,7 +3188,7 @@ def _ensure_runtime_wasm(
                 )
                 _write_runtime_fingerprint(
                     reported_staticlib_fingerprint_path,
-                    fingerprint,
+                    staticlib_fingerprint,
                     artifact=src,
                 )
                 # Publish the freshly built reloc runtime wasm to the shared,
@@ -3440,7 +3489,11 @@ def _prepopulate_combined_runtime_wasm_target(
     (caller falls back to the sequential dual-compile -- correct, just no dedup).
     """
     root = project_root
-    if shared_spec.fingerprint is None or reloc_spec.fingerprint is None:
+    if (
+        shared_spec.fingerprint is None
+        or reloc_spec.fingerprint is None
+        or reloc_spec.staticlib_fingerprint is None
+    ):
         return False
     # target_root/profile are codegen-identity properties: identical for the
     # reloc and shared specs (features + codegen rustflags do not depend on the
@@ -3463,7 +3516,7 @@ def _prepopulate_combined_runtime_wasm_target(
         build_state_root=build_state_root,
         cargo_profile=cargo_profile,
         target_label=target_label,
-        fingerprint=reloc_spec.fingerprint,
+        fingerprint=reloc_spec.staticlib_fingerprint,
     )
     if cdylib_current is not None and staticlib_current is not None:
         # Both crate-types already fresh in the target dir; nothing to compile.
@@ -3620,7 +3673,9 @@ def _prepopulate_combined_runtime_wasm_target(
         )
         staticlib_fp_path.parent.mkdir(parents=True, exist_ok=True)
         _write_runtime_fingerprint(
-            staticlib_fp_path, reloc_spec.fingerprint, artifact=staticlib
+            staticlib_fp_path,
+            reloc_spec.staticlib_fingerprint,
+            artifact=staticlib,
         )
     except OSError:
         if not json_output:

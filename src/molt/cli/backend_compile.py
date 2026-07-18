@@ -266,12 +266,26 @@ def _prepare_backend_runtime_context(
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_link_features: frozenset[str] = frozenset(),
     target_triple: str | None = None,
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
+        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    ),
 ) -> tuple[_PreparedBackendRuntimeContext | None, _CliFailure | None]:
     runtime_state = prepared_backend_setup.runtime_state
+    native_runtime_exports = native_artifact_plan.runtime_export_symbols()
+
+    def runtime_export_requirements(
+        required_exports: set[str] | frozenset[str] | None,
+    ) -> set[str] | frozenset[str] | None:
+        if not native_runtime_exports:
+            return required_exports
+        if required_exports is None:
+            return native_runtime_exports
+        return frozenset(required_exports) | native_runtime_exports
 
     def ensure_runtime_wasm_shared(
         required_exports: set[str] | frozenset[str] | None = None,
     ) -> bool:
+        required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_artifact(
             runtime_state,
             reloc=False,
@@ -290,6 +304,7 @@ def _prepare_backend_runtime_context(
     def ensure_runtime_wasm_reloc(
         required_exports: set[str] | frozenset[str] | None = None,
     ) -> bool:
+        required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_artifact(
             runtime_state,
             reloc=True,
@@ -317,6 +332,7 @@ def _prepare_backend_runtime_context(
         # validators) and honours the MOLT_RUNTIME_WASM_SINGLE_COMPILE authority
         # internally, transparently degrading to the sequential dual-compile on
         # any combined-build failure.
+        required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_both(
             runtime_state,
             json_output=json_output,
@@ -387,6 +403,7 @@ def _prepare_backend_dispatch(
     backend_daemon_config_digest: str | None,
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
+    ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
     resolved_modules: set[str] | frozenset[str] | None,
     ir: Mapping[str, Any],
     warnings: list[str],
@@ -418,7 +435,28 @@ def _prepare_backend_dispatch(
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
     if is_wasm and backend_env is not None:
         layout_probe_path: Path | None = None
-        if reloc_requested and linked and runtime_reloc_wasm is not None:
+        if split_runtime:
+            # The executable shared runtime is the only authority for the
+            # memory/table/callable layout consumed by a split app.  Close the
+            # native-extension export plan before backend code generation and
+            # ensure BOTH crate types in one Cargo invocation; checking only
+            # for file existence here admitted a fingerprint-stale shared
+            # runtime and the old reloc-first path forced a second full runtime
+            # compile after final app imports became known.
+            runtime_ready = (
+                ensure_runtime_wasm_both(None)
+                if reloc_requested and linked
+                else ensure_runtime_wasm_shared(None)
+            )
+            if not runtime_ready:
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if runtime_wasm is not None and runtime_wasm.exists():
+                layout_probe_path = runtime_wasm
+        elif reloc_requested and linked and runtime_reloc_wasm is not None:
             if not ensure_runtime_wasm_reloc(None):
                 return None, _fail(
                     "Runtime wasm build failed",
@@ -428,7 +466,7 @@ def _prepare_backend_dispatch(
             if runtime_reloc_wasm.exists():
                 layout_probe_path = runtime_reloc_wasm
         if "MOLT_WASM_DATA_BASE" not in backend_env:
-            if layout_probe_path is None:
+            if layout_probe_path is None and not split_runtime:
                 if not ensure_runtime_wasm_shared(None):
                     return None, _fail(
                         "Runtime wasm build failed",
@@ -507,15 +545,8 @@ def _prepare_backend_dispatch(
                     backend_env["MOLT_WASM_TABLE_BASE"] = str(runtime_table_min)
         if split_runtime:
             if runtime_wasm is None or not runtime_wasm.exists():
-                if not ensure_runtime_wasm_shared(None):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-            if runtime_wasm is None or not runtime_wasm.exists():
                 return None, _fail(
-                    "Split-runtime callable layout requires the executable shared runtime",
+                    "Split-runtime layout requires the current executable shared runtime",
                     json_output,
                     command="build",
                 )
@@ -1111,6 +1142,7 @@ def _prepare_backend_compile(
     resolved_modules: frozenset[str],
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
+    ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
     _ensure_backend_ir_file_path: Callable[[], Path],
@@ -1190,6 +1222,7 @@ def _prepare_backend_compile(
                     backend_daemon_config_digest=backend_daemon_config_digest,
                     ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                     ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                    ensure_runtime_wasm_both=ensure_runtime_wasm_both,
                     resolved_modules=resolved_modules,
                     ir=ir,
                     warnings=warnings,
