@@ -7,8 +7,8 @@
 | Metric | Before report 001 | Current |
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
-| CI selection families | 5 | 10 |
-| Hashed executable authority inputs | 1 | 41 |
+| CI selection families | 5 | 11 |
+| Hashed executable authority inputs | 1 | 40 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -43,6 +43,31 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | 8 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | 23 |
+
+## Matrix cells
+
+`github-matrix` families project these cells directly into the workflow strategy. The runner is therefore generated policy, not a second handwritten OS list.
+
+| Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |
+|---|---|---|---|---|---|---|---|
+| `linux-x86_64-py312-repository-policy` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `repository` | `host` | `policy` |
+| `linux-x86_64-py312-wasm-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `dev-fast` |
+| `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
+| `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
+| `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
+| `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
+| `linux-x86_64-rust-wasi-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `wasm32-wasip1` | `dev` |
+| `linux-x86_64-rust-aarch64-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `aarch64-unknown-linux-gnu` | `dev` |
+| `linux-x86_64-py312-llvm-release-fast` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `llvm` | `x86_64-unknown-linux-gnu` | `release-fast` |
+| `linux-x86_64-py312-mlir-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `mlir` | `x86_64-unknown-linux-gnu` | `dev` |
+| `linux-x86_64-py312-linker-release-fast` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `linker` | `elf-x86_64` | `release-fast` |
+| `linux-x86_64-py312-python-audit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python` | `host` | `audit` |
+| `linux-x86_64-rust-audit` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `host` | `audit` |
+| `linux-x86_64-formal-verification` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `formal` | `tir-luau` | `verification` |
+| `linux-x86_64-py312-queue-portability` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
 
 ## Toolchain contracts
 
@@ -53,7 +78,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
 | `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 3 |
 | `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 5 |
+| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 4 |
 | `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 2 |
 | `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
 | `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -71,6 +96,9 @@ Receipts record resolved path, version text, and the repository-relative probe w
 
 | Command ID | Family | Cell | Timeout | Resource | Parents |
 |---|---|---|---:|---|---:|
+| `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
+| `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | 600 s | `python-tests` | 0 |
+| `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
 | `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
@@ -184,4 +212,4 @@ Receipts record resolved path, version text, and the repository-relative probe w
 
 ## Selection contract
 
-Pull requests use the merge-base diff. Pushes use the event's `before..after` identities. Forced pushes, null SHAs, missing refs, and unknown events fail closed to the full plan. Scheduled and manual runs intentionally select the full plan. The selected matrix records the exact paths that caused every family to run.
+Pull requests use the merge-base diff. Pushes use the event's `before..after` identities. Forced pushes, null SHAs, missing refs, and unknown events fail closed to the full plan. Merge-group, scheduled, and manual runs intentionally select the full plan. The topology projection records why every family was selected; the executable matrix expands selected `github-matrix` families into exact runner cells.

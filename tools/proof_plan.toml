@@ -16,7 +16,6 @@ authority_inputs = [
   ".github/workflows/formal.yml",
   ".github/workflows/molt-wasm-ci.yml",
   ".github/workflows/nightly.yml",
-  ".github/workflows/proof-queue-portability.yml",
   ".github/workflows/security_hardening.yml",
   ".gitignore",
   ".python-version",
@@ -141,7 +140,6 @@ setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
   ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
   ".github/workflows/molt-wasm-ci.yml::dtolnay/rust-toolchain@1.96.1",
-  ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1",
   ".github/workflows/security_hardening.yml::dtolnay/rust-toolchain@1.96.1",
 ]
 
@@ -155,7 +153,7 @@ version_pattern = '^cargo 1\.96\.1\b'
 setup_value = "1.96.1"
 setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
-  ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
 ]
 
 [[toolchain_policy]]
@@ -260,6 +258,7 @@ setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -269,6 +268,7 @@ profile = "policy"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-wasm-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -278,6 +278,7 @@ profile = "dev-fast"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-static"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -287,6 +288,7 @@ profile = "static"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-unit"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -296,6 +298,7 @@ profile = "test"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-native-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -305,6 +308,7 @@ profile = "dev"
 
 [[matrix_cell]]
 id = "linux-x86_64-rust-native-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "none"
@@ -314,6 +318,7 @@ profile = "dev"
 
 [[matrix_cell]]
 id = "linux-x86_64-rust-wasi-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "none"
@@ -323,6 +328,7 @@ profile = "dev"
 
 [[matrix_cell]]
 id = "linux-x86_64-rust-aarch64-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "none"
@@ -332,6 +338,7 @@ profile = "dev"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-llvm-release-fast"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -341,6 +348,7 @@ profile = "release-fast"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-mlir-dev"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -350,6 +358,7 @@ profile = "dev"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-linker-release-fast"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -359,6 +368,7 @@ profile = "release-fast"
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-python-audit"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
@@ -368,6 +378,7 @@ profile = "audit"
 
 [[matrix_cell]]
 id = "linux-x86_64-rust-audit"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "none"
@@ -377,12 +388,43 @@ profile = "audit"
 
 [[matrix_cell]]
 id = "linux-x86_64-formal-verification"
+runner = "ubuntu-latest"
 os = "linux"
 arch = "x86_64"
 python = "3.12"
 backend = "formal"
 target = "tir-luau"
 profile = "verification"
+
+[[matrix_cell]]
+id = "linux-x86_64-py312-queue-portability"
+runner = "ubuntu-latest"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "proof-queue"
+target = "host"
+profile = "portability"
+
+[[matrix_cell]]
+id = "macos-arm64-py312-queue-portability"
+runner = "macos-14"
+os = "macos"
+arch = "aarch64"
+python = "3.12"
+backend = "proof-queue"
+target = "host"
+profile = "portability"
+
+[[matrix_cell]]
+id = "windows-x86_64-py312-queue-portability"
+runner = "windows-2022"
+os = "windows"
+arch = "x86_64"
+python = "3.12"
+backend = "proof-queue"
+target = "host"
+profile = "portability"
 
 [[ci_family]]
 name = "repository_policy"
@@ -514,9 +556,58 @@ timeout_minutes = 45
 resource_class = "formal-tools"
 dependencies = []
 
+[[ci_family]]
+name = "platform_portability"
+description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof."
+inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py"]
+executor = "github-matrix"
+workflow = ".github/workflows/ci.yml"
+job = "platform-portability"
+tiers = ["pr", "main"]
+required = true
+timeout_minutes = 20
+resource_class = "python-tests"
+dependencies = []
+
 # Every executable partition has a stable command identity, exact matrix cell,
 # bounded timeout, resource class, and DAG parents. Workflows invoke these IDs;
 # command spelling is never duplicated in YAML.
+[[command]]
+id = "portability.queue.linux"
+family = "platform_portability"
+cell = "linux-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 600
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.queue.macos"
+family = "platform_portability"
+cell = "macos-arm64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 600
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.queue.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 600
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
 [[command]]
 id = "repository.status-blocks.generated"
 family = "repository_policy"
