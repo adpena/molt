@@ -37,6 +37,7 @@ from molt.compiler_analysis.python_imports import (
     resolve_relative_import,
 )
 from molt.frontend.lowering import import_lowering, module_lifecycle
+from molt.frontend import SimpleTIRGenerator
 
 
 _SEMANTIC_DEFINITIONS = (
@@ -245,6 +246,22 @@ def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
         module_import_scanner._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
+
+
+def test_deferred_relative_import_without_module_name_uses_runtime_transaction() -> None:
+    generator = SimpleTIRGenerator(
+        source_path="pkg/module.py",
+        module_name="pkg.module",
+        module_execution_kind="imported",
+        known_modules={"pkg", "pkg.module", "pkg.sibling"},
+    )
+    generator.visit(
+        ast.parse("def load():\n    from . import sibling\n    return sibling\n")
+    )
+
+    load_ops = generator.funcs_map["pkg_module__load"]["ops"]
+    assert any(op.kind == "CALL_FUNC" for op in load_ops)
+    assert any(op.kind == "CONST" and op.args == [1] for op in load_ops)
 
 
 def test_import_flow_is_cached_and_state_growth_is_bounded() -> None:

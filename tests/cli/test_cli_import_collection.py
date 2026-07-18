@@ -229,6 +229,8 @@ def _install_fake_backend_compile(
         output.write_bytes(output_bytes)
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
+    write_fake_runtime_artifacts()
+
     monkeypatch.setattr(
         cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
@@ -261,6 +263,11 @@ def _install_fake_backend_compile(
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
+    )
+    monkeypatch.setattr(
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_ensure_native_runtime_lib_ready_before_link",
+        fake_ensure_runtime_lib_ready,
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -9860,10 +9867,14 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
+    clang = tmp_path / "clang"
+    clang.write_bytes(b"tool")
 
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
-    monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("CC", str(clang))
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
+    )
 
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -9894,10 +9905,14 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
+    clang = tmp_path / "clang"
+    clang.write_bytes(b"tool")
 
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
-    monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("CC", str(clang))
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
+    )
 
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -9930,15 +9945,17 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     output_obj.write_bytes(b"\x7fELFobject")
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
+    clang = tmp_path / "clang"
+    clang.write_bytes(b"tool")
 
-    def fake_which(name: str) -> str | None:
-        if name == "ld.lld":
-            return "/usr/bin/ld.lld"
-        return None
+    def fake_candidates(*names: str, **_kwargs: object) -> tuple[Path, ...]:
+        return (Path("/usr/bin/ld.lld"),) if "ld.lld" in names else ()
 
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
-    monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", fake_which)
+    monkeypatch.setenv("CC", str(clang))
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", fake_candidates
+    )
 
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -9973,7 +9990,9 @@ def test_windows_link_omits_icf_for_fn_identity(
 
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
     monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
+    )
 
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -9990,10 +10009,7 @@ def test_windows_link_omits_icf_for_fn_identity(
 
     assert "-Wl,/OPT:REF" in link_plan.command
     assert "-Wl,/OPT:NOICF" in link_plan.command
-    assert "-lws2_32" in link_plan.command
-    assert "-lntdll" in link_plan.command
-    assert "-luserenv" in link_plan.command
-    assert "-ladvapi32" in link_plan.command
+    assert not any(argument.startswith("-l") for argument in link_plan.command)
 
 
 def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
@@ -10011,7 +10027,9 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
 
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
     monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
+    )
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND,
         "_molt_c_api_export_names",
@@ -10057,11 +10075,10 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
 
-    monkeypatch.setenv("CC", "zig cc")
     monkeypatch.setattr(
-        NATIVE_LINK_COMMAND.shutil,
-        "which",
-        lambda name: "zig" if name == "zig" else None,
+        NATIVE_LINK_COMMAND,
+        "llvm_named_tool_candidates",
+        lambda *names, **_kwargs: (Path("zig"),) if "zig" in names else (),
     )
 
     link_plan = cli._build_native_link_plan(
@@ -10078,10 +10095,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     )
 
     assert link_plan.normalized_target == "x86_64-windows-gnu"
-    assert "-lws2_32" in link_plan.command
-    assert "-lntdll" in link_plan.command
-    assert "-luserenv" in link_plan.command
-    assert "-ladvapi32" in link_plan.command
+    assert not any(argument.startswith("-l") for argument in link_plan.command)
 
 
 def test_windows_native_partial_link_uses_coff_library_tool(
@@ -10096,9 +10110,11 @@ def test_windows_native_partial_link_uses_coff_library_tool(
 
     monkeypatch.setattr(NATIVE_LINK_DEPS.sys, "platform", "win32")
     monkeypatch.setattr(
-        NATIVE_LINK_COMMAND.shutil,
-        "which",
-        lambda name: "C:/LLVM/bin/llvm-lib.exe" if name == "llvm-lib" else None,
+        NATIVE_LINK_COMMAND,
+        "llvm_named_tool_candidates",
+        lambda *names, **_kwargs: (
+            (Path("C:/LLVM/bin/llvm-lib.exe"),) if "llvm-lib" in names else ()
+        ),
     )
 
     def fake_run_native_link_command(
@@ -10128,7 +10144,7 @@ def test_windows_native_partial_link_uses_coff_library_tool(
 
     assert result.returncode == 0
     assert captured["link_cmd"] == [
-        "C:/LLVM/bin/llvm-lib.exe",
+        str(Path("C:/LLVM/bin/llvm-lib.exe")),
         f"/OUT:{output_obj}",
         str(input_obj),
         str(stdlib_obj),
@@ -12317,6 +12333,9 @@ def test_backend_source_paths_are_feature_aware() -> None:
         "runtime/molt-backend-wasm/src",
         "runtime/molt-backend-wasm/Cargo.toml",
         "runtime/molt-backend-wasm/build.rs",
+        "runtime/molt-wasm-facts/src",
+        "runtime/molt-wasm-facts/Cargo.toml",
+        "runtime/molt-wasm-facts/build.rs",
     }
     rust_leaf = {
         "runtime/molt-backend-rust/src",
@@ -13834,6 +13853,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         module_path,
         logical_source_path=str(module_path),
         entry_override=None,
+        module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
         parse_codec="json",
@@ -14031,6 +14051,7 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -14076,6 +14097,7 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         module_path=Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -14121,6 +14143,7 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -14165,6 +14188,7 @@ def test_module_lowering_context_payload_scopes_known_classes() -> None:
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={
             "MainClass": {"module": "main", "fields": {}},
             "DepClass": {"module": "alpha", "fields": {}},
@@ -14207,6 +14231,7 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         type_hint_policy="ignore",
         fallback_policy="error",
         module_is_namespace=False,
+        module_execution_kind="imported",
         entry_module=None,
         type_facts=None,
         enable_phi=True,
@@ -14255,6 +14280,7 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         type_hint_policy="ignore",
         fallback_policy="error",
         module_is_namespace=False,
+        module_execution_kind="imported",
         entry_module=None,
         type_facts=None,
         enable_phi=True,
@@ -14492,6 +14518,7 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             type_hint_policy="ignore",
             fallback_policy="error",
             module_is_namespace=False,
+            module_execution_kind="imported",
             entry_module=None,
             type_facts=None,
             enable_phi=True,
@@ -14538,6 +14565,7 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="trust",
@@ -14587,6 +14615,7 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         type_hint_policy="trust",
         fallback_policy="error",
         module_is_namespace=False,
+        module_execution_kind="imported",
         entry_module=None,
         type_facts=type_facts,
         enable_phi=True,
@@ -14883,6 +14912,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -14940,6 +14970,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         type_hint_policy="ignore",
         fallback_policy="error",
         module_is_namespace=False,
+        module_execution_kind="imported",
         entry_module=None,
         type_facts=None,
         enable_phi=True,
@@ -15004,6 +15035,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         module_path,
         logical_source_path=str(module_path),
         entry_override=None,
+        module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
         parse_codec="json",
@@ -15083,6 +15115,7 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override=None,
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -15119,6 +15152,7 @@ def test_module_lowering_context_digest_includes_native_callable_exports() -> No
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
+        "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
         "type_hint_policy": "ignore",
@@ -15183,6 +15217,7 @@ def test_module_lowering_context_digest_includes_native_python_exports() -> None
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
+        "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
         "type_hint_policy": "ignore",
@@ -15229,6 +15264,7 @@ def test_module_lowering_context_digest_includes_target_sys_platform() -> None:
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
+        "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
         "type_hint_policy": "ignore",
@@ -15282,6 +15318,7 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
     common: dict[str, object] = {
         "logical_source_path": str(module_path),
         "entry_override": None,
+        "module_execution_kind": "imported",
         "known_classes_snapshot": {},
         "parse_codec": "json",
         "type_hint_policy": "ignore",
@@ -15348,6 +15385,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override="main",
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="trust",
@@ -15380,6 +15418,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
         entry_override="main",
+        module_execution_kind="imported",
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="trust",
@@ -17159,6 +17198,7 @@ def test_frontend_lower_module_worker_smoke(
         "type_hint_policy": "ignore",
         "fallback_policy": "error",
         "module_is_namespace": False,
+        "module_execution_kind": "imported",
         "entry_module": None,
         "enable_phi": True,
         "known_modules": ["worker_module"],
@@ -18450,6 +18490,11 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
+        "_ensure_native_runtime_lib_ready_before_link",
+        fake_ensure_runtime_lib_ready,
+    )
+    monkeypatch.setattr(
+        RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -18556,6 +18601,11 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
+        "_ensure_native_runtime_lib_ready_before_link",
+        fake_ensure_runtime_lib_ready,
+    )
+    monkeypatch.setattr(
+        RUNTIME_CALLABLE_SYMBOLS,
         "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -18656,6 +18706,11 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
+    )
+    monkeypatch.setattr(
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_ensure_native_runtime_lib_ready_before_link",
+        fake_ensure_runtime_lib_ready,
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -18767,6 +18822,11 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
     monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
+    )
+    monkeypatch.setattr(
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_ensure_native_runtime_lib_ready_before_link",
+        fake_ensure_runtime_lib_ready,
     )
     monkeypatch.setattr(
         RUNTIME_CALLABLE_SYMBOLS,
@@ -21414,9 +21474,13 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
 def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib = tmp_path / cli._runtime_lib_archive_name("micro", None)
     runtime_lib.write_bytes(b"archive")
-    fingerprint = {"hash": "ok"}
+    fingerprint = {
+        "hash": "ok",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        "rustc": "rustc-test",
+    }
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
@@ -21767,7 +21831,7 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib = tmp_path / cli._runtime_lib_archive_name("micro", None)
     runtime_lib.write_bytes(b"archive")
     RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
     verification_calls: list[frozenset[str]] = []
@@ -21776,6 +21840,9 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda project_root, **kwargs: {
+            "hash": "runtime-test",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+            "rustc": "rustc-test",
             "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
         },
     )

@@ -61,6 +61,7 @@ from molt.compiler_analysis.python_effects_generated import (
     WRITES_OBJECT_STATE,
     EffectMask,
 )
+from molt.compiler_analysis.python_imports import import_metadata_target_name
 
 
 _ANALYSIS_SCHEMA: Final = 3
@@ -674,6 +675,28 @@ class _Analyzer:
         self._observed_stack: list[list[int]] = []
         self._module_history: list[int] = [0]
         self._active_module_states: tuple[int, ...] | None = None
+        self._module_import_flow_required = False
+
+    @staticmethod
+    def _target_may_write_import_metadata(target: ast.AST) -> bool:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(
+                _Analyzer._target_may_write_import_metadata(element)
+                for element in target.elts
+            )
+        return import_metadata_target_name(target) in _METADATA_NAMES
+
+    def _expression_exposes_module_globals(self, expression: ast.AST) -> bool:
+        pending = [expression]
+        while pending:
+            node = pending.pop()
+            fact = self.expressions.get(_node_key(node))
+            if fact is not None and fact.identities & int(
+                PythonIdentity.CURRENT_GLOBALS
+            ):
+                return True
+            pending.extend(ast.iter_child_nodes(node))
+        return False
 
     def _queue_function(
         self,
@@ -1081,6 +1104,26 @@ class _Analyzer:
                 result = self.eval_expr(keyword.value, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+            callee_may_require_intrinsic = bool(
+                callee_result.identities & int(PythonIdentity.INTRINSICS_REQUIRE)
+            )
+            if (
+                callee_result.identities
+                & int(PythonIdentity.BUILTIN_EXEC | PythonIdentity.BUILTIN_EVAL)
+                or not callee_may_require_intrinsic
+                and any(
+                    self._expression_exposes_module_globals(argument)
+                    for argument in (
+                        *node.args,
+                        *(keyword.value for keyword in node.keywords),
+                    )
+                )
+                or isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) >= 2
+                and _literal_string(node.args[1]) in _METADATA_NAMES
+            ):
+                self._module_import_flow_required = True
             identities, effects, state_id = self._call_semantics(
                 state_id, scope, node, callee_result.identities, effects
             )
@@ -1400,6 +1443,18 @@ class _Analyzer:
 
     def exec_statement(self, node: ast.stmt, state_id: int, scope: _Scope) -> tuple[int, EffectMask]:
         effects = NO_EFFECTS
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)):
+            self._module_import_flow_required = True
+        elif isinstance(node, ast.Assign) and any(
+            self._target_may_write_import_metadata(target) for target in node.targets
+        ):
+            self._module_import_flow_required = True
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and self._target_may_write_import_metadata(node.target):
+            self._module_import_flow_required = True
+        elif isinstance(node, ast.Delete) and any(
+            self._target_may_write_import_metadata(target) for target in node.targets
+        ):
+            self._module_import_flow_required = True
         if isinstance(node, ast.Expr):
             result = self.eval_expr(node.value, state_id, scope)
             return result.state_id, result.effects
@@ -1804,7 +1859,6 @@ class _Analyzer:
             ModuleImportContext,
             ModuleImportFlow,
             _analyze_module_import_flow_uncached,
-            _module_import_flow_required,
             context_import_state,
         )
 
@@ -1815,7 +1869,7 @@ class _Analyzer:
             target_python=self.policy.target_python,
             execution_kind=self.policy.module_execution_kind,
         )
-        if _module_import_flow_required(tree):
+        if self._module_import_flow_required:
             module_import_flow = _analyze_module_import_flow_uncached(
                 tree,
                 import_context,

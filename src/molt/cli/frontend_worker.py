@@ -18,6 +18,7 @@ from molt.type_facts import TypeFacts
 from molt.cli.models import (
     BuildProfile,
     FallbackPolicy,
+    ModuleExecutionKind,
     ParseCodec,
     TypeHintPolicy,
     _FrontendModuleResultTimings,
@@ -155,6 +156,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
     fallback_policy = cast(FallbackPolicy, payload["fallback_policy"])
     module_is_namespace = bool(payload["module_is_namespace"])
+    module_execution_kind = cast(
+        ModuleExecutionKind, payload["module_execution_kind"]
+    )
     entry_module = cast(str | None, payload["entry_module"])
     enable_phi = bool(payload["enable_phi"])
     known_modules = set(cast(list[str], payload["known_modules"]))
@@ -224,6 +228,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         source_path=logical_source_path,
         module_name=module_name,
         module_is_namespace=module_is_namespace,
+        module_execution_kind=module_execution_kind,
         entry_module=entry_module,
         enable_phi=enable_phi,
         known_modules=known_modules,
@@ -354,6 +359,7 @@ def _module_frontend_generator(
     logical_source_path: str,
     entry_override: str | None,
     module_is_namespace: bool,
+    module_execution_kind: ModuleExecutionKind,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -375,6 +381,7 @@ def _module_frontend_generator(
         type_facts=scoped_inputs.type_facts,
         module_name=module_name,
         module_is_namespace=module_is_namespace,
+        module_execution_kind=module_execution_kind,
         entry_module=entry_override,
         enable_phi=enable_phi,
         known_modules=set(scoped_inputs.known_modules_set),
@@ -468,6 +475,7 @@ def _lower_module_serial_with_context(
     entry_override = metadata_view.entry_override
     is_package = metadata_view.is_package
     module_is_namespace = metadata_view.module_is_namespace
+    module_execution_kind = metadata_view.module_execution_kind
     path_stat = metadata_view.path_stat
     if path_stat is None:
         with contextlib.suppress(OSError):
@@ -480,6 +488,7 @@ def _lower_module_serial_with_context(
             module_path,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
+            module_execution_kind=module_execution_kind,
             known_classes_snapshot=lowering_context.known_classes,
             parse_codec=lowering_context.parse_codec,
             type_hint_policy=lowering_context.type_hint_policy,
@@ -540,6 +549,7 @@ def _lower_module_serial_with_context(
         logical_source_path=logical_source_path,
         entry_override=entry_override,
         module_is_namespace=module_is_namespace,
+        module_execution_kind=module_execution_kind,
         parse_codec=lowering_context.parse_codec,
         type_hint_policy=lowering_context.type_hint_policy,
         fallback_policy=lowering_context.fallback_policy,
@@ -770,6 +780,7 @@ def _prepare_frontend_parallel_batch(
         logical_source_path = metadata_view.logical_source_path
         entry_override = metadata_view.entry_override
         module_is_namespace = metadata_view.module_is_namespace
+        module_execution_kind = metadata_view.module_execution_kind
         is_package = metadata_view.is_package
         path_stat = metadata_view.path_stat
         scoped_known_classes = execution_view.scoped_known_classes
@@ -779,6 +790,7 @@ def _prepare_frontend_parallel_batch(
                 module_path,
                 logical_source_path=logical_source_path,
                 entry_override=entry_override,
+                module_execution_kind=module_execution_kind,
                 known_classes_snapshot=known_classes_snapshot,
                 parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
@@ -820,6 +832,7 @@ def _prepare_frontend_parallel_batch(
             module_path,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
+            module_execution_kind=module_execution_kind,
             is_package=is_package,
             known_classes_snapshot=known_classes_snapshot,
             parse_codec=parse_codec,
@@ -871,6 +884,7 @@ def _prepare_frontend_parallel_batch(
                     type_hint_policy=type_hint_policy,
                     fallback_policy=fallback_policy,
                     module_is_namespace=module_is_namespace,
+                    module_execution_kind=module_execution_kind,
                     entry_module=entry_override,
                     type_facts=type_facts,
                     enable_phi=enable_phi,
