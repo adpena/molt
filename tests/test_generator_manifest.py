@@ -48,6 +48,26 @@ def _load_tool():
 CGM = _load_tool()
 
 
+def test_repository_text_checkout_has_one_cross_platform_eol_authority() -> None:
+    representative_text_authorities = (
+        "runtime/heap_kinds.generated.json",
+        "src/molt/compiler_analysis/python_effects_generated.py",
+        ".github/proof-plan.generated.json",
+        "docs/agent/PROOF_PLAN.generated.md",
+        "packaging/install.ps1",
+    )
+    attributes = subprocess.check_output(
+        ["git", "check-attr", "eol", "--", *representative_text_authorities],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+    ).splitlines()
+
+    assert attributes == [
+        f"{path}: eol: lf" for path in representative_text_authorities
+    ]
+
+
 # --- 1. the live gate -----------------------------------------------------
 
 
