@@ -85,6 +85,21 @@ def test_unreferenced_function_is_unreachable_and_contributes_no_requirement() -
     assert RF.required_link_features(functions) == frozenset()
 
 
+def test_relocation_table_root_contributes_its_runtime_feature() -> None:
+    functions = [
+        {"name": "molt_main", "params": [], "ops": []},
+        {
+            "name": "molt_init_re",
+            "params": [],
+            "ops": [_builtin_func("v1", "molt_re_compile")],
+        },
+    ]
+    assert RF.required_link_features(functions) == frozenset()
+    assert RF.required_link_features(
+        functions, extra_roots={"molt_init_re"}
+    ) == frozenset({"stdlib_regex"})
+
+
 def test_protected_isolate_entrypoint_is_a_root() -> None:
     # ``molt_isolate_*`` is a protected runtime entrypoint (the isolate import
     # dispatcher), so a module-init it references is reachable even with no edge
