@@ -1823,6 +1823,44 @@ mod tests {
     }
 
     #[test]
+    fn every_simple_exception_transfer_spelling_threads_live_handler_state() {
+        for transfer_kind in ["check_exception", "async_work_poll", "try_start"] {
+            let ops = vec![
+                op_val_out("const", 7, "live"),
+                op_val(transfer_kind, 100),
+                op("ret_void"),
+                op_val("label", 100),
+                op_args("print", &["live"]),
+                op("ret_void"),
+            ];
+            let cfg = CFG::build(&ops);
+            let output = convert_to_ssa(&cfg, &ops);
+            let handler_bid = cfg
+                .blocks
+                .iter()
+                .position(|block| block.start_op <= 3 && block.end_op > 3)
+                .expect("handler block");
+            let handler = &output.blocks[handler_bid];
+            assert_eq!(
+                handler.args.len(),
+                1,
+                "{transfer_kind} must place the live handler environment"
+            );
+            let transfer = output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .find(|op| matches!(op.opcode, OpCode::CheckException | OpCode::TryStart))
+                .expect("exception transfer op");
+            assert_eq!(
+                transfer.operands.len(),
+                handler.args.len(),
+                "{transfer_kind} must serialize one operand per handler block argument"
+            );
+        }
+    }
+
+    #[test]
     fn check_exception_in_multi_block_try_does_not_capture_dead_vars() {
         let ops = vec![
             op_val_out("const", 1, "c"),

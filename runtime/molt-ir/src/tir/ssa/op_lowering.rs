@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::ir::OpIR;
 
 use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
+use super::super::dominators;
 use super::super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table, simpleir_kind_is_async_work_poll,
     simpleir_kind_preserves_original_kind_for_ssa,
@@ -22,6 +23,7 @@ impl<'a> SsaContext<'a> {
         op: &OpIR,
         var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> TirOp {
+        let opcode = kind_to_opcode(&op.kind);
         // Resolve operands from args.
         // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
@@ -99,10 +101,16 @@ impl<'a> SsaContext<'a> {
         {
             operands.push(vid);
         }
-        if op.kind == "check_exception"
+        if dominators::is_exception_transfer_edge(opcode)
             && let Some(label_id) = op.value
             && let Some(target_bid) = self.block_for_label(label_id)
         {
+            // Exception-transfer operands are the target block's serialized
+            // SSA environment, not ordinary SimpleIR value operands. Frontend
+            // transfer ops have no explicit data operands; replacing rather
+            // than appending makes this one authority for CheckException,
+            // TryStart, and every generated wire alias.
+            operands.clear();
             operands.extend(self.collect_branch_args(target_bid, var_stacks));
         }
 
@@ -229,8 +237,6 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
-        let opcode = kind_to_opcode(&op.kind);
-
         if simpleir_kind_is_async_work_poll(&op.kind) {
             attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
         }
