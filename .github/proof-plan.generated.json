@@ -38,7 +38,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "e2500a6af62fb772688c2e35c37bbf52b31bf5305b936c4f1ac806d38a1c28f2",
+  "authority_sha256": "1f101211d3697658dfa4e61869c7e4c78e8d84774b32700cbc276083713361bd",
   "ci_families": [
     {
       "dependencies": [],
@@ -1849,7 +1849,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "rustc",
@@ -2386,11 +2386,11 @@
       },
       "rust": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 1080,
-        "headroom_seconds": 2040,
-        "projected_makespan_seconds": 1560,
+        "critical_path_seconds": 2280,
+        "headroom_seconds": 840,
+        "projected_makespan_seconds": 2760,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 1560
+          "compiler-build-resource": 2760
         }
       },
       "rust_security": {

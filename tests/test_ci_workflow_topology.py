@@ -38,9 +38,9 @@ def _default_python_version() -> str:
 def test_ci_push_path_is_cheap_only() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
-    docs_gate = ci_text.split("  docs-gates:", 1)[1].split(
-        "\n  classify-changes:", 1
-    )[0]
+    docs_gate = ci_text.split("  docs-gates:", 1)[1].split("\n  classify-changes:", 1)[
+        0
+    ]
     rustfmt_setup = docs_gate.index("uses: dtolnay/rust-toolchain@1.96.1")
     repository_executor = docs_gate.index("Execute repository policy partitions")
     assert rustfmt_setup < repository_executor
@@ -489,6 +489,7 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         "python3",
         "tools/run_cargo_test_truth.py",
     ]
+    assert commands["rust.test.default-truth"]["timeout_seconds"] == 1800
     assert commands["rust.clippy.workspace-default"]["argv"] == [
         "cargo",
         "clippy",

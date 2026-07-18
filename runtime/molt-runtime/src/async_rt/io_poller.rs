@@ -48,7 +48,7 @@ mod wasm;
 mod worker;
 
 #[cfg(molt_has_net_io)]
-use blocking::{BlockingWaiter, BlockingWaiterList, blocking_waiter_id};
+use blocking::{BlockingWaiter, BlockingWaiterList};
 #[cfg(molt_has_net_io)]
 pub(crate) use native::IoPoller;
 #[cfg(molt_has_net_io)]

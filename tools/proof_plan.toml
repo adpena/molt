@@ -1149,7 +1149,10 @@ family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 600
+# Cold hosted run 29649415885 remained in the canonical workspace compile at
+# 600 seconds with four measured-safe jobs and no cache. Preserve the complete
+# truth command and size its bounded proof window for that observed cold shape.
+timeout_seconds = 1800
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/run_cargo_test_truth.py"]

@@ -10,11 +10,7 @@ use super::super::poll::ws_wait_poll_fn_addr;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use super::super::sockets::require_net_capability;
 use super::super::sockets::{SendData, send_data_from_bits};
-#[cfg(any(target_arch = "wasm32", molt_has_net_io))]
-use super::super::{current_token_id, token_id_from_bits};
 use super::stream::bytes_channel;
-#[cfg(molt_has_net_io)]
-use super::stream::{default_stream_max_queued_bytes, stream_enqueue_bytes_blocking};
 #[cfg(molt_has_net_io)]
 use crate::GilReleaseGuard;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -34,10 +30,7 @@ use crate::{
     ptr_from_bits, raise_exception, release_ptr, usize_from_bits,
 };
 #[cfg(molt_has_net_io)]
-use crate::{
-    alloc_string, exception_pending, intern_static_name, is_missing_bits, missing_bits,
-    molt_getattr_builtin, raise_os_error, runtime_static_name_slot,
-};
+use crate::{alloc_string, raise_os_error, runtime_static_name_slot};
 #[cfg(molt_has_net_io)]
 use mio::net::TcpStream as MioTcpStream;
 #[cfg(molt_has_net_io)]
