@@ -199,12 +199,24 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
     unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }
 
+/// Return the number of elements in a live runtime sequence.
+///
+/// # Safety
+///
+/// `ptr` must refer to a live Molt list or tuple and the caller must hold the
+/// GIL for the duration of this call.
 pub unsafe fn seq_read_len(ptr: *mut u8) -> usize {
     unsafe { molt_seq_read_len(ptr) }
 }
 
 /// Borrow one immutable pool item for immediate use while the GIL and owning
 /// tuple remain live.
+///
+/// # Safety
+///
+/// `ptr` must refer to a live Molt list or tuple and the caller must hold the
+/// GIL. A returned handle is borrowed from that sequence and must not outlive
+/// either the sequence or the current GIL-protected operation.
 pub unsafe fn seq_read_item_gil_borrowed(ptr: *mut u8, index: usize) -> Option<u64> {
     let mut out = 0u64;
     if unsafe { molt_seq_read_item_gil_borrowed(ptr, index, &mut out) } != 0 {
@@ -216,6 +228,11 @@ pub unsafe fn seq_read_item_gil_borrowed(ptr: *mut u8, index: usize) -> Option<u
 
 /// Return one owned item from a mutable sequence. The caller assumes the
 /// returned reference and must either return it to Python or release it.
+///
+/// # Safety
+///
+/// `ptr` must refer to a live Molt mutable sequence and the caller must hold
+/// the GIL. Every returned handle transfers one owned reference to the caller.
 pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
     let mut out = 0u64;
     if unsafe { molt_seq_read_item_owned(ptr, index, &mut out) } != 0 {

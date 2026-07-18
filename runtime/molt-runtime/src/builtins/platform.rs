@@ -1209,6 +1209,7 @@ fn traceback_exception_suppress_context_bits(
     Ok(out)
 }
 
+#[cfg(test)]
 fn bootstrap_resolve_abspath(path: &str, module_file: Option<String>) -> String {
     let sep = bootstrap_path_sep();
     let state = sys_bootstrap_state_from_module_file(module_file);

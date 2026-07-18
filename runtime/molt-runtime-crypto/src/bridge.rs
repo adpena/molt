@@ -320,6 +320,11 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 
 /// Return one owned sequence handle. The caller assumes the returned reference
 /// and must either return it to Python or release it with [`dec_ref_bits`].
+///
+/// # Safety
+///
+/// `ptr` must refer to a live Molt mutable sequence and the caller must hold
+/// the GIL. Every returned handle transfers one owned reference to the caller.
 pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
     let mut out = 0u64;
     if unsafe { molt_seq_read_item_owned(ptr, index, &mut out) } != 0 {

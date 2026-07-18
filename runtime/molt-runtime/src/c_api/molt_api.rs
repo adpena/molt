@@ -55,9 +55,7 @@ pub extern "C" fn molt_shutdown() -> i32 {
 pub extern "C" fn molt_gil_acquire() -> i32 {
     let outermost = match PUBLIC_GIL_ACQUIRE_DEPTH.with(|depth| {
         let current = depth.get();
-        let Some(next) = current.checked_add(1) else {
-            return None;
-        };
+        let next = current.checked_add(1)?;
         depth.set(next);
         Some(current == 0)
     }) {

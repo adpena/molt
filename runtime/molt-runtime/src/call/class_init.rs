@@ -169,12 +169,11 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
         if needs_recompute
             && let Some(class_dict_ptr) = class_dict_ptr
             && object_type_id(class_dict_ptr) == TYPE_ID_DICT
+            && let Ok(size_i64) = i64::try_from(size)
         {
-            if let Ok(size_i64) = i64::try_from(size) {
-                let size_bits = MoltObject::from_int(size_i64).bits();
-                dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
-                class_bump_layout_version(class_ptr);
-            }
+            let size_bits = MoltObject::from_int(size_i64).bits();
+            dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
+            class_bump_layout_version(class_ptr);
         }
         if crate::object::class_definition_is_finished(class_ptr) {
             crate::object::layout::class_set_cached_layout_size(class_ptr, size);

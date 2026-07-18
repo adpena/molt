@@ -1,6 +1,5 @@
 use molt_obj_model::MoltObject;
 use molt_runtime::MoltHeader;
-use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, Once};
 
 #[unsafe(no_mangle)]
