@@ -62,9 +62,7 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
     assert state._db_path(args) == (
         custody_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
     )
-    assert state._logs_root(args) == (
-        custody_root / "logs" / "proof_queue" / "runs"
-    )
+    assert state._logs_root(args) == (custody_root / "logs" / "proof_queue" / "runs")
 
 
 def test_proof_queue_durable_state_remains_with_its_source_checkout(
@@ -2507,7 +2505,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
             self.killed = True
             self.returncode = 9
 
-    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "Popen", FakePopen)
     monkeypatch.setattr(
         state,
         "_git_snapshot",
@@ -2576,6 +2574,20 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
     )
 
 
+def test_queue_process_fake_is_scoped_to_custody_constructor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_constructor = subprocess.Popen
+
+    class FakePopen:
+        pass
+
+    monkeypatch.setattr(custody, "Popen", FakePopen)
+
+    assert custody.Popen is FakePopen
+    assert subprocess.Popen is global_constructor
+
+
 def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2634,7 +2646,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             self.terminated = True
             self.returncode = 15
 
-    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "Popen", FakePopen)
     monkeypatch.setattr(
         state,
         "_git_snapshot",
@@ -2745,7 +2757,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             self.terminated = True
             self.returncode = 15
 
-    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "Popen", FakePopen)
     monkeypatch.setattr(
         state,
         "_git_snapshot",
@@ -3968,7 +3980,7 @@ def test_proof_queue_windows_launchers_hide_console(
         0x08000000,
         raising=False,
     )
-    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "Popen", FakePopen)
 
     args = SimpleNamespace(
         db=tmp_path / "proof_queue.sqlite3",
@@ -3995,7 +4007,7 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
             captured.append(kwargs)
 
     monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: False)
-    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "Popen", FakePopen)
 
     args = SimpleNamespace(
         db=tmp_path / "proof_queue.sqlite3",

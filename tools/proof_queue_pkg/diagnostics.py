@@ -228,7 +228,6 @@ FRONTIER_SUPERSEDING_CHILD_STATUSES = frozenset(
 )
 
 
-
 def _elapsed_since(started_at: str | None, elapsed_s: float | None = None) -> str:
     if elapsed_s is not None:
         return f"{elapsed_s:.1f}s"
@@ -244,7 +243,6 @@ def _elapsed_since(started_at: str | None, elapsed_s: float | None = None) -> st
     return f"{elapsed:.1f}s"
 
 
-
 def _running_age_seconds(started_at: str | None) -> float | None:
     """Wall-clock seconds since ``started_at``, or None if unparseable."""
     if not started_at:
@@ -258,14 +256,12 @@ def _running_age_seconds(started_at: str | None) -> float | None:
     return max(0.0, (dt.datetime.now(dt.UTC) - started).total_seconds())
 
 
-
 def _format_duration(seconds: float) -> str:
     if seconds < 60.0:
         return f"{seconds:.1f}s"
     if seconds < 3600.0:
         return f"{seconds / 60.0:.1f}m"
     return f"{seconds / 3600.0:.1f}h"
-
 
 
 def _last_nonempty_log_line(path: Path) -> str | None:
@@ -283,13 +279,11 @@ def _last_nonempty_log_line(path: Path) -> str | None:
     return None
 
 
-
 def _first_log_line_containing(log_tail: str, needle: str) -> str | None:
     for line in log_tail.splitlines():
         if needle in line:
             return state._shorten(line)
     return None
-
 
 
 def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str:
@@ -302,7 +296,6 @@ def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str
         return ""
 
 
-
 def _read_json_object(path: Path) -> dict[str, object]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -311,13 +304,11 @@ def _read_json_object(path: Path) -> dict[str, object]:
     return raw if isinstance(raw, dict) else {}
 
 
-
 def _log_age_seconds(path: Path) -> float | None:
     try:
         return max(0.0, time.time() - path.stat().st_mtime)
     except OSError:
         return None
-
 
 
 def _is_guard_command(command: object) -> bool:
@@ -330,7 +321,6 @@ def _is_guard_command(command: object) -> bool:
         and part.replace("\\", "/").endswith("tools/memory_guard.py")
         for part in command
     )
-
 
 
 def _row_command_mentions_pytest(row: sqlite3.Row) -> bool:
@@ -348,7 +338,6 @@ def _row_command_mentions_pytest(row: sqlite3.Row) -> bool:
     )
 
 
-
 def _pytest_sections_from_summary(summary_json: object) -> list[dict[str, object]]:
     if not summary_json:
         return []
@@ -358,7 +347,6 @@ def _pytest_sections_from_summary(summary_json: object) -> list[dict[str, object
     if isinstance(repro, dict):
         candidates.append(repro.get("pytest"))
     return [item for item in candidates if isinstance(item, dict)]
-
 
 
 def _pytest_current_status_line(summary_json: object) -> str | None:
@@ -379,14 +367,11 @@ def _pytest_current_status_line(summary_json: object) -> str | None:
                 return f"  pytest_current=missing path={path}"
             error = current_test_file.get("error")
             if isinstance(error, str) and error.strip():
-                return (
-                    f"  pytest_current=unreadable error={state._shorten(error.strip(), 120)}"
-                )
+                return f"  pytest_current=unreadable error={state._shorten(error.strip(), 120)}"
         current = pytest_section.get("current_test")
         if isinstance(current, str) and current.strip():
             return f"  pytest_current={current.strip()}"
     return None
-
 
 
 def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | None:
@@ -403,7 +388,6 @@ def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | No
     return None
 
 
-
 def _pytest_progress_failure_counts(line: str | None) -> tuple[int, int] | None:
     if line is None:
         return None
@@ -417,14 +401,12 @@ def _pytest_progress_failure_counts(line: str | None) -> tuple[int, int] | None:
     return failures, errors
 
 
-
 def _summary_child_process(summary_json: object) -> dict[str, object] | None:
     if not summary_json:
         return None
     summary = _read_json_object(Path(str(summary_json)))
     child = summary.get("child_process")
     return child if isinstance(child, dict) else None
-
 
 
 def _summary_host_platform(summary_json: object) -> str | None:
@@ -441,7 +423,6 @@ def _summary_host_platform(summary_json: object) -> str | None:
     return platform if isinstance(platform, str) and platform.strip() else None
 
 
-
 def _summary_payload_host_platform(summary: Mapping[str, object]) -> str | None:
     repro = summary.get("repro")
     if not isinstance(repro, dict):
@@ -451,7 +432,6 @@ def _summary_payload_host_platform(summary: Mapping[str, object]) -> str | None:
         return None
     platform = host.get("platform")
     return platform if isinstance(platform, str) and platform.strip() else None
-
 
 
 def _memory_guard_child_runner_evidence(summary_json: object) -> str | None:
@@ -472,13 +452,11 @@ def _memory_guard_child_runner_evidence(summary_json: object) -> str | None:
     return f"child_process={label}"
 
 
-
 def _memory_guard_child_runner_status_line(summary_json: object) -> str | None:
     evidence = _memory_guard_child_runner_evidence(summary_json)
     if evidence is None:
         return None
     return f"  guard_child={evidence}"
-
 
 
 def _memory_guard_child_descendant_status_line(summary_json: object) -> str | None:
@@ -504,7 +482,6 @@ def _memory_guard_child_descendant_status_line(summary_json: object) -> str | No
     if sample_evidence is not None:
         line += f" {sample_evidence}"
     return line
-
 
 
 def _descendant_sample_evidence(
@@ -534,11 +511,9 @@ def _descendant_sample_evidence(
     return "descendant_samples=" + "; ".join(snippets) + suffix
 
 
-
 def _low_signal_descendant_command(command: str) -> bool:
     normalized = command.replace("\\", "/").strip().strip('"').casefold()
     return normalized.endswith("/conhost.exe") or normalized == "conhost.exe"
-
 
 
 def _running_pytest_failures_observed_diagnostic(
@@ -580,7 +555,6 @@ def _running_pytest_failures_observed_diagnostic(
         scopes=("tools/proof_queue.py",),
         artifacts=(str(row["log_path"]),),
     )
-
 
 
 def _running_pytest_current_test_missing_diagnostic(
@@ -650,7 +624,6 @@ def _running_pytest_current_test_missing_diagnostic(
     )
 
 
-
 def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | None:
     if row["status"] != "running":
         return None
@@ -700,8 +673,8 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
     )
     if not custody._pid_alive(child_pid):
         evidence = (
-            f"summary_json={row['summary_json']} child_pid={child_pid} "
-            f"last_log_age={_format_duration(log_age_s)}"
+            f"child_pid={child_pid} last_log_age={_format_duration(log_age_s)} "
+            f"summary_json={row['summary_json']}"
         )
         if host_platform == "win32":
             evidence += f" child_process={child_runner_label}"
@@ -738,8 +711,8 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
                 severity="infra",
                 summary="Running proof row could not be inspected by the process sampler.",
                 evidence=(
-                    f"summary_json={row['summary_json']} child_pid={child_pid} "
-                    f"sampler_error={type(exc).__name__}: {exc}"
+                    f"child_pid={child_pid} sampler_error={type(exc).__name__}: {exc} "
+                    f"summary_json={row['summary_json']}"
                 ),
                 next_action=(
                     "Inspect the memory-guard summary and process custody manually, "
@@ -750,9 +723,8 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
         if descendants:
             sample_evidence = _descendant_sample_evidence(samples, descendants)
             evidence = (
-                f"summary_json={row['summary_json']} child_pid={child_pid} "
-                f"last_log_age={_format_duration(log_age_s)} "
-                f"descendants={len(descendants)}"
+                f"child_pid={child_pid} last_log_age={_format_duration(log_age_s)} "
+                f"descendants={len(descendants)} summary_json={row['summary_json']}"
             )
             if sample_evidence is not None:
                 evidence += f" {sample_evidence}"
@@ -774,8 +746,8 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
         evidence = (
-            f"summary_json={row['summary_json']} child_pid={child_pid} "
-            f"last_log_age={_format_duration(log_age_s)} descendants=0"
+            f"child_pid={child_pid} last_log_age={_format_duration(log_age_s)} "
+            f"descendants=0 summary_json={row['summary_json']}"
         )
         summary_text = (
             "Running proof row has a live nested memory guard but no visible "
@@ -794,7 +766,6 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
         scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
         artifacts=(str(row["summary_json"]), str(row["log_path"])),
     )
-
 
 
 def _finished_incomplete_memory_guard_diagnostic(
@@ -870,7 +841,6 @@ def _finished_incomplete_memory_guard_diagnostic(
     )
 
 
-
 def _finished_worker_exit_without_summary_diagnostic(
     row: sqlite3.Row,
 ) -> dict[str, object] | None:
@@ -940,7 +910,6 @@ def _finished_worker_exit_without_summary_diagnostic(
     )
 
 
-
 def _active_log_status(row: sqlite3.Row) -> list[str]:
     path = Path(row["log_path"])
     try:
@@ -974,7 +943,6 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     return lines
 
 
-
 def _diagnostic(
     *,
     signal_id: str,
@@ -996,7 +964,6 @@ def _diagnostic(
     }
 
 
-
 def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | None:
     for pytest_section in _pytest_sections_from_summary(summary_json):
         current_test_file = pytest_section.get("current_test_file")
@@ -1014,7 +981,6 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
     return None
 
 
-
 def _diagnostics_have_terminal_stale_signal(
     diagnostics: Sequence[dict[str, object]],
 ) -> bool:
@@ -1024,22 +990,17 @@ def _diagnostics_have_terminal_stale_signal(
     )
 
 
-
 def _diagnostics_have_signal(
     diagnostics: Sequence[dict[str, object]], signal_id: str
 ) -> bool:
     return any(diagnostic.get("signal_id") == signal_id for diagnostic in diagnostics)
 
 
-
 def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | None:
     if not diagnostics:
         return None
     first = diagnostics[0]
-    return (
-        f"{first['signal_id']} [{first['severity']}]: {state._shorten(str(first['summary']))}"
-    )
-
+    return f"{first['signal_id']} [{first['severity']}]: {state._shorten(str(first['summary']))}"
 
 
 def _diagnostic_artifacts(diagnostics: Sequence[dict[str, object]]) -> list[str]:
@@ -1051,7 +1012,6 @@ def _diagnostic_artifacts(diagnostics: Sequence[dict[str, object]]) -> list[str]
     return [str(path) for path in artifacts]
 
 
-
 def _print_status_diagnostics(row: sqlite3.Row) -> None:
     diagnostics = _run_diagnostics(row)
     diagnostic_summary = _format_diagnostic_summary(diagnostics)
@@ -1060,7 +1020,6 @@ def _print_status_diagnostics(row: sqlite3.Row) -> None:
     artifacts = _diagnostic_artifacts(diagnostics)
     if artifacts:
         print(f"  artifacts={', '.join(artifacts)}")
-
 
 
 def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]]) -> str:
@@ -1079,7 +1038,6 @@ def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]])
         f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
         "has no queue diagnostic signals."
     )
-
 
 
 def _audit_issue(
@@ -1103,7 +1061,6 @@ def _audit_issue(
     }
 
 
-
 def _audit_severity_for_diagnostic(row: sqlite3.Row, signal_id: str) -> str | None:
     if signal_id == "memory-guard-summary-incomplete" and row["status"] == "stale":
         return "warning"
@@ -1112,7 +1069,6 @@ def _audit_severity_for_diagnostic(row: sqlite3.Row, signal_id: str) -> str | No
     if signal_id in AUDIT_WARNING_DIAGNOSTICS:
         return "warning"
     return None
-
 
 
 def _frontier_failure(
@@ -1142,7 +1098,6 @@ def _frontier_failure(
     return None
 
 
-
 def _frontier_superseded(dag: dict[str, list[dict[str, object]]]) -> bool:
     for edge in dag.get("children", []):
         if str(edge["kind"]) not in FRONTIER_SUPERSEDING_EDGE_KINDS:
@@ -1150,7 +1105,6 @@ def _frontier_superseded(dag: dict[str, list[dict[str, object]]]) -> bool:
         if str(edge["child_status"]) in FRONTIER_SUPERSEDING_CHILD_STATUSES:
             return True
     return False
-
 
 
 def _audit_rows(
@@ -1193,7 +1147,6 @@ def _audit_rows(
     return rows
 
 
-
 def _diagnose_row(conn: sqlite3.Connection, args: argparse.Namespace) -> sqlite3.Row:
     conn.row_factory = sqlite3.Row
     if args.run_id:
@@ -1219,6 +1172,7 @@ def _diagnose_row(conn: sqlite3.Connection, args: argparse.Namespace) -> sqlite3
         selector = args.run_id or args.logical_id or "latest proof run"
         raise SystemExit(f"unknown proof run selector {selector!r}")
     return row
+
 
 SOURCE_EXTENSION_BUILD_PLAN_MISSING_RE = re.compile(
     r"source extension build plan not found: (?P<path>[^\r\n\"]+)"
@@ -1268,6 +1222,7 @@ CPYTHON_ABI_PYMOD_GIL_SLOT_RE = re.compile(
     r"Py_MOD_PER_INTERPRETER_GIL_SUPPORTED[\s\S]*?)"
     r"(?=\n\n|proof_queue finished|$)"
 )
+
 
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
@@ -1471,9 +1426,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
         in log_tail
     ):
         evidence_parts = [
-            _first_log_line_containing(
-                log_tail, "[scoreboard] machine NOT quiescent"
-            )
+            _first_log_line_containing(log_tail, "[scoreboard] machine NOT quiescent")
             or "",
             _first_log_line_containing(
                 log_tail,
@@ -2377,9 +2330,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             if phase is not None:
                 evidence += f" pytest_phase={phase}"
             next_action_context = f"{nodeid}"
-        if (
-            pytest_context is not None
-            and nodeid.startswith(NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX)
+        if pytest_context is not None and nodeid.startswith(
+            NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX
         ):
             diagnostics.append(
                 _diagnostic(
@@ -2438,8 +2390,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             evidence += f" cargo_quarantine_receipt={receipt}"
             artifacts = (receipt,)
         nested_guard = (
-            "guarded_exec:" in log_tail
-            or "MOLT_TEST_SUITE guarded command" in log_tail
+            "guarded_exec:" in log_tail or "MOLT_TEST_SUITE guarded command" in log_tail
         )
         diagnostics.append(
             _diagnostic(
@@ -2478,9 +2429,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     incomplete_memory_guard = _finished_incomplete_memory_guard_diagnostic(row)
     if incomplete_memory_guard is not None:
         diagnostics.insert(0, incomplete_memory_guard)
-    worker_exit_without_summary = (
-        _finished_worker_exit_without_summary_diagnostic(row)
-    )
+    worker_exit_without_summary = _finished_worker_exit_without_summary_diagnostic(row)
     if worker_exit_without_summary is not None:
         diagnostics.insert(0, worker_exit_without_summary)
 

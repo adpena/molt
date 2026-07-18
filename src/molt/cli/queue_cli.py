@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-import subprocess
+from subprocess import SubprocessError, run as run_process
 import sys
 
 from molt.cli.project_roots import _find_molt_root
@@ -16,7 +16,9 @@ def _positive_queue_size(value: object) -> str:
     try:
         parsed = int(str(value).strip())
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"--queue-size must be a positive integer, got {value!r}") from exc
+        raise ValueError(
+            f"--queue-size must be a positive integer, got {value!r}"
+        ) from exc
     if parsed < 1:
         raise ValueError(f"--queue-size must be a positive integer, got {value!r}")
     return str(parsed)
@@ -53,14 +55,14 @@ def _main_worktree_venv(repo_root: Path) -> Path | None:
     if not (repo_root / ".git").exists():
         return None
     try:
-        proc = subprocess.run(
+        proc = run_process(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root,
             capture_output=True,
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, SubprocessError):
         return None
     if proc.returncode != 0:
         return None
@@ -137,7 +139,7 @@ def handle_queue_command(args: argparse.Namespace) -> int:
     except DxConfigError as exc:
         print(f"molt queue: {exc}", file=sys.stderr)
         return 2
-    result = subprocess.run(
+    result = run_process(
         [sys.executable, str(proof_queue), *queue_args],
         cwd=repo_root,
         env=env,
