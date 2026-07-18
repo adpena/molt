@@ -1100,6 +1100,7 @@ def _wasm_link_operation_counts(
                 for name, value in pipeline_stage_ms.items()
                 if (
                     str(name).startswith("split_app_")
+                    or str(name).startswith("runtime_tree_shake_cache_")
                     or str(name).startswith("wasm_whole_artifact_")
                 )
                 and isinstance(value, (int, float))

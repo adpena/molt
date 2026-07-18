@@ -541,6 +541,7 @@ def test_cli_doctor_json() -> None:
     assert "backend-daemon" in names
     assert "cargo-target-dir" in names
     assert "molt-cache-dir" in names
+    assert "wasm-link-cache" in names
     assert "cargo-upgrade" in names
     assert "llvm-backend-toolchain" in names
 

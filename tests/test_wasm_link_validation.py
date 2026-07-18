@@ -3,6 +3,9 @@ import importlib.machinery
 import importlib.util
 import json
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -1900,11 +1903,16 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
 ) -> None:
     app = _build_split_runtime_app_module([])
     optimize_calls = 0
-    monkeypatch.setattr(
-        wasm_link, "_split_app_optimize_cache_root", lambda: tmp_path / "cache"
-    )
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "session-a"))
     monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "wasm-opt")
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "test")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "test"),
+    )
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
     monkeypatch.setattr(
         wasm_link,
@@ -1934,6 +1942,7 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
         operation_counts=cold_counts,
         facts_provider=_facts_provider,
     )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "session-b"))
     warm = wasm_link._optimize_split_app_module(
         app,
         reference_data=None,
@@ -1947,17 +1956,118 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
 
     assert warm == cold
     assert optimize_calls == 1
-    assert cold_counts == {
-        "split_app_optimize_requests": 1,
-        "split_app_optimize_cache_misses": 1,
-        "split_app_wasm_opt_runs": 1,
-    }
-    assert warm_counts == {
-        "split_app_optimize_requests": 1,
-        "split_app_optimize_cache_hits": 1,
-    }
+    assert cold_counts["split_app_optimize_requests"] == 1
+    assert cold_counts["split_app_optimize_cache_misses"] == 1
+    assert cold_counts["split_app_wasm_opt_runs"] == 1
+    assert cold_counts["split_app_optimize_cache_bytes_written"] == len(cold)
+    assert warm_counts["split_app_optimize_requests"] == 1
+    assert warm_counts["split_app_optimize_cache_hits"] == 1
+    assert warm_counts["split_app_optimize_cache_bytes_read"] == len(warm)
     assert warm_attestation["pipeline"] == ["test-pass"]
     assert warm_attestation["cache_hit"] is True
+    assert next((cache_root / "wasm_link").rglob("artifact.wasm")).read_bytes() == cold
+    assert not (tmp_path / "session-a" / ".molt_state" / "wasm_link_cache").exists()
+    assert not (tmp_path / "session-b" / ".molt_state" / "wasm_link_cache").exists()
+
+
+def test_split_app_optimization_cache_rejects_corrupt_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _build_split_runtime_app_module([])
+    calls = 0
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "test")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "test"),
+    )
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_optimize(path: Path, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return True
+
+    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_optimize)
+    first = wasm_link._optimize_split_app_module(
+        app,
+        reference_data=None,
+        optimize=True,
+        optimize_level="Oz",
+        contract_keep_set={"molt_main"},
+        facts_provider=_facts_provider,
+    )
+    artifact = next((tmp_path / "cache" / "wasm_link").rglob("artifact.wasm"))
+    artifact.write_bytes(first + b"corrupt")
+    counts: dict[str, int | float] = {}
+    second = wasm_link._optimize_split_app_module(
+        app,
+        reference_data=None,
+        optimize=True,
+        optimize_level="Oz",
+        contract_keep_set={"molt_main"},
+        operation_counts=counts,
+        facts_provider=_facts_provider,
+    )
+
+    assert second == first
+    assert calls == 2
+    assert counts["split_app_optimize_cache_corruptions"] == 1
+    assert counts["split_app_optimize_cache_misses"] == 1
+
+
+def test_split_app_optimization_cache_serializes_concurrent_producers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _build_split_runtime_app_module([])
+    calls = 0
+    calls_lock = threading.Lock()
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "test")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "test"),
+    )
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_optimize(path: Path, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.05)
+        return True
+
+    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_optimize)
+
+    def optimize() -> bytes:
+        return wasm_link._optimize_split_app_module(
+            app,
+            reference_data=None,
+            optimize=True,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+            facts_provider=_facts_provider,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        outputs = list(executor.map(lambda _index: optimize(), range(4)))
+
+    assert outputs == [outputs[0]] * 4
+    assert calls == 1
 
 
 def test_python_callable_table_consumer_rejects_dynamic_active_offset() -> None:
@@ -2149,6 +2259,7 @@ def test_tree_shake_runtime_reuses_cached_result(
     target_root = tmp_path / "target"
     final_runtime = b"\x00asm\x01\x00\x00\x00tree-shaken-runtime"
     calls = {"count": 0}
+    cache_root = tmp_path / "cache"
 
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         del capture_output, text, timeout
@@ -2162,14 +2273,24 @@ def test_tree_shake_runtime_reuses_cached_result(
         path.write_bytes(final_runtime)
         return True
 
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root / "session-a"))
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "wasm-opt 1.0"),
+    )
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_final_optimize)
 
+    cold_counts: dict[str, int | float] = {}
     first = wasm_link._tree_shake_runtime(
-        module, {"exception_pending"}, facts_provider=_facts_provider
+        module,
+        {"exception_pending"},
+        facts_provider=_facts_provider,
+        operation_counts=cold_counts,
     )
 
     assert first == final_runtime
@@ -2182,12 +2303,225 @@ def test_tree_shake_runtime_reuses_cached_result(
             AssertionError("wasm-opt should not rerun for cached tree-shake output")
         ),
     )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root / "session-b"))
 
+    warm_counts: dict[str, int | float] = {}
     second = wasm_link._tree_shake_runtime(
-        module, {"exception_pending"}, facts_provider=_facts_provider
+        module,
+        {"exception_pending"},
+        facts_provider=_facts_provider,
+        operation_counts=warm_counts,
     )
 
     assert second == final_runtime
+    assert cold_counts["runtime_tree_shake_cache_misses"] == 1
+    assert cold_counts["runtime_tree_shake_cache_bytes_written"] == len(first)
+    assert warm_counts["runtime_tree_shake_cache_hits"] == 1
+    assert warm_counts["runtime_tree_shake_cache_bytes_read"] == len(second)
+    assert next((cache_root / "wasm_link").rglob("artifact.wasm")).read_bytes() == first
+    assert not (target_root / "session-a" / ".molt_state" / "wasm_link_cache").exists()
+    assert not (target_root / "session-b" / ".molt_state" / "wasm_link_cache").exists()
+
+
+def test_tree_shake_runtime_does_not_cache_transient_timeout_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _build_exported_runtime_module("molt_exception_pending")
+    cache_root = tmp_path / "cache"
+    calls = 0
+
+    def timeout(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        raise wasm_link.subprocess.TimeoutExpired("wasm-opt", 300)
+
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "session-a"))
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "wasm-opt 1.0"),
+    )
+    monkeypatch.setattr(wasm_link, "_run_external_tool", timeout)
+
+    cold_counts: dict[str, int | float] = {}
+    cold = wasm_link._tree_shake_runtime(
+        module,
+        {"exception_pending"},
+        facts_provider=_facts_provider,
+        operation_counts=cold_counts,
+    )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "session-b"))
+    warm_counts: dict[str, int | float] = {}
+    warm = wasm_link._tree_shake_runtime(
+        module,
+        {"exception_pending"},
+        facts_provider=_facts_provider,
+        operation_counts=warm_counts,
+    )
+
+    assert warm == cold
+    assert calls == 2
+    assert cold_counts["runtime_tree_shake_cache_timeouts"] == 1
+    assert warm_counts["runtime_tree_shake_cache_timeouts"] == 1
+    assert cold_counts.get("runtime_tree_shake_cache_bytes_written", 0) == 0
+    assert warm_counts.get("runtime_tree_shake_cache_hits", 0) == 0
+    assert not list((cache_root / "wasm_link").rglob("artifact.wasm"))
+
+
+def test_wasm_link_cache_root_is_canonical_molt_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "shared-cache"
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "legacy-state"))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "session-target"))
+
+    assert wasm_link._wasm_link_cache_root() == cache_root / "wasm_link"
+
+
+def test_transform_authority_digest_invalidates_both_cache_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_files = tuple(tmp_path / name for name in ("link", "post", "binaryen"))
+    for index, path in enumerate(authority_files):
+        path.write_text(f"authority-{index}", encoding="utf-8")
+    first_digest = wasm_link._transform_authority_digest(authority_files)
+    authority_files[-1].write_text("changed-binaryen-authority", encoding="utf-8")
+    assert wasm_link._transform_authority_digest(authority_files) != first_digest
+
+    def keys(authority: str) -> tuple[str, str]:
+        monkeypatch.setattr(
+            wasm_link, "_wasm_link_transform_authority_digest", lambda: authority
+        )
+        split = wasm_link._split_app_optimize_cache_key(
+            app_data=b"app",
+            reference_data=b"reference",
+            optimize=False,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+        )
+        tree = wasm_link._tree_shake_runtime_cache_key(
+            runtime_data=b"runtime",
+            normalized_required_exports={"molt_main"},
+            wasm_opt_sha256="a" * 64,
+            feature_flags=["--converge"],
+        )
+        return split, tree
+
+    assert keys("authority-a") != keys("authority-b")
+
+
+def test_wasm_opt_binary_content_invalidates_both_cache_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "wasm-opt"
+    executable.write_bytes(b"binaryen-build-a")
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: str(executable))
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "same-version")
+
+    def keys() -> tuple[str | None, str]:
+        identity = wasm_link._wasm_opt_executable_identity(str(executable))
+        assert identity is not None
+        split = wasm_link._split_app_optimize_cache_key(
+            app_data=b"app",
+            reference_data=b"reference",
+            optimize=True,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+        )
+        tree = wasm_link._tree_shake_runtime_cache_key(
+            runtime_data=b"runtime",
+            normalized_required_exports={"molt_main"},
+            wasm_opt_sha256=identity[1],
+            feature_flags=["--converge"],
+        )
+        return split, tree
+
+    first = keys()
+    executable.write_bytes(b"binaryen-build-b-with-different-content")
+    second = keys()
+
+    assert first[0] is not None
+    assert second[0] is not None
+    assert first != second
+
+
+def test_split_app_cache_disables_when_wasm_opt_identity_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "missing-wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_executable_identity", lambda _path: None)
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_unused_module_function_imports",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        wasm_link, "_run_wasm_opt_via_optimize", lambda *_args, **_kwargs: True
+    )
+
+    assert (
+        wasm_link._split_app_optimize_cache_key(
+            app_data=b"app",
+            reference_data=None,
+            optimize=True,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+        )
+        is None
+    )
+    counts: dict[str, int | float] = {}
+    app = _build_split_runtime_app_module([])
+    assert (
+        wasm_link._optimize_split_app_module(
+            app,
+            reference_data=None,
+            optimize=True,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+            operation_counts=counts,
+            facts_provider=_facts_provider,
+        )
+        == app
+    )
+    assert counts["split_app_optimize_cache_requests"] == 1
+    assert counts["split_app_optimize_cache_identity_errors"] == 1
+    assert not list((tmp_path / "cache").rglob("artifact.wasm"))
+
+
+def test_tree_shake_cache_counts_request_when_identity_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _build_exported_runtime_module("molt_exception_pending")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "missing-wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_executable_identity", lambda _path: None)
+
+    def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(module)
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(
+        wasm_link, "_run_wasm_opt_via_optimize", lambda *_args, **_kwargs: False
+    )
+    counts: dict[str, int | float] = {}
+    wasm_link._tree_shake_runtime(
+        module,
+        {"exception_pending"},
+        facts_provider=_facts_provider,
+        operation_counts=counts,
+    )
+
+    assert counts["runtime_tree_shake_cache_requests"] == 1
+    assert counts["runtime_tree_shake_cache_identity_errors"] == 1
+    assert not list((tmp_path / "cache").rglob("artifact.wasm"))
 
 
 def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
@@ -2291,6 +2625,14 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         "wasm_facts_cache_hits",
         "wasm_facts_input_bytes",
         "wasm_facts_response_chars",
+        "runtime_tree_shake_cache_hits",
+        "runtime_tree_shake_cache_misses",
+        "runtime_tree_shake_cache_wall_ms",
+        "runtime_tree_shake_cache_optimizer_peak_total_rss_kb",
+        "split_app_optimize_cache_hits",
+        "split_app_optimize_cache_misses",
+        "split_app_optimize_cache_wall_ms",
+        "split_app_optimize_cache_optimizer_peak_total_rss_kb",
     }
 
 
@@ -2324,10 +2666,13 @@ def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
         fixed_prefix_len=81,
     )
 
-    assert wasm_link._reconcile_split_callable_layout(
-        app_layout,
-        final_runtime_layout,
-    ) == app_layout
+    assert (
+        wasm_link._reconcile_split_callable_layout(
+            app_layout,
+            final_runtime_layout,
+        )
+        == app_layout
+    )
 
 
 def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
@@ -3176,8 +3521,14 @@ def test_tree_shake_runtime_uses_converge_flag(
         return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
+    monkeypatch.setattr(
+        wasm_link,
+        "_wasm_opt_executable_identity",
+        lambda path: (path, "a" * 64, "wasm-opt 1.0"),
+    )
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(
         wasm_link, "_run_wasm_opt_via_optimize", lambda *_a, **_k: False
