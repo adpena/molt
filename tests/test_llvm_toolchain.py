@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -23,6 +24,26 @@ from molt.llvm_toolchain import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_toolchain_bootstrap_import_does_not_load_cli_dependency_graph() -> None:
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import sys; import molt.llvm_toolchain; "
+            "assert not any(name == 'molt.cli' or name.startswith('molt.cli.') "
+            "for name in sys.modules)",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def _write(path: Path, text: str) -> None:
