@@ -117,6 +117,20 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_python_effects.py"
+outputs = [
+  "src/molt/compiler_analysis/python_effects_generated.py",
+  "runtime/molt-ir/src/python_effects_generated.rs",
+]
+source = "runtime/python_effects.toml"
+check_mode = true
+check_command = "tools/gen_python_effects.py --check"
+idempotent = true
+sync_test = "tests/test_gen_python_effects.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_runtime_profile_schema.py"
 outputs = [
   "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",

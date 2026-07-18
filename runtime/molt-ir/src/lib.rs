@@ -16,6 +16,7 @@ pub mod ir_schema;
 pub mod json_boundary;
 pub mod native_callable_abi;
 pub mod process_diagnostics;
+pub mod python_effects_generated;
 pub mod repr;
 pub mod runtime_callable_symbols;
 pub mod stdlib_module_symbols;

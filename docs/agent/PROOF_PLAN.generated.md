@@ -9,8 +9,8 @@
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 10 |
 | Hashed executable authority inputs | 1 | 32 |
-| Local path rules | 35 | 35 |
-| Unique local commands | 73 | 74 |
+| Local path rules | 35 | 36 |
+| Unique local commands | 73 | 77 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -66,6 +66,7 @@ Receipts record resolved path and version text, bind their identity hash to both
 | `repository.performance-doc.freshness` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.op-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.heap-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.python-effects.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.runtime-profile.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.cpython-slots.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.op-kinds.drift` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 1 |
@@ -142,6 +143,7 @@ Receipts record resolved path and version text, bind their identity hash to both
 | `frontend-python` | 1 | 3 | no |
 | `bootstrap-stdlib` | 4 | 2 | no |
 | `heap-kind-lifetime-authority` | 7 | 2 | no |
+| `python-effect-capability-authority` | 6 | 3 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
 | `op-kind-registry` | 10 | 2 | no |
 | `frontend-diagnostics` | 6 | 2 | no |
