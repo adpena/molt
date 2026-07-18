@@ -90,8 +90,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         The ``@dataclass`` transform is construction-method-agnostic: it operates
         on a *finished* class object via ``setattr`` / ``cls.x = ...`` and reads
-        ``cls.__annotations__`` (gathered at compile time and published into the
-        class namespace).  It therefore applies identically whether ``class_val``
+        ``cls.__annotations__`` (eagerly materialized through Python 3.13 and
+        provided by the runtime's lazy type descriptor on Python 3.14+).  It
+        therefore applies identically whether ``class_val``
         came from the static "outlined ``CLASS_DEF``" path or from the dynamic
         metaclass-call path the #50 block-execution re-lower uses.  Centralizing
         the emission here keeps exactly ONE code path that publishes the dataclass
@@ -283,10 +284,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         exec_map = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
         self.class_annotation_exec_map = exec_map
-        self._store_local_value(name, exec_map)
-        if self.current_func_name.startswith("molt_init_"):
-            self.globals[name] = exec_map
-            self._emit_module_attr_set(name, exec_map)
+        self._publish_annotation_exec_map(name, exec_map)
         return exec_map
 
     def _rewrite_class_annotation_expr(
@@ -1862,38 +1860,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     result=MoltValue("none"),
                 )
             )
-        elif (
-            not self.future_annotations
-            and not self.eager_annotations
-            and dynamic_namespace is not None
-            and self.class_annotation_items
-            and "__annotations__" not in class_attr_values
-        ):
-            # PEP 749 deferred annotations: the __annotate__ function is
-            # emitted separately, but CPython 3.14 also needs __annotations__
-            # eagerly accessible on class objects (via type descriptor).
-            # Since our runtime doesn't implement the type.__annotations__
-            # descriptor, eagerly evaluate and store annotations here.
-            ann_items: list[MoltValue] = []
-            for name, expr, _exec_id in self.class_annotation_items:
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                ann_val = self._emit_annotation_value(expr, stringize=False)
-                ann_items.extend([key_val, ann_val])
-            ann_dict = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__annotations__"], result=key_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[dynamic_namespace, key_val, ann_dict],
-                    result=MoltValue("none"),
-                )
-            )
-
         if dynamic_build:
             if (
                 dynamic_meta is None
@@ -2140,26 +2106,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 akey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=["__annotate__"], result=akey))
                 class_def_attrs.append((akey, annotate_val))
-                # Also emit eager __annotations__ dict: our runtime does not
-                # implement the type.__annotations__ descriptor that CPython 3.14
-                # uses to lazily evaluate __annotate__.  Eagerly storing the
-                # annotations ensures cls.__annotations__ works for dataclasses
-                # and any code that reads annotations directly.
-                ann_items_eager: list[MoltValue] = []
-                for name, expr, _exec_id in self.class_annotation_items:
-                    ekey = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=ekey))
-                    eval_val = self._emit_annotation_value(expr, stringize=False)
-                    ann_items_eager.extend([ekey, eval_val])
-                ann_dict = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(
-                    MoltOp(kind="DICT_NEW", args=ann_items_eager, result=ann_dict)
-                )
-                ann_key = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["__annotations__"], result=ann_key)
-                )
-                class_def_attrs.append((ann_key, ann_dict))
             for method_name, method_info in methods.items():
                 mkey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[method_name], result=mkey))
@@ -2190,8 +2136,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self._publish_class_value(node.name, class_val)
             # ``@dataclass`` runtime application is construction-method-agnostic:
             # it operates on the finished ``class_val`` via ``setattr`` /
-            # ``cls.x = ...`` and reads ``cls.__annotations__`` (published into the
-            # namespace at compile time).  Apply it here for the static-outlined
+            # ``cls.x = ...`` and reads ``cls.__annotations__`` through the versioned
+            # eager/lazy runtime authority.  Apply it here for the static-outlined
             # path; the ``dynamic_build`` branch below applies the SAME helper, so
             # a dataclass whose body needs block execution (P0 #50) still gets its
             # generated dunders.

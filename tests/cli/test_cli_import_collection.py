@@ -66,6 +66,7 @@ from molt.cli.models import (
     _StagedExternalPackageNativeArtifact,
     _BuildDiagnosticsContext,
 )
+from molt.cli.target_python import TargetPythonVersion
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
@@ -15016,6 +15017,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
+        target_python=cli._parse_target_python_version("3.14"),
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("alpha", "main"),
             known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
@@ -15035,6 +15037,8 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.native_python_exports == {"alpha.native_call"}
     assert gen.midend_hot_functions == {"main::hot"}
     assert gen.classes["MainClass"]["module"] == "main"
+    assert gen.target_python == (3, 14)
+    assert gen.eager_annotations is False
 
 
 def test_module_lowering_context_digest_for_module_reuses_precomputed_views() -> None:
@@ -17081,9 +17085,25 @@ def test_analyze_module_schedule_condenses_cycle_into_serial_scc_unit() -> None:
     assert closures["b"] == frozenset({"a", "b"})
 
 
-def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
+def test_frontend_lower_module_worker_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module_path = tmp_path / "worker_module.py"
-    source = "x = 1\ny = x + 2\n"
+    source = "class Deferred:\n    value: int\n"
+    parsed_targets: list[tuple[int, int]] = []
+
+    def parse_for_target(
+        source_text: str,
+        *,
+        filename: str,
+        target_python: TargetPythonVersion,
+    ) -> ast.AST:
+        parsed_targets.append(target_python.feature_version)
+        return ast.parse(source_text, filename=filename)
+
+    monkeypatch.setattr(
+        cli_frontend_worker, "_parse_source_for_target", parse_for_target
+    )
     payload = {
         "module_name": "worker_module",
         "module_path": str(module_path),
@@ -17106,12 +17126,15 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
         "pgo_hot_functions": ["worker_module::molt_main"],
+        "target_python": "3.14",
     }
     result = cli_frontend_worker._frontend_lower_module_worker(payload)
     assert result["ok"] is True
     assert isinstance(result["functions"], list)
     assert isinstance(result["func_code_ids"], dict)
     assert isinstance(result["timings"]["total_s"], float)
+    assert any("__annotate__" in function["name"] for function in result["functions"])
+    assert parsed_targets == [(3, 14)]
     worker = result["worker"]
     assert isinstance(worker["pid"], int)
     assert worker["started_ns"] > 0

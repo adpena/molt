@@ -41,3 +41,28 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     assert "def main(" in root_module_source
     assert "if args.command ==" not in root_module_source
     assert "ArgumentParser(" not in root_module_source
+
+
+def test_run_options_after_source_are_not_silently_forwarded_to_program() -> None:
+    parser = entrypoint_parser._build_entrypoint_parser()
+
+    args = parser.parse_args(
+        ["run", "app.py", "--python-version", "3.14", "--profile", "release"]
+    )
+
+    assert args.file == "app.py"
+    assert args.python_version == "3.14"
+    assert args.profile == "release"
+    assert args.script_args == []
+
+
+def test_run_double_dash_owns_option_shaped_program_arguments() -> None:
+    parser = entrypoint_parser._build_entrypoint_parser()
+
+    args = parser.parse_args(
+        ["run", "app.py", "--python-version", "3.14", "--", "--profile", "user"]
+    )
+
+    assert args.python_version == "3.14"
+    assert args.profile is None
+    assert args.script_args == ["--profile", "user"]

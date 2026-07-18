@@ -6,7 +6,6 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use molt_tir::ir_rewrites::rewrite_annotate_stubs;
 use std::env;
 use std::io;
 use std::path::Path;
@@ -288,8 +287,6 @@ fn main() -> io::Result<()> {
             "module_registry requires a native or WASM runtime-backed target",
         ));
     }
-
-    rewrite_annotate_stubs(&mut ir);
 
     // Source emitters do not link against native/WASM runtime objects, so they
     // prune unreachable runtime/bootstrap support before textual codegen.

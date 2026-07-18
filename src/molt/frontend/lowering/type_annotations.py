@@ -348,6 +348,15 @@ class TypeAnnotationMixin(_MixinBase):
         self.class_annotation_exec_counter += 1
         return ident
 
+    def _publish_annotation_exec_map(self, name: str, exec_map: MoltValue) -> None:
+        """Bind execution state where the deferred annotate body resolves it."""
+        self._store_local_value(name, exec_map)
+        if self.current_func_name == "molt_main" or self.current_func_name.startswith(
+            "molt_init_"
+        ):
+            self.globals[name] = exec_map
+            self._emit_module_attr_set(name, exec_map)
+
     def _annotate_qualname(self) -> str:
         prefix = self._qualname_prefix()
         if not prefix:
@@ -367,10 +376,7 @@ class TypeAnnotationMixin(_MixinBase):
         exec_map = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
         self.module_annotation_exec_map = exec_map
-        self._store_local_value(name, exec_map)
-        if self.current_func_name.startswith("molt_init_"):
-            self.globals[name] = exec_map
-            self._emit_module_attr_set(name, exec_map)
+        self._publish_annotation_exec_map(name, exec_map)
         return exec_map
 
     def _emit_annotation_exec_mark(self, exec_map: MoltValue, exec_id: int) -> None:

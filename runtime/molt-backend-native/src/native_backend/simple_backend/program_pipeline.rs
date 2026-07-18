@@ -1,7 +1,6 @@
 use super::*;
 use molt_tir::ir_rewrites::{
-    elide_useless_try_blocks_for_function, rewrite_annotate_stubs, rewrite_copy_aliases,
-    rewrite_phi_to_store_load,
+    elide_useless_try_blocks_for_function, rewrite_copy_aliases, rewrite_phi_to_store_load,
 };
 use std::fmt::Write as _;
 
@@ -124,7 +123,6 @@ impl SimpleBackend {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         split_megafunctions(ir);
-        rewrite_annotate_stubs(ir);
         run_post_tir_simple_ir_rewrites(&mut ir.functions);
 
         let emit_resolver_here = self.emit_app_callable_resolver;

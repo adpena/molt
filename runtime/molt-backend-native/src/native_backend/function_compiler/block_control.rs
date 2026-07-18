@@ -120,8 +120,7 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
 }
 
 #[cfg(feature = "native-backend")]
-#[cfg(test)]
-pub(in crate::native_backend::function_compiler) fn live_exception_rebind_vars_for_op(
+pub(in crate::native_backend::function_compiler) fn live_rebind_vars_for_op(
     vars: &BTreeMap<String, Variable>,
     transport_last_use: &BTreeMap<String, usize>,
     first_defined_at: &BTreeMap<String, usize>,
@@ -129,7 +128,7 @@ pub(in crate::native_backend::function_compiler) fn live_exception_rebind_vars_f
 ) -> BTreeMap<String, Variable> {
     vars.iter()
         .filter_map(|(name, var)| {
-            let last = transport_last_use.get(name).copied().unwrap_or(usize::MAX);
+            let last = transport_last_use.get(name).copied()?;
             let has_reaching_def = first_defined_at
                 .get(name)
                 .copied()

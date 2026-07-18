@@ -1,6 +1,6 @@
 //! Backend-neutral IR rewrite/elision passes (moved verbatim from lib.rs).
 
-use crate::ir::{FunctionIR, OpIR, SimpleIR};
+use crate::ir::{FunctionIR, OpIR};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Pre-process phi ops into explicit store_var/load_var pairs.
@@ -457,27 +457,6 @@ pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
                 }
             }
             _ => {}
-        }
-    }
-}
-
-/// Replace typing-only `__annotate__` stubs with a deterministic empty-dict
-/// return so all backend entrypoints preserve matching callable signatures and
-/// a usable `__annotations__` value.
-pub fn rewrite_annotate_stubs(ir: &mut SimpleIR) {
-    for func in ir.functions.iter_mut() {
-        if func.name.contains("__annotate__") {
-            func.ops.clear();
-            func.ops.push(OpIR {
-                kind: "dict_new".to_string(),
-                out: Some("__ret".to_string()),
-                ..OpIR::default()
-            });
-            func.ops.push(OpIR {
-                kind: "ret".to_string(),
-                var: Some("__ret".to_string()),
-                ..OpIR::default()
-            });
         }
     }
 }
