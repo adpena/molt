@@ -173,6 +173,19 @@ fn redundant_check_after_pure_ops_dropped() {
 }
 
 #[test]
+fn ssa_local_transport_is_proven_nonraising() {
+    let mut func = make_func_with_block(vec![
+        make_check_exception(),
+        make_original_kind("store_var"),
+        make_original_kind("load_var"),
+        make_check_exception(),
+    ]);
+    let stats = run(&mut func);
+    assert_eq!(stats.ops_removed, 1);
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 3);
+}
+
+#[test]
 fn check_after_call_kept() {
     let mut func = make_func_with_block(vec![
         make_const_int(1, ValueId(0)),

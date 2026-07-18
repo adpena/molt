@@ -26,7 +26,7 @@
 //! uses, then tightens it with local TIR facts for operations whose only
 //! remaining exceptional case has been statically excluded.
 
-mod classify;
+pub(crate) mod classify;
 mod engine;
 mod flow;
 

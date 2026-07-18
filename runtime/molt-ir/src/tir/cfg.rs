@@ -11,6 +11,7 @@
 //! - Loop control: `loop_break`, `loop_break_if_true`, `loop_break_if_false`, `loop_continue`
 
 use crate::ir::OpIR;
+use crate::tir::dominators::is_simple_exception_transfer_kind;
 use crate::tir::op_kinds_generated::{
     simpleir_kind_is_block_ender, simpleir_kind_is_block_leader,
     simpleir_kind_is_conditional_branch, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
@@ -730,13 +731,15 @@ fn compute_exception_edges(
             }
         }
 
-        // `check_exception` also carries its handler label directly even when
+        // Exception-transfer ops also carry their handler label directly even when
         // the frontend did not materialize an enclosing try_start/try_end
-        // region. This shape appears in method-level guarded field stores and
-        // must still thread live cleanup state into the handler block.
+        // region. The generated kind mapping includes wire aliases such as
+        // `async_work_poll`; spelling-specific discovery would give those ops a
+        // CheckException opcode after SSA while omitting the pre-SSA edge used
+        // to place and populate handler block arguments.
         for op_idx in block.start_op..block.end_op {
             let op = &ops[op_idx];
-            if op.kind != "check_exception" {
+            if !is_simple_exception_transfer_kind(&op.kind) {
                 continue;
             }
             let Some(target_label) = op.value else {
@@ -990,6 +993,23 @@ mod tests {
         // ret_void is not in our terminator list so it falls through, but
         // there's no next block so successors should be empty.
         assert_eq!(cfg.loop_depth[0], 0);
+    }
+
+    #[test]
+    fn async_work_poll_alias_records_the_same_implicit_edge_as_check_exception() {
+        let ops = vec![
+            op_val("async_work_poll", 41),
+            op("ret_void"),
+            op_val("label", 41),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let source = block_containing(&cfg.blocks, 0).expect("poll block");
+        let handler = block_containing(&cfg.blocks, 2).expect("handler block");
+        assert!(
+            cfg.exception_edges.contains(&(source, handler)),
+            "generated wire aliases must participate in pre-SSA exception CFG discovery"
+        );
     }
 
     // -----------------------------------------------------------------------
