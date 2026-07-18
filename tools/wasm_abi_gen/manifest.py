@@ -553,22 +553,69 @@ def _annotate_runtime_callable_features(
 
 
 @lru_cache(maxsize=1)
+def _runtime_crate_dependency_roots() -> tuple[Path, ...]:
+    """Return the target-independent local crate closure of ``molt-runtime``.
+
+    Export custody follows Cargo dependency authority, not crate-name prefixes.
+    Optional dependencies are included because WASM runtime profiles may enable
+    any of them. WASM-specific target dependencies are included as well; native-
+    only target tables are deliberately outside this scanner's target surface.
+
+    ``molt-cpython-abi`` owns a separately linked/exported ABI surface and is
+    scanned by ``generator_cpython_abi_link_import_kinds``. It must not be folded
+    into the runtime-export provider because names such as ``molt_type_call``
+    intentionally exist in both link units with different ABIs.
+    """
+
+    entry_root = RUNTIME_ROOT / "molt-runtime"
+    split_roots = {CPYTHON_ABI_SOURCE_ROOT.parent.resolve()}
+    pending = [entry_root.resolve()]
+    visited: set[Path] = set()
+    roots: list[Path] = []
+    runtime_root = RUNTIME_ROOT.resolve()
+    while pending:
+        root = pending.pop()
+        if root in visited or root in split_roots:
+            continue
+        try:
+            root.relative_to(runtime_root)
+        except ValueError:
+            continue
+        manifest_path = root / "Cargo.toml"
+        if not manifest_path.is_file():
+            raise WasmAbiManifestError(
+                f"runtime dependency root has no Cargo.toml: {root}"
+            )
+        visited.add(root)
+        roots.append(root)
+        cargo = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        dependency_tables = [cargo.get("dependencies", {})]
+        for selector, target in cargo.get("target", {}).items():
+            if (
+                isinstance(selector, str)
+                and "wasm" in selector
+                and "not(" not in selector
+                and isinstance(target, dict)
+            ):
+                dependency_tables.append(target.get("dependencies", {}))
+        for dependencies in dependency_tables:
+            if not isinstance(dependencies, dict):
+                continue
+            for spec in dependencies.values():
+                if not isinstance(spec, dict) or not isinstance(spec.get("path"), str):
+                    continue
+                pending.append((root / spec["path"]).resolve())
+    return tuple(sorted(roots))
+
+
+@lru_cache(maxsize=1)
 def _runtime_rust_files() -> tuple[Path, ...]:
-    roots = [
-        child
-        for child in RUNTIME_ROOT.iterdir()
-        if child.is_dir()
-        and (
-            child.name.startswith("molt-runtime")
-            or child.name.startswith("molt-stdlib")
-        )
-    ]
     generator_owned_outputs = {OUT_RUNTIME_CALLABLES_RS.resolve()}
     return tuple(
         sorted(
             path
-            for root in roots
-            for path in root.rglob("*.rs")
+            for root in _runtime_crate_dependency_roots()
+            for path in (root / "src").rglob("*.rs")
             if path.resolve() not in generator_owned_outputs
         )
     )

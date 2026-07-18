@@ -160,6 +160,13 @@ def load_manifest(root: Path) -> Manifest:
             isinstance(o, str) for o in row["outputs"]
         ):
             raise ManifestError(f"{tool}: outputs must be a list of strings")
+        toolchains = row.get("toolchains", [])
+        if not isinstance(toolchains, list) or not all(
+            isinstance(name, str) and name for name in toolchains
+        ):
+            raise ManifestError(f"{tool}: toolchains must be a string list")
+        if len(toolchains) != len(set(toolchains)):
+            raise ManifestError(f"{tool}: toolchains must be unique")
         # A non-discovery authority that is CI-checkable must justify any skip.
         if not row.get("discovery_only", False):
             if not row.get("ci_checkable", True) and not row.get("ci_skip_reason"):
@@ -429,6 +436,22 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
                 )
             else:
                 gated_commands[tool] = matching_commands[0]
+
+                required_toolchains = set(g.get("toolchains", []))
+                command_toolchains = set(matching_commands[0].get("toolchains", []))
+                missing_toolchains = required_toolchains - command_toolchains
+                if missing_toolchains:
+                    violations.append(
+                        Violation(
+                            kind="ungated",
+                            severity="high",
+                            location=tool,
+                            detail=(
+                                "generator consumes toolchains absent from its "
+                                f"proof receipt: {sorted(missing_toolchains)!r}"
+                            ),
+                        )
+                    )
 
     for generator in manifest.generators:
         tool = str(generator["tool"])

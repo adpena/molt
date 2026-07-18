@@ -37,6 +37,13 @@ jobs:
           cache: npm
           cache-dependency-path: tools/browser_asset_graph/package-lock.json
 
+      # Repository-policy generators render checked-in Rust and execute in
+      # parallel. Provision their shared formatter once before the DAG so
+      # rustup is never raced by first-use component installation.
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: rustfmt
+
       - name: Sync Python environment
         run: uv sync --frozen --group dev
 

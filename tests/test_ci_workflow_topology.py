@@ -38,6 +38,14 @@ def _default_python_version() -> str:
 def test_ci_push_path_is_cheap_only() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
+    docs_gate = ci_text.split("  docs-gates:", 1)[1].split(
+        "\n  classify-changes:", 1
+    )[0]
+    rustfmt_setup = docs_gate.index("uses: dtolnay/rust-toolchain@1.96.1")
+    repository_executor = docs_gate.index("Execute repository policy partitions")
+    assert rustfmt_setup < repository_executor
+    assert "components: rustfmt" in docs_gate
+
     assert "concurrency:" in ci_text
     assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
     assert "cancel-in-progress: true" in ci_text
