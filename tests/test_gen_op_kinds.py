@@ -3198,7 +3198,9 @@ def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    drop_insertion = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
+    drop_insertion = tir_path("passes/drop_insertion/util.rs").read_text(
+        encoding="utf-8"
+    )
 
     expected = {
         "ChanRecvYield",
@@ -3220,19 +3222,7 @@ def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
 
     table_name = "opcode_is_drop_insertion_suspension_point_table"
     assert table_name in drop_insertion
-    start = drop_insertion.index("fn is_suspension_point(")
-    brace = drop_insertion.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(drop_insertion)):
-        if drop_insertion[i] == "{":
-            depth += 1
-        elif drop_insertion[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    body = drop_insertion[start:end]
+    body = _rust_fn_body(drop_insertion, "fn is_suspension_point(")
     assert f"{table_name}(opcode)" in body
     assert "matches!" not in body
     assert "OpCode::" not in body
@@ -3243,7 +3233,12 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    drop_insertion = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
+    drop_insertion = tir_path("passes/drop_insertion/util.rs").read_text(
+        encoding="utf-8"
+    )
+    drop_insertion_runner = tir_path(
+        "passes/drop_insertion/runner.rs"
+    ).read_text(encoding="utf-8")
 
     expected = {"DecRef", "Free", "IncRef"}
     assert set(data["drop_insertion_return_deferral_barrier_opcodes"]) == expected
@@ -3259,26 +3254,14 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
 
     table_name = "opcode_is_drop_insertion_return_deferral_barrier_table"
     assert table_name in drop_insertion
-    start = drop_insertion.index("fn is_return_deferral_barrier(")
-    brace = drop_insertion.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(drop_insertion)):
-        if drop_insertion[i] == "{":
-            depth += 1
-        elif drop_insertion[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    body = drop_insertion[start:end]
+    body = _rust_fn_body(drop_insertion, "fn is_return_deferral_barrier(")
     assert f"{table_name}(opcode)" in body
     assert "matches!" not in body
     assert "OpCode::" not in body
 
-    scan = drop_insertion.split("let mut disqualified: HashSet<ValueId>", maxsplit=1)[
-        1
-    ].split("Gate (c) transfer rail", maxsplit=1)[0]
+    scan = drop_insertion_runner.split(
+        "let mut disqualified: HashSet<ValueId>", maxsplit=1
+    )[1].split("Gate (c) transfer rail", maxsplit=1)[0]
     assert "is_return_deferral_barrier(op.opcode)" in scan
     assert "OpCode::IncRef | OpCode::DecRef | OpCode::Free" not in scan
     assert "matches!(op.opcode" not in scan
@@ -3749,9 +3732,10 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    llvm_lowering = _read_rs_module_cluster(
-        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
-    )
+    llvm_lowering = (
+        ROOT
+        / "runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs"
+    ).read_text(encoding="utf-8")
 
     expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
     assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected
