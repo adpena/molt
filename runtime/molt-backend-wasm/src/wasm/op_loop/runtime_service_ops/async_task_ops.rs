@@ -9,7 +9,7 @@ use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_async_task_runtime_op(
-    context: &RuntimeServiceOpContext<'_>,
+    context: &mut RuntimeServiceOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
@@ -23,8 +23,17 @@ pub(super) fn emit_async_task_runtime_op(
             let total = op.value.unwrap_or(0);
             let layout = WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
             let target_name = op.s_value.as_ref().expect("alloc_task target missing");
-            let table_idx = call_site_abi.table_index(target_name, "alloc_task");
-            layout.emit_task_new(func, import_ids, reloc_enabled, table_idx, total);
+            let table_target = call_site_abi.table_target(target_name, "alloc_task");
+            layout.emit_task_new(
+                func,
+                import_ids,
+                context.table_relocations,
+                reloc_enabled,
+                context.func_import_count,
+                context.func_index,
+                &table_target,
+                total,
+            );
             let res = if let Some(out) = op.out.as_ref() {
                 let r = locals[out];
                 func.instruction(&Instruction::LocalSet(r));

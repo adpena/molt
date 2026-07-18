@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from molt._wasm_abi_generated import WASM_RESERVED_RUNTIME_CALLABLES
+from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 from molt.dx import development_artifact_env, session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
@@ -89,8 +90,10 @@ def _wasm_section(section_id: int, payload: bytes) -> bytes:
 
 
 def _wasm_func_type(params: list[int], results: list[int]) -> bytes:
-    return bytes([0x60]) + _wasm_vec([bytes([param]) for param in params]) + _wasm_vec(
-        [bytes([result]) for result in results]
+    return (
+        bytes([0x60])
+        + _wasm_vec([bytes([param]) for param in params])
+        + _wasm_vec([bytes([result]) for result in results])
     )
 
 
@@ -100,10 +103,7 @@ def _wasm_import_func(module: str, name: str, type_index: int) -> bytes:
 
 def _wasm_import_memory(module: str, name: str, min_pages: int) -> bytes:
     return (
-        _wasm_str(module)
-        + _wasm_str(name)
-        + bytes([0x02, 0x00])
-        + _wasm_u32(min_pages)
+        _wasm_str(module) + _wasm_str(name) + bytes([0x02, 0x00]) + _wasm_u32(min_pages)
     )
 
 
@@ -125,10 +125,15 @@ def _wasm_data_segment(offset: int, payload: bytes) -> bytes:
 
 
 def _minimal_wasm_module() -> bytes:
-    return b"\x00asm\x01\x00\x00\x00"
+    return attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
 
 
-def _webgpu_embed_manifest() -> dict[str, object]:
+def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, object]:
+    from molt.wasm_artifact import (
+        parse_wasm_callable_table_attestation,
+        wasm_callable_table_manifest_summary,
+    )
+
     return {
         "version": 2,
         "mode": "split-runtime",
@@ -141,7 +146,7 @@ def _webgpu_embed_manifest() -> dict[str, object]:
                 "runtime_import_fallbacks": {},
                 "reserved_runtime_callables": [],
                 "table_layout": {
-                    "legacy_table_base": 256,
+                    "default_app_table_base": 256,
                     "reserved_runtime_callable_base": 33,
                     "reserved_runtime_callable_count": 0,
                 },
@@ -154,7 +159,14 @@ def _webgpu_embed_manifest() -> dict[str, object]:
                 "export_names": {},
                 "runtime_export_signatures": {},
             },
-            "table_refs": {"app": {}, "runtime": {}},
+            "callable_table": {
+                "app": wasm_callable_table_manifest_summary(
+                    parse_wasm_callable_table_attestation(app_wasm)
+                ),
+                "runtime": wasm_callable_table_manifest_summary(
+                    parse_wasm_callable_table_attestation(runtime_wasm)
+                ),
+            },
         },
         "modules": {
             "app": {"path": "app.wasm"},
@@ -424,9 +436,10 @@ def test_browser_embed_routes_webgpu_import_through_shared_dispatch_host(
     package_dir = tmp_path / "webgpu_embed"
     package_dir.mkdir()
     app_wasm, layout = _build_webgpu_dispatch_app_wasm()
+    runtime_wasm = _minimal_wasm_module()
     (package_dir / "app.wasm").write_bytes(app_wasm)
-    (package_dir / "molt_runtime.wasm").write_bytes(_minimal_wasm_module())
-    manifest = _webgpu_embed_manifest()
+    (package_dir / "molt_runtime.wasm").write_bytes(runtime_wasm)
+    manifest = _webgpu_embed_manifest(app_wasm, runtime_wasm)
     (package_dir / "manifest.json").write_text(
         json.dumps(manifest, sort_keys=True),
         encoding="utf-8",
@@ -517,9 +530,10 @@ def test_browser_embed_rejects_webgpu_target_feature_manifest_drift(
     package_dir = tmp_path / "webgpu_embed_bad_manifest"
     package_dir.mkdir()
     app_wasm, _layout = _build_webgpu_dispatch_app_wasm()
+    runtime_wasm = _minimal_wasm_module()
     (package_dir / "app.wasm").write_bytes(app_wasm)
-    (package_dir / "molt_runtime.wasm").write_bytes(_minimal_wasm_module())
-    manifest = _webgpu_embed_manifest()
+    (package_dir / "molt_runtime.wasm").write_bytes(runtime_wasm)
+    manifest = _webgpu_embed_manifest(app_wasm, runtime_wasm)
     assert isinstance(manifest["target_features"], dict)
     manifest["target_features"]["profile"] = "wasm-browser"
     (package_dir / "manifest.json").write_text(
@@ -1078,36 +1092,50 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert (out_dir / "molt_runtime.wasm").exists()
     assert (out_dir / "manifest.json").exists()
     assert (out_dir / "browser_embed.js").exists()
+    assert (out_dir / "browser_host.js").exists()
     assert (out_dir / "browser_gpu_dispatch.js").exists()
     assert (out_dir / "browser_gpu_worker.js").exists()
     assert (out_dir / "browser_target_features.js").exists()
     assert (out_dir / "target_feature_constants.generated.js").exists()
     assert (out_dir / "loader_bridge.js").exists()
+    assert (out_dir / "callable_table_abi_generated.js").exists()
     assert (out_dir / "target_feature_manifest.json").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["assets"]["browser_embed"]["path"] == "browser_embed.js"
-    assert manifest["assets"]["browser_gpu_dispatch"]["path"] == "browser_gpu_dispatch.js"
-    assert manifest["assets"]["browser_gpu_dispatch"]["size"] == (
-        out_dir / "browser_gpu_dispatch.js"
-    ).stat().st_size
+    assert manifest["assets"]["browser_host"]["path"] == "browser_host.js"
+    assert (
+        manifest["assets"]["browser_gpu_dispatch"]["path"] == "browser_gpu_dispatch.js"
+    )
+    assert (
+        manifest["assets"]["browser_gpu_dispatch"]["size"]
+        == (out_dir / "browser_gpu_dispatch.js").stat().st_size
+    )
     assert manifest["assets"]["browser_gpu_worker"]["path"] == "browser_gpu_worker.js"
-    assert manifest["assets"]["browser_gpu_worker"]["size"] == (
-        out_dir / "browser_gpu_worker.js"
-    ).stat().st_size
+    assert (
+        manifest["assets"]["browser_gpu_worker"]["size"]
+        == (out_dir / "browser_gpu_worker.js").stat().st_size
+    )
     assert (
         manifest["assets"]["browser_target_features"]["path"]
         == "browser_target_features.js"
     )
-    assert manifest["assets"]["browser_target_features"]["size"] == (
-        out_dir / "browser_target_features.js"
-    ).stat().st_size
+    assert (
+        manifest["assets"]["browser_target_features"]["size"]
+        == (out_dir / "browser_target_features.js").stat().st_size
+    )
     assert manifest["assets"]["target_feature_constants"]["path"] == (
         "target_feature_constants.generated.js"
     )
-    assert manifest["assets"]["target_feature_constants"]["size"] == (
-        out_dir / "target_feature_constants.generated.js"
-    ).stat().st_size
+    assert (
+        manifest["assets"]["target_feature_constants"]["size"]
+        == (out_dir / "target_feature_constants.generated.js").stat().st_size
+    )
     assert manifest["assets"]["loader_bridge"]["path"] == "loader_bridge.js"
+    assert manifest["assets"]["molt_vfs_browser"]["path"] == "molt_vfs_browser.js"
+    assert len(manifest["assets"]["callable_table_abi"]["sha256"]) == 64
+    assert manifest["assets"]["callable_table_abi"]["path"] == (
+        "callable_table_abi_generated.js"
+    )
     target_feature_asset = manifest["assets"]["target_feature_manifest"]
     assert target_feature_asset["path"] == "target_feature_manifest.json"
     assert (
@@ -1122,7 +1150,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert browser_abi["call_indirect_imports"] == [
         f"molt_call_indirect{arity}" for arity in range(14)
     ]
-    assert browser_abi["table_layout"]["legacy_table_base"] == 256
+    assert browser_abi["table_layout"]["default_app_table_base"] == 256
     assert browser_abi["reserved_runtime_callables"] == [
         {
             "index": index,

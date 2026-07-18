@@ -54,6 +54,8 @@ mod wasm_options;
 #[cfg(feature = "wasm-backend")]
 mod wasm_plan;
 #[cfg(feature = "wasm-backend")]
+mod wasm_table;
+#[cfg(feature = "wasm-backend")]
 mod wasm_values;
 
 #[cfg(feature = "wasm-backend")]

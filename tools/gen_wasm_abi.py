@@ -37,11 +37,13 @@ from wasm_abi_gen.paths import (
     LEGACY_OUT_RS,
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
+    OUT_JS_CALLABLE_TABLE_ABI,
     OUT_PY,
     OUT_RS_DIR,
     OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_TABLE_LAYOUT_INC,
+    OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
     ROOT,
     WASM_ABI_GEN_CACHE,
@@ -49,14 +51,16 @@ from wasm_abi_gen.paths import (
 
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v2"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v3"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 RUSTFMT_CACHE_ENABLED = True
 RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
     "rendered_runtime_callables_rs",
+    "rendered_wasm_facts_callable_table_rs",
     "rendered_py",
     "rendered_js_abi",
+    "rendered_js_callable_table_abi",
     "rendered_table_layout_inc",
     "rendered_allowed_imports",
 )
@@ -413,6 +417,7 @@ def _render_rs_mod() -> str:
     lines.extend(
         [
             "mod bulk_memory_ops;\n",
+            "pub(crate) mod callable_table;\n",
             "mod call_indirect;\n",
             "mod container_runtime_selector;\n",
             "mod const_policy;\n",
@@ -503,6 +508,50 @@ def _render_rs_call_indirect(data: dict) -> str:
         ]
     )
     return "".join(lines)
+
+
+def _render_rs_callable_table(
+    data: dict, *, include_active_element_role: bool = True
+) -> str:
+    authority = data["callable_table_publication"]
+    lines = [
+        _header("//"),
+        "pub(crate) const CALLABLE_TABLE_SECTION_NAME: &str = ",
+        f"{_rust_string(authority['section_name'])};\n",
+        "pub(crate) const CALLABLE_TABLE_SECTION_VERSION: u32 = ",
+        f"{authority['version']};\n",
+        "pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = ",
+        f"{_rust_string(authority['layout_section_name'])};\n",
+        "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
+        f"{authority['layout_version']};\n",
+    ]
+    if include_active_element_role:
+        lines.extend(
+            [
+                "pub(crate) const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: u32 = ",
+                f"{authority['active_element_role']};\n",
+            ]
+        )
+    lines.extend(
+        [
+            "pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = ",
+            f"{authority['value_type_format']};\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_callable_table_layout(data: dict) -> str:
+    authority = data["callable_table_publication"]
+    return "".join(
+        [
+            _header("//"),
+            "pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = ",
+            f"{_rust_string(authority['layout_section_name'])};\n",
+            "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
+            f"{authority['layout_version']};\n",
+        ]
+    )
 
 
 def _render_rs_const_policy(data: dict) -> str:
@@ -2085,6 +2134,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
     modules = {
         "mod.rs": _render_rs_mod(),
         "bulk_memory_ops.rs": _render_rs_bulk_memory_ops(data),
+        "callable_table.rs": _render_rs_callable_table_layout(data),
         "call_indirect.rs": _render_rs_call_indirect(data),
         "container_runtime_selector.rs": _render_rs_container_runtime_selector(data),
         "const_policy.rs": _render_rs_const_policy(data),
@@ -2150,11 +2200,28 @@ def render_py(data: dict) -> str:
         "1 + max((slot for slot, _name in WASM_POLL_TABLE_IMPORTS), default=0)\n\n"
     )
     lines.append(
-        f"WASM_LEGACY_TABLE_BASE: int = {data['table_layout']['legacy_table_base']}\n\n"
+        f"WASM_DEFAULT_APP_TABLE_BASE: int = {data['table_layout']['default_app_table_base']}\n\n"
     )
     lines.append(
-        "WASM_TABLE_REF_EXPORT_PREFIX: str = "
-        f"{_py_string(data['table_layout']['table_ref_export_prefix'])}\n\n"
+        "WASM_CALLABLE_TABLE_SECTION_NAME: str = "
+        f"{_py_string(data['callable_table_publication']['section_name'])}\n"
+    )
+    callable_table = data["callable_table_publication"]
+    lines.append(
+        f"WASM_CALLABLE_TABLE_SECTION_VERSION: int = {callable_table['version']}\n"
+    )
+    lines.append(
+        "WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME: str = "
+        f"{_py_string(callable_table['layout_section_name'])}\n"
+    )
+    lines.append(
+        f"WASM_CALLABLE_TABLE_LAYOUT_VERSION: int = {callable_table['layout_version']}\n"
+    )
+    lines.append(
+        f"WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: int = {callable_table['active_element_role']}\n"
+    )
+    lines.append(
+        f"WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = {callable_table['value_type_format']}\n\n"
     )
     lines.append(
         "WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (\n"
@@ -2497,11 +2564,7 @@ def render_table_layout_inc(data: dict) -> str:
     lines.append("#[allow(dead_code)]\n")
     lines.append(
         "pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = "
-        f"{data['table_layout']['legacy_table_base']};\n"
-    )
-    lines.append(
-        "pub(crate) const WASM_TABLE_REF_EXPORT_PREFIX: &str = "
-        f"{_rust_string(data['table_layout']['table_ref_export_prefix'])};\n"
+        f"{data['table_layout']['default_app_table_base']};\n"
     )
     return "".join(lines)
 
@@ -2540,6 +2603,7 @@ def render_js_abi(data: dict) -> str:
 
     payload = {
         "generated_by": "tools/gen_wasm_abi.py",
+        "callable_table_publication": dict(data["callable_table_publication"]),
         "runtime_export_by_import": runtime_export_by_import,
         "runtime_import_canonical_names": runtime_import_canonical_names,
         "runtime_import_fallbacks": {
@@ -2556,6 +2620,24 @@ def render_js_abi(data: dict) -> str:
         },
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def render_js_callable_table_abi(data: dict) -> str:
+    payload = json.dumps(data["callable_table_publication"], sort_keys=True)
+    return "".join(
+        [
+            _header("//"),
+            "(function publishMoltCallableTableAbi(root, factory) {\n",
+            "  const authority = Object.freeze(factory());\n",
+            "  if (typeof module === 'object' && module && module.exports) {\n",
+            "    module.exports = authority;\n",
+            "  }\n",
+            "  root.MoltCallableTableAbiGenerated = authority;\n",
+            "})(typeof globalThis !== 'undefined' ? globalThis : this, () => (",
+            payload,
+            "));\n",
+        ]
+    )
 
 
 def _check(path: Path, rendered: str) -> bool:
@@ -2681,8 +2763,19 @@ def main(argv: list[str]) -> int:
         rendered_runtime_callables_rs = timed(
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
+        rendered_wasm_facts_callable_table_rs = timed(
+            "render_wasm_facts_callable_table_rs",
+            lambda: _rustfmt(
+                "callable_table_generated.rs",
+                _render_rs_callable_table(data, include_active_element_role=False),
+            ),
+        )
         rendered_py = timed("render_py", lambda: render_py(data))
         rendered_js_abi = timed("render_js_abi", lambda: render_js_abi(data))
+        rendered_js_callable_table_abi = timed(
+            "render_js_callable_table_abi",
+            lambda: render_js_callable_table_abi(data),
+        )
         rendered_table_layout_inc = timed(
             "render_table_layout_inc", lambda: render_table_layout_inc(data)
         )
@@ -2692,8 +2785,10 @@ def main(argv: list[str]) -> int:
         bundle = {
             "rendered_rs_modules": rendered_rs_modules,
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
+            "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
             "rendered_py": rendered_py,
             "rendered_js_abi": rendered_js_abi,
+            "rendered_js_callable_table_abi": rendered_js_callable_table_abi,
             "rendered_table_layout_inc": rendered_table_layout_inc,
             "rendered_allowed_imports": rendered_allowed_imports,
         }
@@ -2701,8 +2796,12 @@ def main(argv: list[str]) -> int:
             timed("cache_store", lambda: _store_render_cache(cache_key, bundle))
     rendered_rs_modules = dict(bundle["rendered_rs_modules"])
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
+    rendered_wasm_facts_callable_table_rs = str(
+        bundle["rendered_wasm_facts_callable_table_rs"]
+    )
     rendered_py = str(bundle["rendered_py"])
     rendered_js_abi = str(bundle["rendered_js_abi"])
+    rendered_js_callable_table_abi = str(bundle["rendered_js_callable_table_abi"])
     rendered_table_layout_inc = str(bundle["rendered_table_layout_inc"])
     rendered_allowed_imports = str(bundle["rendered_allowed_imports"])
     if args.check:
@@ -2710,8 +2809,13 @@ def main(argv: list[str]) -> int:
             0
             if _check_rs_modules(rendered_rs_modules)
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+            and _check(
+                OUT_WASM_FACTS_CALLABLE_TABLE_RS,
+                rendered_wasm_facts_callable_table_rs,
+            )
             and _check(OUT_PY, rendered_py)
             and _check(OUT_JS_ABI, rendered_js_abi)
+            and _check(OUT_JS_CALLABLE_TABLE_ABI, rendered_js_callable_table_abi)
             and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
             and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
             and all(_check_absent(path) for path in REMOVED_GENERATED_FILES)
@@ -2726,8 +2830,13 @@ def main(argv: list[str]) -> int:
         return ok
     _write_rs_modules(rendered_rs_modules)
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+    _write_if_changed(
+        OUT_WASM_FACTS_CALLABLE_TABLE_RS,
+        rendered_wasm_facts_callable_table_rs,
+    )
     _write_if_changed(OUT_PY, rendered_py)
     _write_if_changed(OUT_JS_ABI, rendered_js_abi)
+    _write_if_changed(OUT_JS_CALLABLE_TABLE_ABI, rendered_js_callable_table_abi)
     _write_if_changed(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
     _write_if_changed(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
     for path in REMOVED_GENERATED_FILES:

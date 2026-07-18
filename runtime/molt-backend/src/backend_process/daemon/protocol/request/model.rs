@@ -15,7 +15,7 @@ pub(crate) struct DaemonJobRequest {
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     pub(crate) wasm_table_base: Option<u32>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_split_runtime_runtime_table_min: Option<u32>,
+    pub(crate) wasm_split_runtime_app_table_base: Option<u32>,
     pub(crate) output: String,
     pub(crate) cache_key: String,
     pub(crate) function_cache_key: Option<String>,

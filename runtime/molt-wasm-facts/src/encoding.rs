@@ -1,10 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use wasm_encoder::Encode;
 
-use crate::model::{
-    DecodedCallableTableAttestation, WasmCallableTableEntryFact, WasmFunctionType, WasmLinkFacts,
-};
+use crate::model::{WasmCallableTableEntryFact, WasmFunctionType, WasmLinkFacts};
 use crate::{CALLABLE_TABLE_SECTION_VERSION, CALLABLE_TABLE_VALUE_TYPE_FORMAT};
 
 pub(crate) fn encode_callable_table_attestation(facts: &WasmLinkFacts) -> Result<Vec<u8>, String> {
@@ -66,145 +64,185 @@ fn encode_attested_value_types(
     Ok(())
 }
 
-pub(crate) fn read_u32_leb(data: &[u8], offset: &mut usize) -> Result<u32, String> {
-    let mut result = 0u32;
-    let mut shift = 0u32;
-    loop {
-        let byte = *data
-            .get(*offset)
-            .ok_or("truncated callable-table attestation varuint")?;
-        *offset = offset
-            .checked_add(1)
-            .ok_or("callable-table attestation offset overflow")?;
-        if shift == 28 && byte & 0xF0 != 0 {
-            return Err("callable-table attestation varuint exceeds u32".to_string());
+pub(crate) struct AttestationDecoder<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> AttestationDecoder<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    pub(crate) fn read_u32(&mut self) -> Result<u32, String> {
+        let mut result = 0u32;
+        for shift in (0..=28).step_by(7) {
+            let byte = *self
+                .data
+                .get(self.offset)
+                .ok_or("truncated callable-table attestation varuint")?;
+            self.offset = self
+                .offset
+                .checked_add(1)
+                .ok_or("callable-table attestation offset overflow")?;
+            if shift == 28 && byte & 0xF0 != 0 {
+                return Err("callable-table attestation varuint exceeds u32".to_string());
+            }
+            result |= u32::from(byte & 0x7F) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(result);
+            }
         }
-        result |= u32::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Ok(result);
+        Err("callable-table attestation varuint exceeds u32".to_string())
+    }
+
+    pub(crate) fn finish(self, label: &str) -> Result<(), String> {
+        if self.offset == self.data.len() {
+            Ok(())
+        } else {
+            Err(format!("{label} has trailing bytes"))
         }
-        shift = shift
-            .checked_add(7)
-            .ok_or("callable-table attestation varuint shift overflow")?;
-        if shift >= 35 {
-            return Err("callable-table attestation varuint exceeds u32".to_string());
+    }
+
+    fn read_count(&mut self, label: &str, minimum_item_width: usize) -> Result<usize, String> {
+        let count = usize::try_from(self.read_u32()?)
+            .map_err(|_| format!("{label} count exceeds host usize"))?;
+        let remaining = self
+            .data
+            .len()
+            .checked_sub(self.offset)
+            .ok_or("callable-table attestation cursor exceeds payload")?;
+        if count > remaining / minimum_item_width {
+            return Err(format!(
+                "callable-table attestation {label} count {count} exceeds the encoded payload bound {}",
+                remaining / minimum_item_width
+            ));
         }
+        Ok(count)
+    }
+
+    fn read_bytes(&mut self, byte_count: usize, label: &str) -> Result<&'a [u8], String> {
+        let end = self
+            .offset
+            .checked_add(byte_count)
+            .ok_or_else(|| format!("callable-table {label} boundary overflow"))?;
+        let encoded = self
+            .data
+            .get(self.offset..end)
+            .ok_or_else(|| format!("truncated callable-table attestation {label}"))?;
+        self.offset = end;
+        Ok(encoded)
     }
 }
 
-fn read_encoded_value_types(data: &[u8], offset: &mut usize) -> Result<Vec<Vec<u8>>, String> {
-    let count = read_u32_leb(data, offset)?;
-    let mut values = Vec::with_capacity(
-        usize::try_from(count).map_err(|_| "value-type count exceeds host usize")?,
-    );
-    for _ in 0..count {
-        let byte_count = read_u32_leb(data, offset)?;
+fn validate_encoded_value_types(
+    decoder: &mut AttestationDecoder<'_>,
+    expected: &[Vec<u8>],
+    label: &str,
+) -> Result<(), String> {
+    // Every encoded value type has at least a one-byte width and one data byte.
+    let count = decoder.read_count("value-type", 2)?;
+    if count != expected.len() {
+        return Err(format!(
+            "callable-table attestation {label} count {count} disagrees with final module count {}",
+            expected.len()
+        ));
+    }
+    for expected_type in expected {
+        let byte_count = usize::try_from(decoder.read_u32()?)
+            .map_err(|_| "value-type width exceeds host usize")?;
         if byte_count == 0 {
             return Err("callable-table attestation has empty value type".to_string());
         }
-        let byte_count =
-            usize::try_from(byte_count).map_err(|_| "value-type width exceeds host usize")?;
-        let end = offset
-            .checked_add(byte_count)
-            .ok_or("callable-table value-type boundary overflow")?;
-        let encoded = data
-            .get(*offset..end)
-            .ok_or("truncated callable-table attestation value type")?;
-        values.push(encoded.to_vec());
-        *offset = end;
-    }
-    Ok(values)
-}
-
-pub(crate) fn decode_callable_table_attestation(
-    data: &[u8],
-) -> Result<DecodedCallableTableAttestation, String> {
-    let mut offset = 0usize;
-    if read_u32_leb(data, &mut offset)? != 1 {
-        return Err("unsupported callable-table attestation version".to_string());
-    }
-    if read_u32_leb(data, &mut offset)? != 1 {
-        return Err("unsupported callable-table value-type format".to_string());
-    }
-    let type_count = read_u32_leb(data, &mut offset)?;
-    let mut types = BTreeMap::new();
-    let mut previous_type_index = None;
-    for _ in 0..type_count {
-        let type_index = read_u32_leb(data, &mut offset)?;
-        if previous_type_index.is_some_and(|previous| type_index <= previous) {
-            return Err("callable-table type indices are not strictly ordered".to_string());
-        }
-        previous_type_index = Some(type_index);
-        let params = read_encoded_value_types(data, &mut offset)?;
-        let results = read_encoded_value_types(data, &mut offset)?;
-        types.insert(type_index, (params, results));
-    }
-    let entry_count = read_u32_leb(data, &mut offset)?;
-    let mut entries = Vec::with_capacity(
-        usize::try_from(entry_count).map_err(|_| "entry count exceeds host usize")?,
-    );
-    let mut slot = 0u32;
-    for entry_index in 0..entry_count {
-        let delta = read_u32_leb(data, &mut offset)?;
-        if entry_index != 0 && delta == 0 {
-            return Err(format!("callable-table attestation duplicates slot {slot}"));
-        }
-        slot = slot
-            .checked_add(delta)
-            .ok_or("callable-table attestation slot overflow")?;
-        let function_index = read_u32_leb(data, &mut offset)?;
-        let type_index = read_u32_leb(data, &mut offset)?;
-        let role = read_u32_leb(data, &mut offset)?;
-        if role != 0 {
+        if decoder.read_bytes(byte_count, "value type")? != expected_type {
             return Err(format!(
-                "callable-table slot {slot} has unknown role {role}"
+                "callable-table attestation {label} disagrees with final module type"
             ));
         }
-        if !types.contains_key(&type_index) {
-            return Err(format!(
-                "callable-table slot {slot} references missing type"
-            ));
-        }
-        entries.push(WasmCallableTableEntryFact {
-            slot,
-            function_index,
-            type_index,
-            role,
-        });
     }
-    if offset != data.len() {
-        return Err("callable-table attestation has trailing bytes".to_string());
-    }
-    let used_types = entries
-        .iter()
-        .map(|entry| entry.type_index)
-        .collect::<BTreeSet<_>>();
-    if types.keys().copied().collect::<BTreeSet<_>>() != used_types {
-        return Err("callable-table attestation contains unused types".to_string());
-    }
-    Ok(DecodedCallableTableAttestation { types, entries })
+    Ok(())
 }
 
 pub(crate) fn validate_callable_table_attestation(
-    attestation: DecodedCallableTableAttestation,
+    data: &[u8],
     expected_entries: &[WasmCallableTableEntryFact],
     canonical_types: &[Option<WasmFunctionType>],
 ) -> Result<(), String> {
-    if attestation.entries != expected_entries {
-        return Err("callable-table attestation disagrees with final module facts".to_string());
+    let mut decoder = AttestationDecoder::new(data);
+    if decoder.read_u32()? != 1 {
+        return Err("unsupported callable-table attestation version".to_string());
     }
-    for (type_index, (params, results)) in attestation.types {
+    if decoder.read_u32()? != 1 {
+        return Err("unsupported callable-table value-type format".to_string());
+    }
+    let used_types = expected_entries
+        .iter()
+        .map(|entry| entry.type_index)
+        .collect::<BTreeSet<_>>();
+    // A type row contains at least an index and two empty-list counts. Validate
+    // directly against the canonical scan so malformed input never drives an
+    // allocation proportional to an attested count or width.
+    let type_count = decoder.read_count("type", 3)?;
+    if type_count != used_types.len() {
+        return Err(format!(
+            "callable-table attestation type count {type_count} disagrees with final module count {}",
+            used_types.len()
+        ));
+    }
+    for expected_type_index in used_types {
+        let type_index = decoder.read_u32()?;
+        if type_index != expected_type_index {
+            return Err(format!(
+                "callable-table attestation expected type {expected_type_index}, found {type_index}"
+            ));
+        }
         let canonical = canonical_types
             .get(usize::try_from(type_index).map_err(|_| "type index exceeds host usize")?)
             .and_then(Option::as_ref)
             .ok_or_else(|| {
                 format!("callable-table attestation references non-function type {type_index}")
             })?;
-        if canonical.params != params || canonical.results != results {
+        validate_encoded_value_types(&mut decoder, &canonical.params, "parameter")?;
+        validate_encoded_value_types(&mut decoder, &canonical.results, "result")?;
+    }
+    // Every entry contains four varuints, each at least one byte.
+    let entry_count = decoder.read_count("entry", 4)?;
+    if entry_count != expected_entries.len() {
+        return Err(format!(
+            "callable-table attestation entry count {entry_count} disagrees with final module count {}",
+            expected_entries.len()
+        ));
+    }
+    let mut slot = 0u32;
+    for (entry_index, expected) in expected_entries.iter().enumerate() {
+        let delta = decoder.read_u32()?;
+        if entry_index != 0 && delta == 0 {
+            return Err(format!("callable-table attestation duplicates slot {slot}"));
+        }
+        slot = slot
+            .checked_add(delta)
+            .ok_or("callable-table attestation slot overflow")?;
+        let function_index = decoder.read_u32()?;
+        let type_index = decoder.read_u32()?;
+        let role = decoder.read_u32()?;
+        if role != 0 {
             return Err(format!(
-                "callable-table attestation type {type_index} disagrees with final module type"
+                "callable-table slot {slot} has unknown role {role}"
+            ));
+        }
+        if (slot, function_index, type_index, role)
+            != (
+                expected.slot,
+                expected.function_index,
+                expected.type_index,
+                expected.role,
+            )
+        {
+            return Err(format!(
+                "callable-table attestation slot {slot} disagrees with final module facts"
             ));
         }
     }
+    decoder.finish("callable-table attestation")?;
     Ok(())
 }

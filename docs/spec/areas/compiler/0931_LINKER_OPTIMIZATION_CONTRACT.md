@@ -60,10 +60,12 @@ WASM link commands must:
   enumerated;
 - avoid broad `--export-all` except for debug-only diagnostics because it
   expands the public ABI and defeats tree shaking;
-- preserve `molt_table_init`, exception-pending exports, table refs, memory,
-  and host-call exports required by runners;
-- use post-link table-ref materialization only after validating the output with
-  runtime tests that exercise indirect calls.
+- preserve exception-pending exports, memory, and host-call exports required by
+  runners while rejecting legacy table writers and numeric callable aliases;
+- publish final active element segments and their generated callable-table
+  attestation only after all link and optimization rewrites, then validate the
+  attestation against the final types, functions, tables, dispatches, and
+  mutations before exposing the artifact.
 - derive WebAssembly feature flags from the selected target feature profile
   (`wasm-mvp`, `wasm-refs`, `wasm-gc`) defined in
   `docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md`; linkers and

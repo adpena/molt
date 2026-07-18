@@ -538,8 +538,18 @@ Complete the design 18 fix plan (4 phases: 3a → 3b → 4c → 4a → 4b → 2a
 - 3a/3b: WASM bundler transitive closure + heavyweight asyncio package list. Files: `src/molt/cli.py`.
 - 4c: Upgrade `molt_thread_submit` WASM stub to synchronous execution. File: `runtime/molt-runtime/src/async_rt/threads.rs:282–293`.
 - 4a/4b: `run_in_executor` capability guard + ThreadPoolExecutor WASM shim. Files: `src/molt/stdlib/asyncio/__init__.py:3788`, `src/molt/stdlib/concurrent/futures/__init__.py`.
-- 2a: Move `installTableRefs` before `molt_runtime_init`. File: `src/molt/cli.py:11938,11956`.
+- 2a (superseded implementation): final active element segments publish the
+  callable table before instantiation, and the post-link compact attestation is
+  the loader's immutable signature authority. The former `installTableRefs`
+  export-repair path is deleted rather than reordered.
 - 1a/1b/1c: `WasiPollSet` + WASM `run_once` with `wasi::poll_oneoff` + stop raising in `add_reader`/`add_writer` stubs. File: `runtime/molt-runtime/src/async_rt/event_loop.rs`.
+- Browser deployment custody: `src/molt/browser_asset_closure.py` derives the
+  complete transitive loader asset graph from ES imports and statically
+  resolved module/worker URLs. CLI split packaging, browser matrix execution,
+  Falcon/Cloudflare materialization, verifiers, and proof scopes consume that
+  one closure. This includes generated callable-table and target-feature ABI
+  modules automatically; adding an import cannot silently produce a partial
+  browser deployment.
 
 **Gate:** All asyncio differential tests pass on WASM target. `bench_async_sleep0.py` runs to completion on WASM via `wasmtime`.
 
@@ -674,7 +684,10 @@ Phase 3 does not address the await-waiter graph's three-Mutex-per-registration o
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/mod.rs` — add `pub mod timer_wheel;`, `pub mod buffer;`, `pub mod io_uring;`.
 - `/Users/adpena/Projects/molt/src/molt/stdlib/asyncio/__init__.py:3788` — Phase 6: `run_in_executor` WASM capability guard.
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/threads.rs:282–293` — Phase 6: upgrade WASM `molt_thread_submit` stub to synchronous execution path.
-- `/Users/adpena/Projects/molt/src/molt/cli.py:11938,11956` — Phase 6: move `installTableRefs` before `molt_runtime_init`.
+- `src/molt/browser_asset_closure.py` — Phase 6 browser asset custody. Final
+  active element segments plus the compact callable-table attestation are the
+  only table publication authority; legacy `installTableRefs` exports and
+  loader repair are deleted.
 - `Cargo.toml` — Phase 4b: add `io-uring` crate under Linux target.
 
 Sources:

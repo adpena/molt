@@ -2,7 +2,9 @@
 
 # asyncio WASM Failures: Root-Cause Analysis and Structural Fix Plan
 
-**Status:** Design doc — no implementation landed. All claims are anchored to code verified on 2026-06-04.
+**Status:** Historical investigation. The table-ref design described below was
+superseded by the finalized callable-table authority; remaining event-loop and
+import-closure claims require fresh proof against current code.
 
 **Summary of the claim being investigated:** The gap audit at `docs/design/foundation/16_cpython-surface-stdlib-gpu-gap-audit.md` states "4/5 runtime-heavy asyncio tests fail on wasm; event-loop policy, table-ref trap, zipimport gap, thread unavailable in wasm." This document identifies whether those four blockers are real, what they concretely are in code, and how to fix each one structurally.
 
@@ -51,25 +53,26 @@ The fix is a first-class WASM event loop implementation that delegates I/O readi
 
 ---
 
-## Blocker 2: "Table-Ref Trap"
+## Blocker 2: Callable-Table Drift (Superseded Design)
 
-### Root Cause
+The numeric export and JavaScript signature-map scheme investigated in June
+2026 has been deleted. Final core WASM artifacts now publish versioned
+`molt.callable_table` and `molt.callable_table.layout` custom sections after
+linking and optimization. Rust scans the final type, function, table, element,
+dispatch, mutation, and table-read facts; publication fails closed when the
+callable topology can escape the canonical table or when an attestation does
+not match the final module.
 
-`src/molt/cli.py:10693-10720` defines `_export_wasm_table_refs`, which writes entries named `__molt_table_ref_{slot}` into the WASM binary for every function pointer stored in the indirect call table. At `cli.py:11880-11904` the JavaScript harness resolves indirect calls by looking up `appTableRefSignatures` or `runtimeTableRefSignatures`. If a function pointer stored into the table at compile time (in the app wasm) is called at runtime but the corresponding `__molt_table_ref_N` export was not registered in `installTableRefs` (line 11631-11662), the indirect call lands in the wrong table slot or traps with `WebAssembly.RuntimeError: indirect call type mismatch` or `out of bounds table access`.
+Browser, Node, split-runtime packaging, Cloudflare validation, and Python
+artifact inspection consume that same finalized attestation. The section names,
+versions, value-type format, and layout semantics are generated from
+`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`; there is no numeric
+callable export compatibility lane and no independently authored JavaScript
+signature map.
 
-For asyncio, the specific trap is triggered by `molt_async_sleep` and `molt_block_on`. Both are lowered into the user binary as coroutine poll functions — their poll function pointers are stored into the WASM function table at AOT compile time (in the Cranelift backend's `_poll` lowering). When the JavaScript host calls into the WASM binary and the asyncio event loop scheduler invokes the poll function via an indirect call, it dispatches through the table. If the table slot numbering diverged between the runtime WASM and the app WASM after linking, or if the signature recorded in `runtimeTableRefSignatures` does not match the signature of the poll function as seen by the app wasm (because the runtime and app are linked as two separate modules sharing one table), the call traps.
-
-The concrete failure: the current JS harness at `cli.py:11638` matches table ref exports using the pattern `/^__molt_table_ref_(\d+)$/`, which requires that `installTableRefs` run before any indirect calls can resolve. But `installTableRefs` is called at `cli.py:11938,11956` after instantiation — if the asyncio module is initialized during module-level code (which happens because `asyncio/__init__.py` runs `_intrinsic_require("molt_block_on", ...)` at line 1268 at import time), the table refs for `molt_block_on`'s poll function may be invoked during bootstrap before `installTableRefs` completes.
-
-### Structural Fix
-
-The table-ref installation must be guaranteed to complete before any application-level Python module initialization code runs. The architectural fix:
-
-**Phase 2a — Eager table-ref installation.** Move `installTableRefs(rtInstance, sharedTable)` and `installTableRefs(appInstance, sharedTable)` (lines 11938, 11956) to occur immediately after `WebAssembly.instantiate` returns but before `molt_runtime_init` is called. `molt_runtime_init` is the Rust entrypoint that triggers Python bootstrap; no Python code runs before it. The current code instantiates both modules then calls `installTableRefs` inside the main harness sequence, but if anything between instantiation and `installTableRefs` invokes a Molt API that internally makes an indirect call (even via an intrinsic resolution path), the trap occurs.
-
-**Phase 2b — Defensive table-ref audit.** Add a WASM build-time check that enumerates all indirect-call sites in the app WASM and verifies each indirect call target slot is exported as `__molt_table_ref_N`. This check belongs in `src/molt/cli.py`'s `_export_wasm_table_refs` function — after emitting all table-ref exports, walk the app binary's code section and assert that every `call_indirect` instruction's table index was exported. This converts the silent trap into a build-time error.
-
-**Files to touch:** `src/molt/cli.py:11631-11662` (move `installTableRefs` call earlier in the instantiation sequence), `src/molt/cli.py:10693-10720` (add audit pass in `_export_wasm_table_refs`).
+Any future asyncio indirect-call failure must therefore be diagnosed against
+the final attested element map and split-runtime layout. Reintroducing synthetic
+exports, guessed slots, or host-side signature maps is not a valid fix.
 
 ---
 
@@ -191,6 +194,6 @@ For each phase, the acceptance criterion is differential parity: `molt build --t
 | Claimed blocker | Actual mechanism | Structural fix location |
 |---|---|---|
 | "Event-loop policy" | `add_reader`/`add_writer` stubs raise on WASM; no `poll_oneoff` integration | `event_loop.rs` — add `WasiPollSet` + WASM `run_once` |
-| "Table-ref trap" | `installTableRefs` completes after bootstrap; indirect calls during bootstrap trap | `cli.py:11938,11956` — move `installTableRefs` before `molt_runtime_init` |
+| Callable-table drift | Historical numeric export repair could race bootstrap | Superseded: final active elements plus the post-link attestation are the only authority |
 | "zipimport gap" | WASM bundler does not compute full transitive import closure; asyncio sub-modules missing | `cli.py` WASM bundler — transitive closure + heavyweight package list |
 | "Thread unavailable" | `molt_thread_submit` WASM stub raises `RuntimeError`; `run_in_executor(None, fn)` takes this path | `threads.rs:286-293` (upgrade stub) + `__init__.py:3788` (capability guard) |

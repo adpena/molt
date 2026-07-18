@@ -3,7 +3,6 @@ use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
 use super::{WasmAppCallableResolverEntry, WasmCallableTablePlan};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::static_func_type_idx;
-use crate::wasm_binary::emit_table_index_i64;
 
 impl WasmBackend {
     pub(in crate::wasm::module_abi) fn emit_app_callable_resolver(
@@ -78,7 +77,13 @@ fn emit_resolver_entry(
         func.instruction(&Instruction::I32And);
     }
     func.instruction(&Instruction::If(BlockType::Empty));
-    emit_table_index_i64(func, reloc_enabled, entry.table_index);
+    backend.table_relocations.emit_i64(
+        reloc_enabled,
+        backend.func_import_count,
+        resolver_func_index,
+        func,
+        &entry.target,
+    );
     func.instruction(&Instruction::Return);
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);

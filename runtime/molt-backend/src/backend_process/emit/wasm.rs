@@ -58,8 +58,8 @@ pub(super) fn emit_wasm_target(
     if let Some(value) = wasm_options.table_base {
         options.table_base = value;
     }
-    if let Some(value) = wasm_options.split_runtime_runtime_table_min {
-        options.split_runtime_runtime_table_min = Some(value);
+    if let Some(value) = wasm_options.split_runtime_app_table_base {
+        options.split_runtime_app_table_base = Some(value);
     }
     let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
     let wasm_bytes = backend.compile(ir);

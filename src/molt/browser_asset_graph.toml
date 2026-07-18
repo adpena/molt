@@ -43,6 +43,12 @@ source_type = "module"
 authority = "target-feature-manifest"
 
 [[asset]]
+path = "callable_table_abi_generated.js"
+role = "shared"
+source_type = "script"
+authority = "wasm-abi"
+
+[[asset]]
 path = "loader_bridge.js"
 role = "shared"
 source_type = "script"

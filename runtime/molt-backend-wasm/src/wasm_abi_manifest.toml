@@ -84,8 +84,17 @@ non_runtime_callable_intrinsic = [
 ]
 
 [table_layout]
-legacy_table_base = 256
-table_ref_export_prefix = "__molt_table_ref_"
+default_app_table_base = 256
+
+[callable_table_publication]
+section_name = "molt.callable_table"
+version = 1
+layout_section_name = "molt.callable_table.layout"
+layout_version = 1
+active_element_role = 0
+# Each value type is encoded as ``byte_length + canonical wasm bytes``. This
+# preserves typed-reference encodings without a second type registry.
+value_type_format = 1
 
 [witness_frontier]
 # Runtime callables reachable from the numpy/scipy extension-init and later
@@ -6775,7 +6784,6 @@ essential_exports = [
   "molt_scratch_free",
   "molt_string_as_ptr",
   "molt_string_from_bytes",
-  "molt_table_init",
   "molt_table",
   "molt_traceback_format_exc",
   "molt_type_tag_of_bits",

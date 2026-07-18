@@ -54,7 +54,7 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 - Implemented: `run_wasm.js` linked-mode runtime wiring now lazily loads runtime sidecar assets, so linked artifacts execute without requiring `MOLT_RUNTIME_WASM` presence.
 - Implemented: linked runner regression test `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked`.
 - Implemented: `tools/bench_wasm.py` linked compile wiring now injects reloc-runtime table-base (`MOLT_WASM_TABLE_BASE`) during linked-mode bench builds, eliminating linked `null function or function signature mismatch` traps observed on `output_linked.wasm`.
-- Implemented: `run_wasm.js` now calls optional `molt_table_init` before `molt_main` for linked/direct execution paths that export passive table initializers.
+- Implemented: final active element segments are the sole callable-table publication authority; runners verify the generated final-artifact attestation and never rewrite table entries after instantiation.
 - Implemented: linked table/signature regressions added in `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_bench_sum_has_no_table_signature_trap` and `tests/test_bench_wasm_node_resolver.py::test_prepare_wasm_binary_sets_linked_table_base`.
 - Implemented: Rust 2024 unsafe hardening in `runtime/molt-runtime/src/async_rt/channels.rs` to remove `unsafe_op_in_unsafe_fn` warnings in that module.
 - Implemented: explicit `fallible-iterator-02` alias boundary in `runtime/molt-worker` so `0.2` usage is isolated to postgres decode surfaces while `0.3` remains on rusqlite paths.

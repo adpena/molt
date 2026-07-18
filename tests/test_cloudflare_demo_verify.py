@@ -7,18 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from molt.wasm_artifact import wasm_table_ref_export_name
+from molt.wasm_artifact import (
+    parse_wasm_callable_table_attestation,
+    wasm_callable_table_manifest_summary,
+)
+from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 
 
-APP_TABLE_REF = wasm_table_ref_export_name(4096)
-APP_TABLE_REF_SIGNATURES = {APP_TABLE_REF: {"params": [], "result": "nil"}}
+EMPTY_CALLABLE_WASM = attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
+EMPTY_CALLABLE_SUMMARY = wasm_callable_table_manifest_summary(
+    parse_wasm_callable_table_attestation(EMPTY_CALLABLE_WASM)
+)
 
 WORKER_ABI_JS = "\n".join(
     [
         'const runtimeImportResultKinds = {"molt_module_import": "i64"};',
         'const runtimeImportSignatures = {"molt_module_import": {"params": ["i32"], "result": "i64"}};',
-        f"const appTableRefSignatures = {json.dumps(APP_TABLE_REF_SIGNATURES, sort_keys=True)};",
-        "const runtimeTableRefSignatures = {};",
         "export default {};",
         "",
     ]
@@ -33,9 +37,9 @@ MANIFEST_ABI = {
         },
         "result_kinds": {"molt_module_import": "i64"},
     },
-    "table_refs": {
-        "app": APP_TABLE_REF_SIGNATURES,
-        "runtime": {},
+    "callable_table": {
+        "app": EMPTY_CALLABLE_SUMMARY,
+        "runtime": EMPTY_CALLABLE_SUMMARY,
     },
 }
 
@@ -62,8 +66,8 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
-    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
-    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
@@ -123,8 +127,8 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
     (bundle_root / "molt_vfs_browser.js").write_text("export class MoltVfs {}\n")
-    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
-    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
@@ -179,8 +183,8 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
-    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
-    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
@@ -230,8 +234,8 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
     (bundle_root / "worker.js").write_text(
         WORKER_ABI_JS.replace('"result": "i64"', '"result": "i32"')
     )
-    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
-    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {

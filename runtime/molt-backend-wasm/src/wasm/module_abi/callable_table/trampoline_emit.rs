@@ -6,6 +6,7 @@ use task::{emit_task_trampoline, task_trampoline_local_types};
 
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::emit_call;
+use crate::wasm_table::WasmCallableTableTarget;
 use crate::wasm_values::box_int;
 use crate::{TrampolineBehavior, TrampolineSpec};
 
@@ -14,7 +15,7 @@ impl WasmBackend {
         &mut self,
         reloc_enabled: bool,
         target_func_index: u32,
-        table_idx: u32,
+        table_target: WasmCallableTableTarget,
         spec: TrampolineSpec,
         multi_return_count: Option<usize>,
     ) {
@@ -26,6 +27,7 @@ impl WasmBackend {
             target_has_ret: _,
         } = spec;
         let behavior = kind.behavior();
+        let func_index = self.func_count;
         self.funcs.function(5);
         self.func_count += 1;
         let mut local_types = Vec::new();
@@ -58,7 +60,8 @@ impl WasmBackend {
                 self,
                 &mut func,
                 reloc_enabled,
-                table_idx,
+                func_index,
+                &table_target,
                 task_kind,
                 arity,
                 has_closure,

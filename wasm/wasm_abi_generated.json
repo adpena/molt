@@ -1,4 +1,12 @@
 {
+  "callable_table_publication": {
+    "active_element_role": 0,
+    "layout_section_name": "molt.callable_table.layout",
+    "layout_version": 1,
+    "section_name": "molt.callable_table",
+    "value_type_format": 1,
+    "version": 1
+  },
   "external_native_link_imports": {
     "primitive_classes": {
       "PyArg_ParseTuple": "molt_cpython_abi_link_import",

@@ -1,11 +1,11 @@
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
-use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_code_metadata_call_op(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
@@ -70,7 +70,7 @@ fn emit_code_new(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, op: 
 }
 
 fn emit_value_then_local_drop_call(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
     import: WasmRuntimeImport,
@@ -84,7 +84,7 @@ fn emit_value_then_local_drop_call(
 }
 
 fn emit_table_local_drop_call(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
     table_context: &str,
@@ -92,15 +92,23 @@ fn emit_table_local_drop_call(
 ) {
     let args = op.args.as_ref().unwrap();
     let func_name = op.s_value.as_ref().unwrap();
-    let table_idx = call_ctx.call_site_abi.table_index(func_name, table_context);
-    emit_table_index_i64(func, call_ctx.reloc_enabled, table_idx);
+    let target = call_ctx
+        .call_site_abi
+        .table_target(func_name, table_context);
+    call_ctx.table_relocations.emit_i64(
+        call_ctx.reloc_enabled,
+        call_ctx.func_import_count,
+        call_ctx.func_index,
+        func,
+        &target,
+    );
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     func.instruction(&Instruction::Drop);
 }
 
 fn emit_table_two_local_drop_call(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
     table_context: &str,
@@ -108,8 +116,16 @@ fn emit_table_two_local_drop_call(
 ) {
     let args = op.args.as_ref().unwrap();
     let func_name = op.s_value.as_ref().unwrap();
-    let table_idx = call_ctx.call_site_abi.table_index(func_name, table_context);
-    emit_table_index_i64(func, call_ctx.reloc_enabled, table_idx);
+    let target = call_ctx
+        .call_site_abi
+        .table_target(func_name, table_context);
+    call_ctx.table_relocations.emit_i64(
+        call_ctx.reloc_enabled,
+        call_ctx.func_import_count,
+        call_ctx.func_index,
+        func,
+        &target,
+    );
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);

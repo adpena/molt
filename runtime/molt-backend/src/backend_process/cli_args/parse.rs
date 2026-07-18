@@ -33,7 +33,7 @@ impl<'a> BackendCliArgs<'a> {
         let mut saw_fact_graph_function_flag = false;
         let mut saw_wasm_data_base_flag = false;
         let mut saw_wasm_table_base_flag = false;
-        let mut saw_wasm_split_runtime_runtime_table_min_flag = false;
+        let mut saw_wasm_split_runtime_app_table_base_flag = false;
         let mut saw_ir_format_flag = false;
 
         for (idx, arg) in args.iter().enumerate() {
@@ -82,12 +82,11 @@ impl<'a> BackendCliArgs<'a> {
                     saw_wasm_table_base_flag = true;
                     parsed.wasm_options.table_base = parse_u32_after(args, idx);
                 }
-                "--wasm-split-runtime-runtime-table-min"
-                    if !saw_wasm_split_runtime_runtime_table_min_flag =>
+                "--wasm-split-runtime-app-table-base"
+                    if !saw_wasm_split_runtime_app_table_base_flag =>
                 {
-                    saw_wasm_split_runtime_runtime_table_min_flag = true;
-                    parsed.wasm_options.split_runtime_runtime_table_min =
-                        parse_u32_after(args, idx);
+                    saw_wasm_split_runtime_app_table_base_flag = true;
+                    parsed.wasm_options.split_runtime_app_table_base = parse_u32_after(args, idx);
                 }
                 "--ir-format" if !saw_ir_format_flag => {
                     saw_ir_format_flag = true;

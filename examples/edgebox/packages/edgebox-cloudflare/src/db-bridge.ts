@@ -25,7 +25,6 @@ const ERR_UNAVAILABLE = 7;
 interface WasmExports {
   memory: WebAssembly.Memory;
   molt_alloc?: (size: number) => number;
-  molt_table_init?: () => void;
   molt_main?: () => void;
   _start?: () => void;
 }

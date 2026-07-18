@@ -5,6 +5,7 @@
 
 mod bulk_memory_ops;
 mod call_indirect;
+pub(crate) mod callable_table;
 mod const_policy;
 mod container_runtime_selector;
 mod import_metadata;

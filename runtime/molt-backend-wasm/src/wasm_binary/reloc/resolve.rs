@@ -14,12 +14,12 @@ pub(super) fn resolve_reloc_entries(scan: &RelocScan, maps: &SymbolMaps) -> Relo
     let mut elem_entries: Vec<RelocEntry> = Vec::new();
 
     for reloc in &scan.pending_code {
-        match *reloc {
+        match reloc {
             PendingReloc::Function { offset, func_index } => {
-                if let Some(index) = maps.func_symbol_map.get(func_index as usize) {
+                if let Some(index) = maps.func_symbol_map.get(*func_index as usize) {
                     code_entries.push(RelocEntry {
                         ty: 0,
-                        offset,
+                        offset: *offset,
                         index: *index,
                         addend: 0,
                     });
@@ -28,8 +28,8 @@ pub(super) fn resolve_reloc_entries(scan: &RelocScan, maps: &SymbolMaps) -> Relo
             PendingReloc::Type { offset, type_index } => {
                 code_entries.push(RelocEntry {
                     ty: 6,
-                    offset,
-                    index: type_index,
+                    offset: *offset,
+                    index: *type_index,
                     addend: 0,
                 });
             }
@@ -37,14 +37,31 @@ pub(super) fn resolve_reloc_entries(scan: &RelocScan, maps: &SymbolMaps) -> Relo
                 offset,
                 segment_index,
             } => {
-                if let Some(index) = maps.data_symbol_map.get(segment_index as usize) {
+                if let Some(index) = maps.data_symbol_map.get(*segment_index as usize) {
                     code_entries.push(RelocEntry {
                         ty: 4,
-                        offset,
+                        offset: *offset,
                         index: *index,
                         addend: 0,
                     });
                 }
+            }
+            PendingReloc::TableIndex {
+                offset,
+                target,
+                role,
+            } => {
+                let index = maps.function_symbol(target).unwrap_or_else(|| {
+                    panic!(
+                        "callable-table relocation target missing after import stripping: {target:?} ({role:?})"
+                    )
+                });
+                code_entries.push(RelocEntry {
+                    ty: 1,
+                    offset: *offset,
+                    index,
+                    addend: 0,
+                });
             }
         }
     }
@@ -53,12 +70,12 @@ pub(super) fn resolve_reloc_entries(scan: &RelocScan, maps: &SymbolMaps) -> Relo
         if let PendingReloc::DataAddr {
             offset,
             segment_index,
-        } = *reloc
-            && let Some(index) = maps.data_symbol_map.get(segment_index as usize)
+        } = reloc
+            && let Some(index) = maps.data_symbol_map.get(*segment_index as usize)
         {
             data_entries.push(RelocEntry {
                 ty: 4,
-                offset,
+                offset: *offset,
                 index: *index,
                 addend: 0,
             });
@@ -66,12 +83,12 @@ pub(super) fn resolve_reloc_entries(scan: &RelocScan, maps: &SymbolMaps) -> Relo
     }
 
     for reloc in &scan.pending_elem {
-        if let PendingReloc::Function { offset, func_index } = *reloc
-            && let Some(index) = maps.func_symbol_map.get(func_index as usize)
+        if let PendingReloc::Function { offset, func_index } = reloc
+            && let Some(index) = maps.func_symbol_map.get(*func_index as usize)
         {
             elem_entries.push(RelocEntry {
                 ty: 0,
-                offset,
+                offset: *offset,
                 index: *index,
                 addend: 0,
             });

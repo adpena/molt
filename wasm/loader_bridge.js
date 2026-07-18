@@ -1,12 +1,24 @@
 (function installMoltWasmLoaderBridge(root, factory) {
-  const api = factory();
+  const callableTableAbi =
+    root.MoltCallableTableAbiGenerated ||
+    (typeof module === 'object' && module && module.exports
+      ? require('./callable_table_abi_generated.js')
+      : null);
+  const api = factory(callableTableAbi);
   if (typeof module === 'object' && module && module.exports) {
     module.exports = api;
   }
   root.MoltWasmLoaderBridge = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, () => {
+})(typeof globalThis !== 'undefined' ? globalThis : this, (callableTableAbi) => {
+  if (!callableTableAbi) {
+    throw new Error('generated callable-table ABI authority is unavailable');
+  }
   const WASM_MAGIC = 0x6d736100;
   const WASM_VERSION = 0x1;
+  const CALLABLE_TABLE_SECTION_NAME = callableTableAbi.section_name;
+  const CALLABLE_TABLE_SECTION_VERSION = callableTableAbi.version;
+  const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = callableTableAbi.active_element_role;
+  const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
   const BIGINT_SIGNATURE_KINDS = new Set(['i64', 'u64', 's64', 'molt-object']);
 
@@ -116,10 +128,7 @@
     } else if (opcode === 0x23 || opcode === 0xd2) {
       pos = readVarUint(view, pos).offset;
     } else if (opcode === 0xd0) {
-      if (pos >= view.length) {
-        throw new Error('Unexpected EOF while reading ref.null expr');
-      }
-      pos += 1;
+      pos = readVarInt32(view, pos).offset;
     } else {
       throw new Error(`Unsupported const expr opcode ${opcode}`);
     }
@@ -138,32 +147,14 @@
     return offset;
   };
 
-  const inferWasmTableBaseFromExports = (buffer) => {
-    try {
-      const mod = new WebAssembly.Module(buffer);
-      const refs = WebAssembly.Module.exports(mod)
-        .map((entry) => entry.name)
-        .filter((name) => name.startsWith('__molt_table_ref_'))
-        .map((name) => Number.parseInt(name.slice('__molt_table_ref_'.length), 10))
-        .filter((value) => Number.isFinite(value) && value > 0);
-      return refs.length > 0 ? Math.min(...refs) : null;
-    } catch {
-      return null;
-    }
-  };
-
   const extractWasmTableBase = (buffer) => {
     if (!buffer) return null;
-    const exportedBase = inferWasmTableBaseFromExports(buffer);
     try {
       const bytes = new Uint8Array(buffer);
       if (bytes.length < 8) {
         return null;
       }
       let offset = 8;
-      let importFuncCount = 0;
-      let tableInitFuncIndex = null;
-      let codeBodies = null;
       const activeTableBases = [];
       while (offset < bytes.length) {
         const sectionId = bytes[offset++];
@@ -174,35 +165,7 @@
         if (sectionEnd > bytes.length) {
           return null;
         }
-        if (sectionId === 2) {
-          let count;
-          ({ value: count, offset } = readVarUint(bytes, offset));
-          for (let idx = 0; idx < count; idx += 1) {
-            ({ offset } = readString(bytes, offset));
-            ({ offset } = readString(bytes, offset));
-            const kind = bytes[offset++];
-            if (kind === 0) {
-              importFuncCount += 1;
-            }
-            offset = skipImportDesc(bytes, offset, kind);
-          }
-        } else if (sectionId === 7) {
-          let count;
-          ({ value: count, offset } = readVarUint(bytes, offset));
-          for (let idx = 0; idx < count; idx += 1) {
-            let name;
-            ({ value: name, offset } = readString(bytes, offset));
-            if (offset >= bytes.length) {
-              return null;
-            }
-            const kind = bytes[offset++];
-            let index;
-            ({ value: index, offset } = readVarUint(bytes, offset));
-            if (kind === 0 && name === 'molt_table_init') {
-              tableInitFuncIndex = index;
-            }
-          }
-        } else if (sectionId === 9) {
+        if (sectionId === 9) {
           let count;
           ({ value: count, offset } = readVarUint(bytes, offset));
           for (let idx = 0; idx < count; idx += 1) {
@@ -237,22 +200,6 @@
                 : (view, pos) => readVarUint(view, pos).offset,
             );
           }
-        } else if (sectionId === 10) {
-          let count;
-          ({ value: count, offset } = readVarUint(bytes, offset));
-          const bodies = new Array(count);
-          for (let idx = 0; idx < count; idx += 1) {
-            let bodySize;
-            ({ value: bodySize, offset } = readVarUint(bytes, offset));
-            const bodyStart = offset;
-            const bodyEnd = bodyStart + bodySize;
-            if (bodyEnd > bytes.length) {
-              return null;
-            }
-            bodies[idx] = [bodyStart, bodyEnd];
-            offset = bodyEnd;
-          }
-          codeBodies = bodies;
         } else {
           offset = sectionEnd;
         }
@@ -261,30 +208,6 @@
         }
       }
 
-      let tableInitBase = null;
-      if (tableInitFuncIndex !== null && codeBodies) {
-        const definedIndex = tableInitFuncIndex - importFuncCount;
-        if (definedIndex >= 0 && definedIndex < codeBodies.length) {
-          const [bodyStart, bodyEnd] = codeBodies[definedIndex];
-          let pos = bodyStart;
-          let localDeclCount;
-          ({ value: localDeclCount, offset: pos } = readVarUint(bytes, pos));
-          for (let idx = 0; idx < localDeclCount; idx += 1) {
-            ({ offset: pos } = readVarUint(bytes, pos));
-            if (pos >= bodyEnd) {
-              break;
-            }
-            pos += 1;
-          }
-          if (pos < bodyEnd && bytes[pos] === 0x41) {
-            pos += 1;
-            tableInitBase = readVarInt32(bytes, pos).value;
-          }
-        }
-      }
-      if (Number.isFinite(tableInitBase) && tableInitBase > 0) {
-        return tableInitBase;
-      }
       if (activeTableBases.length > 0) {
         const appActiveTableBases = activeTableBases.filter((base) => base > 1);
         if (appActiveTableBases.length > 0) {
@@ -292,9 +215,9 @@
         }
         return Math.min(...activeTableBases);
       }
-      return exportedBase;
+      return null;
     } catch {
-      return exportedBase;
+      return null;
     }
   };
 
@@ -323,8 +246,12 @@
     return manifestBase;
   };
 
-  const decodeWasmValType = (byte) => {
-    switch (byte) {
+  const decodeWasmValType = (encoded) => {
+    const view = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
+    if (view.length === 0) {
+      throw new Error('Empty wasm value type encoding');
+    }
+    switch (view[0]) {
       case 0x7f:
         return 'i32';
       case 0x7e:
@@ -340,23 +267,219 @@
       case 0x70:
         return 'funcref';
       default:
-        throw new Error(`Unsupported wasm value type 0x${byte.toString(16)}`);
+        if (view[0] === 0x63 || view[0] === 0x64) {
+          const heapType = readVarInt32(view, 1);
+          if (heapType.offset !== view.length) {
+            throw new Error('Trailing bytes in typed-reference value type');
+          }
+          const qualifier = view[0] === 0x63 ? 'ref null' : 'ref';
+          return `(${qualifier} ${heapType.value})`;
+        }
+        throw new Error(`Unsupported wasm value type 0x${view[0].toString(16)}`);
     }
   };
 
-  const readWasmValTypeVec = (view, offset) => {
+  const readWasmValType = (view, offset) => {
+    if (offset >= view.length) {
+      throw new Error('Unexpected EOF in wasm value type');
+    }
+    const start = offset;
+    const form = view[offset++];
+    if (form === 0x63 || form === 0x64) {
+      offset = readVarInt32(view, offset).offset;
+    }
+    const encoded = view.subarray(start, offset);
+    return { value: decodeWasmValType(encoded), encoded, offset };
+  };
+
+  const readWasmValTypeVec = (view, offset, lengthPrefixed = false) => {
     const countRes = readVarUint(view, offset);
     let count = countRes.value;
     offset = countRes.offset;
     const out = [];
     while (count > 0) {
-      if (offset >= view.length) {
-        throw new Error('Unexpected EOF in valtype vec');
+      if (lengthPrefixed) {
+        const byteCountRes = readVarUint(view, offset);
+        const byteCount = byteCountRes.value;
+        offset = byteCountRes.offset;
+        const end = offset + byteCount;
+        if (byteCount === 0 || end > view.length) {
+          throw new Error('Unexpected EOF in length-prefixed valtype');
+        }
+        const valueType = readWasmValType(view.subarray(offset, end), 0);
+        if (valueType.offset !== byteCount) {
+          throw new Error('Malformed length-prefixed valtype');
+        }
+        out.push(valueType.value);
+        offset = end;
+      } else {
+        const valueType = readWasmValType(view, offset);
+        out.push(valueType.value);
+        offset = valueType.offset;
       }
-      out.push(decodeWasmValType(view[offset++]));
       count -= 1;
     }
     return { values: out, offset };
+  };
+
+  const parseCallableTableSectionPayload = (payload, label = 'wasm') => {
+    const view = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+    let offset = 0;
+    const versionRes = readVarUint(view, offset);
+    const version = versionRes.value;
+    offset = versionRes.offset;
+    if (version !== CALLABLE_TABLE_SECTION_VERSION) {
+      throw new Error(
+        `${label} ${CALLABLE_TABLE_SECTION_NAME} has unsupported version ${version}`,
+      );
+    }
+    const valueTypeFormatRes = readVarUint(view, offset);
+    const valueTypeFormat = valueTypeFormatRes.value;
+    offset = valueTypeFormatRes.offset;
+    if (valueTypeFormat !== CALLABLE_TABLE_VALUE_TYPE_FORMAT) {
+      throw new Error(
+        `${label} ${CALLABLE_TABLE_SECTION_NAME} has unsupported value-type format ` +
+          `${valueTypeFormat}`,
+      );
+    }
+
+    const typeCountRes = readVarUint(view, offset);
+    const typeCount = typeCountRes.value;
+    offset = typeCountRes.offset;
+    const types = new Map();
+    let previousTypeIndex = -1;
+    for (let index = 0; index < typeCount; index += 1) {
+      const typeIndexRes = readVarUint(view, offset);
+      const typeIndex = typeIndexRes.value;
+      offset = typeIndexRes.offset;
+      if (typeIndex <= previousTypeIndex) {
+        throw new Error(
+          `${label} ${CALLABLE_TABLE_SECTION_NAME} type indices are not strictly ordered`,
+        );
+      }
+      previousTypeIndex = typeIndex;
+      const params = readWasmValTypeVec(view, offset, true);
+      offset = params.offset;
+      const results = readWasmValTypeVec(view, offset, true);
+      offset = results.offset;
+      types.set(typeIndex, {
+        typeIndex,
+        params: params.values,
+        results: results.values,
+        result: results.values.length === 0 ? 'nil' : results.values.join(', '),
+      });
+    }
+
+    const entryCountRes = readVarUint(view, offset);
+    const entryCount = entryCountRes.value;
+    offset = entryCountRes.offset;
+    const entries = [];
+    const bySlot = new Map();
+    let slot = 0;
+    for (let index = 0; index < entryCount; index += 1) {
+      const slotDeltaRes = readVarUint(view, offset);
+      const slotDelta = slotDeltaRes.value;
+      offset = slotDeltaRes.offset;
+      if (index > 0 && slotDelta === 0) {
+        throw new Error(
+          `${label} ${CALLABLE_TABLE_SECTION_NAME} contains duplicate table slot ${slot}`,
+        );
+      }
+      slot = index === 0 ? slotDelta : slot + slotDelta;
+      const functionIndexRes = readVarUint(view, offset);
+      const functionIndex = functionIndexRes.value;
+      offset = functionIndexRes.offset;
+      const typeIndexRes = readVarUint(view, offset);
+      const typeIndex = typeIndexRes.value;
+      offset = typeIndexRes.offset;
+      const roleRes = readVarUint(view, offset);
+      const role = roleRes.value;
+      offset = roleRes.offset;
+      if (role !== CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE) {
+        throw new Error(
+          `${label} ${CALLABLE_TABLE_SECTION_NAME} slot ${slot} has unknown role ${role}`,
+        );
+      }
+      const signature = types.get(typeIndex);
+      if (!signature) {
+        throw new Error(
+          `${label} ${CALLABLE_TABLE_SECTION_NAME} slot ${slot} references missing type ${typeIndex}`,
+        );
+      }
+      const entry = { slot, functionIndex, typeIndex, role, signature };
+      entries.push(entry);
+      bySlot.set(slot, entry);
+    }
+    if (offset !== view.length) {
+      throw new Error(
+        `${label} ${CALLABLE_TABLE_SECTION_NAME} has ${view.length - offset} trailing byte(s)`,
+      );
+    }
+    return { version, types, entries, bySlot };
+  };
+
+  const callableTableFromModule = (module, label = 'wasm') => {
+    const sections = WebAssembly.Module.customSections(module, CALLABLE_TABLE_SECTION_NAME);
+    if (sections.length !== 1) {
+      throw new Error(
+        `${label} must contain exactly one ${CALLABLE_TABLE_SECTION_NAME} section; ` +
+          `found ${sections.length}`,
+      );
+    }
+    return parseCallableTableSectionPayload(new Uint8Array(sections[0]), label);
+  };
+
+  const callableTableSignature = (attestation, slot) => {
+    const index = Number(slot);
+    if (!Number.isInteger(index) || index < 0) {
+      return null;
+    }
+    return attestation?.bySlot?.get(index)?.signature || null;
+  };
+
+  const verifyCallableTableEntries = (attestation, table, label = 'wasm') => {
+    if (!attestation) {
+      throw new Error(`${label} callable-table verification requires an attestation`);
+    }
+    if (attestation.entries.length === 0) {
+      return;
+    }
+    if (!table) {
+      throw new Error(`${label} callable-table verification requires a table`);
+    }
+    for (const entry of attestation.entries) {
+      if (entry.slot >= table.length) {
+        throw new Error(
+          `${label} callable-table slot ${entry.slot} exceeds table length ${table.length}`,
+        );
+      }
+      if (typeof table.get(entry.slot) !== 'function') {
+        throw new Error(`${label} callable-table slot ${entry.slot} is not initialized`);
+      }
+    }
+  };
+
+  const verifyCallableTableManifestSummary = (attestation, summary, label = 'wasm') => {
+    if (!summary || typeof summary !== 'object') {
+      throw new Error(`${label} manifest is missing callable-table summary`);
+    }
+    const expected = {
+      section: CALLABLE_TABLE_SECTION_NAME,
+      version: attestation.version,
+      entry_count: attestation.entries.length,
+      first_slot: attestation.entries.length ? attestation.entries[0].slot : null,
+      last_slot: attestation.entries.length
+        ? attestation.entries[attestation.entries.length - 1].slot
+        : null,
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      if (summary[name] !== value) {
+        throw new Error(
+          `${label} callable-table manifest ${name}=${String(summary[name])} ` +
+            `does not match binary ${String(value)}`,
+        );
+      }
+    }
   };
 
   const importSelectorMatches = (module, name, selector) => {
@@ -384,6 +507,7 @@
     const funcTypeIndices = [];
     let importedFuncCount = 0;
     const exportFuncIndices = new Map();
+    let callableTable = null;
     const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;
     while (offset < view.length) {
       const sectionId = view[offset++];
@@ -393,6 +517,20 @@
       const end = offset + size;
       if (end > view.length) {
         throw new Error('Unexpected EOF while reading section');
+      }
+      if (sectionId === 0) {
+        const nameRes = readString(view, offset);
+        if (nameRes.value === CALLABLE_TABLE_SECTION_NAME) {
+          if (callableTable !== null) {
+            throw new Error(`WASM contains duplicate ${CALLABLE_TABLE_SECTION_NAME} sections`);
+          }
+          callableTable = parseCallableTableSectionPayload(
+            view.subarray(nameRes.offset, end),
+            options.label || 'wasm',
+          );
+        }
+        offset = end;
+        continue;
       }
       if (sectionId === 1) {
         let inner = offset;
@@ -539,7 +677,18 @@
         };
       }
     }
-    return { imports, exportFunctionSignatures };
+    return { imports, exportFunctionSignatures, callableTable };
+  };
+
+  const requireWasmCallableTable = (buffer, label = 'wasm') => {
+    const callableTable = parseWasmMetadata(buffer, {
+      exportFunctionSignatures: false,
+      label,
+    }).callableTable;
+    if (callableTable === null) {
+      throw new Error(`${label} is missing required ${CALLABLE_TABLE_SECTION_NAME} section`);
+    }
+    return callableTable;
   };
 
   const parseWasmImports = (buffer, options = {}) =>
@@ -726,9 +875,6 @@
     return spec ? { ...spec, trampoline } : null;
   };
 
-  const tableRefExportName = (idx) =>
-    Number.isInteger(idx) ? `__molt_table_ref_${idx}` : null;
-
   const planReservedRuntimeDispatch = ({
     dispatchIdx,
     sharedTableBase,
@@ -797,11 +943,11 @@
     });
   };
 
-  const remapLegacyRuntimeSharedTableIndex = (
+  const remapDefaultAppRuntimeSharedTableIndex = (
     idx,
     {
       sharedTableBase,
-      legacyTableBase,
+      defaultAppTableBase,
       reservedRuntimeCallableBase,
       reservedRuntimeCallableCount,
       rawIndexHasInstalledEntry = null,
@@ -811,21 +957,21 @@
       !Number.isInteger(idx) ||
       sharedTableBase === null ||
       sharedTableBase === undefined ||
-      sharedTableBase <= legacyTableBase
+      sharedTableBase <= defaultAppTableBase
     ) {
       return idx;
     }
-    const legacyStart = legacyTableBase + reservedRuntimeCallableBase;
-    const legacyEnd = legacyStart + reservedRuntimeCallableCount * 2;
-    if (idx >= legacyStart && idx < legacyEnd) {
-      // A legacy reserved-callable reference is a *bare* index (no installed
-      // table entry) baked by a legacy-layout runtime module, to be relocated
+    const defaultStart = defaultAppTableBase + reservedRuntimeCallableBase;
+    const defaultEnd = defaultStart + reservedRuntimeCallableCount * 2;
+    if (idx >= defaultStart && idx < defaultEnd) {
+      // A default-base reserved-callable reference is a *bare* index (no installed
+      // table entry) baked by an app-layout runtime module, to be relocated
       // into the live shared-table reserved region. App-local function pointers
       // legitimately occupy this same low index window (below the shared-table
       // base), so an index that already resolves to an installed funcref is a
-      // genuine indirect call — NOT a legacy reserved reference — and must be
+      // genuine indirect call — NOT a default-base reserved reference — and must be
       // dispatched directly. The index range alone is ambiguous because both
-      // kinds share [legacyStart, legacyEnd); table occupancy disambiguates.
+      // kinds share [defaultStart, defaultEnd); table occupancy disambiguates.
       // Only relocate unpopulated (bare) references.
       if (
         typeof rawIndexHasInstalledEntry === 'function' &&
@@ -833,7 +979,7 @@
       ) {
         return idx;
       }
-      return idx - legacyTableBase + sharedTableBase;
+      return idx - defaultAppTableBase + sharedTableBase;
     }
     return idx;
   };
@@ -1043,6 +1189,9 @@
   };
 
   return {
+    CALLABLE_TABLE_SECTION_NAME,
+    callableTableFromModule,
+    callableTableSignature,
     callIndirectObjectSignature,
     callIsolateImportExport,
     callReservedRuntimeCallable,
@@ -1058,12 +1207,14 @@
     parseWasmMetadata,
     parseWasmExportFunctionSignatures,
     parseWasmImports,
+    requireWasmCallableTable,
     planReservedRuntimeDispatch,
-    remapLegacyRuntimeSharedTableIndex,
+    remapDefaultAppRuntimeSharedTableIndex,
     resolveWasmTableBase,
     reservedRuntimeCallablesFromManifest,
-    tableRefExportName,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,
+    verifyCallableTableEntries,
+    verifyCallableTableManifestSummary,
   };
 });

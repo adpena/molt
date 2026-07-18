@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Serialize, Serializer, ser::SerializeTuple};
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -26,9 +24,13 @@ pub struct WasmLinkFacts {
     pub dynamic_table_dispatch: bool,
     pub dynamic_dispatch_functions: Vec<u32>,
     pub reachable_dynamic_dispatch: bool,
+    pub function_reference_dispatch_functions: Vec<u32>,
+    pub reachable_function_reference_dispatch: bool,
     pub indirect_call_tables: Vec<u32>,
     pub reachable_indirect_call_tables: Vec<u32>,
     pub indirect_calls: Vec<WasmIndirectCall>,
+    pub table_reads: Vec<WasmTableRead>,
+    pub reachable_table_reads: Vec<WasmTableRead>,
     pub exported_table_indices: Vec<u32>,
     pub tables: Vec<WasmTableFact>,
 }
@@ -46,12 +48,6 @@ pub struct WasmCallableTableEntryFact {
     pub function_index: u32,
     pub type_index: u32,
     pub role: u32,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct DecodedCallableTableAttestation {
-    pub(crate) types: BTreeMap<u32, (Vec<Vec<u8>>, Vec<Vec<u8>>)>,
-    pub(crate) entries: Vec<WasmCallableTableEntryFact>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -85,6 +81,12 @@ pub struct WasmTableMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WasmIndirectCall {
+    pub function_index: u32,
+    pub table_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WasmTableRead {
     pub function_index: u32,
     pub table_index: u32,
 }
@@ -171,6 +173,18 @@ impl Serialize for WasmTableMutation {
 }
 
 impl Serialize for WasmIndirectCall {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut row = serializer.serialize_tuple(2)?;
+        row.serialize_element(&self.function_index)?;
+        row.serialize_element(&self.table_index)?;
+        row.end()
+    }
+}
+
+impl Serialize for WasmTableRead {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

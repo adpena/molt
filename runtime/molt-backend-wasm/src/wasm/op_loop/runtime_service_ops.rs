@@ -4,6 +4,7 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
 use wasm_encoder::Function;
 
@@ -18,6 +19,9 @@ pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) const_cache: &'a ConstantCache,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
+    pub(super) func_index: u32,
+    pub(super) func_import_count: u32,
+    pub(super) table_relocations: &'a mut WasmTableRelocations,
 }
 
 impl RuntimeServiceOpContext<'_> {
@@ -31,7 +35,7 @@ impl RuntimeServiceOpContext<'_> {
 }
 
 pub(super) fn emit_runtime_service_op(
-    context: RuntimeServiceOpContext<'_>,
+    mut context: RuntimeServiceOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
@@ -39,7 +43,7 @@ pub(super) fn emit_runtime_service_op(
         emit_op_loop_runtime_call(&context.op_loop_call_context(), func, op, call);
         return true;
     }
-    if async_task_ops::emit_async_task_runtime_op(&context, func, op) {
+    if async_task_ops::emit_async_task_runtime_op(&mut context, func, op) {
         return true;
     }
     if exception_ops::emit_exception_runtime_op(&context, func, op) {

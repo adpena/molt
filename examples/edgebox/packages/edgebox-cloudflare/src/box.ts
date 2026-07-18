@@ -137,7 +137,6 @@ export class EdgeBox implements DurableObject {
       const instance = await WebAssembly.instantiate(module, imports);
       const exports = instance.exports as unknown as {
         memory: WebAssembly.Memory;
-        molt_table_init?: () => void;
         molt_main?: () => void;
         _start?: () => void;
       };
@@ -145,7 +144,6 @@ export class EdgeBox implements DurableObject {
       bridge.memory = exports.memory;
       bridge.exports = exports;
 
-      if (exports.molt_table_init) exports.molt_table_init();
       if (exports.molt_main) exports.molt_main();
       else if (exports._start) exports._start();
     } catch (err) {

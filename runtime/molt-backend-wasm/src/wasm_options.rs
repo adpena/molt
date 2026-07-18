@@ -18,7 +18,7 @@ pub struct WasmCompileOptions {
     pub reloc_enabled: bool,
     pub data_base: u32,
     pub table_base: u32,
-    pub split_runtime_runtime_table_min: Option<u32>,
+    pub split_runtime_app_table_base: Option<u32>,
     /// Enable `return_call` emission (WASM tail-call proposal).
     /// Disabled by default until the target feature probe proves support; set
     /// `MOLT_WASM_TAIL_CALL=1` after that probe to opt into the proposal.
@@ -56,11 +56,9 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
-            split_runtime_runtime_table_min: std::env::var(
-                "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN",
-            )
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok()),
+            split_runtime_app_table_base: std::env::var("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok()),
             tail_call_enabled: matches!(
                 std::env::var("MOLT_WASM_TAIL_CALL").as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")

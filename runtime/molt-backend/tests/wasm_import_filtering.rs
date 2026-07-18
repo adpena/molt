@@ -346,7 +346,7 @@ fn auto_reloc_omits_reserved_runtime_callable_imports() {
 }
 
 #[test]
-fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
+fn auto_reloc_uses_linker_elements_without_table_writers_or_numeric_aliases() {
     let wasm = compile_with_options(
         empty_main_ir(),
         WasmCompileOptions {
@@ -357,8 +357,8 @@ fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
     );
     let exports = function_export_names(&wasm);
     assert!(
-        exports.contains("molt_table_init"),
-        "relocatable wasm must export table initializer; exports={exports:?}"
+        !exports.contains("molt_table_init"),
+        "relocatable wasm must not expose a post-instantiation table writer; exports={exports:?}"
     );
     assert!(
         exports.contains("molt_main"),
@@ -367,8 +367,8 @@ fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
     assert!(
         exports
             .iter()
-            .any(|name| name.starts_with("__molt_table_ref_")),
-        "relocatable wasm must export table ref symbols; exports={exports:?}"
+            .all(|name| !name.starts_with("__molt_table_ref_")),
+        "relocatable wasm must not expose numeric callable aliases; exports={exports:?}"
     );
 
     let custom_sections = custom_section_names(&wasm);

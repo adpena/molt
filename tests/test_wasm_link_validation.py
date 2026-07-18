@@ -62,9 +62,13 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
         "dynamic_table_dispatch": False,
         "dynamic_dispatch_functions": [],
         "reachable_dynamic_dispatch": False,
+        "function_reference_dispatch_functions": [],
+        "reachable_function_reference_dispatch": False,
         "indirect_call_tables": [],
         "reachable_indirect_call_tables": [],
         "indirect_calls": [],
+        "table_reads": [],
+        "reachable_table_reads": [],
         "exported_table_indices": exported_tables,
         "tables": [],
     }
@@ -3117,6 +3121,7 @@ def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() 
         "function_references": [],
         "active_function_elements": [],
         "reachable_dynamic_dispatch": True,
+        "reachable_function_reference_dispatch": False,
         "exported_table_indices": [],
         "table_mutations": [],
     }
@@ -3151,6 +3156,7 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
         "function_references": [],
         "active_function_elements": [[0, 0, 1]],
         "reachable_dynamic_dispatch": False,
+        "reachable_function_reference_dispatch": False,
         "exported_table_indices": [],
         "table_mutations": [],
     }
@@ -3182,6 +3188,7 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
 
     for override in (
         {"reachable_dynamic_dispatch": True},
+        {"reachable_function_reference_dispatch": True},
         {"exported_table_indices": [0]},
         {
             "table_mutations": [[0, "table.init", 0, None]]
@@ -3190,6 +3197,10 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
         controlled = dict(facts)
         controlled.update(override)
         assert wasm_link._neutralize_dead_element_entries(module, controlled) is None
+
+    opaque_ref_dispatch = dict(facts)
+    opaque_ref_dispatch["reachable_function_reference_dispatch"] = True
+    assert wasm_link._stub_dead_functions(module, opaque_ref_dispatch) is None
 
 
 def test_import_walkers_handle_tag_imports_before_host_call_indirect() -> None:
@@ -5049,6 +5060,7 @@ def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> N
         "function_references": [],
         "active_function_elements": [[0, 0, 0]],
         "reachable_dynamic_dispatch": True,
+        "reachable_function_reference_dispatch": False,
         "exported_table_indices": [],
         "table_mutations": [],
     }
