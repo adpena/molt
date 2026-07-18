@@ -125,16 +125,26 @@ def test_ci_push_path_is_cheap_only() -> None:
 def test_ci_heavy_jobs_are_path_classified() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
-    assert 'python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"' in (
-        ci_text
-    )
+    assert 'python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"' in (ci_text)
     assert "python_tooling: ${{ steps.paths.outputs.python_tooling }}" in ci_text
     assert "rust: ${{ steps.paths.outputs.rust }}" in ci_text
     assert "llvm: ${{ steps.paths.outputs.llvm }}" in ci_text
     assert "python_security: ${{ steps.paths.outputs.python_security }}" in ci_text
     assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in ci_text
     assert "matrix: ${{ steps.paths.outputs.matrix }}" in ci_text
+    assert "selected: ${{ steps.paths.outputs.selected }}" in ci_text
     assert ci_text.count("needs: classify-changes") == 4
+    assert "proof-plan-verdict:" in ci_text
+    assert "name: Proof Plan Verdict" in ci_text
+    assert (
+        "--verify-selected '${{ needs.classify-changes.outputs.selected }}'" in ci_text
+    )
+    assert "python_tooling=${{ needs.python-tooling-smoke.result }}:${{" in ci_text
+    assert "rust=${{ needs.rust-build-unit-smoke.result }}:${{" in ci_text
+    assert "llvm=${{ needs.llvm-backend.result }}:${{" in ci_text
+    assert "python_security=${{ needs.security-hardening.result }}:${{" in ci_text
+    assert "rust_security=${{ needs.security-hardening.result }}:${{" in ci_text
+    assert ci_text.count("== 'success' && 1 || 0") == 5
     assert ci_text.count("fetch-depth: 0") == 1
 
 
@@ -658,7 +668,9 @@ def test_security_hardening_is_reusable_and_ci_uses_one_planner() -> None:
     assert "inputs.python_security" in security_text
     assert "inputs.rust_security" in security_text
     assert "uses: ./.github/workflows/security_hardening.yml" in ci_text
-    assert ci_text.count("tools/proof_plan.py") == 1
+    assert ci_text.count("tools/proof_plan.py") == 2
+    assert ci_text.count('tools/proof_plan.py --github-output "$GITHUB_OUTPUT"') == 1
+    assert ci_text.count("tools/proof_plan.py\n          --verify-selected") == 1
 
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
