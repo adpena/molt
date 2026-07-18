@@ -49,12 +49,18 @@ def _wait_for_guard_completion_or_stale(
                         file=log,
                         flush=True,
                     )
-                    custody._terminate_queue_owned_guard_process(proc, log, run_id=run_id)
+                    custody._terminate_queue_owned_guard_process(
+                        proc, log, run_id=run_id
+                    )
                 return str(row["status"]), row["returncode"], elapsed
             diagnostics = diagnostic_engine._run_diagnostics(row)
-            if not diagnostic_engine._diagnostics_have_terminal_stale_signal(diagnostics):
+            if not diagnostic_engine._diagnostics_have_terminal_stale_signal(
+                diagnostics
+            ):
                 continue
-            diagnostic_summary = diagnostic_engine._format_diagnostic_summary(diagnostics)
+            diagnostic_summary = diagnostic_engine._format_diagnostic_summary(
+                diagnostics
+            )
             print(
                 "\nproof_queue stale-running terminalization "
                 f"diagnosis={diagnostic_summary}",
@@ -68,7 +74,9 @@ def _wait_for_guard_completion_or_stale(
                 artifacts = diagnostic_engine._diagnostic_artifacts(diagnostics)
                 if artifacts:
                     print(f"artifacts={', '.join(artifacts)}", file=log, flush=True)
-            guard_rc = custody._terminate_queue_owned_guard_process(proc, log, run_id=run_id)
+            guard_rc = custody._terminate_queue_owned_guard_process(
+                proc, log, run_id=run_id
+            )
             if guard_rc is not None:
                 print(
                     f"proof_queue stale terminalization guard_exit_code={guard_rc}",
@@ -81,7 +89,6 @@ def _wait_for_guard_completion_or_stale(
             elapsed = time.monotonic() - start
             status = "passed" if rc == 0 else "failed"
             return status, rc, elapsed
-
 
 
 def _queue_one(
@@ -167,7 +174,9 @@ def _queue_one(
                 note=edge_note,
             )
         for note in initial_notes or []:
-            state._insert_note(conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND)
+            state._insert_note(
+                conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+            )
     except Exception as exc:
         rc = evidence._fail_preexecution_run(
             args,
@@ -225,7 +234,6 @@ def _queue_one(
     return 0, run_id
 
 
-
 def _claim_detached_run(
     conn: sqlite3.Connection,
     run_id: str,
@@ -274,7 +282,9 @@ def _claim_detached_run(
             return (
                 None,
                 f"waiting {run_id} "
-                + scheduling._format_active_contention_conflicts(active).replace("\n", "; "),
+                + scheduling._format_active_contention_conflicts(active).replace(
+                    "\n", "; "
+                ),
             )
 
         now = state._utc_now()
@@ -299,7 +309,6 @@ def _claim_detached_run(
     return state._row_by_run_id(conn, run_id), None
 
 
-
 def _dispatch_detached_runner(
     args: argparse.Namespace,
     conn: sqlite3.Connection,
@@ -317,7 +326,9 @@ def _dispatch_detached_runner(
             print(skip_reason)
         return None
     try:
-        pid, runner_log = custody._launch_detached_runner(args, run_id=run_id, timeout=timeout)
+        pid, runner_log = custody._launch_detached_runner(
+            args, run_id=run_id, timeout=timeout
+        )
     except Exception:
         state._update_run(
             conn,
@@ -338,7 +349,6 @@ def _dispatch_detached_runner(
             print(f"runner_pid={pid}", file=log)
             print(f"runner_log={runner_log}", file=log)
     return pid, runner_log
-
 
 
 def _record_policy_rejection(
@@ -386,7 +396,6 @@ def _record_policy_rejection(
     return 2
 
 
-
 def _ensure_disk_headroom_before_build() -> None:
     """Preemptive, AGENT-SAFE disk reclaim before launching a queued build.
 
@@ -403,6 +412,7 @@ def _ensure_disk_headroom_before_build() -> None:
         disk_guard.ensure_free_fail_open()
     except Exception:
         pass
+
 
 def _run_one(
     args: argparse.Namespace,
@@ -457,7 +467,9 @@ def _run_one(
         scheduling._print_active_contention_conflicts(active)
         return 2
     suffix = uuid.uuid4().hex[:16]
-    run_id = existing_run_id or f"{state._compact_utc()}-{state._slug(logical_id)}-{suffix}"
+    run_id = (
+        existing_run_id or f"{state._compact_utc()}-{state._slug(logical_id)}-{suffix}"
+    )
     logs_root.mkdir(parents=True, exist_ok=True)
     log_path = existing_log_path or logs_root / f"{run_id}.log"
     summary_json = existing_summary_json or logs_root / f"{run_id}.memory_guard.json"
@@ -488,7 +500,9 @@ def _run_one(
                     note=edge_note,
                 )
             for note in initial_notes or []:
-                state._insert_note(conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND)
+                state._insert_note(
+                    conn, run_id=run_id, body=note, kind=state.SUBMISSION_NOTE_KIND
+                )
         except Exception as exc:
             return evidence._fail_preexecution_run(
                 args,
@@ -622,14 +636,11 @@ def _run_one(
         print(f"memory_guard_summary_json={summary_json}", file=log)
         print(f"memory_guard_command={shlex.join(wrapped)}", file=log)
         print("", file=log, flush=True)
-        proc = subprocess.Popen(
+        proc = custody._launch_queued_command(
             wrapped,
             cwd=repo_root,
             env=env,
             stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            **custody._queued_command_process_kwargs(),
         )
     except Exception as exc:
         try:

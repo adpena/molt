@@ -7,6 +7,7 @@ import ctypes
 import os
 import shlex
 import subprocess
+from subprocess import Popen, TimeoutExpired
 import sys
 from pathlib import Path
 
@@ -36,9 +37,8 @@ PROOF_QUEUE_STALE_EXIT_CODE = 2
 PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS = 6 * 60 * 60.0
 
 
-
 def _terminate_queue_owned_guard_process(
-    proc: subprocess.Popen[str],
+    proc: Popen[str],
     log: object,
     *,
     run_id: str,
@@ -55,7 +55,7 @@ def _terminate_queue_owned_guard_process(
         return None
     try:
         return int(proc.wait(timeout=PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS))
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         print(
             "proof_queue stale terminalization escalate kill "
             f"guard_pid={proc.pid} run_id={run_id}",
@@ -74,7 +74,7 @@ def _terminate_queue_owned_guard_process(
         return None
     try:
         return int(proc.wait(timeout=PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS))
-    except subprocess.TimeoutExpired:  # pragma: no cover - only wedged OS child.
+    except TimeoutExpired:  # pragma: no cover - only wedged OS child.
         print(
             "proof_queue stale terminalization guard still live after kill "
             f"guard_pid={proc.pid} run_id={run_id}",
@@ -82,7 +82,6 @@ def _terminate_queue_owned_guard_process(
             flush=True,
         )
         return None
-
 
 
 def _memory_guard_command(
@@ -112,7 +111,6 @@ def _memory_guard_command(
     ]
 
 
-
 def _proof_queue_memory_guard_poll_sec(env_overrides: dict[str, str]) -> str:
     value = env_overrides.get(
         MEMORY_GUARD_POLL_SEC_ENV, DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC
@@ -130,10 +128,8 @@ def _proof_queue_memory_guard_poll_sec(env_overrides: dict[str, str]) -> str:
     return value
 
 
-
 def _normalize_queue_process_environment() -> None:
     os.environ.setdefault("UV_LINK_MODE", "copy")
-
 
 
 def _global_arg_pairs(args: argparse.Namespace) -> list[str]:
@@ -148,7 +144,6 @@ def _global_arg_pairs(args: argparse.Namespace) -> list[str]:
         if value:
             pairs.extend([option, str(value)])
     return pairs
-
 
 
 def _launch_detached_runner(
@@ -183,7 +178,7 @@ def _launch_detached_runner(
     with runner_log.open("w", encoding="utf-8") as log:
         print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
         print(f"command={shlex.join(command)}", file=log, flush=True)
-        proc = subprocess.Popen(
+        proc = Popen(
             command,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -192,10 +187,8 @@ def _launch_detached_runner(
     return proc.pid, runner_log
 
 
-
 def _queue_process_spawn_is_windows() -> bool:
     return os.name == "nt"
-
 
 
 def _queued_command_process_kwargs() -> dict[str, object]:
@@ -205,6 +198,30 @@ def _queued_command_process_kwargs() -> dict[str, object]:
     )
 
 
+def _launch_queued_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    stdout: object,
+) -> Popen[str]:
+    """Launch through the queue-owned process boundary.
+
+    Keeping the constructor here makes process fakes local to queue custody;
+    patching ``subprocess.Popen`` on the shared module object used to replace
+    unrelated Git/DX subprocesses and turned valid rows into rc=2 setup errors.
+    """
+
+    return Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=stdout,
+        stderr=subprocess.STDOUT,
+        text=True,
+        **_queued_command_process_kwargs(),
+    )
+
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -213,13 +230,11 @@ _ERROR_ACCESS_DENIED = 5
 _STILL_ACTIVE = 259
 
 
-
 class _FILETIME(ctypes.Structure):
     _fields_ = [
         ("dwLowDateTime", ctypes.c_uint32),
         ("dwHighDateTime", ctypes.c_uint32),
     ]
-
 
 
 def _windows_process_creation_ticks(pid: int) -> int | None:
@@ -257,7 +272,6 @@ def _windows_process_creation_ticks(pid: int) -> int | None:
         kernel32.CloseHandle(handle)
 
 
-
 def _process_creation_ticks(pid: int) -> int | None:
     """Best-effort process creation time (100ns ticks) for identity binding."""
     if pid <= 0:
@@ -290,7 +304,6 @@ def _process_creation_ticks(pid: int) -> int | None:
         return None
 
 
-
 def _process_identity(pid: int) -> str | None:
     """A PID+creation-time identity string, or None if it can't be determined.
 
@@ -305,7 +318,6 @@ def _process_identity(pid: int) -> str | None:
     if ticks is None:
         return None
     return f"{os.name}:{int(pid)}:{ticks}"
-
 
 
 def _pid_alive(pid: int) -> bool:
@@ -332,7 +344,6 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
-
 
 
 def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:

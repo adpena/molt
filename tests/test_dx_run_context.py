@@ -15,7 +15,22 @@ from molt.dx import (
     development_artifact_env,
     render_env,
 )
+from molt.path_custody import (
+    CustodyPathRole,
+    forbidden_for_role,
+    host_path_is_within,
+    pure_path_is_within,
+)
 from tools import run_context_env
+
+
+@pytest.fixture(autouse=True)
+def _isolate_unit_paths_from_hosted_checkout_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unit cases create independent synthetic project roots.  The process-wide
+    # hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
+    monkeypatch.delenv(dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, raising=False)
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,12 +303,6 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
     repo_root = tmp_path / "repo"
     external_root = tmp_path / "external-drive" / "Molt"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(
-        dx,
-        "_default_windows_external_artifact_roots",
-        lambda _root, _env=None: (external_root,),
-    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
     env = RunContext(
@@ -302,6 +311,7 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
         prefer_external_artifacts=True,
     ).canonical_env(
         {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
         },
         create_dirs=True,
@@ -323,12 +333,6 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
     unhealthy = tmp_path / "unhealthy" / "Molt"
     healthy = tmp_path / "healthy" / "Molt"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(
-        dx,
-        "_default_windows_external_artifact_roots",
-        lambda _root, _env=None: (unhealthy, healthy),
-    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
     def fake_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
@@ -345,6 +349,9 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
         prefer_external_artifacts=True,
     ).canonical_env(
         {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": os.pathsep.join(
+                (str(unhealthy), str(healthy))
+            ),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
         },
         create_dirs=True,
@@ -362,7 +369,6 @@ def test_run_context_rejects_windows_c_drive_artifact_root_by_default(
     repo_root = tmp_path / "repo"
     c_root = tmp_path / "c-artifacts"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     with pytest.raises(dx.DxConfigError, match="must not be placed on C"):
@@ -387,7 +393,6 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
     repo_root = tmp_path / "repo"
     user_output_root = repo_root / "build" / "wasm" / "case"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     env = RunContext(
@@ -445,7 +450,6 @@ def test_run_context_rejects_explicit_c_drive_canonical_root(
     external_root = tmp_path / "external-drive" / "Molt"
     c_target = tmp_path / "c-drive-target"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
         dx,
         "_is_windows_c_drive_path",
@@ -682,12 +686,6 @@ def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
     repo_root = tmp_path / "repo"
     external_root = tmp_path / "external" / "Molt"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(
-        dx,
-        "_default_windows_external_artifact_roots",
-        lambda _root, _env=None: (external_root,),
-    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
 
@@ -697,6 +695,7 @@ def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
         prefer_external_artifacts=True,
     ).dx_env(
         {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
         },
         create_dirs=True,
@@ -713,12 +712,6 @@ def test_dx_env_preserves_explicit_uv_link_mode_on_exfat_root(
     repo_root = tmp_path / "repo"
     external_root = tmp_path / "external" / "Molt"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(
-        dx,
-        "_default_windows_external_artifact_roots",
-        lambda _root, _env=None: (external_root,),
-    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
 
@@ -728,6 +721,7 @@ def test_dx_env_preserves_explicit_uv_link_mode_on_exfat_root(
         prefer_external_artifacts=True,
     ).dx_env(
         {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
             "UV_LINK_MODE": "hardlink",
         },
@@ -828,7 +822,8 @@ def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
 ) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
+    if os.name != "nt":
+        pytest.skip("concrete drive-path resolution requires a Windows host")
     env = RunContext(
         repo_root,
         session_prefix="test",
@@ -836,7 +831,7 @@ def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
     ).canonical_env({"MOLT_EXT_ROOT": r"D:\scratch"}, create_dirs=False)
 
     assert env["MOLT_EXT_ROOT"] == str(Path(r"D:\scratch").resolve())
-    assert env["MOLT_TARGET_ROOT"] == str(dx.canonical_toolchain_root(repo_root))
+    assert env["MOLT_TARGET_ROOT"] == str(dx.checkout_custody(repo_root).toolchain_root)
 
 
 def test_run_context_attests_selected_windows_c_artifact_root(
@@ -846,7 +841,6 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     primary = tmp_path / "Molt"
     repo_root = primary / "molt-src"
     repo_root.mkdir(parents=True)
-    monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     env = RunContext(
@@ -864,24 +858,78 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     assert payload["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] == "1"
 
 
-def test_toolchain_root_is_child_of_canonical_custody_root(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_toolchain_root_is_child_of_canonical_custody_root(tmp_path: Path) -> None:
     custody = tmp_path / "custody"
     worktree = custody / "worktrees" / "lane"
     worktree.mkdir(parents=True)
-    monkeypatch.setattr(dx.os, "name", "nt")
-    assert dx.canonical_toolchain_root(worktree) == (
-        custody.resolve() / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    resolved = dx.checkout_custody(worktree)
+    assert (
+        resolved.toolchain_root
+        == resolved.custody_root / dx.DEFAULT_TARGET_ROOT_DIRNAME
     )
 
 
-def test_canonical_custody_fails_closed_on_d_worktree_family(monkeypatch) -> None:
-    monkeypatch.setattr(dx.os, "name", "nt")
-    with pytest.raises(dx.DxConfigError, match=r"forbidden drive D:"):
-        dx.canonical_molt_root(
-            Path(r"D:\Molt\worktrees\lane"), require_exists=False
-        )
+@pytest.mark.parametrize(
+    "path",
+    (
+        r"D:\Molt\worktrees\lane",
+        "D:/other/molt-src",
+        r"\\?\D:\Molt\worktrees\lane",
+        "//?/D:/Molt/worktrees/lane",
+        r"\\.\D:\Molt\worktrees\lane",
+        r"\??\D:\Molt\worktrees\lane",
+    ),
+    ids=(
+        "normal",
+        "slash",
+        "win32-device",
+        "win32-device-slash",
+        "dos-device",
+        "nt-object-manager",
+    ),
+)
+def test_canonical_custody_fails_closed_on_entire_d_drive(path: str) -> None:
+    with pytest.raises(dx.DxConfigError, match=r"forbidden D:"):
+        dx.canonical_molt_root(path, require_exists=False)
+    assert forbidden_for_role(path, CustodyPathRole.DURABLE_AUTHORITY)
+    assert not forbidden_for_role(path, CustodyPathRole.HOSTED_SOURCE)
+    assert not forbidden_for_role(path, CustodyPathRole.HOSTED_EXECUTION)
+
+
+@pytest.mark.parametrize(
+    ("runner_source", "runner_temp", "runner_custody"),
+    [
+        (
+            r"D:\a\molt\molt",
+            r"D:\a\_temp",
+            r"D:\a\_temp\molt-proof-queue-windows",
+        ),
+        (
+            "/home/runner/work/molt/molt",
+            "/home/runner/work/_temp",
+            "/home/runner/work/_temp/molt-proof-queue-linux",
+        ),
+        (
+            "/Users/runner/work/molt/molt",
+            "/Users/runner/work/_temp",
+            "/Users/runner/work/_temp/molt-proof-queue-macos",
+        ),
+    ],
+    ids=("windows", "linux", "macos"),
+)
+def test_path_roles_distinguish_hosted_runner_matrix_from_durable_authority(
+    runner_source: str,
+    runner_temp: str,
+    runner_custody: str,
+) -> None:
+    assert forbidden_for_role(
+        r"D:\Molt\worktrees\lane", CustodyPathRole.DURABLE_AUTHORITY
+    )
+    assert forbidden_for_role(r"D:\other\molt-src", CustodyPathRole.DURABLE_AUTHORITY)
+    assert not forbidden_for_role(runner_source, CustodyPathRole.HOSTED_SOURCE)
+    assert not forbidden_for_role(runner_custody, CustodyPathRole.HOSTED_EXECUTION)
+    assert pure_path_is_within(runner_custody, runner_temp)
+    assert host_path_is_within(runner_custody, runner_temp)
 
 
 def test_verified_github_checkout_separates_source_from_execution_custody(
@@ -904,7 +952,9 @@ def test_verified_github_checkout_separates_source_from_execution_custody(
     assert custody.custody_root == (runner_temp / "molt-custody").resolve()
     assert Path(resolved["MOLT_EXT_ROOT"]) == custody.custody_root
     assert Path(resolved["MOLT_TARGET_ROOT"]) == custody.toolchain_root
-    assert not dx._forbidden_windows_canonical_path(custody.toolchain_root)
+    assert not forbidden_for_role(
+        custody.toolchain_root, CustodyPathRole.HOSTED_EXECUTION
+    )
     for key in dx.CANONICAL_ROOT_ENV_KEYS:
         value = resolved.get(key)
         if value:
@@ -917,7 +967,8 @@ def test_github_actions_flag_alone_cannot_self_attest_custody(tmp_path: Path) ->
         {"GITHUB_ACTIONS": "true", "CI": "true"},
     )
 
-    assert custody.kind == "durable"
+    assert custody.kind in {"durable", "explicit-scratch"}
+    assert custody.kind != "github-actions-ephemeral"
     assert custody.custody_root == tmp_path.resolve()
 
 
@@ -1004,13 +1055,15 @@ def test_verified_github_checkout_on_d_is_source_only(
     assert custody.kind == "github-actions-ephemeral"
     assert custody.source_root == source_root.resolve()
     assert custody.custody_root != custody.source_root
-    assert not dx._forbidden_windows_canonical_path(custody.toolchain_root)
-    with pytest.raises(dx.DxConfigError, match="forbidden drive D"):
+    assert not forbidden_for_role(
+        custody.toolchain_root, CustodyPathRole.HOSTED_EXECUTION
+    )
+    with pytest.raises(dx.DxConfigError, match=r"forbidden D:"):
         dx.canonical_molt_root(source_root, require_exists=False)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive-letter semantics are Windows-only")
-def test_verified_windows_ci_rejects_d_toolchain_cache(
+def test_verified_windows_ci_keeps_d_toolchain_cache_ephemeral(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     repo_root = tmp_path / "repo"
@@ -1020,27 +1073,30 @@ def test_verified_windows_ci_rejects_d_toolchain_cache(
     env["RUNNER_TOOL_CACHE"] = r"D:\hostedtoolcache\windows"
     monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
 
-    with pytest.raises(dx.DxConfigError, match="RUNNER_TOOL_CACHE.*forbidden drive D"):
-        dx.checkout_custody(repo_root, env)
+    custody = dx.checkout_custody(repo_root, env, require_exists=False)
+
+    assert custody.ephemeral
+    assert (
+        custody.toolchain_root == custody.custody_root / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    )
+    assert not forbidden_for_role(
+        custody.toolchain_root, CustodyPathRole.HOSTED_EXECUTION
+    )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
 def test_should_rehome_offvolume_toolchain_root(monkeypatch) -> None:
-    monkeypatch.setattr(dx.os, "name", "nt")
     assert dx._should_rehome_toolchain_root(r"E:\molt-target", Path(r"D:\Molt"), {})
-    # Same-volume legacy sibling is still stale: the APDataStore authority is
-    # D:\Molt\target-root, not the empty old D:\molt-target default.
-    assert dx._should_rehome_toolchain_root(r"D:\molt-target", Path(r"D:\Molt"), {})
+    # Every D: toolchain path is rehomed when its role is durable.
     assert dx._should_rehome_toolchain_root(
         r"D:\Molt\target-root", Path(r"D:\Molt"), {}
     )
     assert dx._should_rehome_toolchain_root(
-        r"D:\custom-toolchains", Path(r"D:\Molt"), {}
+        r"D:\custom-toolchains", Path(r"C:\Molt"), {}
     )
-    # Explicit operator opt-out cannot preserve D:, but may preserve a
-    # deliberate non-poison custom toolchain location.
+    # Explicit operator opt-out may preserve a non-D custom toolchain, never D:.
     assert dx._should_rehome_toolchain_root(
-        r"D:\custom-toolchains",
+        r"D:\Molt\custom-toolchains",
         Path(r"C:\Molt"),
         {"MOLT_PRESERVE_TARGET_ROOT": "1"},
     )
@@ -1061,7 +1117,6 @@ def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
     custody_root = tmp_path / "custody"
     repo_root.mkdir()
     custody_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
         dx,
         "checkout_custody",
@@ -1177,7 +1232,9 @@ def test_auto_janitor_skips_under_pytest(monkeypatch, tmp_path):
 
     popen_calls = []
     monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
-    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_dx_run_context.py::test (call)")
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST", "tests/test_dx_run_context.py::test (call)"
+    )
     monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
 
     dx._maybe_sweep_stale_artifacts(tmp_path)

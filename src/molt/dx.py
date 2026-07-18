@@ -15,8 +15,18 @@ import tempfile
 import time
 import tomllib
 import uuid
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
+
+from molt.path_custody import (
+    CustodyPathRole,
+    PathCustodyError,
+    forbidden_for_role,
+    host_path_is_within,
+    same_host_path,
+    validate_path_role,
+    windows_drive,
+)
 
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
@@ -62,7 +72,6 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/APDataStore/Molt",
     "/Volumes/VertigoDataTier/Molt",
 )
-FORBIDDEN_WINDOWS_CANONICAL_DRIVES = frozenset({"D:"})
 # Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the durable
 # Molt custody root, never from a capacity-selected scratch/output volume.
 DEFAULT_TARGET_ROOT_DIRNAME = "target-root"
@@ -82,7 +91,7 @@ class DxConfigError(RuntimeError):
     pass
 
 
-CheckoutCustodyKind = Literal["durable", "github-actions-ephemeral"]
+CheckoutCustodyKind = Literal["durable", "github-actions-ephemeral", "explicit-scratch"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +111,10 @@ class CheckoutCustody:
 
     @property
     def ephemeral(self) -> bool:
+        return self.kind != "durable"
+
+    @property
+    def source_only(self) -> bool:
         return self.kind == "github-actions-ephemeral"
 
 
@@ -297,7 +310,11 @@ def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
             return
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(now), encoding="utf-8")  # claim the slot first
-        janitor = Path(__file__).resolve().parent.parent.parent / "tools" / "molt_ssd_janitor.py"
+        janitor = (
+            Path(__file__).resolve().parent.parent.parent
+            / "tools"
+            / "molt_ssd_janitor.py"
+        )
         if not janitor.exists():
             return
         creationflags = 0
@@ -579,9 +596,9 @@ def _artifact_root_is_windows_exfat(artifact_root: Path) -> bool:
     return filesystem is not None and filesystem.casefold() == "exfat"
 
 
-def _checkout_family_custody_root(repo_root: Path) -> Path:
+def _checkout_family_custody_root(repo_root: str | Path) -> Path:
     """Derive the durable checkout family root without consulting build env."""
-    root = repo_root.expanduser().resolve()
+    root = Path(repo_root).expanduser().resolve()
     if root.name == "molt-src":
         return root.parent
     if root.parent.name == "worktrees":
@@ -590,12 +607,7 @@ def _checkout_family_custody_root(repo_root: Path) -> Path:
 
 
 def _path_is_within(path: Path, parent: Path) -> bool:
-    path_key = os.path.normcase(str(path.resolve()))
-    parent_key = os.path.normcase(str(parent.resolve()))
-    try:
-        return os.path.commonpath((path_key, parent_key)) == parent_key
-    except ValueError:
-        return False
+    return host_path_is_within(path, parent)
 
 
 def _git_checkout_head(repo_root: Path) -> str | None:
@@ -610,7 +622,9 @@ def _git_checkout_head(repo_root: Path) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     head = proc.stdout.strip().lower()
-    return head if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    return (
+        head if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    )
 
 
 def _github_actions_checkout_custody(
@@ -646,7 +660,15 @@ def _github_actions_checkout_custody(
     source_root = repo_root.expanduser().resolve()
     verify_checkout_files = require_exists or source_root.is_dir()
     workspace_raw = env.get("GITHUB_WORKSPACE", "").strip()
-    if not workspace_raw or Path(workspace_raw).expanduser().resolve() != source_root:
+    runner_temp_raw = env.get("RUNNER_TEMP", "").strip()
+    if workspace_raw and not same_host_path(workspace_raw, source_root):
+        # A hosted job's environment is process-global, but unit/integration
+        # tests legitimately create synthetic projects beneath RUNNER_TEMP.
+        # The hosted checkout contract belongs only to GITHUB_WORKSPACE; nested
+        # runner scratch is explicitly non-canonical and resolves normally.
+        if runner_temp_raw and host_path_is_within(source_root, runner_temp_raw):
+            return None
+    if not workspace_raw or not same_host_path(workspace_raw, source_root):
         raise DxConfigError(
             "GitHub Actions custody requires GITHUB_WORKSPACE to equal the source checkout"
         )
@@ -668,7 +690,9 @@ def _github_actions_checkout_custody(
         raise DxConfigError(f"invalid GitHub Actions workflow ref: {workflow_ref!r}")
     workflow_sha = env.get("GITHUB_WORKFLOW_SHA", "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", workflow_sha):
-        raise DxConfigError("GitHub Actions custody requires a full GITHUB_WORKFLOW_SHA")
+        raise DxConfigError(
+            "GitHub Actions custody requires a full GITHUB_WORKFLOW_SHA"
+        )
 
     event_path_raw = env.get("GITHUB_EVENT_PATH", "").strip()
     try:
@@ -690,7 +714,6 @@ def _github_actions_checkout_custody(
             f"GitHub Actions checkout HEAD mismatch: expected {github_sha}, got {checkout_head}"
         )
 
-    runner_temp_raw = env.get("RUNNER_TEMP", "").strip()
     runner_temp = Path(runner_temp_raw).expanduser()
     custody_root = Path(contract_raw).expanduser()
     if not runner_temp_raw or not runner_temp.is_absolute():
@@ -701,6 +724,18 @@ def _github_actions_checkout_custody(
         )
     runner_temp = runner_temp.resolve()
     custody_root = custody_root.resolve()
+    for path, role, authority in (
+        (source_root, CustodyPathRole.HOSTED_SOURCE, "GitHub Actions source"),
+        (
+            custody_root,
+            CustodyPathRole.HOSTED_EXECUTION,
+            "GitHub Actions execution custody",
+        ),
+    ):
+        try:
+            validate_path_role(path, role, authority=authority)
+        except PathCustodyError as exc:  # pragma: no cover - roles currently allow all.
+            raise DxConfigError(str(exc)) from exc
     if verify_checkout_files and not runner_temp.is_dir():
         raise DxConfigError(f"GitHub Actions RUNNER_TEMP does not exist: {runner_temp}")
     if custody_root == runner_temp or not _path_is_within(custody_root, runner_temp):
@@ -710,7 +745,9 @@ def _github_actions_checkout_custody(
     if _path_is_within(custody_root, source_root) or _path_is_within(
         source_root, custody_root
     ):
-        raise DxConfigError("GitHub Actions source checkout and custody roots must be disjoint")
+        raise DxConfigError(
+            "GitHub Actions source checkout and custody roots must be disjoint"
+        )
 
     for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
         if not env.get(key, "").strip().isdigit():
@@ -737,41 +774,20 @@ def _github_actions_checkout_custody(
         "i386": "X86",
         "i686": "X86",
     }.get(platform.machine().lower())
-    if expected_runner_arch is None or env.get("RUNNER_ARCH", "").strip() != expected_runner_arch:
+    if (
+        expected_runner_arch is None
+        or env.get("RUNNER_ARCH", "").strip() != expected_runner_arch
+    ):
         raise DxConfigError(
             "GitHub Actions RUNNER_ARCH does not match this host: "
             f"{env.get('RUNNER_ARCH')!r}"
         )
 
-    if os.name == "nt":
-        runner_tool_cache_raw = env.get("RUNNER_TOOL_CACHE", "").strip()
-        runner_tool_cache = Path(runner_tool_cache_raw).expanduser()
-        if not runner_tool_cache_raw or not runner_tool_cache.is_absolute():
-            raise DxConfigError(
-                "GitHub Actions Windows custody requires an absolute RUNNER_TOOL_CACHE"
-            )
-        runner_tool_cache = runner_tool_cache.resolve()
-        if _forbidden_windows_canonical_path(runner_tool_cache):
-            raise DxConfigError(
-                "GitHub Actions RUNNER_TOOL_CACHE resolved to forbidden drive D: "
-                f"({runner_tool_cache})"
-            )
-        if verify_checkout_files and not runner_tool_cache.is_dir():
-            raise DxConfigError(
-                f"GitHub Actions RUNNER_TOOL_CACHE does not exist: {runner_tool_cache}"
-            )
-        toolchain_root = (
-            runner_tool_cache
-            / "molt"
-            / f"{env['GITHUB_RUN_ID']}-{env['GITHUB_RUN_ATTEMPT']}-"
-            f"{session_artifact_component(env['GITHUB_JOB'])}"
-        )
-        if _path_is_within(toolchain_root, source_root):
-            raise DxConfigError(
-                "GitHub Actions toolchain custody must be outside the source checkout"
-            )
-    else:
-        toolchain_root = custody_root / DEFAULT_TARGET_ROOT_DIRNAME
+    # One per-run execution authority on every hosted OS.  RUNNER_TOOL_CACHE is
+    # a runner-managed shared cache, not Molt custody; deriving Windows tools
+    # from it created a second platform-only authority and incorrectly treated
+    # its drive letter as durable project identity.
+    toolchain_root = custody_root / DEFAULT_TARGET_ROOT_DIRNAME
 
     return CheckoutCustody(
         source_root=source_root,
@@ -782,7 +798,7 @@ def _github_actions_checkout_custody(
     )
 
 
-def canonical_molt_root(repo_root: Path, *, require_exists: bool = True) -> Path:
+def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -> Path:
     """Return the single durable Molt custody root for this platform.
 
     The authority is derived from the invoking checkout family (``molt-src`` or
@@ -790,13 +806,18 @@ def canonical_molt_root(repo_root: Path, *, require_exists: bool = True) -> Path
     environment, volume labels, free-space policy, or preservation switches.
     A normal installed/user project therefore has no global ``C:\\Molt``
     requirement, while this workstation's ``C:\\Molt`` family resolves there
-    deterministically. Drive D is refused for durable custody.
+    deterministically. D: is refused for durable custody, while hosted-runner
+    D:\\a paths are validated under hosted roles.
     """
-    root = _checkout_family_custody_root(repo_root)
-    if _forbidden_windows_canonical_path(root):
-        raise DxConfigError(
-            f"canonical Molt custody resolved to forbidden drive D: ({root})"
+    try:
+        validate_path_role(
+            repo_root,
+            CustodyPathRole.DURABLE_AUTHORITY,
+            authority="canonical Molt custody",
         )
+    except PathCustodyError as exc:
+        raise DxConfigError(str(exc)) from exc
+    root = _checkout_family_custody_root(repo_root)
     if require_exists and not root.is_dir():
         raise DxConfigError(f"canonical Molt custody root does not exist: {root}")
     return root
@@ -817,6 +838,22 @@ def checkout_custody(
     )
     if hosted is not None:
         return hosted
+    temp_root = Path(tempfile.gettempdir()).expanduser().resolve()
+    if host_path_is_within(source_root, temp_root):
+        # Test/build projects created beneath the OS-issued temp root are
+        # explicit scratch, not durable checkout authority. This distinction is
+        # essential on hosted Windows, where pytest fixtures live under D:\a.
+        validate_path_role(
+            source_root,
+            CustodyPathRole.EXPLICIT_SCRATCH,
+            authority="temporary project scratch",
+        )
+        return CheckoutCustody(
+            source_root=source_root,
+            custody_root=source_root,
+            toolchain_root=source_root / DEFAULT_TARGET_ROOT_DIRNAME,
+            kind="explicit-scratch",
+        )
     durable_root = canonical_molt_root(source_root, require_exists=require_exists)
     return CheckoutCustody(
         source_root=source_root,
@@ -833,13 +870,6 @@ def canonical_toolchain_root(repo_root: Path, *, require_exists: bool = True) ->
     )
 
 
-def _forbidden_windows_canonical_path(raw: str | Path) -> bool:
-    if os.name != "nt":
-        return False
-    drive = PureWindowsPath(str(raw).strip()).drive.upper()
-    return drive in FORBIDDEN_WINDOWS_CANONICAL_DRIVES
-
-
 def _should_rehome_toolchain_root(
     raw: str,
     artifact_root: Path,
@@ -847,12 +877,13 @@ def _should_rehome_toolchain_root(
 ) -> bool:
     """True when inherited toolchain custody conflicts with durable authority.
 
-    Drive D is unconditionally forbidden. An intentional non-poison custom
-    toolchain may be retained with ``MOLT_PRESERVE_TARGET_ROOT=1``.
+    D: is unconditionally forbidden for durable authority. An intentional
+    non-poison custom toolchain may be retained with
+    ``MOLT_PRESERVE_TARGET_ROOT=1``.
     """
     if os.name != "nt":
         return False
-    if _forbidden_windows_canonical_path(raw):
+    if forbidden_for_role(raw, CustodyPathRole.DURABLE_AUTHORITY):
         return True
     if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
         return False
@@ -881,7 +912,7 @@ def _allow_c_drive_artifacts(env: Mapping[str, str]) -> bool:
 
 
 def _is_windows_c_drive_path(path: Path) -> bool:
-    return os.name == "nt" and path.drive.upper() == "C:"
+    return os.name == "nt" and windows_drive(path) == "C:"
 
 
 def _reject_c_drive_artifact_path(
@@ -1179,9 +1210,10 @@ def _provision_sccache() -> str | None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as td:
             archive = Path(td) / url.rsplit("/", 1)[-1]
-            with urllib.request.urlopen(url, timeout=90) as resp, open(
-                archive, "wb"
-            ) as out:
+            with (
+                urllib.request.urlopen(url, timeout=90) as resp,
+                open(archive, "wb") as out,
+            ):
                 shutil.copyfileobj(resp, out)
             if archive.suffix == ".zip":
                 with zipfile.ZipFile(archive) as zf:
@@ -1376,7 +1408,7 @@ class RunContext:
         forced = set(force_default_keys)
         custody = checkout_custody(self.root, env)
 
-        if custody.ephemeral:
+        if custody.source_only:
             for key in CANONICAL_ROOT_ENV_KEYS:
                 raw = env.get(key, "").strip()
                 if raw and _path_is_within(self._resolve_env_path(raw), self.root):
