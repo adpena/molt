@@ -265,10 +265,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.1
 
-      - name: Install elan (Lean 4 toolchain)
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Setup exact Lean toolchain
+        uses: ./.github/actions/setup-lean
 
       - uses: actions/setup-node@v6
         with:

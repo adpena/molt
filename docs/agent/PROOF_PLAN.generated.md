@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 10 |
-| Hashed executable authority inputs | 1 | 32 |
+| Hashed executable authority inputs | 1 | 34 |
 | Local path rules | 35 | 36 |
 | Unique local commands | 73 | 77 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -60,7 +60,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 1 |
+| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 4 |
 | `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
 | `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |

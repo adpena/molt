@@ -23,10 +23,8 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - name: Install elan
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+      - name: Setup exact Lean toolchain
+        uses: ./.github/actions/setup-lean
 
       - name: Cache Lean build
         uses: actions/cache@v5

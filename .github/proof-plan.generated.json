@@ -1,10 +1,12 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/formal.yml",
     ".github/workflows/molt-wasm-ci.yml",
+    ".github/workflows/nightly.yml",
     ".github/workflows/proof-queue-portability.yml",
     ".github/workflows/security_hardening.yml",
     ".gitignore",
@@ -34,7 +36,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "77c7099653ac9c662effe061c19aa1901dd1f8cca9234799d973d22d4beea941",
+  "authority_sha256": "1fa01f8ec1f4dfcf0842857a521d9c9539714a47477e22f5af0b0e717b73dce1",
   "ci_families": [
     {
       "dependencies": [],
@@ -3575,7 +3577,10 @@
       "name": "lean",
       "probe_cwd": "formal/lean",
       "setup_evidence": [
-        "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0"
+        "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
+        ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
+        ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
+        ".github/workflows/nightly.yml::uses: ./.github/actions/setup-lean"
       ],
       "setup_value": "4.28.0",
       "version_args": [

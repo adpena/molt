@@ -266,6 +266,12 @@ def test_toolchain_probe_cwd_is_existing_repo_contained_directory(
 def test_lean_toolchain_probe_cwd_is_project_authority() -> None:
     lean = next(policy for policy in PLAN.toolchain_policies if policy.name == "lean")
     assert lean.data["probe_cwd"] == "formal/lean"
+    assert lean.data["setup_evidence"] == [
+        "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
+        '.github/actions/setup-lean/action.yml::toolchain install "$toolchain"',
+        ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
+        ".github/workflows/nightly.yml::uses: ./.github/actions/setup-lean",
+    ]
 
 
 def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) -> None:
