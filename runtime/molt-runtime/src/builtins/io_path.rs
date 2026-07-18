@@ -252,7 +252,7 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
         }
         let mode = mode as u32;
         #[cfg(unix)]
-        let mut builder = {
+        let builder = {
             let mut builder = std::fs::DirBuilder::new();
             builder.mode(mode);
             builder
@@ -776,7 +776,7 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
             };
         }
         #[cfg(unix)]
-        let mut builder = {
+        let builder = {
             let mut builder = std::fs::DirBuilder::new();
             builder.mode(mode);
             builder

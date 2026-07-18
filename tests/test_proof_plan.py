@@ -72,10 +72,10 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     timeout_envelopes = projection["executor"]["github_job_timeout_envelopes"]
     assert timeout_envelopes["rust"] == {
         "budget_seconds": 3600,
-        "projected_makespan_seconds": 1560,
-        "critical_path_seconds": 1080,
-        "resource_capacity_floor_seconds": {"compiler-build-resource": 1560},
-        "headroom_seconds": 2040,
+        "projected_makespan_seconds": 2760,
+        "critical_path_seconds": 2280,
+        "resource_capacity_floor_seconds": {"compiler-build-resource": 2760},
+        "headroom_seconds": 840,
     }
     assert timeout_envelopes["repository_policy"] == {
         "budget_seconds": 3600,

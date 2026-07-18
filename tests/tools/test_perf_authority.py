@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -394,10 +395,18 @@ def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
 
 
 def test_ci_docs_gate_runs_perf_freshness_and_authority_tests() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    proof_plan = tomllib.loads(
+        (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    )
+    commands = {command["id"]: command for command in proof_plan["command"]}
 
-    assert "tools/check_perf_freshness.py" in workflow
-    assert "tests/tools/test_perf_authority.py" in workflow
+    assert commands["repository.performance-doc.freshness"]["argv"][-1] == (
+        "tools/check_perf_freshness.py"
+    )
+    assert (
+        "tests/tools/test_perf_authority.py"
+        in commands["repository.docs-tests"]["argv"]
+    )
 
 
 # --- freshness helpers -------------------------------------------------------

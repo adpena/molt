@@ -1,3 +1,4 @@
+use super::blocking::blocking_waiter_id;
 use super::*;
 
 #[cfg(molt_has_net_io)]

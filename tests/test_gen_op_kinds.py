@@ -24,6 +24,7 @@ import ast
 import importlib
 import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,16 +40,18 @@ OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 
 def _read_rs_module_cluster(root_file: Path) -> str:
     parts: list[str] = []
-    module_dir = root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
+    module_dir = (
+        root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
+    )
     if module_dir.is_dir():
-        for child in sorted(module_dir.rglob("*.rs")):
-            if child == root_file:
-                continue
-            if child.name == "tests.rs":
-                continue
-            if "tests" in child.relative_to(module_dir).parts:
-                continue
-            parts.append(child.read_text(encoding="utf-8"))
+        for current_dir, dirnames, filenames in os.walk(module_dir):
+            dirnames[:] = sorted(name for name in dirnames if name != "tests")
+            for filename in sorted(filenames):
+                if filename == "tests.rs" or not filename.endswith(".rs"):
+                    continue
+                child = Path(current_dir) / filename
+                if child != root_file:
+                    parts.append(child.read_text(encoding="utf-8"))
     parts.append(root_file.read_text(encoding="utf-8"))
     return "\n".join(parts)
 
@@ -515,9 +518,7 @@ def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
     data = gen.load_table()
 
     rows = data["simpleir_control_kind"]
-    aliases = {
-        row["canonical"]: set(row.get("aliases", [])) for row in data["kind"]
-    }
+    aliases = {row["canonical"]: set(row.get("aliases", [])) for row in data["kind"]}
     for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
         expected = {
             spelling
