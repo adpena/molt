@@ -7,6 +7,8 @@ import argparse
 import re
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "runtime/molt-cpython-abi/src/type_slots.rs"
@@ -67,15 +69,11 @@ def main() -> int:
     args = parser.parse_args()
     rendered = render(load_slots())
     if args.check:
-        try:
-            current = OUTPUT.read_text(encoding="utf-8")
-        except OSError:
-            current = ""
-        if current != rendered:
+        if not generated_file_matches(OUTPUT, rendered):
             print(f"out of date: {OUTPUT.relative_to(ROOT)}")
             return 1
         return 0
-    OUTPUT.write_text(rendered, encoding="utf-8", newline="\n")
+    write_generated_text(OUTPUT, rendered)
     return 0
 
 

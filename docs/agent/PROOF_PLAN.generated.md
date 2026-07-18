@@ -8,9 +8,9 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 10 |
-| Hashed executable authority inputs | 1 | 34 |
-| Local path rules | 35 | 36 |
-| Unique local commands | 73 | 77 |
+| Hashed executable authority inputs | 1 | 36 |
+| Local path rules | 35 | 37 |
+| Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -148,7 +148,8 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `backend-llvm` | 2 | 1 | yes |
 | `tir-midend` | 9 | 4 | yes |
 | `wasm-host` | 3 | 2 | yes |
-| `runtime-gpu` | 3 | 1 | no |
+| `gpu-core` | 3 | 1 | no |
+| `gpu-runtime` | 3 | 2 | no |
 | `runtime-vfs` | 4 | 3 | yes |
 | `runtime-lib` | 3 | 2 | yes |
 | `frontend-python` | 1 | 3 | no |
@@ -175,7 +176,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `table-drift` | 8 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 8 | 2 | no |
+| `ci-wiring` | 16 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

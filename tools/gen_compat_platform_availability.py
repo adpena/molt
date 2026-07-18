@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = ROOT / "docs" / "python_documentation"
@@ -172,10 +174,7 @@ def main() -> int:
     output = _render(rows)
 
     if args.check:
-        if not OUT_PATH.exists():
-            print(f"MISSING generated file: {OUT_PATH}", file=sys.stderr)
-            return 1
-        if OUT_PATH.read_text(encoding="utf-8") != output:
+        if not generated_file_matches(OUT_PATH, output):
             print(
                 f"STALE generated file: {OUT_PATH}\n"
                 "  run `python3 tools/gen_compat_platform_availability.py --write` "
@@ -187,8 +186,7 @@ def main() -> int:
         return 0
 
     if args.write:
-        OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        OUT_PATH.write_text(output, encoding="utf-8")
+        write_generated_text(OUT_PATH, output)
         print(f"wrote {OUT_PATH}")
     else:
         print(output, end="")

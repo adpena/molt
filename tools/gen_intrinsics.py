@@ -24,6 +24,7 @@ from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
     load_intrinsic_availability,
     longest_prefix_value,
 )
+from tools.generator_io import generated_file_matches, write_generated_text  # noqa: E402
 
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
@@ -794,20 +795,20 @@ def _rustfmt(path: Path) -> None:
 
 
 def _write_text_if_changed(path: Path, text: str) -> bool:
-    if path.exists() and path.read_text(encoding="utf-8") == text:
+    if generated_file_matches(path, text):
         return False
     if _CHECK_MODE:
         _record_check_diff(
             path, path.read_text(encoding="utf-8") if path.exists() else "", text
         )
         return True
-    path.write_text(text, encoding="utf-8")
+    write_generated_text(path, text)
     return True
 
 
 def _write_rust_if_changed(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.read_text(encoding="utf-8") == text:
+    if generated_file_matches(path, text):
         return False
     # Repository-policy generator checks run concurrently while the proof DAG
     # continuously attests that the source tree is clean.  Formatting scratch
@@ -820,7 +821,7 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
         tmp.write_text(text, encoding="utf-8", newline="\n")
         _rustfmt(tmp)
         formatted = tmp.read_text(encoding="utf-8")
-        if path.exists() and path.read_text(encoding="utf-8") == formatted:
+        if generated_file_matches(path, formatted):
             return False
         if _CHECK_MODE:
             _record_check_diff(
@@ -829,7 +830,7 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
                 formatted,
             )
             return True
-        tmp.replace(path)
+        write_generated_text(path, formatted)
         return True
 
 
