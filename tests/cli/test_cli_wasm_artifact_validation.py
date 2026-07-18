@@ -1332,7 +1332,13 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
     assert "--export-if-defined=molt_other_required_export" in response_text
     assert "--export-dynamic" not in response_text
     assert fingerprint_rustflags
-    assert "--export-if-defined=molt_required_export" in fingerprint_rustflags[-1]
+    assert any(
+        "--export-if-defined=molt_required_export" in rustflags
+        for rustflags in fingerprint_rustflags
+    )
+    # The final-publication fingerprint includes the allowlist; the staticlib
+    # compile identity intentionally excludes link-only export policy.
+    assert "--export-if-defined=molt_required_export" not in fingerprint_rustflags[-1]
     assert "--export-dynamic" not in fingerprint_rustflags[-1]
 
 

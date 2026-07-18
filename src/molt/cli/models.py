@@ -879,6 +879,30 @@ class _ExternalPackageNativeArtifactPlan:
     def digest_payload(self) -> dict[str, Any]:
         return {"artifacts": [artifact.digest_payload() for artifact in self.artifacts]}
 
+    def runtime_export_symbols(self) -> frozenset[str]:
+        """Exact runtime symbols required by the plan's native object closure.
+
+        This is a property of the admitted package plan, not of its later
+        staging location.  Keeping it here lets runtime build identity close
+        before backend code generation needs the executable runtime layout and
+        prevents the staged-artifact projection from becoming a second symbol
+        authority.
+        """
+        symbols: set[str] = set()
+        for artifact in self.artifacts:
+            symbols.update(
+                symbol.symbol
+                for symbol in artifact.c_api_symbols
+                if symbol.status == "cpython_abi_link"
+            )
+            symbols.update(
+                symbol.symbol
+                for symbol in artifact.abi_symbols
+                if symbol.status == "external_link"
+                and symbol.primitive_class == "molt_cpython_abi_link_import"
+            )
+        return frozenset(symbols)
+
     @staticmethod
     def _module_prefixes(name: str) -> set[str]:
         parts = name.split(".")
