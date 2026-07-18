@@ -392,30 +392,6 @@ pub(in crate::native_backend::simple_backend) fn merge_leaf_functions(
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn backend_setting_requests_llvm(
-    setting: Option<&str>,
-) -> bool {
-    setting == Some("llvm")
-}
-
-#[cfg(all(feature = "native-backend", not(feature = "llvm")))]
-pub(in crate::native_backend::simple_backend) fn assert_requested_llvm_backend_available(
-    use_llvm: bool,
-) {
-    if use_llvm {
-        panic!(
-            "MOLT_BACKEND=llvm requested but molt-backend was built without the llvm feature; rebuild with `--features llvm` or choose the Cranelift backend explicitly"
-        );
-    }
-}
-
-#[cfg(all(feature = "native-backend", feature = "llvm"))]
-pub(in crate::native_backend::simple_backend) fn assert_requested_llvm_backend_available(
-    _use_llvm: bool,
-) {
-}
-
-#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn emitted_module_symbol(name: &str) -> Option<&str> {
     name.strip_prefix("molt_init_")
 }
