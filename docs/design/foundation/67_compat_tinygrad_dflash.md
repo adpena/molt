@@ -177,7 +177,7 @@ tied below to a structural fact, not a patch.
 
 5. **The GPU runtime authority migration is complete (2026-07-18).** The former
    `runtime/molt-runtime/src/builtins/gpu.rs` cluster was deleted after its complete
-   implementation family moved to `runtime/molt-gpu/src/runtime/`. `molt-runtime`
+   implementation family moved to `runtime/molt-gpu-runtime/src/`. `molt-runtime`
    now owns only the narrow Python-object ABI in `src/gpu_bridge.rs`; primitive-only
    `molt-gpu` consumers do not compile that integration layer. The canonicalization
    contract reports zero misplaced GPU implementation lines, closing the former

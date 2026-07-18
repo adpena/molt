@@ -2,7 +2,7 @@ use crate::{
     MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, to_f64,
 };
-use molt_gpu::runtime::{
+use molt_gpu_runtime::{
     molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list, molt_gpu_linear_contiguous,
     molt_gpu_linear_split_last_dim_contiguous,
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,

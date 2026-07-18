@@ -31,6 +31,7 @@ members = [
     "runtime/molt-ffi",
     "runtime/molt-tier",
     "runtime/molt-gpu",
+    "runtime/molt-gpu-runtime",
     "runtime/molt-ir",
     "runtime/molt-passes",
     "runtime/molt-tir",

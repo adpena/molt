@@ -1167,7 +1167,7 @@ resource_class = "compiler-build-resource"
 timeout_seconds = 240
 cache_domain = "cargo-workspace"
 dependencies = ["rust.clippy.workspace-default"]
-argv = ["cargo", "clippy", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "--all-targets", "--all-features", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -1432,10 +1432,10 @@ gates = [
   "cargo build --profile release-fast -p molt-wasm-host",
 ]
 
-# --- GPU runtime Rust -----------------------------------------------------
+# --- GPU compute/render primitive ----------------------------------------
 [[rule]]
-name = "runtime-gpu"
-description = "GPU acceleration Rust: all-target/all-feature clippy for FFI and renderer surfaces."
+name = "gpu-core"
+description = "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling."
 globs = [
   "runtime/molt-gpu/**/*.rs",
   "runtime/molt-gpu/**/*.toml",
@@ -1443,6 +1443,20 @@ globs = [
 ]
 gates = [
   "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
+]
+
+# --- GPU object-runtime integration --------------------------------------
+[[rule]]
+name = "gpu-runtime"
+description = "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests."
+globs = [
+  "runtime/molt-gpu-runtime/**/*.rs",
+  "runtime/molt-gpu-runtime/**/*.toml",
+  "runtime/molt-gpu-runtime/Cargo.toml",
+]
+gates = [
+  "cargo clippy -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+  "cargo test -p molt-gpu-runtime --all-features --no-fail-fast",
 ]
 
 # --- Runtime crate Rust (object model / runtime library) -----------------

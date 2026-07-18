@@ -2,8 +2,8 @@
 
 mod bridge;
 
-use crate::runtime_backend::{GpuBackend, requested_gpu_backend};
 use bridge::*;
+use molt_gpu::runtime_backend::{GpuBackend, requested_gpu_backend};
 use molt_runtime_core::prelude::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, obj_from_bits,
@@ -29,14 +29,14 @@ use metal::{
     Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device,
     MTLResourceOptions, MTLSize, NSUInteger,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
-use pollster;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::sync::Arc;
-#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
-use wgpu;
 
 mod tensor_runtime;
+
+#[cfg(test)]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
 
 pub use tensor_runtime::{
     molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,

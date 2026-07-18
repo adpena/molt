@@ -1,0 +1,30 @@
+[package]
+name = "molt-gpu-runtime"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+molt-gpu = { path = "../molt-gpu", default-features = false }
+molt-runtime-core = { path = "../molt-runtime-core" }
+serde_json.workspace = true
+wgpu = { version = "29", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.33"
+
+[features]
+default = ["cpu-backend"]
+cpu-backend = ["molt-gpu/cpu-backend"]
+metal-backend = ["molt-gpu/metal-backend"]
+metal4 = ["metal-backend", "molt-gpu/metal4"]
+wasm-backend = ["cpu-backend", "molt-gpu/wasm-backend"]
+webgpu-backend = ["molt-gpu/webgpu-backend", "dep:wgpu", "dep:pollster"]
+cuda-backend = ["molt-gpu/cuda-backend"]
+hip-backend = ["molt-gpu/hip-backend"]
+webgl2-backend = ["molt-gpu/webgl2-backend"]
+opencl-backend = ["molt-gpu/opencl-backend"]
+ane-backend = ["molt-gpu/ane-backend"]

@@ -2908,11 +2908,21 @@ version = "0.1.0"
 dependencies = [
  "half 2.7.1",
  "metal",
+ "pollster",
+ "wgpu",
+ "wide",
+]
+
+[[package]]
+name = "molt-gpu-runtime"
+version = "0.1.0"
+dependencies = [
+ "metal",
+ "molt-gpu",
  "molt-runtime-core",
  "pollster",
  "serde_json",
  "wgpu",
- "wide",
 ]
 
 [[package]]
@@ -2991,6 +3001,7 @@ dependencies = [
  "molt-codegen-abi",
  "molt-db",
  "molt-gpu",
+ "molt-gpu-runtime",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
