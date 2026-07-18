@@ -10,7 +10,7 @@ use crate::wasm::WasmFrameLocals;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm::module_abi::WasmNativeCallableImport;
 use crate::wasm_abi_generated::WasmRuntimeImport;
-use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::box_bool;
 use wasm_encoder::{BlockType, Function, Instruction, MemArg};
@@ -44,7 +44,7 @@ pub(super) fn emit_dynamic_call_op(
             let arity = args_names.len().saturating_sub(1);
             let escaped_target = call_site_abi.is_escaped_callable(target_name);
             let func_idx = call_site_abi.function_index(target_name, "call_guarded");
-            let table_idx = call_site_abi.table_index(target_name, "call_guarded");
+            let table_target = call_site_abi.table_target(target_name, "call_guarded");
             if escaped_target {
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 emit_call(
@@ -160,7 +160,13 @@ pub(super) fn emit_dynamic_call_op(
             }));
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
-            emit_table_index_i64(func, reloc_enabled, table_idx);
+            call_ctx.table_relocations.emit_i64(
+                reloc_enabled,
+                call_ctx.func_import_count,
+                call_ctx.func_index,
+                func,
+                &table_target,
+            );
             func.instruction(&Instruction::I64Eq);
             func.instruction(&Instruction::If(BlockType::Empty));
 

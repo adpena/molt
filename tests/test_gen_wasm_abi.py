@@ -1509,17 +1509,26 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
-    assert "WASM_LEGACY_TABLE_BASE" in rendered_py
-    table_ref_export_prefix = data["table_layout"]["table_ref_export_prefix"]
-    assert table_ref_export_prefix
-    assert (
-        f"WASM_TABLE_REF_EXPORT_PREFIX: str = {table_ref_export_prefix!r}"
-        in rendered_py
-    )
-    assert (
-        f'WASM_TABLE_REF_EXPORT_PREFIX: &str = "{table_ref_export_prefix}"'
-        in rendered_table_layout
-    )
+    assert "WASM_DEFAULT_APP_TABLE_BASE" in rendered_py
+    assert data["callable_table_publication"] == {
+        "section_name": "molt.callable_table",
+        "version": 1,
+        "layout_section_name": "molt.callable_table.layout",
+        "layout_version": 1,
+        "active_element_role": 0,
+        "value_type_format": 1,
+    }
+    for name in (
+        "WASM_CALLABLE_TABLE_SECTION_NAME",
+        "WASM_CALLABLE_TABLE_SECTION_VERSION",
+        "WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME",
+        "WASM_CALLABLE_TABLE_LAYOUT_VERSION",
+        "WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE",
+        "WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT",
+    ):
+        assert name in rendered_py
+    assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_py
+    assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_table_layout
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
 
     callable_layout = (
@@ -1530,7 +1539,8 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         in callable_layout
     )
     assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
-    assert "table_index: table_base + table_slot" in callable_layout
+    assert "table_base\n                .checked_add(slot - fixed_prefix_len)" in callable_layout
+    assert "WasmCallableTableAddress::FixedSharedRuntimeAbi" in callable_layout
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:
@@ -1656,7 +1666,6 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         "molt_memory",
         "molt_main",
         "molt_table",
-        "molt_table_init",
         "__indirect_function_table",
     } <= set(policy["essential_exports"])
     assert policy["runtime_export_aliases"] == [

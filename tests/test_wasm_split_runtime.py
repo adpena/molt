@@ -638,13 +638,16 @@ class TestSplitRuntimeArtifacts:
         expected = [
             "app.wasm",
             "browser_embed.js",
+            "browser_host.js",
             "browser_gpu_dispatch.js",
             "browser_gpu_worker.js",
             "browser_target_features.js",
+            "callable_table_abi_generated.js",
             "loader_bridge.js",
             "molt_runtime.wasm",
             "molt_vfs_browser.js",
             "target_feature_manifest.json",
+            "target_feature_constants.generated.js",
             "worker.js",
             "manifest.json",
             "wrangler.jsonc",
@@ -1946,16 +1949,26 @@ class TestManifestJson:
             worker_js, "runtimeImportResultKinds"
         )
 
-    def test_table_ref_abi_matches_worker_maps(self, split_build_a):
-        manifest_abi = self._read_manifest(split_build_a)["abi"]["table_refs"]
+    def test_callable_table_abi_matches_final_artifacts(self, split_build_a):
+        from molt.wasm_artifact import (
+            read_wasm_callable_table_attestation,
+            wasm_callable_table_manifest_summary,
+        )
+
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        manifest_abi = self._read_manifest(split_build_a)["abi"]["callable_table"]
         worker_js = self._read_worker(split_build_a)
 
-        assert manifest_abi["app"] == self._worker_json_const(
-            worker_js, "appTableRefSignatures"
+        assert manifest_abi["app"] == wasm_callable_table_manifest_summary(
+            read_wasm_callable_table_attestation(out_dir / "app.wasm")
         )
-        assert manifest_abi["runtime"] == self._worker_json_const(
-            worker_js, "runtimeTableRefSignatures"
+        assert manifest_abi["runtime"] == wasm_callable_table_manifest_summary(
+            read_wasm_callable_table_attestation(out_dir / "molt_runtime.wasm")
         )
+        assert "callableTableFromModule(appModule" in worker_js
+        assert "appTableRefSignatures" not in worker_js
 
 
 @pytest.mark.slow

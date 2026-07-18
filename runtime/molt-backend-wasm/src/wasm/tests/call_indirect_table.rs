@@ -119,7 +119,7 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
 }
 
 #[test]
-fn reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels() {
+fn reloc_objects_publish_no_numeric_callable_aliases_or_table_writers() {
     let func = wasm_test_function(
         "molt_main",
         vec![],
@@ -142,47 +142,14 @@ fn reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels() {
         .expect("reloc table-ref module must be structurally valid WASM");
 
     let exports = wasm_function_exports(&wasm);
-    let table_ref_slots: Vec<u32> = exports
-        .iter()
-        .filter_map(|name| {
-            name.strip_prefix("__molt_table_ref_")
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .map(|table_index| {
-                    table_index
-                        .checked_sub(RELOC_TABLE_BASE_DEFAULT)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "table-ref export {table_index} is below reloc table base {RELOC_TABLE_BASE_DEFAULT}"
-                            )
-                        })
-                })
-        })
-        .collect();
     assert!(
-        !table_ref_slots.is_empty(),
-        "reloc output must still export concrete app table refs"
+        exports
+            .iter()
+            .all(|name| !name.starts_with("__molt_table_ref_")),
+        "reloc output must not publish numeric callable-table aliases"
     );
-
-    let poll_table_prefix = POLL_TABLE_IMPORTS
-        .iter()
-        .map(|spec| spec.table_slot)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let reserved_callable_start = poll_table_prefix;
-    let reserved_trampoline_start = reserved_callable_start + RESERVED_RUNTIME_CALLABLE_COUNT;
-    let reserved_trampoline_end = reserved_trampoline_start + RESERVED_RUNTIME_CALLABLE_COUNT;
-
-    for slot in table_ref_slots {
-        let in_reserved_callable = slot >= reserved_callable_start
-            && slot < reserved_callable_start + RESERVED_RUNTIME_CALLABLE_COUNT;
-        let in_reserved_trampoline =
-            slot >= reserved_trampoline_start && slot < reserved_trampoline_end;
-        assert!(
-            !in_reserved_callable && !in_reserved_trampoline,
-            "reserved runtime callable/trampoline slot {slot} must stay runtime-owned, not exported as an app table ref"
-        );
-    }
+    assert!(!exports.contains("molt_table_init"));
+    assert!(!wasm_has_table_set(&wasm));
 }
 
 #[test]

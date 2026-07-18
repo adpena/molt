@@ -11,6 +11,7 @@ OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
 OUT_RS_FILES = {
     "mod.rs": OUT_RS_DIR / "mod.rs",
     "bulk_memory_ops.rs": OUT_RS_DIR / "bulk_memory_ops.rs",
+    "callable_table.rs": OUT_RS_DIR / "callable_table.rs",
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "import_tokens.rs": OUT_RS_DIR / "import_tokens.rs",
@@ -28,8 +29,12 @@ OUT_RS_FILES = {
 OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )
+OUT_WASM_FACTS_CALLABLE_TABLE_RS = (
+    ROOT / "runtime/molt-wasm-facts/src/callable_table_generated.rs"
+)
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_JS_ABI = ROOT / "wasm/wasm_abi_generated.json"
+OUT_JS_CALLABLE_TABLE_ABI = ROOT / "wasm/callable_table_abi_generated.js"
 INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 INTRINSIC_CATEGORIES = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"

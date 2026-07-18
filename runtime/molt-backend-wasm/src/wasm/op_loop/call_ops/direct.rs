@@ -26,7 +26,7 @@ pub(super) fn emit_direct_call_op(
 }
 
 fn emit_call_async(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
@@ -38,12 +38,15 @@ fn emit_call_async(
     let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
     let layout = WasmTaskRuntimeLayout::for_call_async();
     let target_name = op.s_value.as_ref().expect("call_async target missing");
-    let table_idx = call_site_abi.table_index(target_name, "call_async");
+    let table_target = call_site_abi.table_target(target_name, "call_async");
     layout.emit_task_new(
         func,
         import_ids,
+        call_ctx.table_relocations,
         reloc_enabled,
-        table_idx,
+        call_ctx.func_import_count,
+        call_ctx.func_index,
+        &table_target,
         (payload_len * 8) as i64,
     );
     let res = if let Some(out) = op.out.as_ref() {

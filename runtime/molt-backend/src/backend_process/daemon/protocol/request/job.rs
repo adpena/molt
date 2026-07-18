@@ -28,9 +28,9 @@ impl DaemonJobRequest {
             wasm_link: optional_bool(obj, "wasm_link", ctx)?.unwrap_or(false),
             wasm_data_base: optional_u32(obj, "wasm_data_base", ctx)?,
             wasm_table_base: optional_u32(obj, "wasm_table_base", ctx)?,
-            wasm_split_runtime_runtime_table_min: optional_u32(
+            wasm_split_runtime_app_table_base: optional_u32(
                 obj,
-                "wasm_split_runtime_runtime_table_min",
+                "wasm_split_runtime_app_table_base",
                 ctx,
             )?,
             output: required_string(obj, "output", ctx)?,

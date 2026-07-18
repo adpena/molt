@@ -10,7 +10,6 @@ const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
 const {
-  callIndirectObjectSignature,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -23,12 +22,14 @@ const {
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
   planReservedRuntimeDispatch,
-  remapLegacyRuntimeSharedTableIndex,
+  requireWasmCallableTable,
+  remapDefaultAppRuntimeSharedTableIndex,
   reservedRuntimeCallablesFromManifest,
   resolveWasmTableBase,
-  tableRefExportName,
+  callableTableSignature,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
+  verifyCallableTableEntries,
 } = require('./loader_bridge.js');
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
 const externalNativeLinkImports = wasmAbiGenerated.external_native_link_imports || {};
@@ -100,13 +101,11 @@ const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
 const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
 const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
 const traceIsolateImport = process.env.MOLT_WASM_TRACE_ISOLATE_IMPORT === '1';
-const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
-const verifyTableRefsEnabled = process.env.MOLT_WASM_VERIFY_TABLE_REFS === '1';
 const traceTableSlotRaw = process.env.MOLT_WASM_TRACE_TABLE_SLOT || null;
 const traceTableRangeRaw = process.env.MOLT_WASM_TRACE_TABLE_RANGE || null;
 const traceTableDiffEnabled = process.env.MOLT_WASM_TRACE_TABLE_DIFF === '1';
 const traceI32AtRaw = process.env.MOLT_WASM_TRACE_I32_AT || null;
-const LEGACY_WASM_TABLE_BASE = 256;
+const DEFAULT_WASM_APP_TABLE_BASE = 256;
 const RESERVED_RUNTIME_CALLABLE_BASE = 33;
 const RESERVED_RUNTIME_CALLABLE_COUNT = 24;
 const reservedRuntimeCallables = [
@@ -332,8 +331,8 @@ const initWasmAssets = () => {
   const directLinkRequestedByEnv =
     directLinkEnv !== undefined &&
     ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
-  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
-  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
+  const directLinkRequestedByPreference = !forceLinked && !preferLinked;
+  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByPreference;
   const useLinkedProbe = forceLinked || !directLinkRequested;
   const tableBaseProbe =
     useLinkedProbe && linkedBuffer
@@ -4687,7 +4686,6 @@ let outputImports = null;
 let runtimeImportsDesc = null;
 let inputHasRuntimeImports = false;
 let runtimeCallIndirectNames = [];
-let outputExportSignatures = {};
 let runtimeExportSignatures = {};
 let canDirectLink = false;
 
@@ -5042,73 +5040,6 @@ const buildRuntimeImportDirect = (runtimeInst) => {
   return runtimeImports;
 };
 
-const installTableRefs = (instance, table, label) => {
-  if (!instance || !table) {
-    return;
-  }
-  const refs = [];
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs.push({ index: Number(match[1]), fn: value });
-  }
-  if (refs.length === 0) {
-    return;
-  }
-  refs.sort((a, b) => a.index - b.index);
-  const maxIndex = refs[refs.length - 1].index;
-  if (maxIndex >= table.length) {
-    table.grow(maxIndex + 1 - table.length);
-  }
-  let installed = 0;
-  let preserved = 0;
-  for (const ref of refs) {
-    if (table.get(ref.index) !== null) {
-      preserved += 1;
-      continue;
-    }
-    table.set(ref.index, ref.fn);
-    installed += 1;
-  }
-  if (traceRun) {
-    console.error(
-      `[molt wasm] installed ${installed} ${label} table refs; preserved=${preserved}`
-    );
-  }
-};
-
-const snapshotTablePrefix = (table, length) => {
-  if (!table || !Number.isInteger(length) || length <= 0) {
-    return null;
-  }
-  const end = Math.min(length, table.length);
-  const entries = new Array(end);
-  for (let idx = 0; idx < end; idx += 1) {
-    entries[idx] = table.get(idx);
-  }
-  return entries;
-};
-
-const restoreTablePrefix = (table, snapshot, label) => {
-  if (!table || !snapshot) {
-    return;
-  }
-  const end = Math.min(snapshot.length, table.length);
-  let restored = 0;
-  for (let idx = 0; idx < end; idx += 1) {
-    const expected = snapshot[idx];
-    if (table.get(idx) !== expected) {
-      table.set(idx, expected);
-      restored += 1;
-    }
-  }
-  if (traceRun && restored > 0) {
-    console.error(`[molt wasm] restored ${restored} ${label} table prefix entries`);
-  }
-};
-
 const traceTableSlot = (table, label) => {
   if (!traceRun || !traceTableSlotRaw || !table) {
     return;
@@ -5183,65 +5114,6 @@ const traceTableDiff = (before, table, label) => {
   }
 };
 
-const verifyTableRefs = (instance, table, label) => {
-  if (!instance || !table) {
-    return;
-  }
-  let refs = 0;
-  let mismatches = 0;
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs += 1;
-    const idx = Number(match[1]);
-    const entry = table.get(idx);
-    if (entry !== value) {
-      mismatches += 1;
-      if (traceRun && mismatches <= 16) {
-        const entryName = entry && entry.name ? entry.name : 'unknown';
-        const valueName = value && value.name ? value.name : 'unknown';
-        console.error(
-          `[molt wasm] table-ref mismatch ${label} idx=${idx} expected=${valueName} actual=${entryName}`
-        );
-      }
-    }
-  }
-  if (traceRun || verifyTableRefsEnabled) {
-    console.error(
-      `[molt wasm] table-ref verify ${label}: refs=${refs} mismatches=${mismatches}`
-    );
-  }
-};
-
-const ensureTableCapacityForExportedRefs = (instance, table, label) => {
-  if (!instance || !table) {
-    return;
-  }
-  let maxIndex = -1;
-  for (const name of Object.keys(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match) {
-      continue;
-    }
-    const idx = Number(match[1]);
-    if (Number.isInteger(idx) && idx > maxIndex) {
-      maxIndex = idx;
-    }
-  }
-  if (maxIndex < 0 || maxIndex < table.length) {
-    return;
-  }
-  const growBy = maxIndex + 1 - table.length;
-  table.grow(growBy);
-  if (traceRun) {
-    console.error(
-      `[molt wasm] grew ${label} table by ${growBy} slots to ${table.length} for exported refs`
-    );
-  }
-};
-
 const unresolvedNativeImportNames = (importsDesc) => {
   const names = [];
   for (const entry of importsDesc?.funcImports || []) {
@@ -5280,6 +5152,8 @@ const runDirectLink = async () => {
       'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
     );
   }
+  const outputCallableTable = requireWasmCallableTable(wasmBuffer, 'output wasm');
+  const runtimeCallableTable = requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
@@ -5358,13 +5232,11 @@ const runDirectLink = async () => {
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
-      const arityMatch = /^molt_call_indirect(\d+)$/.exec(name);
-      const arity = arityMatch ? Number(arityMatch[1]) : null;
       const rawIdx = args[0];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      const dispatchIdx = remapLegacyRuntimeSharedTableIndex(idx, {
+      const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
         sharedTableBase: detectedWasmTableBase,
-        legacyTableBase: LEGACY_WASM_TABLE_BASE,
+        defaultAppTableBase: DEFAULT_WASM_APP_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
         rawIndexHasInstalledEntry: (rawTableIdx) => {
@@ -5378,15 +5250,6 @@ const runDirectLink = async () => {
           }
         },
       });
-      const directName = tableRefExportName(dispatchIdx);
-      const appIndirectFn =
-        arity !== null && outputInstance && outputInstance.exports
-          ? outputInstance.exports[`molt_call_indirect${arity}`]
-          : null;
-      const appDirectFn =
-        directName && outputInstance && outputInstance.exports
-          ? outputInstance.exports[directName]
-          : null;
       const reservedDispatch = planReservedRuntimeDispatch({
         dispatchIdx,
         sharedTableBase: detectedWasmTableBase,
@@ -5426,19 +5289,6 @@ const runDirectLink = async () => {
           );
         }
       }
-      if (typeof appDirectFn === 'function') {
-        const appDirectSignature = directName && outputExportSignatures[directName];
-        try {
-          return callWithWasmSignature(
-            appDirectFn,
-            appDirectSignature || callIndirectObjectSignature(name),
-            args.slice(1),
-          );
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          throw new Error(`${name} app direct export ${directName} failed at idx=${idx}: ${detail}`);
-        }
-      }
       if (callIndirectDebug) {
         const entry = table ? table.get(dispatchIdx) : null;
         const state = entry ? 'set' : 'null';
@@ -5453,46 +5303,15 @@ const runDirectLink = async () => {
       }
       const fn = table ? table.get(dispatchIdx) : null;
       const directSignature =
-        (directName && outputExportSignatures[directName]) ||
-        (directName && runtimeExportSignatures[directName]) ||
-        null;
+        callableTableSignature(outputCallableTable, dispatchIdx) ||
+        callableTableSignature(runtimeCallableTable, dispatchIdx);
       if (typeof fn === 'function' && directSignature) {
         return callWithWasmSignature(fn, directSignature, args.slice(1));
       }
-      if (typeof fn === 'function') {
-        return callWithWasmSignature(fn, callIndirectObjectSignature(name), args.slice(1));
+      if (typeof fn !== 'function') {
+        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
       }
-      const runtimeDirectFn =
-        directName && runtimeInstance && runtimeInstance.exports
-          ? runtimeInstance.exports[directName]
-          : null;
-      if (typeof runtimeDirectFn === 'function') {
-        const runtimeDirectSignature = directName && runtimeExportSignatures[directName];
-        try {
-          return callWithWasmSignature(
-            runtimeDirectFn,
-            runtimeDirectSignature || callIndirectObjectSignature(name),
-            args.slice(1),
-          );
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          throw new Error(`${name} runtime direct export ${directName} failed at idx=${dispatchIdx}: ${detail}`);
-        }
-      }
-      if (typeof appIndirectFn === 'function') {
-        try {
-          return callWithWasmSignature(
-            appIndirectFn,
-            outputExportSignatures[`molt_call_indirect${arity}`] ||
-              callIndirectObjectSignature(name, { includeIndex: true }),
-            [rawIdx, ...args.slice(1)],
-          );
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          throw new Error(`${name} app export failed at idx=${idx}: ${detail}`);
-        }
-      }
-      throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+      throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
     };
   }
 
@@ -5521,18 +5340,11 @@ const runDirectLink = async () => {
       setTableBase(BigInt(detectedWasmTableBase));
     }
   }
-  installTableRefs(runtimeInst, table, 'runtime');
-  if (installTableRefsEnabled) {
-    installTableRefs(runtimeInst, table, 'runtime');
-  }
+  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
   traceTableSlot(table, 'after-runtime-instantiate');
   traceTableRange(table, 'after-runtime-instantiate');
   traceI32At('after-runtime-instantiate', table);
   const runtimeTableSnapshot = snapshotTableEntries(table);
-  const runtimeTablePrefix = snapshotTablePrefix(
-    table,
-    runtimeImportsDesc.table ? runtimeImportsDesc.table.min : 0,
-  );
 
   if (traceRun) {
     console.error('[molt wasm] direct: instantiate output');
@@ -5562,35 +5374,17 @@ const runDirectLink = async () => {
   if (traceRun) {
     console.error('[molt wasm] direct: output instantiated');
   }
-  restoreTablePrefix(table, runtimeTablePrefix, 'runtime');
-
   traceTableDiff(runtimeTableSnapshot, table, 'after-output-instantiate');
   traceTableRange(table, 'after-output-instantiate');
   traceI32At('after-output-instantiate', table);
 
-  const { molt_main, molt_memory, molt_table, molt_table_init } =
-    outputInstance.exports;
+  const { molt_main, molt_memory, molt_table } = outputInstance.exports;
   const outputMemory = molt_memory || outputInstance.exports.memory || memory;
   const outputTable = molt_table || table;
   appWasmMemory = outputMemory;
   initializeWasiContextForInstance(outputWasi.wasi, outputInstance, outputMemory);
-  ensureTableCapacityForExportedRefs(outputInstance, table, 'output');
   initializeWasiForInstance(runtimeInst, memory);
-  if (typeof molt_table_init === 'function') {
-    if (traceRun) {
-      console.error('[molt wasm] direct: call molt_table_init');
-    }
-    molt_table_init();
-    if (traceRun) {
-      console.error('[molt wasm] direct: molt_table_init returned');
-    }
-  }
-  restoreTablePrefix(table, runtimeTablePrefix, 'runtime');
-  traceTableSlot(table, 'after-output-table-init');
-  traceTableRange(table, 'after-output-table-init');
-  traceI32At('after-output-table-init', table);
-  installTableRefs(outputInstance, table, 'output');
-  traceI32At('after-output-install-refs', table);
+  verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }
@@ -5625,6 +5419,7 @@ const runLinked = async () => {
   if (!linkedBuffer) {
     throw new Error(`Linked wasm not found at ${linkedPath}`);
   }
+  const linkedCallableTable = requireWasmCallableTable(linkedBuffer, 'linked wasm');
   const linkedImports = parseWasmImports(linkedBuffer);
   const hasRuntimeImports = linkedImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
@@ -5747,7 +5542,7 @@ const runLinked = async () => {
   );
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
-  const { molt_main, molt_table_init } = linkedModule.instance.exports;
+  const { molt_main } = linkedModule.instance.exports;
   if (typeof molt_main !== 'function') {
     throw new Error('linked wasm missing molt_main export');
   }
@@ -5755,18 +5550,7 @@ const runLinked = async () => {
     linkedModule.instance.exports.molt_table ||
     (importObject.env && importObject.env.__indirect_function_table) ||
     null;
-  ensureTableCapacityForExportedRefs(linkedModule.instance, linkedTable, 'linked');
-  // Linked artifacts populate the table via two mechanisms:
-  //   1. The active element segment (installed at instantiation) for runtime entries.
-  //   2. molt_table_init (called from molt_main) for app-specific entries.
-  // The JS runner does NOT call molt_table_init separately — molt_main handles it.
-  // Opt-in installTableRefs reinstalls from exported __molt_table_ref_* for debugging.
-  if (installTableRefsEnabled) {
-    installTableRefs(linkedModule.instance, linkedTable, 'linked');
-  }
-  if (verifyTableRefsEnabled) {
-    verifyTableRefs(linkedModule.instance, linkedTable, 'linked');
-  }
+  verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
   const linkedMemory =
     linkedModule.instance.exports.molt_memory ||
     linkedModule.instance.exports.memory ||
@@ -5807,13 +5591,12 @@ const runMain = async () => {
     preferLinkedEnv === undefined ||
     !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
   const forceLinked = process.env.MOLT_WASM_LINKED === '1';
-  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
-  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
+  const directLinkRequestedByPreference = !forceLinked && !preferLinked;
+  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByPreference;
   const outputMetadata = parseWasmMetadata(wasmBuffer, {
-    exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer)),
+    exportFunctionSignatures: false,
   });
   outputImports = outputMetadata.imports;
-  outputExportSignatures = outputMetadata.exportFunctionSignatures;
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );

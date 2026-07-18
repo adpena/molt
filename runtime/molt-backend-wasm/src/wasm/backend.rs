@@ -3,6 +3,7 @@ use crate::wasm_data::DataSegmentRef;
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmCompileOptions;
+use crate::wasm_table::WasmTableRelocations;
 use std::collections::BTreeMap;
 use wasm_encoder::{
     CodeSection, ExportSection, FunctionSection, ImportSection, MemorySection, Module,
@@ -31,6 +32,7 @@ pub struct WasmBackend {
     // during code emission (see MOLT_WASM_IMPORT_AUDIT).
     pub(in crate::wasm) import_ids: TrackedImportIds,
     pub(in crate::wasm) data_segments: WasmDataSegments,
+    pub(in crate::wasm) table_relocations: WasmTableRelocations,
     pub(in crate::wasm) molt_main_index: Option<u32>,
     pub(in crate::wasm) molt_host_init_index: Option<u32>,
     pub(in crate::wasm) options: WasmCompileOptions,
@@ -144,6 +146,7 @@ impl WasmBackend {
             func_import_count: 0,
             import_ids: TrackedImportIds::new(BTreeMap::new()),
             data_segments: WasmDataSegments::new(options.data_base),
+            table_relocations: WasmTableRelocations::default(),
             molt_main_index: None,
             molt_host_init_index: None,
             options,

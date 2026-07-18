@@ -3,6 +3,7 @@ use super::super::module_abi::WasmNativeCallableImports;
 use super::super::multi_return_layout::WasmMultiReturnLayout;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
 use std::cell::Cell;
@@ -34,6 +35,9 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
     pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
+    pub(super) func_index: u32,
+    pub(super) func_import_count: u32,
+    pub(super) table_relocations: &'m mut WasmTableRelocations,
     pub(super) tail_call_enabled: bool,
     pub(super) tail_call_eligible: bool,
     pub(super) arena_local: Option<u32>,

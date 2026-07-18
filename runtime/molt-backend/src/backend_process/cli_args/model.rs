@@ -7,7 +7,7 @@ pub(crate) struct WasmCliOptions {
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     pub(crate) table_base: Option<u32>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) split_runtime_runtime_table_min: Option<u32>,
+    pub(crate) split_runtime_app_table_base: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_encoder::Encode;
 use wasmparser::{
-    CompositeInnerType, ElementItems, ElementKind, ExternalKind, FuncValidatorAllocations,
-    Operator, OperatorsReader, OperatorsReaderAllocations, Parser, Payload, TableInit, TypeRef,
-    ValidPayload, Validator,
+    CompositeInnerType, ElementItems, ElementKind, Encoding, ExternalKind,
+    FuncValidatorAllocations, Operator, OperatorsReader, OperatorsReaderAllocations, Parser,
+    Payload, TableInit, TypeRef, ValidPayload, Validator,
 };
 
-use crate::encoding::{decode_callable_table_attestation, validate_callable_table_attestation};
+use crate::encoding::validate_callable_table_attestation;
 use crate::layout::decode_callable_table_layout;
 use crate::model::*;
 use crate::{CALLABLE_TABLE_LAYOUT_SECTION_NAME, CALLABLE_TABLE_SECTION_NAME};
@@ -35,8 +35,10 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut dynamic_table_dispatch = false;
     let mut dynamic_dispatch_imports = BTreeSet::new();
     let mut dynamic_dispatch_functions = Vec::new();
+    let mut function_reference_dispatch_functions = Vec::new();
     let mut indirect_call_tables = Vec::new();
     let mut indirect_calls = Vec::new();
+    let mut table_reads = Vec::new();
     let mut exported_table_indices = Vec::new();
     let mut tables = Vec::new();
     let mut active_element_segments = Vec::new();
@@ -48,6 +50,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut validator_allocations = FuncValidatorAllocations::default();
     let mut operator_reader_allocations = OperatorsReaderAllocations::default();
     let mut pending_code_section: Option<(u8, std::ops::Range<usize>, u32)> = None;
+    let mut module_header_seen = false;
 
     for payload in Parser::new(0).parse_all(bytes) {
         let payload = payload.map_err(|error| error.to_string())?;
@@ -69,6 +72,17 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             _ => None,
         };
         match payload {
+            Payload::Version { num, encoding, .. } => {
+                if module_header_seen {
+                    return Err("duplicate top-level WebAssembly header".to_string());
+                }
+                module_header_seen = true;
+                if num != 1 || encoding != Encoding::Module {
+                    return Err(format!(
+                        "wasm link facts require a core WebAssembly module version 1, found {encoding:?} version {num}"
+                    ));
+                }
+            }
             Payload::TypeSection(reader) => {
                 for rec_group in reader {
                     let rec_group = rec_group.map_err(|error| error.to_string())?;
@@ -276,6 +290,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 let mut direct_calls = Vec::new();
                 let mut ref_funcs = Vec::new();
                 let mut function_dynamic_dispatch = false;
+                let mut function_reference_dispatch = false;
                 let mut locals_reader = body.get_binary_reader();
                 function_validator
                     .read_locals(&mut locals_reader)
@@ -310,6 +325,15 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                             indirect_calls.push(WasmIndirectCall {
                                 function_index,
                                 table_index,
+                            });
+                        }
+                        Operator::CallRef { .. } | Operator::ReturnCallRef { .. } => {
+                            function_reference_dispatch = true;
+                        }
+                        Operator::TableGet { table } => {
+                            table_reads.push(WasmTableRead {
+                                function_index,
+                                table_index: table,
                             });
                         }
                         Operator::TableSet { table } => record_table_mutation(
@@ -373,6 +397,9 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 if function_dynamic_dispatch {
                     dynamic_dispatch_functions.push(function_index);
                 }
+                if function_reference_dispatch {
+                    function_reference_dispatch_functions.push(function_index);
+                }
                 if let Some((id, range, remaining)) = pending_code_section.as_mut() {
                     *remaining = remaining
                         .checked_sub(1)
@@ -413,8 +440,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 if callable_table_attestation.is_some() {
                     return Err("duplicate molt.callable_table custom sections".to_string());
                 }
-                callable_table_attestation =
-                    Some(decode_callable_table_attestation(reader.data())?);
+                callable_table_attestation = Some(reader.data());
             }
             Payload::CustomSection(reader)
                 if reader.name() == CALLABLE_TABLE_LAYOUT_SECTION_NAME =>
@@ -440,6 +466,9 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
 
     if pending_code_section.is_some() {
         return Err("code section ended before all declared bodies were decoded".to_string());
+    }
+    if !module_header_seen {
+        return Err("missing top-level WebAssembly module header".to_string());
     }
 
     let declared_function_count = declared_function_count.unwrap_or(0);
@@ -514,6 +543,10 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     indirect_calls.dedup();
     dynamic_dispatch_functions.sort_unstable();
     dynamic_dispatch_functions.dedup();
+    function_reference_dispatch_functions.sort_unstable();
+    function_reference_dispatch_functions.dedup();
+    table_reads.sort_unstable();
+    table_reads.dedup();
     exported_table_indices.sort_unstable();
     exported_table_indices.dedup();
     let mut reference_row_by_function = vec![None; function_type_indices.len()];
@@ -578,6 +611,25 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let reachable_function_reference_dispatch =
+        function_reference_dispatch_functions
+            .iter()
+            .any(|function_index| {
+                reachable_functions
+                    .get(*function_index as usize)
+                    .copied()
+                    .unwrap_or(false)
+            });
+    let reachable_table_reads = table_reads
+        .iter()
+        .filter(|read| {
+            reachable_functions
+                .get(read.function_index as usize)
+                .copied()
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let mut reachable_indirect_call_tables = indirect_calls
         .iter()
         .filter(|call| {
@@ -613,9 +665,13 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         dynamic_table_dispatch,
         dynamic_dispatch_functions,
         reachable_dynamic_dispatch,
+        function_reference_dispatch_functions,
+        reachable_function_reference_dispatch,
         indirect_call_tables,
         reachable_indirect_call_tables,
         indirect_calls,
+        table_reads,
+        reachable_table_reads,
         exported_table_indices,
         tables,
     })

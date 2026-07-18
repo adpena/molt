@@ -7,19 +7,37 @@ use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 #[derive(Clone)]
 pub(crate) struct TrackedImportIds {
     inner: BTreeMap<WasmRuntimeImport, u32>,
+    by_index: BTreeMap<u32, WasmRuntimeImport>,
     used: Rc<RefCell<BTreeSet<WasmRuntimeImport>>>,
 }
 
 impl TrackedImportIds {
     pub(crate) fn new(inner: BTreeMap<WasmRuntimeImport, u32>) -> Self {
+        let by_index = inner
+            .iter()
+            .filter_map(|(&import, &index)| (index != u32::MAX).then_some((index, import)))
+            .collect();
         Self {
             inner,
+            by_index,
             used: Rc::new(RefCell::new(BTreeSet::new())),
         }
     }
 
     pub(crate) fn insert(&mut self, key: WasmRuntimeImport, value: u32) {
-        self.inner.insert(key, value);
+        if let Some(previous) = self.inner.insert(key, value)
+            && previous != u32::MAX
+            && self.by_index.get(&previous) == Some(&key)
+        {
+            self.by_index.remove(&previous);
+        }
+        if value != u32::MAX {
+            let displaced = self.by_index.insert(value, key);
+            assert!(
+                displaced.is_none() || displaced == Some(key),
+                "duplicate WASM runtime import function index {value}"
+            );
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -60,6 +78,10 @@ impl TrackedImportIds {
     pub(crate) fn is_used_name(&self, name: &str) -> bool {
         wasm_runtime_import(name).is_some_and(|key| self.is_used(key))
     }
+
+    pub(crate) fn import_for_index(&self, index: u32) -> Option<WasmRuntimeImport> {
+        self.by_index.get(&index).copied()
+    }
 }
 
 impl std::ops::Index<WasmRuntimeImport> for TrackedImportIds {
@@ -84,4 +106,25 @@ pub(crate) fn selected_import_id(
         import_key.name()
     );
     import_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_index_identity_is_constant_time_and_tracks_replacement() {
+        let first = WasmRuntimeImport::RuntimeInit;
+        let second = WasmRuntimeImport::RuntimeShutdown;
+        let mut imports = TrackedImportIds::new(BTreeMap::from([(first, 3), (second, u32::MAX)]));
+
+        assert_eq!(imports.import_for_index(3), Some(first));
+        assert_eq!(imports.import_for_index(u32::MAX), None);
+
+        imports.insert(first, 7);
+        imports.insert(second, 9);
+        assert_eq!(imports.import_for_index(3), None);
+        assert_eq!(imports.import_for_index(7), Some(first));
+        assert_eq!(imports.import_for_index(9), Some(second));
+    }
 }

@@ -1,11 +1,11 @@
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
-use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_function_object_call_op(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
@@ -76,7 +76,7 @@ pub(super) fn emit_function_object_call_op(
 }
 
 fn emit_builtin_func(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
@@ -108,7 +108,7 @@ fn emit_builtin_func(
 }
 
 fn emit_function_constructor(
-    call_ctx: &CallOpContext<'_, '_, '_>,
+    call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
     table_context: &str,
@@ -124,15 +124,19 @@ fn emit_function_constructor(
     if let Some(local) = leading_local {
         func.instruction(&Instruction::LocalGet(local));
     }
-    emit_table_index_i64(
-        func,
+    call_ctx.table_relocations.emit_i64(
         call_ctx.reloc_enabled,
-        table_pair.function_table_index,
+        call_ctx.func_import_count,
+        call_ctx.func_index,
+        func,
+        &table_pair.function,
     );
-    emit_table_index_i64(
-        func,
+    call_ctx.table_relocations.emit_i64(
         call_ctx.reloc_enabled,
-        table_pair.trampoline_table_index,
+        call_ctx.func_import_count,
+        call_ctx.func_index,
+        func,
+        &table_pair.trampoline,
     );
     func.instruction(&Instruction::I64Const(arity));
     if let Some(local) = trailing_local {

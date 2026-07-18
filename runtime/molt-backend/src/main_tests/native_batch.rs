@@ -47,7 +47,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         wasm_link: false,
         wasm_data_base: None,
         wasm_table_base: None,
-        wasm_split_runtime_runtime_table_min: None,
+        wasm_split_runtime_app_table_base: None,
         output: output.to_string_lossy().to_string(),
         cache_key: "module-cache".to_string(),
         function_cache_key: Some("function-cache".to_string()),

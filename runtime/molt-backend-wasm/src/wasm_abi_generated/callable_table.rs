@@ -3,5 +3,5 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
-#[allow(dead_code)]
-pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;
+pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = "molt.callable_table.layout";
+pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 1;

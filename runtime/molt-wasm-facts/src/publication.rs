@@ -97,6 +97,18 @@ fn validate_callable_table_topology(facts: &WasmLinkFacts) -> Result<(), String>
             "indirect callable dispatch escapes canonical table 0 through table {table_index}"
         ));
     }
+    if facts.reachable_function_reference_dispatch {
+        if let Some(read) = facts
+            .reachable_table_reads
+            .iter()
+            .find(|read| read.table_index != 0)
+        {
+            return Err(format!(
+                "function-reference dispatch can escape canonical table 0 through reachable table.get {} in function {}",
+                read.table_index, read.function_index
+            ));
+        }
+    }
     if let Some(mutation) = facts
         .reachable_table_mutations
         .iter()
