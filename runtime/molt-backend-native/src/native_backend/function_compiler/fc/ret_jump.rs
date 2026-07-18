@@ -57,7 +57,8 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     already_decrefed: &mut BTreeSet<String>,
     reachable_blocks: &mut BTreeSet<Block>,
     label_blocks: &BTreeMap<i64, Block>,
-    label_join_slots: &BTreeMap<i64, Vec<String>>,
+    label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
+    cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     function_exception_label_id: Option<i64>,
     slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     raw_backed_slot_names: &BTreeSet<String>,
@@ -538,7 +539,11 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
             }
             reachable_blocks.insert(target_block);
-            jump_block(&mut *builder, target_block, &[]);
+            let transport_args = label_transport_plans
+                .get(&target_id)
+                .map(|plan| plan.edge_args(&mut *builder))
+                .unwrap_or_default();
+            jump_block(&mut *builder, target_block, &transport_args);
             *is_block_filled = true;
         }
         "br_if" => {
@@ -550,6 +555,23 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 .expect("br_if requires an active block");
 
             let fallthrough_block = builder.create_block();
+            let fallthrough_transport = if op_idx + 1 < func_ops.len() {
+                let block_id = cfg_liveness.block_for_op(op_idx + 1);
+                BlockTransportPlan::from_live_names(
+                    &cfg_liveness.live_in_by_block[block_id],
+                    vars,
+                    representation_plan,
+                    slot_backed_join_slots,
+                )
+            } else {
+                BlockTransportPlan::from_live_names(
+                    &BTreeSet::new(),
+                    vars,
+                    representation_plan,
+                    slot_backed_join_slots,
+                )
+            };
+            fallthrough_transport.append_block_params(&mut *builder, fallthrough_block);
             if debug_block_origins.is_some() {
                 eprintln!(
                     "BLOCK_ORIGIN {} op{} br_if target_label={} target_block={:?} fallthrough={:?}",
@@ -709,15 +731,25 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     carry_ptr.clone(),
                 );
             }
-            builder
-                .ins()
-                .brif(cond_bool, target_block, &[], fallthrough_block, &[]);
-            switch_to_block_with_rebind(
+            let target_args = label_transport_plans
+                .get(&target_id)
+                .map(|plan| plan.edge_args(&mut *builder))
+                .unwrap_or_default();
+            let fallthrough_args = fallthrough_transport.edge_args(&mut *builder);
+            brif_block(
+                &mut *builder,
+                cond_bool,
+                target_block,
+                &target_args,
+                fallthrough_block,
+                &fallthrough_args,
+            );
+            crate::switch_to_block_tracking(
                 &mut *builder,
                 fallthrough_block,
                 &mut *is_block_filled,
-                false,
             );
+            fallthrough_transport.bind_block_params(&mut *builder, fallthrough_block);
             maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough_block);
         }
@@ -725,22 +757,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             let label_id = op.value.unwrap_or(0);
             let block = label_blocks[&label_id];
             let is_function_exception_label = Some(label_id) == function_exception_label_id;
-            let label_live_join_vars: BTreeMap<String, Variable> = label_join_slots
-                .get(&label_id)
-                .into_iter()
-                .flat_map(|names| names.iter())
-                .filter(|name| !slot_backed_join_slots.contains_key(name.as_str()))
-                .filter_map(|name| vars.get(name).copied().map(|var| (name.clone(), var)))
-                .collect();
-            let rebind_label_join_state = |builder: &mut FunctionBuilder| {
-                if builder.block_params(block).is_empty() && !is_function_exception_label {
-                    return;
-                }
-                for var in label_live_join_vars.values() {
-                    let value = builder.use_var(*var);
-                    builder.def_var(*var, value);
-                }
-            };
+            let transport = label_transport_plans.get(&label_id);
 
             // Prevent normal fallthrough into the function-level exception handler.
             if is_function_exception_label && !*is_block_filled {
@@ -759,10 +776,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // hot execution path for better i-cache/branch behavior.
                 builder.set_cold_block(block);
                 reachable_blocks.insert(block);
-                materialize_label_block(&mut *builder, block, &mut *is_block_filled);
-                if !*is_block_filled {
-                    rebind_label_join_state(&mut *builder);
-                }
+                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
                 if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",
@@ -778,10 +792,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // the block even when no already-emitted predecessor
                 // has reached it yet; later backedges / deferred
                 // branches may still target it.
-                materialize_label_block(&mut *builder, block, &mut *is_block_filled);
-                if !*is_block_filled {
-                    rebind_label_join_state(&mut *builder);
-                }
+                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
                 if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",

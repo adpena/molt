@@ -178,12 +178,13 @@ impl SimpleBackend {
             has_store,
             var_names,
             last_use,
+            cfg_liveness,
             alias_roots,
             if_to_end_if,
             if_to_else,
             else_to_end_if,
             label_ids,
-            state_label_ids: _state_label_ids,
+            state_label_ids,
             shared_resume_label_ids,
             state_ids: _state_ids,
             resume_states,
@@ -803,6 +804,36 @@ impl SimpleBackend {
         let has_frame_slot =
             emit_traces && func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
 
+        let label_transport_plans: BTreeMap<i64, BlockTransportPlan> = if stateful {
+            // Stateful live-across-suspend values have frame custody, not a
+            // simultaneously-live SSA predecessor. Their state-label ABI is a
+            // separate resume transport authority.
+            BTreeMap::new()
+        } else {
+            func_ir
+                .ops
+                .iter()
+                .enumerate()
+                .filter_map(|(op_idx, op)| {
+                    if op.kind != "label" {
+                        return None;
+                    }
+                    let label_id = op.value?;
+                    if state_label_ids.contains(&label_id) {
+                        return None;
+                    }
+                    let block_id = cfg_liveness.block_for_op(op_idx);
+                    let plan = BlockTransportPlan::from_live_names(
+                        &cfg_liveness.live_in_by_block[block_id],
+                        &vars,
+                        representation_plan,
+                        &slot_backed_join_slots,
+                    );
+                    Some((label_id, plan))
+                })
+                .collect()
+        };
+
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -811,9 +842,12 @@ impl SimpleBackend {
         // with a regular label emitted later in the same function; only labels
         // that are themselves persisted as pending resume states share blocks.
         for label_id in label_ids {
-            label_blocks
+            let block = *label_blocks
                 .entry(label_id)
                 .or_insert_with(|| builder.create_block());
+            if let Some(plan) = label_transport_plans.get(&label_id) {
+                plan.append_block_params(&mut builder, block);
+            }
         }
         for state_id in resume_states.iter().copied() {
             let block = if shared_resume_label_ids.contains(&state_id) {
@@ -826,35 +860,6 @@ impl SimpleBackend {
             resume_blocks.insert(state_id, block);
         }
         let ops = &func_ir.ops;
-        let mut label_join_slots: BTreeMap<i64, Vec<String>> = BTreeMap::new();
-        let mut live_join_slots: BTreeSet<String> = BTreeSet::new();
-        for op in ops {
-            match op.kind.as_str() {
-                "store_var" => {
-                    if let Some(name) = op.var.as_ref()
-                        && is_join_slot_name(name)
-                    {
-                        live_join_slots.insert(name.clone());
-                    }
-                }
-                "load_var" => {
-                    if let Some(name) = op.var.as_ref()
-                        && is_join_slot_name(name)
-                    {
-                        live_join_slots.insert(name.clone());
-                    }
-                }
-                "label" | "state_label" => {
-                    if let Some(label_id) = op.value
-                        && !live_join_slots.is_empty()
-                    {
-                        label_join_slots
-                            .insert(label_id, live_join_slots.iter().cloned().collect());
-                    }
-                }
-                _ => {}
-            }
-        }
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
@@ -1030,6 +1035,27 @@ impl SimpleBackend {
             // unexpressible. `None` means an inline arm (below) or no native
             // codegen (handled by the loud catch-all).
             let op_family = fc::native_op_family(op.kind.as_str());
+            let op_live_through = if matches!(
+                op_family,
+                Some(
+                    fc::NativeOpFamily::RetJump
+                        | fc::NativeOpFamily::ControlFlow
+                        | fc::NativeOpFamily::Loops
+                        | fc::NativeOpFamily::Coroutine
+                        | fc::NativeOpFamily::ExceptionControl
+                )
+            ) {
+                OpLiveThroughSnapshot::empty()
+            } else {
+                let defined_by_op = crate::tir::simple_def_use::simple_ir_defined_names(&op);
+                OpLiveThroughSnapshot::capture(
+                    &mut builder,
+                    cfg_liveness.live_after(op_idx),
+                    &defined_by_op,
+                    &vars,
+                    &slot_backed_join_slots,
+                )
+            };
             match op.kind.as_str() {
                 _ if op_family == Some(fc::NativeOpFamily::ConstLiterals) => {
                     let __flow = fc::const_literals::handle_const_literal_op(
@@ -1778,6 +1804,8 @@ impl SimpleBackend {
                         entry_block,
                         loop_depth,
                         &label_blocks,
+                        &label_transport_plans,
+                        &cfg_liveness,
                         &mut reachable_blocks,
                         &mut is_block_filled,
                         rc_authority,
@@ -1788,6 +1816,7 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
+                        &slot_backed_join_slots,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
                         &mut tracked_obj_vars,
@@ -1795,8 +1824,6 @@ impl SimpleBackend {
                         &mut tracked_obj_vars_set,
                         &mut tracked_vars_set,
                         &last_use,
-                        &first_defined_at,
-                        &slot_backed_join_slots,
                         &alias_roots,
                         &mut already_decrefed,
                         &mut entry_vars,
@@ -1996,7 +2023,8 @@ impl SimpleBackend {
                         &mut already_decrefed,
                         &mut reachable_blocks,
                         &label_blocks,
-                        &label_join_slots,
+                        &label_transport_plans,
+                        &cfg_liveness,
                         function_exception_label_id,
                         &slot_backed_join_slots,
                         &raw_backed_slot_names,
@@ -2062,6 +2090,10 @@ impl SimpleBackend {
             // We therefore only drain entry-tracked cleanup while still emitting the entry block.
             // Values whose "last use" happens exclusively in a non-entry block remain live until
             // the function-level return cleanup, which is emitted on all paths.
+            if !is_block_filled {
+                op_live_through.rebind(&mut builder);
+            }
+
             if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
                 && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                     .ok()

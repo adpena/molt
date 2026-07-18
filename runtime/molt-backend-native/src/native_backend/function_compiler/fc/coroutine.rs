@@ -124,12 +124,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             }
             reachable_blocks.insert(fallback_block);
             switch.emit(&mut *builder, state, fallback_block);
-            switch_to_block_with_rebind(
-                &mut *builder,
-                fallback_block,
-                &mut *is_block_filled,
-                false,
-            );
+            crate::switch_to_block_tracking(&mut *builder, fallback_block, &mut *is_block_filled);
         }
         "state_transition" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -243,12 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     );
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
                 }
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    fallthrough,
-                    &mut *is_block_filled,
-                    true,
-                );
+                crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
                 *is_block_filled = false;
             }
 
@@ -269,7 +259,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 .ins()
                 .brif(is_pending, pending_path, &[], ready_path, &[]);
 
-            switch_to_block_with_rebind(&mut *builder, pending_path, &mut *is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, pending_path, &mut *is_block_filled);
             seal_block_once(&mut *builder, &mut *sealed_blocks, pending_path);
             let sleep_callee = SimpleBackend::import_func_id_split(
                 &mut *module,
@@ -301,7 +291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             );
             jump_block(&mut *builder, master_return_block, &[pending_const]);
 
-            switch_to_block_with_rebind(&mut *builder, ready_path, &mut *is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, ready_path, &mut *is_block_filled);
             seal_block_once(&mut *builder, &mut *sealed_blocks, ready_path);
             if let Some(bits) = slot_bits {
                 let offset = unbox_int(&mut *builder, bits, nbc);
@@ -343,7 +333,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             }
             jump_block(&mut *builder, next_block, &[]);
 
-            switch_to_block_with_rebind(&mut *builder, next_block, &mut *is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
         }
         "state_yield" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -416,12 +406,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
 
             let next_block = resume_blocks[&next_state_id];
             if reachable_blocks.contains(&next_block) {
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    next_block,
-                    &mut *is_block_filled,
-                    false,
-                );
+                crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
             } else {
                 *is_block_filled = true;
             }
@@ -512,12 +497,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     maybe_debug_seal("chan_send_exception_fallthrough", op_idx, fallthrough);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
                 }
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    fallthrough,
-                    &mut *is_block_filled,
-                    true,
-                );
+                crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
                 *is_block_filled = false;
             }
 
@@ -540,7 +520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &[],
             );
 
-            switch_to_block_with_rebind(&mut *builder, ready_path, &mut *is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, ready_path, &mut *is_block_filled);
             seal_block_once(&mut *builder, &mut *sealed_blocks, ready_path);
             let state_val = builder.ins().iconst(types::I64, next_state_id);
             let set_state_csend2 = import_func_ref(
@@ -570,12 +550,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             jump_block(&mut *builder, next_block, &[]);
 
             if reachable_blocks.contains(&next_block) {
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    next_block,
-                    &mut *is_block_filled,
-                    false,
-                );
+                crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
             } else {
                 *is_block_filled = true;
             }
@@ -655,12 +630,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     maybe_debug_seal("chan_recv_exception_fallthrough", op_idx, fallthrough);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
                 }
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    fallthrough,
-                    &mut *is_block_filled,
-                    true,
-                );
+                crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
                 *is_block_filled = false;
             }
 
@@ -683,7 +653,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &[],
             );
 
-            switch_to_block_with_rebind(&mut *builder, ready_path, &mut *is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, ready_path, &mut *is_block_filled);
             seal_block_once(&mut *builder, &mut *sealed_blocks, ready_path);
             let state_val = builder.ins().iconst(types::I64, next_state_id);
             let set_state_crecv2 = import_func_ref(
@@ -713,12 +683,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             jump_block(&mut *builder, next_block, &[]);
 
             if reachable_blocks.contains(&next_block) {
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    next_block,
-                    &mut *is_block_filled,
-                    false,
-                );
+                crate::switch_to_block_tracking(&mut *builder, next_block, &mut *is_block_filled);
             } else {
                 *is_block_filled = true;
             }

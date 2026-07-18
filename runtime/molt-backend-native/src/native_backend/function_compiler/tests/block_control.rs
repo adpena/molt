@@ -1,140 +1,37 @@
 use super::*;
 
 #[test]
-fn live_rebind_vars_require_known_liveness_and_reaching_definitions() {
-    let mut vars = BTreeMap::new();
-    vars.insert("early".to_string(), Variable::from_u32(0));
-    vars.insert("late".to_string(), Variable::from_u32(1));
-    vars.insert("dead".to_string(), Variable::from_u32(2));
-    vars.insert("unknown".to_string(), Variable::from_u32(3));
-
-    let mut transport_last_use = BTreeMap::new();
-    transport_last_use.insert("early".to_string(), 10usize);
-    transport_last_use.insert("late".to_string(), 10usize);
-    transport_last_use.insert("dead".to_string(), 1usize);
-
-    let mut first_defined_at = BTreeMap::new();
-    first_defined_at.insert("early".to_string(), 0usize);
-    first_defined_at.insert("late".to_string(), 5usize);
-    first_defined_at.insert("dead".to_string(), 0usize);
-    first_defined_at.insert("unknown".to_string(), 0usize);
-
-    let live = live_rebind_vars_for_op(&vars, &transport_last_use, &first_defined_at, 3);
-
-    assert!(live.contains_key("early"));
-    assert!(!live.contains_key("late"));
-    assert!(!live.contains_key("dead"));
-    assert!(!live.contains_key("unknown"));
-}
-
-#[test]
-fn switch_to_block_with_rebind_does_not_inflate_merge_params_for_invariant_vars() {
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.returns.push(AbiParam::new(types::I64));
+fn block_transport_plan_emits_typed_args_and_rebinds_values() {
+    let sig = Signature::new(CallConv::SystemV);
     let mut func = Function::with_name_signature(UserFuncName::default(), sig);
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
 
-    let stable_var = builder.declare_var(types::I64);
-    let phi_var = builder.declare_var(types::I64);
-
+    let word_var = builder.declare_var(types::I64);
+    let float_var = builder.declare_var(types::F64);
     let entry = builder.create_block();
-    let then_block = builder.create_block();
-    let else_block = builder.create_block();
-    let merge_block = builder.create_block();
-    builder.append_block_param(merge_block, types::I64);
+    let target = builder.create_block();
+    let plan = BlockTransportPlan::for_test(
+        vec!["float".into(), "word".into()],
+        vec![float_var, word_var],
+        vec![types::F64, types::I64],
+    );
+    plan.append_block_params(&mut builder, target);
 
     switch_to_block_materialized(&mut builder, entry);
-    let stable = builder.ins().iconst(types::I64, 7);
-    let cond = builder.ins().iconst(types::I8, 1);
-    let then_val = builder.ins().iconst(types::I64, 11);
-    let else_val = builder.ins().iconst(types::I64, 13);
-    builder.def_var(stable_var, stable);
-    builder.ins().brif(cond, then_block, &[], else_block, &[]);
+    let word = builder.ins().iconst(types::I64, 17);
+    let float = builder.ins().f64const(3.5);
+    builder.def_var(word_var, word);
+    builder.def_var(float_var, float);
+    let args = plan.edge_args(&mut builder);
+    jump_block(&mut builder, target, &args);
     builder.seal_block(entry);
 
-    switch_to_block_materialized(&mut builder, then_block);
-    builder.def_var(phi_var, then_val);
-    jump_block(&mut builder, merge_block, &[then_val]);
-    builder.seal_block(then_block);
+    switch_to_block_materialized(&mut builder, target);
+    plan.bind_block_params(&mut builder, target);
 
-    switch_to_block_materialized(&mut builder, else_block);
-    builder.def_var(phi_var, else_val);
-    jump_block(&mut builder, merge_block, &[else_val]);
-    builder.seal_block(else_block);
-
-    let mut is_block_filled = false;
-    switch_to_block_with_rebind(&mut builder, merge_block, &mut is_block_filled, false);
-
-    assert_eq!(
-        builder.block_params(merge_block).len(),
-        1,
-        "merge block should only carry the explicit phi payload param",
-    );
-}
-
-#[test]
-fn switch_to_block_with_rebind_does_not_create_exception_fallthrough_phis_for_invariants() {
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.returns.push(AbiParam::new(types::I64));
-    let mut func = Function::with_name_signature(UserFuncName::default(), sig);
-    let mut builder_ctx = FunctionBuilderContext::new();
-    let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
-
-    let stable_var = builder.declare_var(types::I64);
-
-    let entry = builder.create_block();
-    let validate_block = builder.create_block();
-    let fallthrough = builder.create_block();
-
-    switch_to_block_materialized(&mut builder, entry);
-    let stable = builder.ins().iconst(types::I64, 7);
-    let cond = builder.ins().iconst(types::I8, 1);
-    builder.def_var(stable_var, stable);
-    builder
-        .ins()
-        .brif(cond, validate_block, &[], fallthrough, &[]);
-    builder.seal_block(entry);
-
-    switch_to_block_materialized(&mut builder, validate_block);
-    builder.ins().jump(fallthrough, &[]);
-    builder.seal_block(validate_block);
-
-    let mut is_block_filled = false;
-    switch_to_block_with_rebind(&mut builder, fallthrough, &mut is_block_filled, true);
-
-    assert!(
-        builder.block_params(fallthrough).is_empty(),
-        "exception fallthrough should not synthesize params for invariant vars",
-    );
-}
-
-#[test]
-fn switch_to_block_with_rebind_does_not_create_params_for_plain_label_blocks() {
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.returns.push(AbiParam::new(types::I64));
-    let mut func = Function::with_name_signature(UserFuncName::default(), sig);
-    let mut builder_ctx = FunctionBuilderContext::new();
-    let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
-
-    let stable_var = builder.declare_var(types::I64);
-
-    let entry = builder.create_block();
-    let label_block = builder.create_block();
-
-    switch_to_block_materialized(&mut builder, entry);
-    let stable = builder.ins().iconst(types::I64, 7);
-    builder.def_var(stable_var, stable);
-    jump_block(&mut builder, label_block, &[]);
-    builder.seal_block(entry);
-
-    let mut is_block_filled = false;
-    switch_to_block_with_rebind(&mut builder, label_block, &mut is_block_filled, false);
-
-    assert!(
-        builder.block_params(label_block).is_empty(),
-        "plain label blocks must not gain implicit params from SSA repair",
-    );
+    assert_eq!(builder.use_var(float_var), builder.block_params(target)[0]);
+    assert_eq!(builder.use_var(word_var), builder.block_params(target)[1]);
 }
 
 #[test]
@@ -153,7 +50,7 @@ fn materialize_label_block_defines_unreached_forward_label() {
     builder.seal_block(entry);
 
     let mut is_block_filled = true;
-    materialize_label_block(&mut builder, detached_label, &mut is_block_filled);
+    materialize_label_block(&mut builder, detached_label, &mut is_block_filled, None);
 
     assert!(
         builder.func.layout.is_block_inserted(detached_label),
@@ -177,7 +74,7 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
     switch_to_block_materialized(&mut builder, resume_block);
 
     let mut is_block_filled = false;
-    materialize_label_block(&mut builder, resume_block, &mut is_block_filled);
+    materialize_label_block(&mut builder, resume_block, &mut is_block_filled, None);
 
     assert_eq!(builder.current_block(), Some(resume_block));
     assert!(

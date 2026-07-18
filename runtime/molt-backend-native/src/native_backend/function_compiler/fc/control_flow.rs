@@ -440,7 +440,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 seal_block_once(&mut *builder, sealed_blocks, else_block);
             }
 
-            switch_to_block_with_rebind(&mut *builder, then_block, is_block_filled, false);
+            crate::switch_to_block_tracking(&mut *builder, then_block, is_block_filled);
             if_stack.push(IfFrame {
                 else_block,
                 merge_block,
@@ -654,11 +654,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 }
             }
 
-            switch_to_block_with_rebind(
+            crate::switch_to_block_tracking(
                 &mut *builder,
                 frame.else_block.expect("else without placeholder block"),
                 is_block_filled,
-                false,
             );
             frame.has_else = true;
         }
@@ -1007,7 +1006,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 }
 
                 if let Some(else_block) = frame.else_block {
-                    switch_to_block_with_rebind(&mut *builder, else_block, is_block_filled, false);
+                    crate::switch_to_block_tracking(&mut *builder, else_block, is_block_filled);
                     if *is_block_filled {
                         frame.else_terminal = true;
                         return OpFlow::Continue;
@@ -1182,12 +1181,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     maybe_debug_seal("if_merge", op_idx, frame.merge_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.merge_block);
                 }
-                switch_to_block_with_rebind(
-                    &mut *builder,
-                    frame.merge_block,
-                    is_block_filled,
-                    false,
-                );
+                crate::switch_to_block_tracking(&mut *builder, frame.merge_block, is_block_filled);
                 if !*is_block_filled
                     && frame.phi_ops.is_empty()
                     && !frame.merge_rebind_names.is_empty()
