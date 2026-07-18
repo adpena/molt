@@ -3,7 +3,7 @@ use super::*;
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -63,9 +63,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
             MoltObject::from_int(out_features as i64).bits(),
             out_format_bits,
         );
-        if crate::exception_pending(_py) {
+        if exception_pending(_py) {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return out_data_bits;
         }
@@ -73,7 +73,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
             Ok(bits) => bits,
             Err(bits) => {
                 if owns_out_format {
-                    crate::dec_ref_bits(_py, out_format_bits);
+                    dec_ref_bits(_py, out_format_bits);
                 }
                 return bits;
             }
@@ -95,10 +95,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, out_shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_shape_bits);
         if owns_out_format {
-            crate::dec_ref_bits(_py, out_format_bits);
+            dec_ref_bits(_py, out_format_bits);
         }
         tensor_bits
     })
@@ -111,7 +111,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
     weight_bits: u64,
     split_sizes_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -183,15 +183,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             split_sizes_bits,
             out_format_bits,
         );
-        if crate::exception_pending(_py) {
+        if exception_pending(_py) {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return out_parts_bits;
         }
         let Some(out_parts_ptr) = obj_from_bits(out_parts_bits).as_ptr() else {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return raise_exception::<_>(
                 _py,
@@ -199,11 +199,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
                 "linear split helper did not return a tuple",
             );
         };
-        let Some(part_data_bits) =
-            (unsafe { crate::object::seq_access::pin_tuple(_py, out_parts_ptr) })
-        else {
+        let Some(part_data_bits) = (unsafe { seq_access::pin_tuple(_py, out_parts_ptr) }) else {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return raise_exception::<_>(
                 _py,
@@ -213,7 +211,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
         };
         if part_data_bits.len() != split_sizes.len() {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return raise_exception::<_>(
                 _py,
@@ -229,7 +227,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
                 Ok(bits) => bits,
                 Err(bits) => {
                     if owns_out_format {
-                        crate::dec_ref_bits(_py, out_format_bits);
+                        dec_ref_bits(_py, out_format_bits);
                     }
                     return bits;
                 }
@@ -250,19 +248,19 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             } {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, shape_bits);
                     if owns_out_format {
-                        crate::dec_ref_bits(_py, out_format_bits);
+                        dec_ref_bits(_py, out_format_bits);
                     }
                     return bits;
                 }
             };
-            crate::dec_ref_bits(_py, shape_bits);
+            dec_ref_bits(_py, shape_bits);
             tensors.push(tensor_bits);
         }
         let tuple_ptr = alloc_tuple(_py, tensors.as_slice());
         if owns_out_format {
-            crate::dec_ref_bits(_py, out_format_bits);
+            dec_ref_bits(_py, out_format_bits);
         }
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
@@ -277,7 +275,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
     x_bits: u64,
     weight_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -347,9 +345,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
             MoltObject::from_int(in_features as i64).bits(),
             out_format_bits,
         );
-        if crate::exception_pending(_py) {
+        if exception_pending(_py) {
             if owns_out_format {
-                crate::dec_ref_bits(_py, out_format_bits);
+                dec_ref_bits(_py, out_format_bits);
             }
             return out_data_bits;
         }
@@ -357,7 +355,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
             Ok(bits) => bits,
             Err(bits) => {
                 if owns_out_format {
-                    crate::dec_ref_bits(_py, out_format_bits);
+                    dec_ref_bits(_py, out_format_bits);
                 }
                 return bits;
             }
@@ -379,10 +377,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, out_shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_shape_bits);
         if owns_out_format {
-            crate::dec_ref_bits(_py, out_format_bits);
+            dec_ref_bits(_py, out_format_bits);
         }
         tensor_bits
     })
@@ -391,7 +389,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -420,15 +418,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
             normalized_dims_bits,
             x.buffer.format_bits,
         );
-        crate::dec_ref_bits(_py, normalized_dims_bits);
-        if crate::exception_pending(_py) {
+        dec_ref_bits(_py, normalized_dims_bits);
+        if exception_pending(_py) {
             return out_data_bits;
         }
         let out_shape: Vec<usize> = normalized_dims.iter().map(|&dim| x_shape[dim]).collect();
         let out_shape_bits = match alloc_tuple_bits_from_usize(_py, out_shape.as_slice()) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, out_data_bits);
+                dec_ref_bits(_py, out_data_bits);
                 return bits;
             }
         };
@@ -453,8 +451,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, out_shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_shape_bits);
         tensor_bits
     })
 }
@@ -462,7 +460,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -477,8 +475,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
             shape_bits,
             x.buffer.format_bits,
         );
-        if crate::exception_pending(_py) {
-            crate::dec_ref_bits(_py, shape_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, shape_bits);
             return out_data_bits;
         }
         let tensor_bits = match unsafe {
@@ -498,8 +496,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, shape_bits);
         tensor_bits
     })
 }
@@ -507,7 +505,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -586,7 +584,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, final_shape_bits);
+        dec_ref_bits(_py, final_shape_bits);
         tensor_bits
     })
 }
@@ -594,7 +592,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -615,7 +613,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
     indices_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let trace_take_rows = std::env::var("MOLT_TRACE_GPU_TAKE_ROWS").as_deref() == Ok("1");
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
@@ -646,7 +644,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             indices.buffer_bits,
             MoltObject::from_int(row_count as i64).bits(),
         );
-        if crate::exception_pending(_py) {
+        if exception_pending(_py) {
             return rows_list_bits;
         }
         let Some(rows_list_ptr) = obj_from_bits(rows_list_bits).as_ptr() else {
@@ -673,9 +671,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         if x.buffer.data_view.len < expected_bytes {
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
-        let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
+        let allow_negative = is_truthy(_py, obj_from_bits(allow_negative_bits));
         let Some(rows) = (unsafe {
-            crate::object::seq_access::snapshot(
+            seq_access::snapshot(
                 _py,
                 rows_list_ptr,
                 "take_rows index snapshot allocation failed",
@@ -687,7 +685,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             let preview: Vec<i64> = rows
                 .iter()
                 .take(8)
-                .map(|&bits| crate::to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .map(|&bits| to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
                 .collect();
             eprintln!(
                 "molt gpu take_rows rows_len={} rows_preview={:?} allow_negative={}",
@@ -753,7 +751,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         let out_shape_bits = match alloc_tuple_bits_from_usize(_py, out_shape.as_slice()) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, MoltObject::from_ptr(out_data_ptr).bits());
+                dec_ref_bits(_py, MoltObject::from_ptr(out_data_ptr).bits());
                 return bits;
             }
         };
@@ -775,8 +773,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, out_shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_shape_bits);
         tensor_bits
     })
 }
@@ -784,7 +782,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (a, a_shape) = match unsafe { tensor_runtime_view(_py, a_bits, "a") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -840,7 +838,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
         let out_shape_bits = match alloc_tuple_bits_from_usize(_py, out_shape.as_slice()) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, MoltObject::from_ptr(out_data_ptr).bits());
+                dec_ref_bits(_py, MoltObject::from_ptr(out_data_ptr).bits());
                 return bits;
             }
         };
@@ -862,8 +860,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
-        crate::dec_ref_bits(_py, out_shape_bits);
+        dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_shape_bits);
         tensor_bits
     })
 }
@@ -876,7 +874,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     updates_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let trace_scatter_rows = std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
         let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
             Ok(value) => value,
@@ -932,7 +930,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             indices.buffer_bits,
             MoltObject::from_int(row_count as i64).bits(),
         );
-        if crate::exception_pending(_py) {
+        if exception_pending(_py) {
             return rows_list_bits;
         }
         let Some(rows_list_ptr) = obj_from_bits(rows_list_bits).as_ptr() else {
@@ -970,9 +968,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         if updates.buffer.data_view.len < updates_required {
             return raise_exception::<_>(_py, "ValueError", "updates buffer is too small");
         }
-        let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
+        let allow_negative = is_truthy(_py, obj_from_bits(allow_negative_bits));
         let Some(rows) = (unsafe {
-            crate::object::seq_access::snapshot(
+            seq_access::snapshot(
                 _py,
                 rows_list_ptr,
                 "scatter_rows index snapshot allocation failed",
@@ -984,7 +982,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             let preview: Vec<i64> = rows
                 .iter()
                 .take(8)
-                .map(|&bits| crate::to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .map(|&bits| to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
                 .collect();
             eprintln!(
                 "molt gpu scatter_rows rows_len={} rows_preview={:?} allow_negative={}",
@@ -1067,7 +1065,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, out_data_bits);
+        dec_ref_bits(_py, out_data_bits);
         tensor_bits
     })
 }
@@ -1075,7 +1073,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let tensor_class_bits =
             match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") } {
                 Ok(bits) => bits,
@@ -1085,15 +1083,15 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
             match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Buffer", "Buffer") } {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    crate::dec_ref_bits(_py, tensor_class_bits);
+                    dec_ref_bits(_py, tensor_class_bits);
                     return bits;
                 }
             };
         let dims_i64 = match parse_i64_sequence_arg(_py, shape_bits, "shape", true) {
             Ok(value) => value,
             Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
+                dec_ref_bits(_py, tensor_class_bits);
+                dec_ref_bits(_py, buffer_class_bits);
                 return bits;
             }
         };
@@ -1105,8 +1103,8 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
             match value {
                 Ok(value) => dims.push(value),
                 Err(bits) => {
-                    crate::dec_ref_bits(_py, tensor_class_bits);
-                    crate::dec_ref_bits(_py, buffer_class_bits);
+                    dec_ref_bits(_py, tensor_class_bits);
+                    dec_ref_bits(_py, buffer_class_bits);
                     return bits;
                 }
             }
@@ -1115,27 +1113,27 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
         let out = vec![0u8; size * 8];
         let data_ptr = alloc_bytearray(_py, out.as_slice());
         if data_ptr.is_null() {
-            crate::dec_ref_bits(_py, tensor_class_bits);
-            crate::dec_ref_bits(_py, buffer_class_bits);
+            dec_ref_bits(_py, tensor_class_bits);
+            dec_ref_bits(_py, buffer_class_bits);
             return MoltObject::none().bits();
         }
         let data_bits = MoltObject::from_ptr(data_ptr).bits();
         let format_bits = match alloc_string_bits(_py, b"d") {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
-                crate::dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, tensor_class_bits);
+                dec_ref_bits(_py, buffer_class_bits);
+                dec_ref_bits(_py, data_bits);
                 return bits;
             }
         };
         let shape_tuple_bits = match alloc_tuple_bits_from_usize(_py, dims.as_slice()) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
-                crate::dec_ref_bits(_py, data_bits);
-                crate::dec_ref_bits(_py, format_bits);
+                dec_ref_bits(_py, tensor_class_bits);
+                dec_ref_bits(_py, buffer_class_bits);
+                dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, format_bits);
                 return bits;
             }
         };
@@ -1145,7 +1143,7 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
                 tensor_class_bits,
                 buffer_class_bits,
                 data_bits,
-                crate::builtins::classes::builtin_classes(_py).float,
+                builtin_float(_py),
                 size,
                 format_bits,
                 ScalarFormat::F64.itemsize(),
@@ -1156,11 +1154,11 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, tensor_class_bits);
-        crate::dec_ref_bits(_py, buffer_class_bits);
-        crate::dec_ref_bits(_py, data_bits);
-        crate::dec_ref_bits(_py, format_bits);
-        crate::dec_ref_bits(_py, shape_tuple_bits);
+        dec_ref_bits(_py, tensor_class_bits);
+        dec_ref_bits(_py, buffer_class_bits);
+        dec_ref_bits(_py, data_bits);
+        dec_ref_bits(_py, format_bits);
+        dec_ref_bits(_py, shape_tuple_bits);
         tensor_bits
     })
 }

@@ -123,6 +123,10 @@ mod const_data_cache;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_difflib")]
 mod difflib_bridge;
+#[cfg(feature = "molt_gpu_primitives")]
+mod gpu_bridge;
+#[cfg(all(test, feature = "molt_gpu_primitives"))]
+mod gpu_runtime_tests;
 #[cfg(feature = "stdlib_graphlib")]
 mod graphlib_bridge;
 #[cfg(feature = "stdlib_http")]
@@ -315,25 +319,6 @@ pub mod ffi_bridge {
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
-#[cfg(feature = "molt_gpu_primitives")]
-pub use crate::builtins::gpu::{
-    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
-    molt_gpu_interop__load_safetensors, molt_gpu_interop_decode_bf16_bytes_to_f32,
-    molt_gpu_interop_decode_f16_bytes_to_f32, molt_gpu_linear_contiguous,
-    molt_gpu_linear_split_last_dim_contiguous,
-    molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
-    molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
-    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
-    molt_gpu_softmax_last_axis_contiguous, molt_gpu_squared_relu_gate_interleaved_contiguous,
-    molt_gpu_tensor__tensor_concat_first_dim, molt_gpu_tensor__tensor_data_list,
-    molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_linear_split_last_dim,
-    molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved,
-    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_reshape_view,
-    molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
-    molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
-    molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
-    molt_gpu_turboquant_attention_packed,
-};
 pub use crate::builtins::strings::{molt_bytes_from_bytes, molt_string_from_bytes};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -375,6 +360,25 @@ pub use molt_gpu::primitives_ffi::{
     molt_gpu_prim_reduce, molt_gpu_prim_reduce_all, molt_gpu_prim_reshape, molt_gpu_prim_shape,
     molt_gpu_prim_shrink, molt_gpu_prim_ternary, molt_gpu_prim_unary, molt_gpu_prim_zeros,
     molt_gpu_prim_zeros_dtype,
+};
+#[cfg(feature = "molt_gpu_primitives")]
+pub use molt_gpu::runtime::{
+    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
+    molt_gpu_interop__load_safetensors, molt_gpu_interop_decode_bf16_bytes_to_f32,
+    molt_gpu_interop_decode_f16_bytes_to_f32, molt_gpu_linear_contiguous,
+    molt_gpu_linear_split_last_dim_contiguous,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
+    molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
+    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
+    molt_gpu_softmax_last_axis_contiguous, molt_gpu_squared_relu_gate_interleaved_contiguous,
+    molt_gpu_tensor__tensor_concat_first_dim, molt_gpu_tensor__tensor_data_list,
+    molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_linear_split_last_dim,
+    molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved,
+    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_reshape_view,
+    molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
+    molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
+    molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
+    molt_gpu_turboquant_attention_packed,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;

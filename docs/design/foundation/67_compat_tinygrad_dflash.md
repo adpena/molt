@@ -175,14 +175,13 @@ tied below to a structural fact, not a patch.
    `duplicate_authorities` problem the Structural Audit Board (doc 46 instrument) tracks
    for op-kinds, not yet applied to the ML surface.
 
-5. **`runtime/molt-runtime/src/builtins/gpu.rs` is an 11,817-line god-file**
-   (`STRUCTURAL_AUDIT_BOARD.md` row: *medium, ceiling 4000*). It is the legacy ad-hoc GPU
-   pipeline the primitive spec §5.1 marked for deletion (the spec lists
-   `molt-runtime/src/builtins/gpu.rs | 8990 | Replaced by Tensor + MoltDevice`). It has
-   since *grown*, not shrunk — the replacement landed *alongside* the legacy file instead
-   of deleting it. This is a live "two parallel sources of truth" violation
-   (CLAUDE.md §"Splitting an atomic refactor"). It composes directly with the 21*
-   decomposition program and must be retired here, not left.
+5. **The GPU runtime authority migration is complete (2026-07-18).** The former
+   `runtime/molt-runtime/src/builtins/gpu.rs` cluster was deleted after its complete
+   implementation family moved to `runtime/molt-gpu/src/runtime/`. `molt-runtime`
+   now owns only the narrow Python-object ABI in `src/gpu_bridge.rs`; primitive-only
+   `molt-gpu` consumers do not compile that integration layer. The canonicalization
+   contract reports zero misplaced GPU implementation lines, closing the former
+   two-authority violation rather than ratcheting its baseline.
 
 ### 1.3 The one-line diagnosis
 
@@ -537,17 +536,15 @@ immutable, in-tree* references the later phases derive from.
   `safe_run.py` (CLAUDE.md Safe Execution — the reference model is a compiled binary).
   Release-blocking for any `dflash/**` or speculative change.
 
-### Phase 6 — Retire the legacy GPU god-file (retires §1.2.5; composes with 21*)
-**Goal:** one GPU pipeline, not two. Delete the legacy ad-hoc path the primitive spec
-§5.1 already marked for deletion.
-- 6a. Census `runtime/molt-runtime/src/builtins/gpu.rs` (11,817 lines): identify which
-  symbols are (i) still reachable, (ii) duplicated by `molt-gpu` + `gpu_primitives.rs`,
-  (iii) dead. (Use the 21-decomposition tooling + the dispatch-roots probe already used
-  for tinygrad, evidenced by `tmp/.../tinygrad-dispatch-roots`.)
-- 6b. Migrate any still-needed behavior onto the `molt-gpu` crate + `gpu_primitives.rs`
-  intrinsics (symmetric: native + WASM + Luau + LLVM call sites together).
-- 6c. Delete the legacy file/paths; update `STRUCTURAL_AUDIT_BOARD.md` (the
-  `max_god_file_lines` / `god_files` ratchet must drop, never grow).
+### Phase 6 — Retire the legacy GPU god-file — COMPLETE (2026-07-18)
+**Result:** one GPU implementation authority. The complete runtime/tensor family now
+lives in `molt-gpu`; the deleted builtin tree has no facade or compatibility copy.
+- 6a. The reachable implementation, backend gates, and tests were classified as one
+  authority class rather than migrated piecemeal.
+- 6b. Native CPU/WebGPU/Metal, browser WASM, and CUDA/HIP feature gates now compile
+  from `molt-gpu`; Python object services cross one generated-test-stubbed bridge.
+- 6c. The old paths and their four dead-code baseline waivers were deleted. The
+  canonicalization ratchet drops to zero misplaced GPU implementation lines.
 - **Gate:** full backend build (`cargo build --profile release-fast -p molt-backend
   --features native-backend`) + `pytest tests/gpu/` + the Phase-2 diff oracle green
   (proves the migration preserved semantics); board ratchet drops.

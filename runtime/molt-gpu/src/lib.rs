@@ -13,6 +13,12 @@ pub mod mlir;
 pub mod ops;
 pub mod primitives_ffi;
 pub mod render;
+#[cfg(feature = "runtime-integration")]
+pub mod runtime;
+
+#[cfg(all(test, feature = "runtime-integration"))]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
 pub mod runtime_backend;
 pub mod schedule;
 pub mod shapetracker;
