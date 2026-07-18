@@ -89,6 +89,8 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
         {
             "split_app_optimize_requests": 1,
             "split_app_wasm_opt_runs": 0,
+            "runtime_tree_shake_cache_hits": 1.0,
+            "runtime_tree_shake_cache_wall_ms": 0.25,
             "wasm_whole_artifact_full_binary_parses": 17,
             "wasm_whole_artifact_section_walks": 29,
             "wasm_whole_artifact_reserializations": 11,
@@ -98,6 +100,7 @@ def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
     ) == {
         "split_app_optimize_requests": 1,
         "split_app_wasm_opt_runs": 0,
+        "runtime_tree_shake_cache_hits": 1,
         "wasm_whole_artifact_full_binary_parses": 17,
         "wasm_whole_artifact_redundant_parses_eliminated": 6,
         "wasm_whole_artifact_reserializations": 11,

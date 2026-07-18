@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.wasm_linked_runner import _run_wasm_test_process
@@ -260,6 +261,40 @@ class TestWasmOptReduction:
         cmd = recorded["cmd"]
         assert "--converge" not in cmd
         assert "-Oz" in cmd
+
+    def test_optimize_reports_guarded_process_memory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tools.wasm_optimize as mod
+
+        source = tmp_path / "input.wasm"
+        output = tmp_path / "output.wasm"
+        source.write_bytes(_exported_func_module("kept"))
+        monkeypatch.setattr(mod, "find_wasm_opt", lambda: "/usr/bin/wasm-opt")
+
+        def fake_guarded(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            output.write_bytes(source.read_bytes())
+            result = subprocess.CompletedProcess(cmd, 0, "", "")
+            result.peak = SimpleNamespace(rss_kb=12_345)
+            result.peak_total = SimpleNamespace(rss_kb=23_456)
+            return result
+
+        monkeypatch.setattr(
+            mod.harness_memory_guard, "guarded_completed_process", fake_guarded
+        )
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda cmd, **_kwargs: subprocess.CompletedProcess(
+                cmd, 0, "wasm-opt test", ""
+            ),
+        )
+
+        result = mod.optimize(source, output_path=output, level="Oz")
+
+        assert result["ok"] is True
+        assert result["peak_rss_kb"] == 12_345
+        assert result["peak_total_rss_kb"] == 23_456
 
     def test_optimize_rejects_missing_required_exports(
         self,

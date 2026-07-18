@@ -236,6 +236,10 @@ def optimize(
             "error": "wasm-opt timed out after 300s",
         }
     elapsed = time.monotonic() - t0
+    peak = getattr(proc, "peak", None)
+    peak_total = getattr(proc, "peak_total", None)
+    peak_rss_kb = getattr(peak, "rss_kb", None)
+    peak_total_rss_kb = getattr(peak_total, "rss_kb", None)
 
     if proc.returncode != 0:
         return {
@@ -245,6 +249,8 @@ def optimize(
             "reduction_bytes": 0,
             "reduction_pct": 0.0,
             "elapsed_s": elapsed,
+            "peak_rss_kb": peak_rss_kb,
+            "peak_total_rss_kb": peak_total_rss_kb,
             "output_path": str(output_path),
             "error": (proc.stderr or proc.stdout)[:500],
         }
@@ -262,6 +268,8 @@ def optimize(
                 "reduction_bytes": 0,
                 "reduction_pct": 0.0,
                 "elapsed_s": elapsed,
+                "peak_rss_kb": peak_rss_kb,
+                "peak_total_rss_kb": peak_total_rss_kb,
                 "output_path": str(output_path),
                 "error": f"failed to verify optimized exports: {exc}",
             }
@@ -276,6 +284,8 @@ def optimize(
                 "reduction_bytes": 0,
                 "reduction_pct": 0.0,
                 "elapsed_s": elapsed,
+                "peak_rss_kb": peak_rss_kb,
+                "peak_total_rss_kb": peak_total_rss_kb,
                 "output_path": str(output_path),
                 "error": "optimized wasm missing required exports: "
                 + ", ".join(missing),
@@ -292,6 +302,8 @@ def optimize(
         "reduction_bytes": reduction,
         "reduction_pct": round(pct, 2),
         "elapsed_s": round(elapsed, 3),
+        "peak_rss_kb": peak_rss_kb,
+        "peak_total_rss_kb": peak_total_rss_kb,
         "output_path": str(output_path),
         "binaryen_version": subprocess.run(
             [wasm_opt, "--version"],
