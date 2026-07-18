@@ -10,6 +10,39 @@ from molt import python_interpreter
 from tests import molt_diff
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        ("text out", "text err", ("text out", "text err", 124)),
+        (b"byte out", b"byte err", ("byte out", "byte err", 124)),
+        (None, None, ("", "timeout", 124)),
+    ],
+)
+def test_timeout_payloads_are_normalized_at_interpreter_boundary(
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+    expected: tuple[str, str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def time_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            ["python"],
+            1.0,
+            output=stdout,
+            stderr=stderr,
+        )
+
+    monkeypatch.setattr(python_interpreter.subprocess, "run", time_out)
+
+    assert python_interpreter._run_command(
+        ["python"],
+        timeout=1.0,
+        env={},
+        cwd=tmp_path,
+    ) == expected
+
+
 def test_target_python_candidates_are_cross_platform_without_ambient_default():
     target = python_interpreter.parse_target_python_version("3.14")
 

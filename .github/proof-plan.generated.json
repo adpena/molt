@@ -38,7 +38,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "1f101211d3697658dfa4e61869c7e4c78e8d84774b32700cbc276083713361bd",
+  "authority_sha256": "4a063f7b9facee1499f8b1b49aa81b0627fa56ebc1f55007a0c6d4d73139b9c7",
   "ci_families": [
     {
       "dependencies": [],

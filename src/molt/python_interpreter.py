@@ -119,6 +119,21 @@ def format_python_command(command: Sequence[str]) -> str:
     return shlex.join(command)
 
 
+def _subprocess_text(value: str | bytes | None) -> str:
+    """Normalize subprocess payloads at the text-mode process boundary.
+
+    ``TimeoutExpired`` may expose captured bytes even when ``run`` was called
+    with ``text=True``.  Downstream interpreter diagnostics are text-only, so
+    keep that platform quirk inside the custody layer.
+    """
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
+
 def _run_command(
     command: Sequence[str],
     *,
@@ -140,7 +155,9 @@ def _run_command(
     except OSError as exc:
         return "", str(exc), 126
     except subprocess.TimeoutExpired as exc:
-        return exc.stdout or "", exc.stderr or "timeout", 124
+        stdout = _subprocess_text(exc.stdout)
+        stderr = _subprocess_text(exc.stderr)
+        return stdout, stderr or "timeout", 124
     return result.stdout, result.stderr, result.returncode
 
 
