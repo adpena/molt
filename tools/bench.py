@@ -193,6 +193,7 @@ class MoltFailure:
     signal: dict[str, object] | None = None
     guard_violation: dict[str, object] | None = None
     orphaned_process_groups: tuple[int, ...] = ()
+    log_refs: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -654,6 +655,7 @@ def _batch_response_completed_process(
 
 
 _BUILD_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("native runtime staticlib build failed", "native_runtime_staticlib_build_failed"),
     ("backend daemon returned empty response", "backend_daemon_empty_response"),
     (
         "backend daemon died while request was in flight",
@@ -721,6 +723,38 @@ def _failure_message(stdout: str | None, stderr: str | None) -> str | None:
     if not output:
         return None
     return _bounded_failure_text(output)
+
+
+def _runtime_build_failure_payload(
+    stdout: str | None, stderr: str | None
+) -> dict[str, object] | None:
+    for stream in (stdout or "", stderr or ""):
+        for raw in stream.splitlines():
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                continue
+            failure = data.get("runtime_build_failure")
+            if isinstance(failure, dict):
+                return failure
+    return None
+
+
+def _failure_log_refs(
+    stdout: str | None, stderr: str | None
+) -> tuple[dict[str, str], ...]:
+    failure = _runtime_build_failure_payload(stdout, stderr)
+    if failure is None:
+        return ()
+    path = failure.get("evidence_path")
+    if not isinstance(path, str) or not path:
+        return ()
+    return ({"kind": "native_runtime_build_failure", "path": path},)
 
 
 def _failure_detail(phase: str, stdout: str | None, stderr: str | None) -> str | None:
@@ -791,6 +825,7 @@ def _classified_molt_failure(
         signal=signal_payload,
         guard_violation=_rss_record_payload(violation),
         orphaned_process_groups=orphaned_process_groups,
+        log_refs=_failure_log_refs(stdout, stderr),
     )
 
 
@@ -862,6 +897,7 @@ def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
         "signal": failure.signal,
         "guard_violation": failure.guard_violation,
         "orphaned_process_groups": list(failure.orphaned_process_groups),
+        "log_refs": list(failure.log_refs),
     }
 
 
@@ -940,6 +976,14 @@ def _failure_should_restart_batch_server(failure: MoltFailure) -> bool:
         failure.phase == "build"
         and failure.detail is not None
         and failure.detail.startswith("backend_daemon_")
+    )
+
+
+def _failure_should_retry_build(failure: MoltFailure) -> bool:
+    return (
+        failure.phase == "build"
+        and failure.detail is not None
+        and failure.detail.startswith(("backend_daemon_", "batch_server_"))
     )
 
 
@@ -1097,6 +1141,13 @@ def prepare_molt_binary(
 
     result = _attempt_build()
     if isinstance(result, MoltBinary):
+        return result
+
+    # Only transport/daemon state can be repaired by restarting the batch
+    # server and pruning its owned daemons. Deterministic compiler, Cargo,
+    # source, artifact, and linker failures are unchanged by that operation;
+    # retrying them doubled CI wall clock while preserving the same error.
+    if not _failure_should_retry_build(result):
         return result
 
     _restart_batch_server_for_retry(batch_server, result)

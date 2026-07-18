@@ -169,12 +169,26 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         ensure_start,
     )
     if not runtime_ready or not runtime_lib.exists():
+        failure = runtime_state.native_runtime_build_failure
+        failure_detail = ""
+        failure_data: dict[str, object] | None = None
+        if failure is not None:
+            failure_detail = (
+                f" stage={failure.stage}; first_error={failure.summary!r};"
+                + (
+                    f" evidence={failure.evidence_path};"
+                    if failure.evidence_path is not None
+                    else ""
+                )
+            )
+            failure_data = {"runtime_build_failure": failure.json_payload()}
         return "", _fail(
-            "native runtime staticlib build failed or produced no artifact "
-            f"({runtime_lib}); cannot stage the callable-symbol set native "
-            "codegen requires. See the cargo output above for the build error.",
+            "native runtime staticlib build failed"
+            f"{failure_detail} expected_artifact={runtime_lib}; cannot stage the "
+            "callable-symbol set native codegen requires.",
             json_output,
             command="build",
+            data=failure_data,
         )
     symbol_file_start = time.perf_counter()
     symbols_file, symbols_failure = _runtime_callable_symbols_file(runtime_lib)

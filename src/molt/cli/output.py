@@ -37,12 +37,18 @@ def fail(
     json_output: bool,
     code: int = 2,
     command: str = "molt",
+    *,
+    data: dict[str, Any] | None = None,
 ) -> int:
     if json_output:
+        failure_data = dict(data or {})
+        # The process return code is owned by this failure authority; structured
+        # diagnostic extensions may not contradict it.
+        failure_data["returncode"] = code
         payload = json_payload(
             command,
             "error",
-            data={"returncode": code},
+            data=failure_data,
             errors=[message],
         )
         emit_json(payload, json_output=True)
