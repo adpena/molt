@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::sidecars::{remove_shared_stdlib_cache_artifacts, write_shared_stdlib_cache_sidecars};
-use crate::backend_process::commit_existing_file_atomically;
+use crate::backend_process::atomic_publish::commit_existing_file_atomically;
 
 pub(crate) fn publish_shared_stdlib_cache_object(
     stdlib_path: &Path,

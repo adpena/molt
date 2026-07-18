@@ -87,8 +87,32 @@ name = "loop_continue"
 required-features = ["native-backend"]
 
 [[test]]
+name = "entry_block_param_shadow"
+required-features = ["native-backend"]
+
+[[test]]
+name = "lir_loop_and_join_regressions"
+required-features = ["native-backend"]
+
+[[test]]
+name = "loop_try_except_continue"
+required-features = ["native-backend"]
+
+[[test]]
+name = "native_extern_linkage"
+required-features = ["native-backend"]
+
+[[test]]
 name = "native_batch_worker_spawn"
 required-features = ["native-backend"]
+
+[[test]]
+name = "llvm_generated_object_linkage"
+required-features = ["llvm"]
+
+[[test]]
+name = "llvm_rpo"
+required-features = ["llvm"]
 
 [[test]]
 name = "wasm_fastcall_lowering"
@@ -116,6 +140,14 @@ required-features = ["wasm-backend"]
 
 [[test]]
 name = "wasm_type_section"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_link_facts_cli"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_lir_fast_path_integration"
 required-features = ["wasm-backend"]
 
 [[test]]

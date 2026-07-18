@@ -1,7 +1,8 @@
 use std::io;
 use std::path::Path;
 
-use crate::backend_process::write_bytes_atomically;
+#[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
+use crate::backend_process::atomic_publish::write_bytes_atomically;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BackendOutputKind {
@@ -67,6 +68,7 @@ pub(crate) fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
+#[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
 pub(crate) fn write_output_path(output_path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_bytes_atomically(output_path, bytes)
 }

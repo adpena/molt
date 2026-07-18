@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::super::state::DaemonCache;
+use super::state::DaemonCache;
 
 pub(crate) fn insert_daemon_cache_entries(
     cache: &mut DaemonCache,
