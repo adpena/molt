@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
+from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _write_module(tmp_path: Path, name: str, source: str) -> Path:
@@ -116,6 +117,7 @@ def test_same_package_wrapper_importing_intrinsic_root_is_not_python_only(
             {"pkg": root, "pkg.widgets": wrapper},
             stdlib_root,
             json_output=False,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         )
         is None
     )
@@ -146,6 +148,7 @@ def test_private_support_module_loaded_by_intrinsic_owner_is_not_python_only(
             {"_pyio": owner, "_pyio_text": support},
             stdlib_root,
             json_output=False,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         )
         is None
     )

@@ -4,6 +4,15 @@ import ast
 from pathlib import Path
 from typing import Mapping
 
+from molt.cli.target_python import TargetPythonVersion, _parse_source_for_target
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    StaticImportRequest,
+    analyze_module_import_flow,
+    plan_static_import_request,
+    require_static_import_modules,
+)
+
 STATUS_INTRINSIC = "intrinsic-backed"
 STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
 STATUS_INTRINSIC_SUPPORT = "intrinsic-support"
@@ -124,63 +133,65 @@ def stdlib_module_intrinsic_status(path: Path) -> str:
     return stdlib_module_intrinsic_status_from_source(source, path.name)
 
 
-def module_relative_import_base(
+def stdlib_module_static_imports(
     module_name: str,
     path: Path,
     *,
-    level: int,
-    imported_module: str | None,
-) -> str | None:
-    if level <= 0:
-        return imported_module
-    package_parts = module_name.split(".")
-    if path.name != "__init__.py":
-        package_parts = package_parts[:-1]
-    if level > 1:
-        package_parts = package_parts[: max(0, len(package_parts) - (level - 1))]
-    if not package_parts:
-        return imported_module
-    base = ".".join(package_parts)
-    if imported_module:
-        return f"{base}.{imported_module}"
-    return base
-
-
-def stdlib_module_static_imports(module_name: str, path: Path) -> frozenset[str]:
+    target_python: TargetPythonVersion,
+) -> frozenset[str]:
     try:
         source = path.read_text(encoding="utf-8")
     except Exception:
         return frozenset()
     try:
-        tree = ast.parse(source)
+        tree = _parse_source_for_target(
+            source,
+            filename=str(path),
+            target_python=target_python,
+        )
     except SyntaxError:
         return frozenset()
 
     imports: set[str] = set()
+    base_context = ModuleImportContext(
+        module_name,
+        is_package=path.name == "__init__.py",
+        target_python=target_python.feature_version,
+    )
+    import_flow = analyze_module_import_flow(tree, base_context)
+
+    def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
+        return tuple(
+            base_context.with_state(state) for state in import_flow.states_for(node)
+        )
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.add(alias.name)
+                imports.update(
+                    require_static_import_modules(
+                        plan_static_import_request(
+                            StaticImportRequest.statement(alias.name),
+                            contexts_for(node),
+                        ),
+                        consumer="stdlib intrinsic support graph",
+                    )
+                )
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
-        base = module_relative_import_base(
-            module_name,
-            path,
-            level=node.level,
-            imported_module=node.module,
+        imports.update(
+            require_static_import_modules(
+                plan_static_import_request(
+                    StaticImportRequest.statement(
+                        node.module or "",
+                        level=node.level,
+                        fromlist=tuple(alias.name for alias in node.names),
+                    ),
+                    contexts_for(node),
+                ),
+                consumer="stdlib intrinsic support graph",
+            )
         )
-        if base is None:
-            continue
-        imports.add(base)
-        if node.names and all(alias.name != "*" for alias in node.names):
-            imports.update(f"{base}.{alias.name}" for alias in node.names)
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "importlib.util"
-            and node.level == 0
-        ):
-            imports.add("importlib.util")
     imports.update(_stdlib_module_support_file_references(module_name, tree))
     return frozenset(imports)
 
@@ -231,10 +242,16 @@ def _is_intrinsic_status(status: str | None) -> bool:
 def _closed_intrinsic_statuses(
     module_graph: Mapping[str, Path],
     statuses: Mapping[str, str],
+    *,
+    target_python: TargetPythonVersion,
 ) -> dict[str, str]:
     closed = dict(statuses)
     imports_by_module = {
-        module_name: stdlib_module_static_imports(module_name, path)
+        module_name: stdlib_module_static_imports(
+            module_name,
+            path,
+            target_python=target_python,
+        )
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
@@ -269,8 +286,14 @@ def _closed_intrinsic_statuses(
 def same_package_intrinsic_import_closure(
     module_graph: Mapping[str, Path],
     statuses: Mapping[str, str],
+    *,
+    target_python: TargetPythonVersion,
 ) -> frozenset[str]:
-    closed = _closed_intrinsic_statuses(module_graph, statuses)
+    closed = _closed_intrinsic_statuses(
+        module_graph,
+        statuses,
+        target_python=target_python,
+    )
     return frozenset(
         module_name
         for module_name, status in closed.items()
@@ -280,10 +303,16 @@ def same_package_intrinsic_import_closure(
 
 def classify_stdlib_module_statuses(
     module_graph: Mapping[str, Path],
+    *,
+    target_python: TargetPythonVersion,
 ) -> dict[str, str]:
     statuses = {
         module_name: stdlib_module_intrinsic_status(path)
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
-    return _closed_intrinsic_statuses(module_graph, statuses)
+    return _closed_intrinsic_statuses(
+        module_graph,
+        statuses,
+        target_python=target_python,
+    )

@@ -110,6 +110,9 @@ _TYPING_NAMES = {
 # runtime cost): identifier -> ``from`` module.
 _TYPE_CHECKING_IMPORTS = {
     "FunctionKind": "molt.frontend.sema",
+    "ModuleExecutionKind": "molt.compiler_analysis.python_imports",
+    "ModuleImportContext": "molt.compiler_analysis.python_imports",
+    "ModuleImportFlow": "molt.compiler_analysis.python_imports",
     "SemaResult": "molt.frontend.sema",
     "SerializationContext": "molt.frontend.lowering.serialization_context",
     "SysPlatformStaticTruthKwargs": "molt.compiler_analysis.static_truth",

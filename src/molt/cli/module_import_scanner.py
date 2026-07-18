@@ -16,6 +16,18 @@ from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
     static_test_truthiness,
 )
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    StaticImportRequest,
+    analyze_module_import_flow,
+    bind_static_import_call_arguments,
+    dunder_globals_state_from_expression,
+    metadata_value_from_expression,
+    plan_static_import_request,
+    require_static_import_modules,
+    resolve_relative_import,
+    static_import_candidates,
+)
 
 
 # Runtime helper bodies whose imports are required static graph edges. This is
@@ -32,6 +44,17 @@ _IMPORT_SCAN_MODES = frozenset({"full", "module_init", "module_init_static_helpe
 
 
 IMPORTER_MODULE_NAME = "_molt_importer"
+
+
+def _sealed_import_modules(
+    request: StaticImportRequest,
+    contexts: Sequence[ModuleImportContext],
+) -> tuple[str, ...]:
+    module_name = contexts[0].module_name if contexts else None
+    return require_static_import_modules(
+        plan_static_import_request(request, contexts),
+        consumer=f"module import scanner ({module_name or '<script>'}: {request.name!r})",
+    )
 
 
 _RUNTIME_IMPORT_PROTOCOL_MARKERS = (
@@ -71,173 +94,12 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
 )
 
 
-def _spec_parent(spec_name: str, is_package: bool) -> str:
-    if is_package:
-        return spec_name
-    return spec_name.rpartition(".")[0]
-
-
-def _is_modulespec_ctor(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "ModuleSpec"
-    if isinstance(node, ast.Attribute):
-        return node.attr == "ModuleSpec"
-    return False
-
-
-def _parse_modulespec_override(
-    value: ast.AST,
-) -> tuple[str, bool | None] | None:
-    if not isinstance(value, ast.Call):
-        return None
-    if not _is_modulespec_ctor(value.func):
-        return None
-    spec_name = None
-    if value.args:
-        first = value.args[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            spec_name = first.value
-    for kw in value.keywords:
-        if (
-            kw.arg == "name"
-            and spec_name is None
-            and isinstance(kw.value, ast.Constant)
-            and isinstance(kw.value.value, str)
-        ):
-            spec_name = kw.value.value
-    if spec_name is None:
-        return None
-    is_package = None
-    if len(value.args) >= 4:
-        arg = value.args[3]
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, bool):
-            is_package = arg.value
-    for kw in value.keywords:
-        if (
-            kw.arg == "is_package"
-            and isinstance(kw.value, ast.Constant)
-            and isinstance(kw.value.value, bool)
-        ):
-            is_package = kw.value.value
-    return spec_name, is_package
-
-
-def _infer_module_overrides(
-    tree: ast.AST,
-) -> tuple[bool, str | None, bool, str | None, bool | None]:
-    package_override_set = False
-    package_override: str | None = None
-    spec_override_set = False
-    spec_override: str | None = None
-    spec_override_is_package: bool | None = None
-    for stmt in getattr(tree, "body", []):
-        if isinstance(stmt, ast.Assign):
-            targets = stmt.targets
-            value = stmt.value
-        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-            targets = [stmt.target]
-            value = stmt.value
-        else:
-            continue
-        for target in targets:
-            if not isinstance(target, ast.Name):
-                continue
-            if target.id == "__package__":
-                package_override_set = True
-                if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    package_override = value.value
-                elif isinstance(value, ast.Constant) and value.value is None:
-                    package_override = None
-                else:
-                    package_override = None
-            elif target.id == "__spec__":
-                if isinstance(value, ast.Constant) and value.value is None:
-                    spec_override_set = False
-                    spec_override = None
-                    spec_override_is_package = None
-                else:
-                    parsed = _parse_modulespec_override(value)
-                    if parsed is None:
-                        continue
-                    spec_override_set = True
-                    spec_override, spec_override_is_package = parsed
-    return (
-        package_override_set,
-        package_override,
-        spec_override_set,
-        spec_override,
-        spec_override_is_package,
-    )
-
-
-def _resolve_relative_import(
-    module_name: str,
-    *,
-    is_package: bool,
-    level: int,
-    module: str | None,
-    package_override: str | None = None,
-    package_override_set: bool = False,
-    spec_override: str | None = None,
-    spec_override_set: bool = False,
-    spec_override_is_package: bool | None = None,
-) -> str | None:
-    if level <= 0:
-        return module
-    package = ""
-    if package_override_set:
-        package = package_override or ""
-    else:
-        if spec_override_set and spec_override:
-            override_is_package = (
-                spec_override_is_package
-                if spec_override_is_package is not None
-                else is_package
-            )
-            package = _spec_parent(spec_override, override_is_package)
-        else:
-            if is_package:
-                package = module_name
-            elif "." in module_name:
-                package = module_name.rsplit(".", 1)[0]
-            else:
-                package = ""
-    if not package:
-        return None
-    parts = package.split(".")
-    if level > len(parts):
-        return None
-    base_parts = parts[: len(parts) - (level - 1)]
-    base_name = ".".join(base_parts)
-    if module:
-        if base_name:
-            return f"{base_name}.{module}"
-        return module
-    return base_name or None
-
-
-@dataclass(frozen=True, slots=True)
-class _StaticImportRequest:
-    """One statically knowable Python import operation.
-
-    Statements, ``__import__``/the runtime transaction, and
-    ``importlib.import_module`` all project through this value.  Keeping the
-    payload until resolution prevents the graph scanner from losing relative
-    level, package, and fromlist semantics by flattening calls to argument 0.
-    """
-
-    name: str
-    level: int = 0
-    fromlist: tuple[str, ...] = ()
-    package: str | None = None
-    package_is_explicit: bool = False
-
-
 @dataclass(frozen=True, slots=True)
 class _StaticImportCallPayload:
     target: str
     name: ast.expr
     package: ast.expr | None = None
+    globals: ast.expr | None = None
     fromlist: ast.expr | None = None
     level: ast.expr | None = None
 
@@ -425,74 +287,6 @@ def _collect_static_source_executions(
             seen.add(key)
             requests.append(_StaticSourceExecution(request_name, resolved))
     return tuple(requests)
-
-
-def _static_import_request_modules(
-    request: _StaticImportRequest,
-    *,
-    module_name: str | None,
-    is_package: bool,
-    package_override: str | None = None,
-    package_override_set: bool = False,
-    spec_override: str | None = None,
-    spec_override_set: bool = False,
-    spec_override_is_package: bool | None = None,
-) -> tuple[str, ...]:
-    """Project a request to the module candidates needed by the build graph."""
-
-    request_name = request.name
-    level = request.level
-    explicit_package = request.package_is_explicit
-    if explicit_package:
-        # importlib.import_module expresses relative level as leading dots and
-        # supplies the package separately, unlike __import__.
-        leading_dots = len(request_name) - len(request_name.lstrip("."))
-        if leading_dots:
-            level = leading_dots
-            request_name = request_name[leading_dots:]
-        elif level == 0:
-            return _static_import_request_candidates(request_name, request.fromlist)
-
-    if level <= 0:
-        if request_name.startswith("."):
-            return ()
-        return _static_import_request_candidates(request_name, request.fromlist)
-    if module_name is None and not explicit_package:
-        return ()
-    if explicit_package:
-        if request.package is None:
-            return ()
-        context_name = request.package
-    else:
-        if module_name is None:
-            return ()
-        context_name = module_name
-    resolved = _resolve_relative_import(
-        context_name,
-        is_package=True if explicit_package else is_package,
-        level=level,
-        module=request_name or None,
-        package_override=request.package if explicit_package else package_override,
-        package_override_set=explicit_package or package_override_set,
-        spec_override=None if explicit_package else spec_override,
-        spec_override_set=False if explicit_package else spec_override_set,
-        spec_override_is_package=(
-            None if explicit_package else spec_override_is_package
-        ),
-    )
-    if resolved is None:
-        return ()
-    return _static_import_request_candidates(resolved, request.fromlist)
-
-
-def _static_import_request_candidates(
-    base: str, fromlist: Sequence[str]
-) -> tuple[str, ...]:
-    if not base:
-        return ()
-    candidates = [base]
-    candidates.extend(f"{base}.{name}" for name in fromlist if name and name != "*")
-    return tuple(candidates)
 
 
 def _validate_import_scan_mode(import_scan_mode: ImportScanMode) -> None:
@@ -809,6 +603,7 @@ def _collect_imports(
     is_package: bool = False,
     *,
     import_scan_mode: ImportScanMode = "full",
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> list[str]:
     _validate_import_scan_mode(import_scan_mode)
     selected_static_helper_qualnames = _static_import_helper_qualnames(
@@ -825,13 +620,21 @@ def _collect_imports(
         str,
         tuple[list[str], set[str], list[_StaticImportCallPayload]],
     ] = {}
-    (
-        package_override_set,
-        package_override,
-        spec_override_set,
-        spec_override,
-        spec_override_is_package,
-    ) = _infer_module_overrides(tree)
+    base_import_context = ModuleImportContext(
+        module_name,
+        is_package,
+        target_python=target_python.feature_version,
+    )
+    import_flow = None
+
+    def _import_contexts(node: ast.AST) -> tuple[ModuleImportContext, ...]:
+        nonlocal import_flow
+        if import_flow is None:
+            import_flow = analyze_module_import_flow(tree, base_import_context)
+        return tuple(
+            base_import_context.with_state(state)
+            for state in import_flow.states_for(node)
+        )
     module_body = list(getattr(tree, "body", []))
     function_walks: list[
         tuple[
@@ -1074,17 +877,11 @@ def _collect_imports(
                     return None
                 level = len(resolved) - len(resolved.lstrip("."))
                 module = resolved[level:] or None
-                return _resolve_relative_import(
-                    package,
-                    is_package=True,
-                    level=level,
-                    module=module,
-                    package_override=package_override,
-                    package_override_set=package_override_set,
-                    spec_override=spec_override,
-                    spec_override_set=spec_override_set,
-                    spec_override_is_package=spec_override_is_package,
-                )
+                return resolve_relative_import(
+                    module,
+                    level,
+                    ModuleImportContext(module_name=package, is_package=True),
+                ).module
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "join"
@@ -1171,26 +968,16 @@ def _collect_imports(
             current = local_expr_bindings[current.id]
         return current
 
-    def _call_argument(
-        call: ast.Call, position: int, keyword_name: str
-    ) -> ast.expr | None:
-        if position < len(call.args):
-            return call.args[position]
-        for keyword in call.keywords:
-            if keyword.arg == keyword_name:
-                return keyword.value
-        return None
-
     def _resolve_int_constant(
         node: ast.expr | None, bindings: Mapping[str, object]
     ) -> int | None:
         if node is None:
             return None
-        if isinstance(node, ast.Constant) and type(node.value) is int:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
         if isinstance(node, ast.Name):
             value = bindings.get(node.id)
-            if type(value) is int:
+            if isinstance(value, int):
                 return value
         return None
 
@@ -1200,70 +987,96 @@ def _collect_imports(
         *,
         local_expr_bindings: Mapping[str, ast.expr] | None = None,
     ) -> _StaticImportCallPayload | None:
-        name_expr = _call_argument(call, 0, "name")
-        if name_expr is None:
-            return None
+        operation_kind = (
+            "import_module"
+            if target in {"importlib.import_module", "importlib.util.find_spec"}
+            else "dunder_import"
+        )
+        arguments = bind_static_import_call_arguments(call, operation_kind)
 
         def resolve_local(expr: ast.expr | None) -> ast.expr | None:
             if expr is None or local_expr_bindings is None:
                 return expr
             return _resolve_local_expr_binding(expr, dict(local_expr_bindings))
 
-        name_expr = cast(ast.expr, resolve_local(name_expr))
+        name_expr = cast(ast.expr, resolve_local(arguments.name))
         if target in {"importlib.import_module", "importlib.util.find_spec"}:
             return _StaticImportCallPayload(
                 target=target,
                 name=name_expr,
-                package=resolve_local(_call_argument(call, 1, "package")),
+                package=resolve_local(arguments.package),
             )
         return _StaticImportCallPayload(
             target=target,
             name=name_expr,
-            fromlist=resolve_local(_call_argument(call, 3, "fromlist")),
-            level=resolve_local(_call_argument(call, 4, "level")),
+            globals=resolve_local(arguments.globals),
+            fromlist=resolve_local(arguments.fromlist),
+            level=resolve_local(arguments.level),
         )
 
     def _resolve_static_import_call(
         payload: _StaticImportCallPayload,
+        call: ast.Call,
         bindings: dict[str, object] | None = None,
     ) -> tuple[str, ...]:
         bindings = bindings or {}
         name = _resolve_string_constant(payload.name, bindings, set())
         if name is None:
             return ()
-        if payload.target in {"importlib.import_module", "importlib.util.find_spec"}:
-            package = (
-                _resolve_string_constant(payload.package, bindings, set())
-                if payload.package is not None
-                else None
-            )
-            request = _StaticImportRequest(
-                name=name,
-                package=package,
-                package_is_explicit=True,
-            )
-        else:
-            fromlist = (
-                _resolve_string_sequence(payload.fromlist, bindings, set())
-                if payload.fromlist is not None
-                else []
-            )
-            level = _resolve_int_constant(payload.level, bindings)
-            request = _StaticImportRequest(
-                name=name,
-                level=0 if level is None else level,
-                fromlist=tuple(fromlist or ()),
-            )
-        return _static_import_request_modules(
-            request,
-            module_name=module_name,
-            is_package=is_package,
-            package_override=package_override,
-            package_override_set=package_override_set,
-            spec_override=spec_override,
-            spec_override_set=spec_override_set,
-            spec_override_is_package=spec_override_is_package,
-        )
+
+        def resolve_string(expression: ast.expr) -> str | None:
+            return _resolve_string_constant(expression, bindings, set())
+
+        contexts = _import_contexts(call)
+        modules: list[str] = []
+        seen: set[str] = set()
+        for context in contexts:
+            if payload.target in {"importlib.import_module", "importlib.util.find_spec"}:
+                request = StaticImportRequest.import_module(
+                    name,
+                    metadata_value_from_expression(
+                        payload.package, context, resolve_string
+                    ),
+                )
+            else:
+                fromlist = (
+                    _resolve_string_sequence(payload.fromlist, bindings, set())
+                    if payload.fromlist is not None
+                    else []
+                )
+                level = _resolve_int_constant(payload.level, bindings)
+                if fromlist is None:
+                    if payload.fromlist is not None:
+                        raise ValueError(
+                            "non-literal __import__ fromlist requires runtime import custody"
+                        )
+                    fromlist = []
+                if payload.level is not None and level is None:
+                    raise ValueError(
+                        "non-literal __import__ level requires runtime import custody"
+                    )
+                if "*" in fromlist:
+                    if payload.target == "_MOLT_IMPORTLIB_IMPORT_TRANSACTION":
+                        fromlist = []
+                    else:
+                        raise ValueError(
+                            "dynamic __import__ star fromlist requires runtime import custody"
+                        )
+                request = StaticImportRequest(
+                    "dunder_import",
+                    name,
+                    level=0 if level is None else level,
+                    fromlist=tuple(fromlist),
+                    globals_state=dunder_globals_state_from_expression(
+                        payload.globals, context, resolve_string
+                    ),
+                    globals_were_supplied=payload.globals is not None,
+                )
+            for module in _sealed_import_modules(request, (context,)):
+                if module not in seen:
+                    seen.add(module)
+                    modules.append(module)
+        return tuple(modules)
 
     def _bind_helper_call_arguments(
         call: ast.Call, params: list[str], required_params: set[str]
@@ -1401,7 +1214,7 @@ def _collect_imports(
                 if call_bindings is not None:
                     for payload in payloads:
                         imports.extend(
-                            _resolve_static_import_call(payload, call_bindings)
+                            _resolve_static_import_call(payload, node, call_bindings)
                         )
 
     def _record_import_statement(
@@ -1415,30 +1228,23 @@ def _collect_imports(
         bindings.record_aliases(node)
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.extend(
-                    _static_import_request_modules(
-                        _StaticImportRequest(name=alias.name),
-                        module_name=module_name,
-                        is_package=is_package,
-                    )
-                )
+                imports.append(alias.name)
             return
-        request = _StaticImportRequest(
-            name=node.module or "",
+        if node.level == 0:
+            imports.extend(
+                static_import_candidates(
+                    node.module or "",
+                    tuple(alias.name for alias in node.names),
+                )
+            )
+            return
+        request = StaticImportRequest.statement(
+            node.module or "",
             level=node.level,
             fromlist=tuple(alias.name for alias in node.names),
         )
         imports.extend(
-            _static_import_request_modules(
-                request,
-                module_name=module_name,
-                is_package=is_package,
-                package_override=package_override,
-                package_override_set=package_override_set,
-                spec_override=spec_override,
-                spec_override_set=spec_override_set,
-                spec_override_is_package=spec_override_is_package,
-            )
+            _sealed_import_modules(request, _import_contexts(node))
         )
 
     def _collect_import_call(node: ast.Call, bindings: _StaticImportBindings) -> None:
@@ -1449,7 +1255,7 @@ def _collect_imports(
         assert target is not None
         payload = _static_import_call_payload(node, target)
         if payload is not None:
-            imports.extend(_resolve_static_import_call(payload))
+            imports.extend(_resolve_static_import_call(payload, node))
 
     def _function_parameter_names(
         node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1707,6 +1513,8 @@ def _runtime_import_alias_bindings(
     import_scan_mode: ImportScanMode = "full",
 ) -> dict[str, str]:
     bindings: dict[str, str] = {}
+    base_context = ModuleImportContext(module_name, is_package)
+    import_flow = analyze_module_import_flow(tree, base_context)
     scan_nodes = _scan_nodes_for_import_mode(
         tree, import_scan_mode, module_name=module_name
     )
@@ -1724,24 +1532,32 @@ def _runtime_import_alias_bindings(
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
-        if node.level:
-            if module_name is None:
-                continue
-            resolved_module = _resolve_relative_import(
-                module_name,
-                is_package=is_package,
-                level=node.level,
-                module=node.module,
-            )
-        else:
-            resolved_module = node.module
-        if not resolved_module:
+        contexts = tuple(
+            base_context.with_state(state) for state in import_flow.states_for(node)
+        )
+        resolved_modules = _sealed_import_modules(
+            StaticImportRequest.statement(node.module or "", level=node.level),
+            contexts,
+        )
+        if not resolved_modules:
             continue
         for alias in node.names:
             if alias.name == "*":
                 continue
             local_name = alias.asname or alias.name
-            _register_binding(local_name, f"{resolved_module}.{alias.name}")
+            candidates = tuple(
+                f"{resolved_module}.{alias.name}"
+                for resolved_module in resolved_modules
+            )
+            preferred = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate in _RUNTIME_IMPORT_PROTOCOL_TARGETS
+                ),
+                candidates[0],
+            )
+            _register_binding(local_name, preferred)
 
     for node in scan_nodes:
         value: ast.expr | None = None
@@ -1851,15 +1667,15 @@ def _collect_import_star_modules(
     is_package: bool = False,
     *,
     import_scan_mode: ImportScanMode = "full",
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[str, ...]:
     _validate_import_scan_mode(import_scan_mode)
-    (
-        package_override_set,
-        package_override,
-        spec_override_set,
-        spec_override,
-        spec_override_is_package,
-    ) = _infer_module_overrides(tree)
+    base_context = ModuleImportContext(
+        module_name,
+        is_package,
+        target_python=target_python.feature_version,
+    )
+    import_flow = analyze_module_import_flow(tree, base_context)
     scan_nodes = _scan_nodes_for_import_mode(
         tree, import_scan_mode, module_name=module_name
     )
@@ -1870,26 +1686,16 @@ def _collect_import_star_modules(
             continue
         if not any(alias.name == "*" for alias in node.names):
             continue
-        resolved: str | None
-        if node.level:
-            if not module_name:
-                continue
-            resolved = _resolve_relative_import(
-                module_name,
-                is_package=is_package,
-                level=node.level,
-                module=node.module,
-                package_override=package_override,
-                package_override_set=package_override_set,
-                spec_override=spec_override,
-                spec_override_set=spec_override_set,
-                spec_override_is_package=spec_override_is_package,
-            )
-        else:
-            resolved = node.module
-        if resolved and resolved not in seen:
-            seen.add(resolved)
-            out.append(resolved)
+        contexts = tuple(
+            base_context.with_state(state) for state in import_flow.states_for(node)
+        )
+        for resolved in _sealed_import_modules(
+            StaticImportRequest.statement(node.module or "", level=node.level),
+            contexts,
+        ):
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                out.append(resolved)
     return tuple(out)
 
 
@@ -1921,6 +1727,7 @@ def _expand_imports_with_static_package_all_star_children(
         module_name,
         is_package,
         import_scan_mode=import_scan_mode,
+        target_python=target_python,
     )
     if not star_modules:
         return tuple(out)

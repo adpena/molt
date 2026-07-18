@@ -7,7 +7,17 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
+from typing import Iterable, Literal
 
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    StaticImportRequest,
+    analyze_module_import_flow,
+    bind_static_import_call_arguments,
+    dunder_globals_state_from_expression,
+    metadata_value_from_expression,
+    project_static_import_request,
+)
 
 @dataclass(frozen=True)
 class PythonImportPolicy:
@@ -190,24 +200,36 @@ class LocalPythonModuleResolver:
         return resolution.parent_initializers if resolution is not None else ()
 
 
-def _absolute_import_name(
-    module: str,
-    *,
-    level: int,
-    package: str,
+def _project_import_request(
+    request: StaticImportRequest,
+    context: ModuleImportContext,
     path: Path,
-) -> str:
-    if level == 0:
-        return module
-    package_parts = package.split(".") if package else []
-    if not package_parts:
+) -> tuple[str, ...]:
+    projection = project_static_import_request(request, context)
+    if projection.error == "no_parent":
+        if request.kind == "import_module":
+            raise ValueError(f"relative import_module requires a package in {path}")
         raise ValueError(f"relative import has no known parent package in {path}")
-    trim = level - 1
-    if trim >= len(package_parts) and trim:
+    if projection.error == "beyond_top":
         raise ValueError(f"relative import escapes local package in {path}")
-    if trim:
-        package_parts = package_parts[:-trim]
-    return ".".join([*package_parts, *([module] if module else [])])
+    if projection.error == "empty_name":
+        raise ValueError(f"empty Python module name in {path}")
+    if projection.error == "negative_level":
+        raise ValueError(f"negative __import__ level in {path}")
+    if projection.error == "missing_globals":
+        raise ValueError(f"relative __import__ requires explicit globals in {path}")
+    if projection.error in {
+        "invalid_package",
+        "unknown_package",
+        "invalid_spec",
+        "unknown_spec",
+    }:
+        raise ValueError(f"non-literal or invalid import package in {path}")
+    if projection.error == "missing_name":
+        raise ValueError(f"relative import globals are missing __name__ in {path}")
+    if projection.error in {"invalid_name", "unknown_name"}:
+        raise ValueError(f"relative import has invalid or dynamic __name__ in {path}")
+    return projection.modules
 
 
 _AliasProvenance = str | None
@@ -216,7 +238,9 @@ _AliasProvenance = str | None
 @dataclass
 class _LexicalImportScope:
     parent: _LexicalImportScope | None
-    events: dict[str, list[tuple[tuple[int, int], _AliasProvenance]]] = field(
+    events: dict[
+        str, list[tuple[tuple[int, int], _AliasProvenance, bool]]
+    ] = field(
         default_factory=dict
     )
 
@@ -225,16 +249,37 @@ class _LexicalImportScope:
         name: str,
         provenance: _AliasProvenance,
         position: tuple[int, int],
+        *,
+        conditional: bool = False,
     ) -> None:
-        self.events.setdefault(name, []).append((position, provenance))
+        self.events.setdefault(name, []).append((position, provenance, conditional))
+
+    def resolve_all(
+        self, name: str, position: tuple[int, int]
+    ) -> frozenset[_AliasProvenance]:
+        candidates = sorted(
+            (
+            event for event in self.events.get(name, ()) if event[0] <= position
+            ),
+            key=lambda event: event[0],
+        )
+        if candidates:
+            possible: set[_AliasProvenance] = set()
+            for _event_position, provenance, conditional in candidates:
+                if not conditional:
+                    possible = {provenance}
+                else:
+                    possible.add(provenance)
+            return frozenset(possible)
+        return (
+            self.parent.resolve_all(name, position)
+            if self.parent is not None
+            else frozenset({None})
+        )
 
     def resolve(self, name: str, position: tuple[int, int]) -> _AliasProvenance:
-        candidates = [
-            event for event in self.events.get(name, ()) if event[0] <= position
-        ]
-        if candidates:
-            return max(candidates, key=lambda event: event[0])[1]
-        return self.parent.resolve(name, position) if self.parent is not None else None
+        possible = self.resolve_all(name, position)
+        return next(iter(possible)) if len(possible) == 1 else None
 
 
 def _binding_names(target: ast.AST | None) -> set[str]:
@@ -346,13 +391,27 @@ def _node_end(node: ast.AST) -> tuple[int, int]:
 class _DynamicImportLexicalIndex(ast.NodeVisitor):
     def __init__(self, tree: ast.Module) -> None:
         self.scope = _LexicalImportScope(None)
+        self.conditional_depth = 0
         self.scope.bind("__import__", "dunder_import", (-1, -1))
         self.calls: list[tuple[ast.Call, _LexicalImportScope]] = []
         self.visit(tree)
 
     def _bind_target(self, target: ast.AST | None, node: ast.AST) -> None:
         for name in _binding_names(target):
-            self.scope.bind(name, None, _node_end(node))
+            self.scope.bind(
+                name,
+                None,
+                _node_end(node),
+                conditional=self.conditional_depth > 0,
+            )
+
+    def _visit_conditional(self, statements: Iterable[ast.AST]) -> None:
+        self.conditional_depth += 1
+        try:
+            for statement in statements:
+                self.visit(statement)
+        finally:
+            self.conditional_depth -= 1
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -363,7 +422,12 @@ class _DynamicImportLexicalIndex(ast.NodeVisitor):
                 or (alias.name.startswith("importlib.") and alias.asname is None)
                 else None
             )
-            self.scope.bind(name, provenance, _node_end(node))
+            self.scope.bind(
+                name,
+                provenance,
+                _node_end(node),
+                conditional=self.conditional_depth > 0,
+            )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
@@ -383,7 +447,28 @@ class _DynamicImportLexicalIndex(ast.NodeVisitor):
                 and alias.name == "__import__"
             ):
                 provenance = "dunder_import"
-            self.scope.bind(name, provenance, _node_end(node))
+            self.scope.bind(
+                name,
+                provenance,
+                _node_end(node),
+                conditional=self.conditional_depth > 0,
+            )
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        self._visit_conditional((*node.body, *node.orelse))
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        self._visit_conditional((*node.body, *node.orelse))
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_conditional(node.body)
+        for handler in node.handlers:
+            self._visit_conditional((handler,))
+        self._visit_conditional(node.orelse)
+        for statement in node.finalbody:
+            self.visit(statement)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -411,15 +496,21 @@ class _DynamicImportLexicalIndex(ast.NodeVisitor):
 
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
-        self._bind_target(node.target, node.target)
-        for statement in (*node.body, *node.orelse):
-            self.visit(statement)
+        self.conditional_depth += 1
+        try:
+            self._bind_target(node.target, node.target)
+            self._visit_conditional((*node.body, *node.orelse))
+        finally:
+            self.conditional_depth -= 1
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         self.visit(node.iter)
-        self._bind_target(node.target, node.target)
-        for statement in (*node.body, *node.orelse):
-            self.visit(statement)
+        self.conditional_depth += 1
+        try:
+            self._bind_target(node.target, node.target)
+            self._visit_conditional((*node.body, *node.orelse))
+        finally:
+            self.conditional_depth -= 1
 
     def visit_With(self, node: ast.With) -> None:
         for item in node.items:
@@ -444,12 +535,21 @@ class _DynamicImportLexicalIndex(ast.NodeVisitor):
             self.visit(statement)
 
     def visit_match_case(self, node: ast.match_case) -> None:
-        for name in _binding_names(node.pattern):
-            self.scope.bind(name, None, _node_end(node.pattern))
-        if node.guard is not None:
-            self.visit(node.guard)
-        for statement in node.body:
-            self.visit(statement)
+        self.conditional_depth += 1
+        try:
+            for name in _binding_names(node.pattern):
+                self.scope.bind(
+                    name,
+                    None,
+                    _node_end(node.pattern),
+                    conditional=True,
+                )
+            if node.guard is not None:
+                self.visit(node.guard)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.conditional_depth -= 1
 
     def _visit_function(
         self,
@@ -520,17 +620,21 @@ class _DynamicImportLexicalIndex(ast.NodeVisitor):
 def _dynamic_import_kind(
     call: ast.Call,
     scope: _LexicalImportScope,
-) -> str | None:
+) -> Literal["import_module", "dunder_import"] | None:
     position = (int(call.lineno), int(call.col_offset))
     callee = call.func
     if isinstance(callee, ast.Name):
-        provenance = scope.resolve(callee.id, position)
-        return provenance if provenance in {"import_module", "dunder_import"} else None
+        provenance = scope.resolve_all(callee.id, position)
+        if "import_module" in provenance:
+            return "import_module"
+        if "dunder_import" in provenance:
+            return "dunder_import"
+        return None
     if (
         isinstance(callee, ast.Attribute)
         and callee.attr == "import_module"
         and isinstance(callee.value, ast.Name)
-        and scope.resolve(callee.value.id, position) == "importlib"
+        and "importlib" in scope.resolve_all(callee.value.id, position)
     ):
         return "import_module"
     return None
@@ -539,77 +643,39 @@ def _dynamic_import_kind(
 def _dynamic_import_target(
     call: ast.Call,
     *,
-    kind: str,
-    module_name: str,
-    package: str,
+    kind: Literal["import_module", "dunder_import"],
+    contexts: tuple[ModuleImportContext, ...],
     path: Path,
 ) -> tuple[str, ...] | None:
-    def argument(position: int, keyword: str) -> ast.expr | None:
-        if position < len(call.args):
-            if any(item.arg == keyword for item in call.keywords):
-                raise ValueError(
-                    f"duplicate dynamic import argument {keyword!r} in {path}"
-                )
-            return call.args[position]
-        return next((item.value for item in call.keywords if item.arg == keyword), None)
-
     is_import_module = kind == "import_module"
     if kind not in {"import_module", "dunder_import"}:
         return None
-    name_arg = argument(0, "name")
+    try:
+        arguments = bind_static_import_call_arguments(call, kind)
+    except ValueError as exc:
+        raise ValueError(f"{exc} in {path}") from exc
+    name_arg = arguments.name
     if not isinstance(name_arg, ast.Constant) or not isinstance(name_arg.value, str):
         raise ValueError(f"non-literal dynamic Python import in {path}")
     name = name_arg.value
-    if is_import_module:
-        if not name.startswith("."):
-            return (name,)
-        relative_level = len(name) - len(name.lstrip("."))
-        relative_module = name[relative_level:]
-        dynamic_package = package
-        package_arg = argument(1, "package")
-        if package_arg is None:
-            raise ValueError(f"relative dynamic import requires a package in {path}")
-        if package_arg is not None:
-            if isinstance(package_arg, ast.Constant) and isinstance(
-                package_arg.value, str
-            ):
-                dynamic_package = package_arg.value
-            elif isinstance(package_arg, ast.Name) and package_arg.id in {
-                "__package__",
-                "__name__",
-            }:
-                dynamic_package = (
-                    module_name if package_arg.id == "__name__" else package
-                )
-            else:
-                raise ValueError(f"non-literal dynamic import package in {path}")
-        return (
-            _absolute_import_name(
-                relative_module,
-                level=relative_level,
-                package=dynamic_package,
-                path=path,
-            ),
-        )
     level = 0
-    level_arg = argument(4, "level")
+    level_arg = arguments.level if not is_import_module else None
     if level_arg is not None:
-        if isinstance(level_arg, ast.Constant) and type(level_arg.value) is int:
+        if isinstance(level_arg, ast.Constant) and isinstance(level_arg.value, int):
             level = level_arg.value
         elif (
             isinstance(level_arg, ast.UnaryOp)
             and isinstance(level_arg.op, ast.USub)
             and isinstance(level_arg.operand, ast.Constant)
-            and type(level_arg.operand.value) is int
+            and isinstance(level_arg.operand.value, int)
         ):
             level = -level_arg.operand.value
         else:
             raise ValueError(f"non-literal __import__ level in {path}")
         if level < 0:
             raise ValueError(f"negative __import__ level in {path}")
-    absolute = _absolute_import_name(name, level=level, package=package, path=path)
-    targets = {absolute}
-    fromlist_arg = argument(3, "fromlist")
+    fromlist: list[str] = []
+    fromlist_arg = arguments.fromlist if not is_import_module else None
     if fromlist_arg is not None:
         if not isinstance(fromlist_arg, (ast.Tuple, ast.List)):
             raise ValueError(f"non-literal __import__ fromlist in {path}")
@@ -620,8 +686,37 @@ def _dynamic_import_target(
                 raise ValueError(
                     f"dynamic __import__ star fromlist requires a manifest in {path}"
                 )
-            targets.add(f"{absolute}.{item.value}")
-    return tuple(sorted(targets))
+            fromlist.append(item.value)
+    package_arg = arguments.package if is_import_module else None
+    globals_arg = arguments.globals if not is_import_module else None
+    modules: set[str] = set()
+    errors: list[ValueError] = []
+    for context in contexts:
+        if is_import_module:
+            request = StaticImportRequest.import_module(
+                name,
+                metadata_value_from_expression(package_arg, context),
+            )
+        else:
+            request = StaticImportRequest(
+                "dunder_import",
+                name,
+                level=level,
+                fromlist=tuple(fromlist),
+                globals_state=dunder_globals_state_from_expression(
+                    globals_arg, context
+                ),
+                globals_were_supplied=globals_arg is not None,
+            )
+        try:
+            modules.update(_project_import_request(request, context, path))
+        except ValueError as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+    if modules:
+        return tuple(sorted(modules))
+    return ()
 
 
 def local_import_targets(
@@ -635,7 +730,18 @@ def local_import_targets(
     """Analyze one source into import targets according to ``policy``."""
 
     tree = resolver.read_ast(path)
-    module, package = resolver.module_identity(path)
+    module, _package = resolver.module_identity(path)
+    base_context = ModuleImportContext(
+        module_name=module,
+        is_package=path.name == "__init__.py",
+        spec_name=module,
+    )
+    import_flow = analyze_module_import_flow(tree, base_context)
+
+    def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
+        return tuple(
+            base_context.with_state(state) for state in import_flow.states_for(node)
+        )
     nodes: list[ast.AST] = (
         list(tree.body) if policy.module_level_only else list(ast.walk(tree))
     )
@@ -646,24 +752,24 @@ def local_import_targets(
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
-        base = _absolute_import_name(
+        # Keep unresolved fromlist candidates in the persistent graph.
+        # Resolution applies the owner fallback against the live filesystem,
+        # so adding ``pkg/name.py`` later changes the edge without reparsing.
+        request = StaticImportRequest.statement(
             node.module or "",
             level=node.level,
-            package=package,
-            path=path,
+            fromlist=tuple(alias.name for alias in node.names),
         )
-        if not base:
-            continue
-        for alias in node.names:
-            if alias.name == "*":
-                targets.add(base)
-                continue
-            candidate = f"{base}.{alias.name}"
-            # Keep the unresolved candidate in the persistent graph. Resolution
-            # performs the owner fallback against the live filesystem, so adding
-            # ``pkg/name.py`` later changes ``from pkg import name`` from an
-            # attribute edge to a submodule edge without reparsing the importer.
-            targets.add(candidate)
+        projected: set[str] = set()
+        projection_errors: list[ValueError] = []
+        for context in contexts_for(node):
+            try:
+                projected.update(_project_import_request(request, context, path))
+            except ValueError as exc:
+                projection_errors.append(exc)
+        if projection_errors:
+            raise projection_errors[0]
+        targets.update(projected)
 
     nonliteral_dynamic_imports = 0
     if not policy.module_level_only:
@@ -676,8 +782,7 @@ def local_import_targets(
                 target = _dynamic_import_target(
                     node,
                     kind=kind,
-                    module_name=module,
-                    package=package,
+                    contexts=contexts_for(node),
                     path=path,
                 )
             except ValueError:

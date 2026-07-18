@@ -5,11 +5,19 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.cli.target_python import TargetPythonVersion, _parse_source_for_target
 from molt.cli.extension_manifest import (
     ExtensionSupportFile,
     _manifest_support_file_payloads,
 )
 from molt.cli.module_import_scanner import _module_init_scan_nodes
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    StaticImportRequest,
+    analyze_module_import_flow,
+    plan_static_import_request,
+    require_static_import_modules,
+)
 
 
 def _dotted_parts(name: str) -> tuple[str, ...] | None:
@@ -58,28 +66,6 @@ def _support_module_name_for_path(
     return ".".join(module_parts)
 
 
-def _resolve_relative_module(
-    *,
-    module_name: str,
-    is_package: bool,
-    level: int,
-    imported_module: str | None,
-) -> str | None:
-    if level <= 0:
-        return imported_module
-    package_name = module_name if is_package else module_name.rpartition(".")[0]
-    if not package_name:
-        return None
-    parts = package_name.split(".")
-    if level > len(parts):
-        return None
-    base_parts = parts[: len(parts) - (level - 1)]
-    base_name = ".".join(base_parts)
-    if imported_module:
-        return f"{base_name}.{imported_module}" if base_name else imported_module
-    return base_name or None
-
-
 def _module_init_import_nodes(tree: ast.AST) -> tuple[ast.Import | ast.ImportFrom, ...]:
     return tuple(
         node
@@ -92,9 +78,8 @@ def _existing_package_module_imports(
     *,
     source_root: Path,
     package: str,
-    module_name: str,
-    source_path: Path,
     import_node: ast.Import | ast.ImportFrom,
+    import_contexts: tuple[ModuleImportContext, ...],
 ) -> set[str]:
     package_prefix = f"{package}."
     imported: set[str] = set()
@@ -114,23 +99,27 @@ def _existing_package_module_imports(
             add_if_existing(alias.name)
         return imported
 
-    base_module = _resolve_relative_module(
-        module_name=module_name,
-        is_package=source_path.name == "__init__.py",
-        level=import_node.level,
-        imported_module=import_node.module,
+    base_modules = require_static_import_modules(
+        plan_static_import_request(
+            StaticImportRequest.statement(
+                import_node.module or "", level=import_node.level
+            ),
+            import_contexts,
+        ),
+        consumer="extension support graph",
     )
-    if import_node.module:
-        add_if_existing(base_module)
-    for alias in import_node.names:
-        if alias.name == "*":
-            add_if_existing(base_module)
-            continue
-        child_module = f"{base_module}.{alias.name}" if base_module else alias.name
-        if add_if_existing(child_module):
-            continue
+    for base_module in base_modules:
         if import_node.module:
             add_if_existing(base_module)
+        for alias in import_node.names:
+            if alias.name == "*":
+                add_if_existing(base_module)
+                continue
+            child_module = f"{base_module}.{alias.name}" if base_module else alias.name
+            if add_if_existing(child_module):
+                continue
+            if import_node.module:
+                add_if_existing(base_module)
     return imported
 
 
@@ -140,23 +129,33 @@ def _package_internal_imports(
     package: str,
     module_name: str,
     source_path: Path,
+    target_python: TargetPythonVersion,
 ) -> tuple[str, ...]:
     try:
-        tree = ast.parse(
+        tree = _parse_source_for_target(
             source_path.read_text(encoding="utf-8", errors="replace"),
             filename=str(source_path),
+            target_python=target_python,
         )
     except (OSError, SyntaxError, UnicodeDecodeError):
         return ()
+    base_context = ModuleImportContext(
+        module_name,
+        is_package=source_path.name == "__init__.py",
+        target_python=target_python.feature_version,
+    )
+    import_flow = analyze_module_import_flow(tree, base_context)
     imports: set[str] = set()
     for import_node in _module_init_import_nodes(tree):
         imports.update(
             _existing_package_module_imports(
                 source_root=source_root,
                 package=package,
-                module_name=module_name,
-                source_path=source_path,
                 import_node=import_node,
+                import_contexts=tuple(
+                    base_context.with_state(state)
+                    for state in import_flow.states_for(import_node)
+                ),
             )
         )
     return tuple(
@@ -192,6 +191,7 @@ def _derive_module_attr_support_source_rel_paths(
     package: str,
     extension_module: str,
     callable_exports: Sequence[Mapping[str, Any]],
+    target_python: TargetPythonVersion,
 ) -> tuple[str, ...]:
     pending = list(
         _module_attr_provider_modules(
@@ -230,6 +230,7 @@ def _derive_module_attr_support_source_rel_paths(
                 package=package,
                 module_name=discovered_module,
                 source_path=source_path,
+                target_python=target_python,
             )
         ):
             if imported not in seen_modules:
@@ -246,6 +247,7 @@ def module_attr_support_files(
     package: str,
     extension_module: str,
     callable_exports: Sequence[Mapping[str, Any]],
+    target_python: TargetPythonVersion,
     errors: list[str],
 ) -> tuple[ExtensionSupportFile, ...]:
     """Combine explicit support files with source-derived module-attr providers.
@@ -266,6 +268,7 @@ def module_attr_support_files(
         package=package,
         extension_module=extension_module,
         callable_exports=callable_exports,
+        target_python=target_python,
     )
     derived = _manifest_support_file_payloads(
         list(derived_paths),

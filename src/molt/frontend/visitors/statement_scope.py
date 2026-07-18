@@ -11,6 +11,11 @@ import ast
 from typing import TYPE_CHECKING
 
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    analyze_module_import_flow,
+    resolve_relative_import,
+)
 from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
     MoltOp,
@@ -284,6 +289,18 @@ class StatementScopeVisitorMixin(_MixinBase):
 
     def visit_Module(self, node: ast.Module) -> None:
         node = self._prune_native_support_module_functions(node)
+        prev_module_import_flow = self.module_import_flow
+        self.module_import_flow = analyze_module_import_flow(
+            node,
+            ModuleImportContext(
+                self.module_name,
+                self.module_is_package,
+                state=self.module_import_state,
+                spec_name=self.module_spec_name,
+                target_python=self.target_python,
+                execution_kind=self.module_execution_kind,
+            ),
+        )
         defer = self._module_can_defer_attrs(node)
         if self.module_chunking:
             defer = False
@@ -537,6 +554,7 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.reserved_external_func_symbols = prev_reserved_external
         self.module_chunk_globals = prev_module_chunk_globals
         self.module_elided_deleted_funcs = prev_elided_deleted_funcs
+        self.module_import_flow = prev_module_import_flow
         return None
 
     def visit_Global(self, node: ast.Global) -> None:
@@ -656,16 +674,49 @@ class StatementScopeVisitorMixin(_MixinBase):
         module_name = node.module
         transaction_name = node.module or ""
         transaction_level = node.level
+        runtime_relative = node.level > 0 and self.current_func_name != "molt_main"
         if node.level:
-            resolved, error_kind = self._resolve_relative_import(
-                node.module, node.level
-            )
-            if resolved is None:
-                self._emit_relative_import_error(error_kind)
-                return None
-            module_name = resolved
-            transaction_name = resolved
-            transaction_level = 0
+            if not runtime_relative:
+                resolutions = tuple(
+                    resolve_relative_import(node.module, node.level, context)
+                    for context in self._module_import_contexts(node)
+                )
+                resolved_modules = {
+                    resolution.module
+                    for resolution in resolutions
+                    if resolution.module is not None
+                    and not resolution.requires_runtime
+                }
+                error_kinds = {resolution.error for resolution in resolutions}
+                if (
+                    any(resolution.requires_runtime for resolution in resolutions)
+                    or len(resolved_modules) != 1
+                    or any(
+                        error in {
+                            "invalid_package",
+                            "unknown_package",
+                            "invalid_spec",
+                            "unknown_spec",
+                            "missing_name",
+                            "invalid_name",
+                            "unknown_name",
+                        }
+                        for error in error_kinds
+                    )
+                ):
+                    runtime_relative = True
+                elif error_kinds == {None}:
+                    resolved = next(iter(resolved_modules))
+                    module_name = resolved
+                    transaction_name = resolved
+                    transaction_level = 0
+                elif len(error_kinds) == 1:
+                    self._emit_relative_import_error(next(iter(error_kinds)))
+                    return None
+                else:
+                    runtime_relative = True
+                if runtime_relative:
+                    module_name = node.module or ""
         else:
             transaction_level = 0
         if module_name is None:
@@ -685,7 +736,7 @@ class StatementScopeVisitorMixin(_MixinBase):
             # Protocol, Any, cast, etc.) must be loaded from the actual
             # typing module.  Fall through to the normal import path.
             pass
-        if self._is_intrinsics_module_name(module_name):
+        if not runtime_relative and self._is_intrinsics_module_name(module_name):
             # _intrinsics is a synthetic runtime module whose
             # require_intrinsic/load_intrinsic calls are validated at compile
             # time and then resolved through the runtime intrinsic registry by
@@ -744,10 +795,10 @@ class StatementScopeVisitorMixin(_MixinBase):
                 else:
                     self.locals[bind_name] = bound_val
             return None
-        if module_name in self._STUB_IMPORT_MODULES:
+        if not runtime_relative and module_name in self._STUB_IMPORT_MODULES:
             return None
         fromlist_names = tuple(alias.name for alias in node.names)
-        if self._source_imports_use_transaction():
+        if runtime_relative or self._source_imports_use_transaction():
             module_val = self._emit_source_import_transaction(
                 transaction_name,
                 fromlist_names=fromlist_names,

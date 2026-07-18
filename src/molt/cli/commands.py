@@ -104,7 +104,10 @@ from molt.cli.project_roots import (
     _find_project_root,
     _require_molt_root,
 )
-from molt.cli.target_python import _parse_target_python_version
+from molt.cli.target_python import (
+    _parse_target_python_version,
+    _resolve_target_python_version,
+)
 from molt.python_interpreter import (
     PythonInterpreterError,
     format_python_command,
@@ -1789,6 +1792,7 @@ def extension_build(
     support_file: Any = None,
     deterministic: bool = True,
     profile: BuildProfile = "release",
+    python_version: str | None = None,
     target: str | None = None,
     source_plan: str | None = None,
     source_plan_target: str | None = None,
@@ -1832,6 +1836,7 @@ def extension_build(
             python_export,
             callable_export_json,
             support_file,
+            python_version,
         )
     )
 
@@ -1853,6 +1858,15 @@ def extension_build(
             )
     else:
         extension_meta = extension_meta_raw
+
+    try:
+        extension_target_python = _resolve_target_python_version(
+            explicit=python_version,
+            build_config=extension_meta,
+            project_root=project_root,
+        )
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-build")
 
     if source_plan is not None and module is None and "module" not in extension_meta:
         return _fail(
@@ -2144,6 +2158,7 @@ def extension_build(
         package=_extension_export_package(module_parts),
         extension_module=".".join(module_parts),
         callable_exports=callable_exports,
+        target_python=extension_target_python,
         errors=errors,
     )
     source_recompiled_root = _source_recompiled_external_package_root(
@@ -3063,6 +3078,7 @@ def extension_build(
             "abi_tag": abi_tag,
             "abi_tier": normalized_abi_tier,
             "python_tag": python_tag,
+            "target_python": extension_target_python.tag,
             "target_triple": target_triple,
             "platform_tag": platform_tag,
             "loader_kind": "libmolt_source",
@@ -3317,6 +3333,7 @@ def extension_build(
                 "abi_tag": abi_tag,
                 "abi_tier": normalized_abi_tier,
                 "target_triple": target_triple,
+                "target_python": extension_target_python.tag,
                 "build_target": runtime_target_triple or "native",
                 "platform_tag": platform_tag,
                 "runtime_linkage": runtime_linkage,

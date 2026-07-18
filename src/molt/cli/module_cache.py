@@ -29,6 +29,7 @@ from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_obj
 from molt.cli.models import (
     FallbackPolicy,
     ImportScanMode,
+    ModuleExecutionKind,
     ParseCodec,
     TypeHintPolicy,
     _ModuleGraphMetadata,
@@ -664,6 +665,9 @@ def _module_lowering_metadata_view(
             module_name
         ],
         is_package=module_graph_metadata.module_is_package_by_module[module_name],
+        module_execution_kind=module_graph_metadata.module_execution_kind_by_module[
+            module_name
+        ],
         path_stat=(
             path_stat_by_module[module_name]
             if path_stat_by_module is not None
@@ -1394,6 +1398,7 @@ def _module_lowering_context_payload(
     *,
     logical_source_path: str,
     entry_override: str | None,
+    module_execution_kind: ModuleExecutionKind = "imported",
     known_classes_snapshot: Mapping[str, Any],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -1483,12 +1488,13 @@ def _module_lowering_context_payload(
         # is kept (content-correlated); the per-read source sha256 gate
         # (_payload_source_matches) remains the content authority. Bumping the
         # version is the intentional one-time invalidation of pre-fix entries.
-        "version": 2,
+        "version": 3,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
+        "module_execution_kind": module_execution_kind,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
@@ -1588,6 +1594,7 @@ def _module_lowering_context_digest_for_module(
     *,
     logical_source_path: str,
     entry_override: str | None,
+    module_execution_kind: ModuleExecutionKind = "imported",
     known_classes_snapshot: Mapping[str, Any],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -1627,6 +1634,7 @@ def _module_lowering_context_digest_for_module(
         module_path,
         logical_source_path=logical_source_path,
         entry_override=entry_override,
+        module_execution_kind=module_execution_kind,
         known_classes_snapshot=known_classes_snapshot,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
@@ -1828,6 +1836,7 @@ def _load_cached_module_lowering_result(
     *,
     logical_source_path: str,
     entry_override: str | None,
+    module_execution_kind: ModuleExecutionKind = "imported",
     is_package: bool,
     known_classes_snapshot: dict[str, Any],
     parse_codec: ParseCodec,
@@ -1875,6 +1884,7 @@ def _load_cached_module_lowering_result(
             module_path,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
+            module_execution_kind=module_execution_kind,
             known_classes_snapshot=known_classes_snapshot,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
@@ -1936,6 +1946,7 @@ def _module_worker_payload(
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
     module_is_namespace: bool,
+    module_execution_kind: ModuleExecutionKind = "imported",
     entry_module: str | None,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -2008,6 +2019,7 @@ def _module_worker_payload(
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
         "module_is_namespace": module_is_namespace,
+        "module_execution_kind": module_execution_kind,
         "entry_module": entry_module,
         "enable_phi": enable_phi,
         "known_modules": scoped_inputs.known_modules_payload,

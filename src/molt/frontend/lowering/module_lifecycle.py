@@ -11,6 +11,13 @@ import ast
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    ModuleExecutionKind,
+    ModuleImportFlow,
+    loader_module_import_state,
+    module_spec_parent,
+)
 from molt.frontend._types import (
     _BOOTSTRAP_TRACE_EXEMPT_MODULES,
     _MOLT_GLOBALS_BUILTIN,
@@ -38,14 +45,21 @@ class ModuleLifecycleMixin(_MixinBase):
         module_name: str | None,
         module_spec_name: str | None,
         module_is_namespace: bool,
+        module_execution_kind: ModuleExecutionKind | None,
         entry_module: str | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
         direct_call_modules: set[str] | None,
         stdlib_allowlist: set[str] | None,
+        target_python: tuple[int, int],
     ) -> None:
         self.module_name = module_name or "__main__"
+        self.module_execution_kind: ModuleExecutionKind = (
+            module_execution_kind
+            if module_execution_kind is not None
+            else ("script" if module_name is None else "imported")
+        )
         self.module_spec_name = module_spec_name or self.module_name
         self.entry_module = entry_module
         self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
@@ -74,11 +88,16 @@ class ModuleLifecycleMixin(_MixinBase):
                 self.module_is_package = True
         if self.module_is_namespace:
             self.module_is_package = True
-        self.module_package_override: str | None = None
-        self.module_package_override_set = False
-        self.module_spec_override: str | None = None
-        self.module_spec_override_set = False
-        self.module_spec_override_is_package: bool | None = None
+        import_context = ModuleImportContext(
+            self.module_name,
+            self.module_is_package,
+            spec_name=self.module_spec_name,
+            target_python=target_python,
+            execution_kind=self.module_execution_kind,
+        )
+        self.module_import_state = loader_module_import_state(import_context)
+        self.module_import_flow: ModuleImportFlow | None = None
+        self.target_python = target_python
 
     def _emit_initial_module_object(self) -> None:
         module_val: MoltValue | None = None
@@ -170,8 +189,16 @@ class ModuleLifecycleMixin(_MixinBase):
             self._emit_module_attr_set_on(self.module_obj, "__file__", file_val)
             origin_val = file_val
         is_package = self.module_is_package
+        if self.module_execution_kind == "script":
+            metadata_none = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=metadata_none))
+            self._emit_module_attr_set_on(
+                self.module_obj, "__package__", metadata_none
+            )
+            self._emit_module_attr_set_on(self.module_obj, "__spec__", metadata_none)
+            return
         spec_name = self.module_spec_name or self.module_name or ""
-        package_name = self._spec_parent(spec_name, is_package)
+        package_name = module_spec_parent(spec_name, is_package)
         package_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[package_name], result=package_val))
         self._emit_module_attr_set_on(self.module_obj, "__package__", package_val)

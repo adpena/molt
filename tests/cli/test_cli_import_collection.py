@@ -685,6 +685,32 @@ def test_relative_from_import_syntax_is_canonicalized_before_transaction() -> No
     assert ("helper", ("ping",), 1, False) not in calls
 
 
+def test_deferred_relative_import_preserves_call_time_globals_transaction() -> None:
+    gen = SimpleTIRGenerator(
+        module_name="pkg.entry",
+        module_spec_name="pkg.entry",
+        source_path="/tmp/pkg/entry.py",
+        known_modules={"pkg", "pkg.child", "other.pkg", "other.pkg.child"},
+    )
+    gen.visit(
+        ast.parse(
+            "def load():\n"
+            "    from .child import value\n"
+            "__package__ = 'other.pkg'\n"
+        )
+    )
+    functions = gen.to_json()["functions"]
+    load_ops = next(
+        function["ops"]
+        for function in functions
+        if str(function["name"]).endswith("__load")
+    )
+    calls = _frontend_import_transaction_calls(load_ops)
+    assert ("child", ("value",), 1, False) in calls
+    assert ("pkg.child", ("value",), 0, False) not in calls
+    assert ("other.pkg.child", ("value",), 0, False) not in calls
+
+
 def test_import_transaction_implementation_modules_use_bootstrap_imports() -> None:
     ops = _frontend_main_ops_for_import_source(
         "import os\nimport sys\n",
@@ -2501,6 +2527,7 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
         import_plan.module_graph,
         generated_module_source_paths=import_plan.generated_module_source_paths,
         entry_module="demo",
+        entry_execution_kind="script",
         namespace_module_names=import_plan.namespace_module_names,
         module_source_catalog=frontend_analysis.module_source_catalog,
         module_deps=frontend_analysis.module_deps,
@@ -3610,10 +3637,12 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
         entry_override_by_module,
         namespace_by_module,
         (is_package_by_module),
+        execution_kind_by_module,
     ) = cli._build_module_lowering_metadata(
         module_graph,
         generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
         entry_module="app_entry",
+        entry_execution_kind="script",
         namespace_module_names={"pkg"},
     )
 
@@ -3625,6 +3654,11 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
     assert namespace_by_module["pkg.mod"] is False
     assert is_package_by_module["pkg"] is True
     assert is_package_by_module["pkg.mod"] is False
+    assert execution_kind_by_module == {
+        "app_entry": "script",
+        "pkg": "imported",
+        "pkg.mod": "imported",
+    }
 
 
 def test_find_project_root_is_cached(
@@ -5143,7 +5177,10 @@ def test_native_support_function_roots_cross_imported_helpers(
         ),
     )
 
-    roots = cli_module_graph._native_support_function_roots_by_module(plan)
+    roots = cli_module_graph._native_support_function_roots_by_module(
+        plan,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
 
     assert roots == {
         "nativepkg._lib._util": ("normalize_axis_index",),
@@ -13592,6 +13629,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         {"alpha": module_path},
         generated_module_source_paths={},
         entry_module="__main__",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
 
@@ -13679,6 +13717,7 @@ def test_prepare_frontend_parallel_batch_reuses_dirty_module_lowering_cache(
         {"alpha": module_path},
         generated_module_source_paths={},
         entry_module="__main__",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
 
@@ -13971,6 +14010,7 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
         module_graph,
         generated_module_source_paths={},
         entry_module="field_solve",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
 
@@ -14322,6 +14362,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         module_graph,
         generated_module_source_paths={},
         entry_module="__main__",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
 
@@ -14386,6 +14427,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
         module_graph,
         generated_module_source_paths={},
         entry_module="main",
+        entry_execution_kind="script",
         namespace_module_names=set(),
         module_source_catalog=module_source_catalog,
         module_deps={"main": {"alpha"}, "alpha": set()},
@@ -15009,6 +15051,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_is_namespace=False,
+        module_execution_kind="script",
         parse_codec="json",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -15027,10 +15070,14 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
             type_facts=None,
         ),
         scoped_known_classes={"MainClass": {"module": "main", "fields": {}}},
+        target_python=cli._parse_target_python_version("3.14"),
         target_sys_platform=None,
     )
 
     assert gen.module_name == "main"
+    assert gen.module_execution_kind == "script"
+    assert gen.target_python == (3, 14)
+    assert gen.eager_annotations is False
     assert gen.known_modules == {"alpha", "main"}
     assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
     assert gen.known_func_kinds == {"main": {"run": "sync"}}
@@ -16075,6 +16122,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         module_graph,
         generated_module_source_paths={},
         entry_module="main",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
     resolution_cache = cli_module_resolution._ModuleResolutionCache()
@@ -16784,6 +16832,7 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
         module_graph,
         generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
         entry_module="app_entry",
+        entry_execution_kind="script",
         namespace_module_names={"pkg"},
         module_sources={"app_entry": "print('ok')\n", "pkg": ""},
         module_deps={"app_entry": {"pkg"}, "pkg": set()},
@@ -16793,6 +16842,10 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     assert metadata.entry_override_by_module["app_entry"] == "app_entry"
     assert metadata.module_is_namespace_by_module["pkg"] is True
     assert metadata.module_is_package_by_module["pkg"] is True
+    assert metadata.module_execution_kind_by_module == {
+        "app_entry": "script",
+        "pkg": "imported",
+    }
     assert metadata.frontend_module_costs is not None
     assert metadata.frontend_module_costs["app_entry"] == 12.0 + 512.0
     assert metadata.stdlib_like_by_module is not None
@@ -16958,6 +17011,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
         {"pkg": module_path},
         generated_module_source_paths={"pkg": "generated/pkg.py"},
         entry_module="pkg",
+        entry_execution_kind="module",
         namespace_module_names=set(),
     )
     path_stat = module_path.stat()
@@ -16973,6 +17027,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     assert view.entry_override == "pkg"
     assert view.module_is_namespace is False
     assert view.is_package is False
+    assert view.module_execution_kind == "module"
     assert view.path_stat is path_stat
 
 
@@ -16985,6 +17040,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         {"main": module_path, "alpha": tmp_path / "alpha.py"},
         generated_module_source_paths={"main": "generated/main.py"},
         entry_module="main",
+        entry_execution_kind="script",
         namespace_module_names=set(),
     )
     execution_view = cli._module_lowering_execution_view(

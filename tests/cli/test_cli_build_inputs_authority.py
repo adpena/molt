@@ -23,7 +23,6 @@ _BUILD_INPUT_NAMES = (
     "_merge_module_graph_with_reason",
     "_native_arch_perf_requested",
     "_native_arch_perf_requested_cached",
-    "_package_root_for_override",
     "_parse_audit_log_flag",
     "_parse_io_mode_flag",
     "_parse_type_gate_flag",
