@@ -1,39 +1,39 @@
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
-use crate::{
+mod bridge;
+
+use crate::runtime_backend::{GpuBackend, requested_gpu_backend};
+use bridge::*;
+use molt_runtime_core::prelude::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data,
-    bytes_len, dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind,
-    molt_exception_last, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
-    to_f64, to_i64,
+    TYPE_ID_TYPE, obj_from_bits,
 };
-use molt_gpu::runtime_backend::{GpuBackend, requested_gpu_backend};
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 use std::sync::{Arc as WgpuArc, Mutex as WgpuMutex};
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use metal::{
-    Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device, Library,
+    Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device,
     MTLResourceOptions, MTLSize, NSUInteger,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 use pollster;
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::sync::Arc;
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 use wgpu;
 
 mod tensor_runtime;
@@ -135,7 +135,11 @@ fn trace_gpu_thread_id_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_THREAD_ID").as_deref() == Ok("1"))
 }
 
-#[allow(dead_code)]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
 fn trace_gpu_backend_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_BACKEND").as_deref() == Ok("1"))
@@ -194,7 +198,7 @@ fn decode_bf16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str>
 }
 
 fn decode_half_bytes_to_f32_object(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     data_bits: u64,
     decode: fn(&[u8]) -> Result<Vec<u8>, &'static str>,
 ) -> u64 {
@@ -220,19 +224,19 @@ fn decode_half_bytes_to_f32_object(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_interop_decode_f16_bytes_to_f32(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_f16_payload_to_f32_bytes)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_bf16_payload_to_f32_bytes)
     })
 }
 
-fn parse_i64_launch_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<i64, u64> {
+fn parse_i64_launch_arg(_py: &PyToken, bits: u64, role: &str) -> Result<i64, u64> {
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
@@ -244,16 +248,16 @@ fn parse_i64_launch_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Resu
 }
 
 unsafe fn try_object_attr_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<u64>, u64> {
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits);
+    let out = molt_get_attr_name(obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
-    if crate::exception_pending(_py) {
+    if exception_pending(_py) {
         let exc_bits = molt_exception_last();
         let kind_bits = molt_exception_kind(exc_bits);
         let kind =
@@ -271,35 +275,34 @@ unsafe fn try_object_attr_bits(
     Ok(Some(out))
 }
 
-unsafe fn gpu_kernel_callable_bits(
-    _py: &crate::PyToken<'_>,
-    launcher_bits: u64,
-) -> Result<u64, u64> {
+unsafe fn gpu_kernel_callable_bits(_py: &PyToken, launcher_bits: u64) -> Result<u64, u64> {
     if let Some(func_bits) = unsafe { try_object_attr_bits(_py, launcher_bits, b"_func")? } {
         return Ok(func_bits);
     }
     Ok(launcher_bits)
 }
 
-#[allow(dead_code)]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
 unsafe fn gpu_kernel_descriptor_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     callable_bits: u64,
 ) -> Result<Option<u64>, u64> {
     unsafe { try_object_attr_bits(_py, callable_bits, b"__molt_gpu_descriptor__") }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 type RuntimeWebGpuBufferRegistry = WgpuArc<WgpuMutex<std::collections::HashMap<u64, wgpu::Buffer>>>;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 struct RuntimeWebGpuPipeline {
-    #[allow(dead_code)]
-    shader: wgpu::ShaderModule,
     pipeline: wgpu::ComputePipeline,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 struct RuntimeWebGpuDevice {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -307,7 +310,7 @@ struct RuntimeWebGpuDevice {
     next_id: WgpuMutex<u64>,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 impl RuntimeWebGpuDevice {
     fn new() -> Result<Self, String> {
         pollster::block_on(async {
@@ -359,7 +362,7 @@ impl RuntimeWebGpuDevice {
         if let Some(err) = pollster::block_on(scope.pop()) {
             return Err(err.to_string());
         }
-        Ok(WgpuArc::new(RuntimeWebGpuPipeline { shader, pipeline }))
+        Ok(WgpuArc::new(RuntimeWebGpuPipeline { pipeline }))
     }
 
     fn alloc_buffer(&self, size_bytes: usize) -> (u64, wgpu::Buffer) {
@@ -465,13 +468,11 @@ impl RuntimeWebGpuDevice {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 #[derive(Clone)]
 struct RuntimeKernelBufferArg {
-    name: String,
-    object_bits: u64,
     object_ptr: *mut u8,
     data_bits: u64,
     original_format: String,
@@ -480,8 +481,8 @@ struct RuntimeKernelBufferArg {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 #[derive(Clone)]
 enum RuntimeKernelArg {
@@ -493,8 +494,8 @@ enum RuntimeKernelArg {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 #[derive(Clone)]
 struct RuntimeKernelOp {
@@ -507,8 +508,8 @@ struct RuntimeKernelOp {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 #[derive(Clone)]
 struct RuntimeKernelDescriptor {
@@ -519,8 +520,8 @@ struct RuntimeKernelDescriptor {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, String> {
     let root: JsonValue = serde_json::from_str(text).map_err(|err| err.to_string())?;
@@ -598,7 +599,7 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
     Ok(RuntimeKernelDescriptor { name, params, ops })
 }
 
-fn parse_format(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
+fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
     let Some(value) = string_obj_to_owned(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
@@ -616,7 +617,7 @@ fn parse_format(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<Scala
     }
 }
 
-fn parse_usize_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<usize, u64> {
+fn parse_usize_arg(_py: &PyToken, bits: u64, role: &str) -> Result<usize, u64> {
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
@@ -631,14 +632,10 @@ fn parse_usize_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<us
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-fn kernel_arg_from_bits(
-    _py: &crate::PyToken<'_>,
-    name: &str,
-    bits: u64,
-) -> Result<RuntimeKernelArg, u64> {
+fn kernel_arg_from_bits(_py: &PyToken, name: &str, bits: u64) -> Result<RuntimeKernelArg, u64> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
@@ -659,8 +656,6 @@ fn kernel_arg_from_bits(
             })?;
             let size = parse_usize_arg(_py, size_bits, "_size")?;
             return Ok(RuntimeKernelArg::Buffer(RuntimeKernelBufferArg {
-                name: name.to_string(),
-                object_bits: bits,
                 object_ptr: ptr,
                 data_bits,
                 original_format: format,
@@ -684,11 +679,7 @@ fn kernel_arg_from_bits(
     ))
 }
 
-#[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
-))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), String> {
     match format {
         "f" | "d" => Ok(("float", 4)),
@@ -699,11 +690,7 @@ fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), S
     }
 }
 
-#[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
-))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Vec<u8>), String> {
     match arg {
         RuntimeKernelArg::Int(v) => Ok(("int64_t", v.to_le_bytes().to_vec())),
@@ -714,12 +701,11 @@ fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Ve
 }
 
 #[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn buffer_host_bytes_for_gpu_compute(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     arg: &RuntimeKernelBufferArg,
 ) -> Result<Vec<u8>, String> {
     let view = bytes_like_view(_py, arg.data_bits, "_data")
@@ -743,8 +729,8 @@ fn buffer_host_bytes_for_gpu_compute(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8>, String> {
     match format {
@@ -772,8 +758,8 @@ fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn bytes_like_view_to_webgpu_bytes(
     raw_view: ByteView,
@@ -783,12 +769,9 @@ fn bytes_like_view_to_webgpu_bytes(
     encode_webgpu_buffer_bytes(raw, format)
 }
 
-#[cfg(any(
-    target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
-))]
+#[cfg(target_arch = "wasm32")]
 fn buffer_host_bytes_for_webgpu_compute(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     arg: &RuntimeKernelBufferArg,
 ) -> Result<Vec<u8>, String> {
     let view = bytes_like_view(_py, arg.data_bits, "_data")
@@ -804,11 +787,11 @@ fn buffer_host_bytes_for_webgpu_compute(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn copy_gpu32_output_back_to_buffer(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     arg: &RuntimeKernelBufferArg,
     gpu_output: &[u8],
 ) -> Result<(), u64> {
@@ -835,11 +818,11 @@ fn copy_gpu32_output_back_to_buffer(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn rebuild_host_bytes_from_gpu32_output(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     format: ScalarFormat,
     elem_count: usize,
     gpu_output: &[u8],
@@ -874,8 +857,7 @@ fn rebuild_host_bytes_from_gpu32_output(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn webgpu_scalar_bytes_for_arg(arg: &RuntimeKernelArg) -> Result<Vec<u8>, String> {
     match arg {
@@ -886,7 +868,7 @@ fn webgpu_scalar_bytes_for_arg(arg: &RuntimeKernelArg) -> Result<Vec<u8>, String
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn render_metal_source(
     desc: &RuntimeKernelDescriptor,
     args: &BTreeMap<String, RuntimeKernelArg>,
@@ -1046,7 +1028,7 @@ fn render_metal_source(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
     match format {
@@ -1060,13 +1042,19 @@ fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+type RenderedWebGpuKernel = (String, Vec<String>, Vec<String>, Vec<String>);
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn render_webgpu_source(
     desc: &RuntimeKernelDescriptor,
     args: &BTreeMap<String, RuntimeKernelArg>,
     workgroup_size: u32,
-) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), String> {
+) -> Result<RenderedWebGpuKernel, String> {
     let mut write_buffers = BTreeSet::new();
     for op in &desc.ops {
         if op.kind == "store_index"
@@ -1239,7 +1227,7 @@ fn browser_webgpu_error_message(rc: i32, detail: &str) -> String {
 
 #[cfg(target_arch = "wasm32")]
 fn dispatch_browser_webgpu_bindings(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     source: &str,
     entry: &str,
     launch_bindings: Vec<serde_json::Value>,
@@ -1259,7 +1247,7 @@ fn dispatch_browser_webgpu_bindings(
     let mut err_bytes = vec![0u8; 4096];
     let mut out_err_len = 0u32;
     let rc = unsafe {
-        crate::molt_gpu_webgpu_dispatch_host(
+        molt_gpu_webgpu_dispatch_host(
             source.as_ptr() as usize as u32,
             source.len() as u32,
             entry.as_ptr() as usize as u32,
@@ -1449,7 +1437,7 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn render_metal_turboquant_attention_source(entry: &str) -> String {
     format!(
         "#include <metal_stdlib>\n\
@@ -1528,7 +1516,7 @@ kernel void {entry}(\n\
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn render_webgpu_turboquant_attention_source(entry: &str, workgroup_size: u32) -> String {
     format!(
@@ -1604,25 +1592,23 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 struct RuntimeMetalPipeline {
     pipeline: ComputePipelineState,
-    #[allow(dead_code)]
-    library: Library,
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 unsafe impl Send for RuntimeMetalPipeline {}
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 unsafe impl Sync for RuntimeMetalPipeline {}
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 struct RuntimeMetalDevice {
     device: Device,
     command_queue: CommandQueue,
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 impl RuntimeMetalDevice {
     fn new() -> Result<Self, String> {
         let device = Device::system_default().ok_or_else(|| "No Metal device found".to_string())?;
@@ -1649,7 +1635,7 @@ impl RuntimeMetalDevice {
             .device
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|err| format!("Metal pipeline creation failed: {err}"))?;
-        Ok(Arc::new(RuntimeMetalPipeline { pipeline, library }))
+        Ok(Arc::new(RuntimeMetalPipeline { pipeline }))
     }
 
     fn alloc_buffer(&self, size_bytes: usize) -> MetalBuffer {
@@ -1704,9 +1690,9 @@ impl RuntimeMetalDevice {
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn try_dispatch_metal_kernel(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
@@ -1739,7 +1725,7 @@ fn try_dispatch_metal_kernel(
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<_>(
             _py,
@@ -1823,9 +1809,9 @@ fn try_dispatch_metal_kernel(
     Ok(Some(MoltObject::none().bits()))
 }
 
-#[cfg(not(all(target_os = "macos", feature = "molt_gpu_metal")))]
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn try_dispatch_metal_kernel(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
@@ -1835,15 +1821,15 @@ fn try_dispatch_metal_kernel(
         return Err(raise_exception::<_>(
             _py,
             "RuntimeError",
-            "metal gpu backend requested but runtime was built without molt_gpu_metal",
+            "metal gpu backend requested but molt-gpu was built without metal-backend",
         ));
     }
     Ok(None)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
 fn try_dispatch_webgpu_kernel(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
@@ -1876,7 +1862,7 @@ fn try_dispatch_webgpu_kernel(
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
@@ -1962,7 +1948,7 @@ fn try_dispatch_webgpu_kernel(
 
 #[cfg(target_arch = "wasm32")]
 fn try_dispatch_webgpu_kernel(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
@@ -1995,7 +1981,7 @@ fn try_dispatch_webgpu_kernel(
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
@@ -2096,10 +2082,10 @@ fn try_dispatch_webgpu_kernel(
 
 #[cfg(not(any(
     target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 )))]
 fn try_dispatch_webgpu_kernel(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
@@ -2109,13 +2095,13 @@ fn try_dispatch_webgpu_kernel(
         return Err(raise_exception::<u64>(
             _py,
             "RuntimeError",
-            "webgpu backend requested but runtime was built without molt_gpu_webgpu",
+            "webgpu backend requested but molt-gpu was built without webgpu-backend",
         ));
     }
     Ok(None)
 }
 
-fn bytes_like_view(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<ByteView, u64> {
+fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
@@ -2137,11 +2123,7 @@ fn bytes_like_view(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<By
     })
 }
 
-unsafe fn require_class_ptr(
-    _py: &crate::PyToken<'_>,
-    bits: u64,
-    role: &str,
-) -> Result<*mut u8, u64> {
+unsafe fn require_class_ptr(_py: &PyToken, bits: u64, role: &str) -> Result<*mut u8, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
@@ -2159,18 +2141,14 @@ unsafe fn require_class_ptr(
     Ok(ptr)
 }
 
-fn normalize_shape_bits(_py: &crate::PyToken<'_>, bits: u64) -> Result<(u64, bool), u64> {
+fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
         return match unsafe { object_type_id(ptr) } {
             TYPE_ID_TUPLE => Ok((bits, false)),
             TYPE_ID_LIST => {
                 let Some(shape) = (unsafe {
-                    crate::object::seq_access::snapshot(
-                        _py,
-                        ptr,
-                        "sequence snapshot allocation failed",
-                    )
+                    seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
                 }) else {
                     return Err(MoltObject::none().bits());
                 };
@@ -2216,37 +2194,35 @@ fn normalize_shape_bits(_py: &crate::PyToken<'_>, bits: u64) -> Result<(u64, boo
 }
 
 unsafe fn set_object_attr_bytes(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     obj_ptr: *mut u8,
     name: &[u8],
     name_str: &str,
     val_bits: u64,
 ) -> Result<(), u64> {
-    let Some(name_bits) = crate::attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = unsafe {
-        crate::builtins::attributes::object_setattr_raw(_py, obj_ptr, name_bits, name_str, val_bits)
-    } as u64;
-    crate::dec_ref_bits(_py, name_bits);
-    if crate::exception_pending(_py) {
+    let out = unsafe { object_setattr_raw(_py, obj_ptr, name_bits, name_str, val_bits) } as u64;
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
         return Err(out);
     }
     Ok(())
 }
 
 unsafe fn object_attr_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     obj_bits: u64,
     name: &[u8],
     name_str: &str,
 ) -> Result<u64, u64> {
-    let Some(name_bits) = crate::attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits);
-    crate::dec_ref_bits(_py, name_bits);
-    if crate::exception_pending(_py) {
+    let out = molt_get_attr_name(obj_bits, name_bits);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
         return Err(out);
     }
     if obj_from_bits(out).is_none() {
@@ -2260,7 +2236,7 @@ unsafe fn object_attr_bits(
 }
 
 unsafe fn build_buffer_instance(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     buffer_class_bits: u64,
     data_bits: u64,
     element_type_bits: u64,
@@ -2269,7 +2245,7 @@ unsafe fn build_buffer_instance(
     itemsize: usize,
 ) -> Result<u64, u64> {
     let buffer_class_ptr = unsafe { require_class_ptr(_py, buffer_class_bits, "buffer_class")? };
-    let buffer_bits = unsafe { crate::alloc_instance_for_class(_py, buffer_class_ptr) };
+    let buffer_bits = unsafe { alloc_instance_for_class(_py, buffer_class_ptr) };
     let Some(buffer_ptr) = obj_from_bits(buffer_bits).as_ptr() else {
         return Err(buffer_bits);
     };
@@ -2302,21 +2278,21 @@ unsafe fn build_buffer_instance(
         }
         .is_err()
     {
-        crate::dec_ref_bits(_py, buffer_bits);
+        dec_ref_bits(_py, buffer_bits);
         return Err(MoltObject::none().bits());
     }
     Ok(buffer_bits)
 }
 
 unsafe fn build_tensor_instance(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     tensor_class_bits: u64,
     buf_bits: u64,
     shape_bits: u64,
     dtype_bits: u64,
 ) -> Result<u64, u64> {
     let tensor_class_ptr = unsafe { require_class_ptr(_py, tensor_class_bits, "tensor_class")? };
-    let tensor_bits = unsafe { crate::alloc_instance_for_class(_py, tensor_class_ptr) };
+    let tensor_bits = unsafe { alloc_instance_for_class(_py, tensor_class_ptr) };
     let Some(tensor_ptr) = obj_from_bits(tensor_bits).as_ptr() else {
         return Err(tensor_bits);
     };
@@ -2326,7 +2302,7 @@ unsafe fn build_tensor_instance(
         || unsafe { set_object_attr_bytes(_py, tensor_ptr, b"_dtype", "_dtype", dtype_bits) }
             .is_err()
     {
-        crate::dec_ref_bits(_py, tensor_bits);
+        dec_ref_bits(_py, tensor_bits);
         return Err(MoltObject::none().bits());
     }
     Ok(tensor_bits)
@@ -2334,7 +2310,7 @@ unsafe fn build_tensor_instance(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_thread_id() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let tid = current_gpu_launch_context().thread_id;
         if trace_gpu_thread_id_enabled() {
             eprintln!("[molt gpu thread_id] tid={tid}");
@@ -2345,28 +2321,28 @@ pub extern "C" fn molt_gpu_thread_id() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_id() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         MoltObject::from_int(current_gpu_launch_context().block_id).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_dim() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         MoltObject::from_int(current_gpu_launch_context().block_dim).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_grid_dim() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         MoltObject::from_int(current_gpu_launch_context().grid_dim).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_barrier() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+    molt_runtime_core::with_core_gil!(_py, MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]
@@ -2376,7 +2352,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
     threads_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let trace_launch = trace_gpu_kernel_launch_enabled();
         let grid = match parse_i64_launch_arg(_py, grid_bits, "grid") {
             Ok(value) => value,
@@ -2413,9 +2389,8 @@ pub extern "C" fn molt_gpu_kernel_launch(
                     tid, block_id, block_dim, grid
                 );
             }
-            let call_builder_bits = match unsafe {
-                crate::call::bind::clone_callargs_builder_bits(_py, builder_bits)
-            } {
+            let call_builder_bits = match unsafe { clone_callargs_builder_bits(_py, builder_bits) }
+            {
                 Ok(bits) => bits,
                 Err(err) => return err,
             };
@@ -2428,7 +2403,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
                 },
                 || molt_call_bind(callable_bits, call_builder_bits),
             );
-            if crate::exception_pending(_py) {
+            if exception_pending(_py) {
                 let exc_bits = molt_exception_last();
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))

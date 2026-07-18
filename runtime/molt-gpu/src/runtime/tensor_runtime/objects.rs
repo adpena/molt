@@ -21,7 +21,7 @@ pub(super) struct TensorRuntimeView {
 }
 
 pub(super) unsafe fn buffer_runtime_view(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     buffer_bits: u64,
     role: &str,
 ) -> Result<BufferRuntimeView, u64> {
@@ -32,7 +32,7 @@ pub(super) unsafe fn buffer_runtime_view(
             &format!("{role} must be a Buffer instance"),
         ));
     };
-    let class_bits = unsafe { crate::object_class_bits(buffer_ptr) };
+    let class_bits = unsafe { object_class_bits(buffer_ptr) };
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
@@ -61,7 +61,7 @@ pub(super) unsafe fn buffer_runtime_view(
 }
 
 pub(super) unsafe fn tensor_runtime_view(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     tensor_bits: u64,
     role: &str,
 ) -> Result<(TensorRuntimeView, Vec<usize>), u64> {
@@ -72,7 +72,7 @@ pub(super) unsafe fn tensor_runtime_view(
             &format!("{role} must be a Tensor instance"),
         ));
     };
-    let class_bits = unsafe { crate::object_class_bits(tensor_ptr) };
+    let class_bits = unsafe { object_class_bits(tensor_ptr) };
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
@@ -97,8 +97,8 @@ pub(super) unsafe fn tensor_runtime_view(
     ))
 }
 
-pub(super) fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &[u8]) -> Result<u64, u64> {
-    let ptr = crate::alloc_string(_py, value);
+pub(super) fn alloc_string_bits(_py: &PyToken, value: &[u8]) -> Result<u64, u64> {
+    let ptr = alloc_string(_py, value);
     if ptr.is_null() {
         Err(MoltObject::none().bits())
     } else {
@@ -106,10 +106,7 @@ pub(super) fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &[u8]) -> Resul
     }
 }
 
-pub(super) fn alloc_tuple_bits_from_usize(
-    _py: &crate::PyToken<'_>,
-    dims: &[usize],
-) -> Result<u64, u64> {
+pub(super) fn alloc_tuple_bits_from_usize(_py: &PyToken, dims: &[usize]) -> Result<u64, u64> {
     let bits: Vec<u64> = dims
         .iter()
         .copied()
@@ -124,7 +121,7 @@ pub(super) fn alloc_tuple_bits_from_usize(
 }
 
 pub(super) fn parse_i64_sequence_arg(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     bits: u64,
     role: &str,
     allow_scalar_int: bool,
@@ -178,8 +175,8 @@ pub(super) fn parse_i64_sequence_arg(
     // Preserve the accepted ``((dims...),)`` call shape without exporting a
     // borrowed edge from a mutable outer list. The pin keeps the sole item
     // alive while the inner sequence is inspected and decoded.
-    let nested_item = if unsafe { crate::object::seq_access::len(ptr) } == 1 {
-        unsafe { crate::object::seq_access::pin_item(_py, ptr, 0) }
+    let nested_item = if unsafe { seq_access::len(ptr) } == 1 {
+        unsafe { seq_access::pin_item(_py, ptr, 0) }
     } else {
         None
     };
@@ -188,15 +185,15 @@ pub(super) fn parse_i64_sequence_arg(
         if let Some(inner_ptr) = inner.as_ptr() {
             let inner_ty = unsafe { object_type_id(inner_ptr) };
             if inner_ty == TYPE_ID_TUPLE || inner_ty == TYPE_ID_LIST {
-                unsafe { crate::object::seq_access::with_borrowed(inner_ptr, decode) }
+                unsafe { seq_access::with_borrowed(inner_ptr, decode) }
             } else {
-                unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+                unsafe { seq_access::with_borrowed(ptr, decode) }
             }
         } else {
-            unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+            unsafe { seq_access::with_borrowed(ptr, decode) }
         }
     } else {
-        unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+        unsafe { seq_access::with_borrowed(ptr, decode) }
     };
     decoded.ok_or_else(|| {
         raise_exception::<_>(_py, "TypeError", &format!("{role} must contain integers"))
@@ -204,7 +201,7 @@ pub(super) fn parse_i64_sequence_arg(
 }
 
 pub(super) fn normalize_permute_dims(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     dims_bits: u64,
     ndim: usize,
 ) -> Result<Vec<usize>, u64> {
@@ -235,45 +232,41 @@ pub(super) fn normalize_permute_dims(
     Ok(normalized)
 }
 
-pub(super) fn normalize_reshape_dims(
-    _py: &crate::PyToken<'_>,
-    shape_bits: u64,
-) -> Result<Vec<i64>, u64> {
+pub(super) fn normalize_reshape_dims(_py: &PyToken, shape_bits: u64) -> Result<Vec<i64>, u64> {
     parse_i64_sequence_arg(_py, shape_bits, "shape", true)
 }
 
 pub(super) unsafe fn module_global_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     module_name: &[u8],
     attr_name: &[u8],
     attr_label: &str,
 ) -> Result<u64, u64> {
     let module_name_bits = alloc_string_bits(_py, module_name)?;
-    let mut module_bits = crate::builtins::modules::molt_module_cache_get(module_name_bits);
+    let mut module_bits = molt_module_cache_get(module_name_bits);
     if obj_from_bits(module_bits).is_none() {
-        module_bits = crate::builtins::modules::molt_module_import(module_name_bits);
+        module_bits = molt_module_import(module_name_bits);
     }
-    crate::dec_ref_bits(_py, module_name_bits);
-    if crate::exception_pending(_py) && obj_from_bits(module_bits).as_ptr().is_some() {
-        let _ = crate::molt_exception_clear();
+    dec_ref_bits(_py, module_name_bits);
+    if exception_pending(_py) && obj_from_bits(module_bits).as_ptr().is_some() {
+        let _ = molt_exception_clear();
     }
-    if crate::exception_pending(_py) {
+    if exception_pending(_py) {
         return Err(module_bits);
     }
-    let attr_bits = crate::attr_name_bits_from_bytes(_py, attr_name)
-        .ok_or_else(|| MoltObject::none().bits())?;
-    let missing = crate::builtins::methods::missing_bits(_py);
-    let value_bits = crate::molt_getattr_builtin(module_bits, attr_bits, missing);
-    crate::dec_ref_bits(_py, attr_bits);
-    crate::dec_ref_bits(_py, module_bits);
-    if crate::exception_pending(_py) && !crate::builtins::methods::is_missing_bits(_py, value_bits)
-    {
-        let _ = crate::molt_exception_clear();
+    let attr_bits =
+        attr_name_bits_from_bytes(_py, attr_name).ok_or_else(|| MoltObject::none().bits())?;
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(module_bits, attr_bits, missing);
+    dec_ref_bits(_py, attr_bits);
+    dec_ref_bits(_py, module_bits);
+    if exception_pending(_py) && !is_missing_bits(_py, value_bits) {
+        let _ = molt_exception_clear();
     }
-    if crate::exception_pending(_py) {
+    if exception_pending(_py) {
         return Err(value_bits);
     }
-    if crate::builtins::methods::is_missing_bits(_py, value_bits) {
+    if is_missing_bits(_py, value_bits) {
         return Err(raise_exception::<_>(
             _py,
             "AttributeError",
@@ -287,38 +280,34 @@ pub(super) unsafe fn module_global_bits(
     Ok(value_bits)
 }
 
-pub(super) unsafe fn ensure_tensor_object_bits(
-    _py: &crate::PyToken<'_>,
-    value_bits: u64,
-) -> Result<u64, u64> {
+pub(super) unsafe fn ensure_tensor_object_bits(_py: &PyToken, value_bits: u64) -> Result<u64, u64> {
     let tensor_class_bits =
         unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") }?;
-    let is_tensor_bits = crate::molt_isinstance(value_bits, tensor_class_bits);
-    if crate::exception_pending(_py) {
-        crate::dec_ref_bits(_py, tensor_class_bits);
+    let is_tensor_bits = molt_isinstance(value_bits, tensor_class_bits);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, tensor_class_bits);
         return Err(is_tensor_bits);
     }
-    let is_tensor = crate::is_truthy(_py, obj_from_bits(is_tensor_bits));
-    crate::dec_ref_bits(_py, is_tensor_bits);
+    let is_tensor = is_truthy(_py, obj_from_bits(is_tensor_bits));
+    dec_ref_bits(_py, is_tensor_bits);
     if is_tensor {
-        crate::dec_ref_bits(_py, tensor_class_bits);
+        dec_ref_bits(_py, tensor_class_bits);
         return Ok(value_bits);
     }
-    let tensor_bits =
-        unsafe { crate::call::dispatch::call_callable1(_py, tensor_class_bits, value_bits) };
-    crate::dec_ref_bits(_py, tensor_class_bits);
-    if crate::exception_pending(_py) {
+    let tensor_bits = unsafe { call_callable1(_py, tensor_class_bits, value_bits) };
+    dec_ref_bits(_py, tensor_class_bits);
+    if exception_pending(_py) {
         return Err(tensor_bits);
     }
     Ok(tensor_bits)
 }
 
 pub(super) unsafe fn promoted_result_format_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     x: &TensorRuntimeView,
     weight: &TensorRuntimeView,
 ) -> Result<(u64, ScalarFormat, bool, u64), u64> {
-    let float_bits = crate::builtins::classes::builtin_classes(_py).float;
+    let float_bits = builtin_float(_py);
     if x.dtype_bits == float_bits && weight.dtype_bits == float_bits {
         if x.buffer.element_type_bits == float_bits
             && weight.buffer.element_type_bits == float_bits
@@ -343,7 +332,7 @@ pub(super) unsafe fn promoted_result_format_bits(
 }
 
 pub(super) unsafe fn build_tensor_from_data_bits(
-    _py: &crate::PyToken<'_>,
+    _py: &PyToken,
     tensor_class_bits: u64,
     buffer_class_bits: u64,
     data_bits: u64,
@@ -368,6 +357,6 @@ pub(super) unsafe fn build_tensor_from_data_bits(
     let tensor_bits = unsafe {
         build_tensor_instance(_py, tensor_class_bits, buffer_bits, shape_bits, dtype_bits)
     };
-    crate::dec_ref_bits(_py, buffer_bits);
+    dec_ref_bits(_py, buffer_bits);
     tensor_bits
 }

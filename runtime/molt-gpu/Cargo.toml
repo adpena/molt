@@ -8,6 +8,8 @@ license = "Apache-2.0"
 
 [dependencies]
 half = "2.7"
+molt-runtime-core = { path = "../molt-runtime-core", optional = true }
+serde_json = { workspace = true, optional = true }
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 wide = { version = "1.5", optional = true }
@@ -20,8 +22,11 @@ default = ["metal-backend", "cpu-backend", "simd-accel"]
 metal-backend = []
 metal4 = ["metal-backend"]
 cpu-backend = []
+runtime-integration = ["dep:molt-runtime-core", "dep:serde_json"]
 wasm-backend = ["cpu-backend"]
 webgpu-backend = ["dep:wgpu", "dep:pollster"]
+cuda-backend = []
+hip-backend = []
 webgl2-backend = []
 opencl-backend = []
 ane-backend = []

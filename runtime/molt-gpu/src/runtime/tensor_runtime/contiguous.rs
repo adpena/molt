@@ -3,7 +3,7 @@ use super::*;
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let load_bits = match unsafe {
             module_global_bits(
                 _py,
@@ -15,8 +15,8 @@ pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let out_bits = unsafe { crate::call::dispatch::call_callable1(_py, load_bits, path_bits) };
-        crate::dec_ref_bits(_py, load_bits);
+        let out_bits = unsafe { call_callable1(_py, load_bits, path_bits) };
+        dec_ref_bits(_py, load_bits);
         out_bits
     })
 }
@@ -32,7 +32,7 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let size = match parse_usize_arg(_py, size_bits, "size") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -73,7 +73,7 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
             Ok(bits) => bits,
             Err(bits) => {
                 if owns_shape_bits {
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, shape_bits);
                 }
                 return bits;
             }
@@ -83,16 +83,16 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
         } {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, buffer_bits);
+                dec_ref_bits(_py, buffer_bits);
                 if owns_shape_bits {
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, shape_bits);
                 }
                 return bits;
             }
         };
-        crate::dec_ref_bits(_py, buffer_bits);
+        dec_ref_bits(_py, buffer_bits);
         if owns_shape_bits {
-            crate::dec_ref_bits(_py, shape_bits);
+            dec_ref_bits(_py, shape_bits);
         }
         tensor_bits
     })
@@ -107,7 +107,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
     repeats_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -219,7 +219,7 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (shape_bits, owns_shape_bits) = match normalize_shape_bits(_py, shape_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -230,13 +230,13 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
             Ok(bits) => bits,
             Err(bits) => {
                 if owns_shape_bits {
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, shape_bits);
                 }
                 return bits;
             }
         };
         if owns_shape_bits {
-            crate::dec_ref_bits(_py, shape_bits);
+            dec_ref_bits(_py, shape_bits);
         }
         tensor_bits
     })
@@ -244,7 +244,7 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let count = match parse_usize_arg(_py, count_bits, "count") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -293,8 +293,7 @@ pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> 
             };
             values.push(bits);
         }
-        let list_ptr =
-            crate::object::builders::alloc_list_with_capacity_owned(_py, &values, values.len());
+        let list_ptr = alloc_list_with_capacity_owned(_py, &values, values.len());
         if list_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -313,7 +312,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
     out_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let trace_linear = std::env::var("MOLT_TRACE_GPU_LINEAR").as_deref() == Ok("1");
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
@@ -516,7 +515,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
     split_sizes_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -750,7 +749,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
     in_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -962,7 +961,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
     op_code_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1078,7 +1077,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
     b_shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1266,7 +1265,7 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
     seq_len_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1434,7 +1433,7 @@ pub extern "C" fn molt_gpu_permute_contiguous(
     dims_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1510,7 +1509,7 @@ pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1587,7 +1586,7 @@ pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
     eps_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1663,7 +1662,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,

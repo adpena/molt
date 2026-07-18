@@ -530,38 +530,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime/src/builtins/gpu.rs::allow_dead_code::1",
-      "path": "runtime/molt-runtime/src/builtins/gpu.rs",
-      "line": 138,
-      "kind": "allow_dead_code",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/gpu.rs::allow_dead_code::2",
-      "path": "runtime/molt-runtime/src/builtins/gpu.rs",
-      "line": 284,
-      "kind": "allow_dead_code",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/gpu.rs::allow_dead_code::3",
-      "path": "runtime/molt-runtime/src/builtins/gpu.rs",
-      "line": 297,
-      "kind": "allow_dead_code",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/gpu.rs::allow_dead_code::4",
-      "path": "runtime/molt-runtime/src/builtins/gpu.rs",
-      "line": 1610,
-      "kind": "allow_dead_code",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-runtime/src/builtins/io/handle.rs::allow_dead_code::1",
       "path": "runtime/molt-runtime/src/builtins/io/handle.rs",
       "line": 259,

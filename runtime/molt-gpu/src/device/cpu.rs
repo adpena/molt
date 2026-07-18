@@ -498,7 +498,7 @@ pub mod interpret {
         if kernel.bufs[b_idx].st.numel() != logical_input_numel {
             return None;
         }
-        if logical_input_numel != domain.input_shape.iter().product() {
+        if logical_input_numel != domain.input_shape.iter().product::<usize>() {
             return None;
         }
 
