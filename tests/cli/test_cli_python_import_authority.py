@@ -221,6 +221,32 @@ def test_unresolved_effect_boundary_requires_explicit_runtime_custody() -> None:
         )
 
 
+def test_intrinsic_lookup_cannot_mutate_escaped_module_metadata() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as require\n"
+        "value = require('molt_demo', globals())\n"
+        "from .child import value\n"
+    )
+    assert set(
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+    ) == {"_intrinsics", "_intrinsics.require_intrinsic", "pkg.child", "pkg.child.value"}
+
+
+def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as require\n"
+        "require = replacement\n"
+        "value = require('molt_demo', globals())\n"
+        "from .child import value\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+
+
 def test_import_flow_is_cached_and_state_growth_is_bounded() -> None:
     source = "\n".join(
         [f"if p{i}:\n    __package__ = 'p{i}'" for i in range(100)]

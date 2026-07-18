@@ -18311,6 +18311,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -18403,6 +18404,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -18508,6 +18510,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -18612,6 +18615,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -18722,6 +18726,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -21927,6 +21932,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
     )
@@ -28728,6 +28734,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -28796,6 +28803,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
@@ -28844,6 +28852,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         entry_override_by_module={},
         module_is_namespace_by_module={},
         module_is_package_by_module={},
+        module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )

@@ -93,7 +93,7 @@ def _measure(import_count: int, iterations: int) -> dict[str, object]:
         "source_bytes": len(source.encode("utf-8")),
         "ast_nodes": node_count,
         "import_calls": import_count,
-        "states": len(reference.states),
+        "states": reference.state_count,
         "scopes": len(reference.scopes),
         "iterations": iterations,
         "cold": {

@@ -54,6 +54,8 @@ class PythonIdentity(IntFlag):
     IMPORTLIB_FIND_SPEC = 1 << 25
     TYPING_MODULE = 1 << 26
     STATIC_FALSE = 1 << 27
+    INTRINSICS_MODULE = 1 << 28
+    INTRINSICS_REQUIRE = 1 << 29
     OTHER = 1 << 30
     UNBOUND = 1 << 31
 
@@ -88,6 +90,7 @@ class PythonMember(IntFlag):
     IMPORTLIB_UTIL = 1 << 8
     UTIL_FIND_SPEC = 1 << 9
     TYPING_TYPE_CHECKING = 1 << 10
+    INTRINSICS_REQUIRE = 1 << 11
 
 
 MemberMask: TypeAlias = int
@@ -149,7 +152,6 @@ class PythonNodeKey:
 class PythonExpressionFact:
     node: PythonNodeKey
     scope_id: int
-    state_id: int
     identities: IdentityMask
     effects: EffectMask
     static_value: PythonStaticValue = None
@@ -159,7 +161,6 @@ class PythonExpressionFact:
 class PythonCallSiteFact:
     node: PythonNodeKey
     scope_id: int
-    state_id: int
     callee_identities: IdentityMask
     result_identities: IdentityMask
     effects: EffectMask
@@ -183,26 +184,6 @@ class PythonScopeFact:
     global_names: tuple[str, ...]
     nonlocal_names: tuple[str, ...]
     binding_slots: tuple[tuple[str, int], ...]
-    entry_state_id: int
-    exit_state_id: int
-
-
-@dataclass(frozen=True, slots=True)
-class PythonBindingState:
-    """One interned persistent environment node.
-
-    A single-parent node is an O(1) strong update.  A multi-parent node is a
-    control-flow join.  This keeps memory linear in program size instead of
-    copying every live binding at every source position.
-    """
-
-    parents: tuple[int, ...] = ()
-    updated_slot: int = -1
-    updated_value: IdentityMask = UNBOUND_IDENTITY
-    updated_static_value: PythonStaticValue = None
-    clean_slots: int = 0
-    maybe_invalidated_members: MemberMask = 0
-    definitely_invalidated_members: MemberMask = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +201,7 @@ class PythonBindingIndex:
     expressions: tuple[PythonExpressionFact, ...]
     calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
-    states: tuple[PythonBindingState, ...]
+    state_count: int
     slot_names: tuple[str, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _call_lookup: Mapping[PythonNodeKey, PythonCallSiteFact]
@@ -240,7 +221,7 @@ class PythonBindingIndex:
         expressions: tuple[PythonExpressionFact, ...],
         calls: tuple[PythonCallSiteFact, ...],
         scopes: tuple[PythonScopeFact, ...],
-        states: tuple[PythonBindingState, ...],
+        state_count: int,
         slot_names: tuple[str, ...],
     ) -> PythonBindingIndex:
         return cls(
@@ -255,7 +236,7 @@ class PythonBindingIndex:
             expressions=expressions,
             calls=calls,
             scopes=scopes,
-            states=states,
+            state_count=state_count,
             slot_names=slot_names,
             _expression_lookup=MappingProxyType({fact.node: fact for fact in expressions}),
             _call_lookup=MappingProxyType({fact.node: fact for fact in calls}),
@@ -286,7 +267,6 @@ __all__ = [
     "NO_IDENTITIES",
     "OTHER_IDENTITY",
     "PythonBindingIndex",
-    "PythonBindingState",
     "PythonCallSiteFact",
     "PythonExpressionFact",
     "PythonIdentity",
