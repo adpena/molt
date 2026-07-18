@@ -354,7 +354,7 @@
   "scanner": {
     "package_lock_sha256": "4d3b5314421fcf83ec9fe144af7a3181b8cd98baf158aca25e486c507c516e6d",
     "path": "tools/browser_asset_graph/scan.mjs",
-    "sha256": "d58d7c415807a6767eafe6284224a0814d645f6f48aa2a95e94a07fe6c9c839a"
+    "sha256": "029749dc13cdb5d5990e434961dd6ecfdfcfb79f4e15a909388886e92081fe45"
   },
   "schema_version": 2
 }
