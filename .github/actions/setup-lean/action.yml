@@ -1,0 +1,35 @@
+name: Setup exact Lean toolchain
+description: Install elan and provision the repository-pinned Lean toolchain
+
+runs:
+  using: composite
+  steps:
+    - name: Install elan launcher
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
+          --retry 5 --retry-delay 2 \
+          https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+          | sh -s -- -y --default-toolchain none
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+    - name: Restore exact Lean toolchain
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.elan/toolchains
+          ~/.elan/update-hashes
+        key: lean-toolchain-${{ runner.os }}-${{ hashFiles('formal/lean/lean-toolchain') }}
+
+    - name: Provision exact Lean toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        toolchain="$(tr -d '\r\n' < formal/lean/lean-toolchain)"
+        if [[ ! "$toolchain" =~ ^leanprover/lean4:v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "invalid formal/lean/lean-toolchain authority: $toolchain" >&2
+          exit 2
+        fi
+        "$HOME/.elan/bin/elan" toolchain install "$toolchain"
+        (cd formal/lean && "$HOME/.elan/bin/lean" --version)
