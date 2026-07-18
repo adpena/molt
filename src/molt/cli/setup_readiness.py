@@ -14,6 +14,7 @@ from molt.dx import DX_ENV_KEYS, DxProject
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.cli.default_paths import _default_molt_cache
+from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
@@ -723,6 +724,22 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         )
     else:
         record("molt-cache-dir", True, str(molt_cache_dir))
+
+    wasm_link_cache_dir = _default_wasm_link_cache()
+    wasm_link_cache_ready = (
+        not wasm_link_cache_dir.exists() or wasm_link_cache_dir.is_dir()
+    )
+    record(
+        "wasm-link-cache",
+        wasm_link_cache_ready,
+        f"{wasm_link_cache_dir} (shared across worktrees and build sessions)",
+        level="warning",
+        advice=[
+            "Remove the non-directory path blocking the canonical MOLT_CACHE/wasm_link cache"
+        ]
+        if not wasm_link_cache_ready
+        else None,
+    )
 
     diff_target_dir = _resolved_env_dir_from_root(root, "MOLT_DIFF_CARGO_TARGET_DIR")
     if diff_target_dir is None:

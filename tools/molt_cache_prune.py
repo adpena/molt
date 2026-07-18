@@ -2,26 +2,31 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+TOOLS_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = TOOLS_ROOT.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.cli.build_locks import (  # noqa: E402
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
+from molt.cli.default_paths import _default_molt_cache  # noqa: E402
+from molt.cli.wasm_link_cache import (  # noqa: E402
+    WASM_LINK_CACHE_DIRECTORY,
+    WASM_LINK_CACHE_FAMILIES,
+)
+
 
 def _default_cache_root() -> Path:
-    import os
-
-    repo_root = Path(__file__).resolve().parent.parent
-    raw = os.environ.get("MOLT_CACHE")
-    if raw:
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            return (Path.cwd() / path).resolve()
-        return path
-    configured_root = os.environ.get("MOLT_EXT_ROOT")
-    if configured_root:
-        return Path(configured_root).expanduser() / ".molt_cache"
-    return repo_root / ".molt_cache"
+    return _default_molt_cache()
 
 
 def _is_external_volume(path: Path) -> bool:
@@ -37,6 +42,7 @@ class CacheEntry:
     path: Path
     size_bytes: int
     mtime: float
+    lock_path: Path | None = None
 
 
 def _format_bytes(size: int) -> str:
@@ -73,6 +79,47 @@ def _collect_entries(cache_root: Path) -> list[CacheEntry]:
     if not cache_root.exists():
         return entries
     for child in cache_root.iterdir():
+        if child.name == WASM_LINK_CACHE_DIRECTORY and child.is_dir():
+            known_families: set[Path] = set()
+            for family_name in sorted(WASM_LINK_CACHE_FAMILIES):
+                family_root = child / family_name
+                if not family_root.is_dir():
+                    continue
+                known_families.add(family_root)
+                for schema_root in family_root.iterdir():
+                    if not schema_root.is_dir() or schema_root.name == ".locks":
+                        continue
+                    lock_root = family_root / ".locks"
+                    for entry_root in schema_root.iterdir():
+                        if not entry_root.is_dir() or entry_root.name == ".locks":
+                            continue
+                        try:
+                            stat = entry_root.stat()
+                        except OSError:
+                            continue
+                        entries.append(
+                            CacheEntry(
+                                path=entry_root,
+                                size_bytes=_entry_size_bytes(entry_root),
+                                mtime=stat.st_mtime,
+                                lock_path=lock_root / f"{entry_root.name[:2]}.lock",
+                            )
+                        )
+            for unknown in child.iterdir():
+                if unknown in known_families:
+                    continue
+                try:
+                    stat = unknown.stat()
+                except OSError:
+                    continue
+                entries.append(
+                    CacheEntry(
+                        path=unknown,
+                        size_bytes=_entry_size_bytes(unknown),
+                        mtime=stat.st_mtime,
+                    )
+                )
+            continue
         try:
             stat = child.stat()
         except OSError:
@@ -82,16 +129,30 @@ def _collect_entries(cache_root: Path) -> list[CacheEntry]:
     return entries
 
 
-def _remove_entry(path: Path, dry_run: bool) -> None:
-    if dry_run:
-        return
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path, ignore_errors=True)
-        return
+def _remove_entry(entry: CacheEntry, dry_run: bool) -> bool:
+    lock_handle = None
+    if entry.lock_path is not None:
+        lock_handle = _try_acquire_file_lock(entry.lock_path)
+        if lock_handle is None:
+            return False
     try:
-        path.unlink(missing_ok=True)
+        if dry_run:
+            return True
+        if entry.path.is_dir() and not entry.path.is_symlink():
+            shutil.rmtree(entry.path, ignore_errors=False)
+        else:
+            entry.path.unlink(missing_ok=True)
+        return not entry.path.exists()
     except OSError:
-        pass
+        return False
+    finally:
+        if lock_handle is not None:
+            _release_file_lock(lock_handle)
+
+
+def _eviction_order(entry: CacheEntry) -> tuple[float, str]:
+    normalized_path = os.path.normcase(os.path.normpath(os.fspath(entry.path)))
+    return entry.mtime, normalized_path
 
 
 def _prune(
@@ -110,8 +171,10 @@ def _prune(
         keep: list[CacheEntry] = []
         for entry in entries:
             if entry.mtime < cutoff:
-                _remove_entry(entry.path, dry_run)
-                removed.append(entry)
+                if _remove_entry(entry, dry_run):
+                    removed.append(entry)
+                else:
+                    keep.append(entry)
             else:
                 keep.append(entry)
         entries = keep
@@ -119,12 +182,12 @@ def _prune(
     total = sum(item.size_bytes for item in entries)
     if max_bytes is not None and max_bytes >= 0 and total > max_bytes:
         # Remove oldest entries first until total <= max_bytes.
-        for entry in sorted(entries, key=lambda item: item.mtime):
+        for entry in sorted(entries, key=_eviction_order):
             if total <= max_bytes:
                 break
-            _remove_entry(entry.path, dry_run)
-            removed.append(entry)
-            total -= entry.size_bytes
+            if _remove_entry(entry, dry_run):
+                removed.append(entry)
+                total -= entry.size_bytes
 
     removed_bytes = sum(item.size_bytes for item in removed)
     return {
