@@ -19,6 +19,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from molt.wasi_sysroot import normalize_wasi_sysroot, wasi_sysroot_llvm_version
+
 
 class LlvmToolchainConfigError(RuntimeError):
     """Raised when Cargo's LLVM feature pin cannot be resolved uniquely."""
@@ -1969,11 +1971,6 @@ def verify_wasm_ci_toolchain(
     )
 
     reject_poison_toolchain_path(wasi_sysroot, authority="WASI sysroot")
-    from molt.cli.wasm_toolchain import (
-        normalize_wasi_sysroot,
-        wasi_sysroot_llvm_version,
-    )
-
     resolved_sysroot = normalize_wasi_sysroot(wasi_sysroot)
     if resolved_sysroot is None:
         raise LlvmToolchainConfigError(
@@ -1982,6 +1979,10 @@ def verify_wasm_ci_toolchain(
     release = load_llvm_releases(root).wasi_sysroot
     version_file = resolved_sysroot / "VERSION"
     actual_llvm_version = wasi_sysroot_llvm_version(resolved_sysroot)
+    if actual_llvm_version is None:
+        raise LlvmToolchainConfigError(
+            f"WASI sysroot has no LLVM producer identity at {version_file}"
+        )
     if actual_llvm_version != release.llvm_version:
         raise LlvmToolchainConfigError(
             "WASI sysroot LLVM identity does not match the manifest authority: "

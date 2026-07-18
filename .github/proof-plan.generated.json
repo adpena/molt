@@ -43,7 +43,7 @@
     "tests/test_generator_manifest.py",
     "tests/tools/test_cargo_test_truth.py"
   ],
-  "authority_sha256": "fb48d93068c476ea22fd499ce1d5cc69fb3fe14025f373a4ac8611c9e87f8805",
+  "authority_sha256": "7f8cef7b0ebbd3054f80a27d12a7973590bf00db9f9e58404357596e144deced",
   "ci_families": [
     {
       "dependencies": [],
