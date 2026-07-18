@@ -77,7 +77,9 @@ def canonical_source_marker_environment(
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     source = default_environment() if environment is None else environment
-    missing = [field for field in SOURCE_MARKER_ENVIRONMENT_FIELDS if field not in source]
+    missing = [
+        field for field in SOURCE_MARKER_ENVIRONMENT_FIELDS if field not in source
+    ]
     if missing:
         raise SourceBuildEnvironmentError(
             "source build marker environment is missing: " + ", ".join(missing)
@@ -211,7 +213,9 @@ def _environment_spec(
     group_requirements = _declared_dependency_group(repo_root, dependency_group)
     lock_path = repo_root / "uv.lock"
     if not lock_path.is_file():
-        raise SourceBuildEnvironmentError(f"locked source-build input is absent: {lock_path}")
+        raise SourceBuildEnvironmentError(
+            f"locked source-build input is absent: {lock_path}"
+        )
     lock_digest = _sha256_file(lock_path)
     python = _python_identity()
     uv, uv_payload = _uv_identity()
@@ -236,8 +240,16 @@ def _environment_spec(
         / "source-extension"
     )
     root = custody_root / environment_id
-    python_executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    return root, python_executable, root / SOURCE_BUILD_ENVIRONMENT_MANIFEST, custody, uv
+    python_executable = root / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    return (
+        root,
+        python_executable,
+        root / SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        custody,
+        uv,
+    )
 
 
 def _canonical_distribution_roots() -> tuple[str, ...]:
@@ -430,6 +442,22 @@ def source_build_environment(
     )
 
 
+def _run_uv_sync(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+) -> subprocess.CompletedProcess[bytes]:
+    """Run the single provisioning mutation behind its module-owned seam."""
+
+    return subprocess.run(
+        list(argv),
+        cwd=cwd,
+        env=dict(environment),
+        check=False,
+    )
+
+
 def provision_source_build_environment(
     repo_root: Path, dependency_group: str
 ) -> LockedSourceBuildEnvironment:
@@ -505,23 +533,23 @@ def provision_source_build_environment(
         # launch guarded build work. The canonical file lock and provisional
         # record make this direct-final mutation recoverable but inadmissible;
         # the complete attestation is the logical publication point.
-        result = subprocess.run(
-            [
-                str(uv),
-                "sync",
-                "--project",
-                str(repo_root.resolve()),
-                "--python",
-                str(Path(raw_base).resolve()),
-                "--frozen",
-                "--no-default-groups",
-                "--group",
-                dependency_group,
-                "--no-install-project",
-            ],
+        sync_argv = (
+            str(uv),
+            "sync",
+            "--project",
+            str(repo_root.resolve()),
+            "--python",
+            str(Path(raw_base).resolve()),
+            "--frozen",
+            "--no-default-groups",
+            "--group",
+            dependency_group,
+            "--no-install-project",
+        )
+        result = _run_uv_sync(
+            sync_argv,
             cwd=repo_root,
-            env=environment,
-            check=False,
+            environment=environment,
         )
         if result.returncode != 0:
             raise SourceBuildEnvironmentError(
@@ -595,15 +623,20 @@ def source_build_environment_problems(payload: object) -> list[str]:
             )
 
         digest_fields = ("environment_id", "uv_lock_sha256")
-        if custody.get("schema_version") != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION or any(
-            not valid_sha256(custody.get(field))
-            for field in digest_fields
+        if custody.get(
+            "schema_version"
+        ) != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION or any(
+            not valid_sha256(custody.get(field)) for field in digest_fields
         ):
-            problems.append("extension-set manifest build-environment custody is invalid")
+            problems.append(
+                "extension-set manifest build-environment custody is invalid"
+            )
         if not isinstance(custody.get("dependency_group"), str) or not custody.get(
             "dependency_group"
         ):
-            problems.append("extension-set manifest build-environment custody is invalid")
+            problems.append(
+                "extension-set manifest build-environment custody is invalid"
+            )
         group_requirements = custody.get("dependency_group_requirements")
         candidate_group_requirements = (
             [item for item in group_requirements if isinstance(item, str) and item]
@@ -622,7 +655,9 @@ def source_build_environment_problems(payload: object) -> list[str]:
             problems.append("extension-set manifest build dependency group is invalid")
         else:
             try:
-                parsed_group = [Requirement(item) for item in normalized_group_requirements]
+                parsed_group = [
+                    Requirement(item) for item in normalized_group_requirements
+                ]
             except InvalidRequirement:
                 problems.append(
                     "extension-set manifest build dependency group is invalid"
@@ -644,8 +679,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
             problems.append("extension-set manifest build Python custody is invalid")
         elif (
             not all(
-                isinstance(custody_python.get(field), str)
-                and custody_python.get(field)
+                isinstance(custody_python.get(field), str) and custody_python.get(field)
                 for field in (
                     "implementation",
                     "version",
@@ -691,7 +725,9 @@ def source_build_environment_problems(payload: object) -> list[str]:
                 "dependency_group_requirements": normalized_group_requirements,
                 "uv_lock_sha256": custody["uv_lock_sha256"],
                 "python": dict(custody_python),
-                "uv": dict(custody_uv) if isinstance(custody_uv, Mapping) else custody_uv,
+                "uv": dict(custody_uv)
+                if isinstance(custody_uv, Mapping)
+                else custody_uv,
             }
             expected_environment_id = hashlib.sha256(
                 json.dumps(
@@ -703,11 +739,16 @@ def source_build_environment_problems(payload: object) -> list[str]:
                     "extension-set manifest build-environment address digest is invalid"
                 )
 
-    if not isinstance(python, Mapping) or set(python) != {
-        "implementation",
-        "version",
-        "executable",
-    } or not all(isinstance(value, str) and value for value in python.values()):
+    if (
+        not isinstance(python, Mapping)
+        or set(python)
+        != {
+            "implementation",
+            "version",
+            "executable",
+        }
+        or not all(isinstance(value, str) and value for value in python.values())
+    ):
         problems.append("extension-set manifest build Python identity is invalid")
     if (
         not isinstance(requirements, list)
@@ -717,9 +758,11 @@ def source_build_environment_problems(payload: object) -> list[str]:
         problems.append("extension-set manifest build requirements are invalid")
         return problems
     requirements = [item for item in requirements if isinstance(item, str) and item]
-    if not isinstance(raw_environment, Mapping) or set(raw_environment) != set(
-        SOURCE_MARKER_ENVIRONMENT_FIELDS
-    ) or not all(isinstance(value, str) for value in raw_environment.values()):
+    if (
+        not isinstance(raw_environment, Mapping)
+        or set(raw_environment) != set(SOURCE_MARKER_ENVIRONMENT_FIELDS)
+        or not all(isinstance(value, str) for value in raw_environment.values())
+    ):
         problems.append("extension-set manifest marker environment is invalid")
         return problems
     raw_environment = {
@@ -742,13 +785,14 @@ def source_build_environment_problems(payload: object) -> list[str]:
             != str(raw_environment.get("python_full_version"))
         ):
             problems.append("extension-set manifest build Python identity is invalid")
-        custody_python_value = custody.get("python") if isinstance(custody, Mapping) else None
+        custody_python_value = (
+            custody.get("python") if isinstance(custody, Mapping) else None
+        )
         if isinstance(custody_python_value, Mapping):
             custody_python = cast(Mapping[str, object], custody_python_value)
-            if (
-                python.get("implementation") != custody_python.get("implementation")
-                or python.get("version") != custody_python.get("version")
-            ):
+            if python.get("implementation") != custody_python.get(
+                "implementation"
+            ) or python.get("version") != custody_python.get("version"):
                 problems.append(
                     "extension-set manifest build Python identity differs from custody"
                 )
@@ -769,13 +813,17 @@ def source_build_environment_problems(payload: object) -> list[str]:
             "distribution",
             "version",
         }:
-            problems.append("extension-set manifest resolved requirement shape is invalid")
+            problems.append(
+                "extension-set manifest resolved requirement shape is invalid"
+            )
             continue
         if not all(
             isinstance(item.get(field), str) and item.get(field)
             for field in ("requirement", "distribution", "version")
         ):
-            problems.append("extension-set manifest resolved requirement values are invalid")
+            problems.append(
+                "extension-set manifest resolved requirement values are invalid"
+            )
             continue
         item = cast(Mapping[str, object], item)
         raw = cast(str, item["requirement"])
@@ -805,10 +853,9 @@ def source_build_environment_problems(payload: object) -> list[str]:
             )
 
     if resolved_requirements != expected_active:
-        if (
-            len(resolved_requirements) == len(expected_active)
-            and sorted(resolved_requirements) == sorted(expected_active)
-        ):
+        if len(resolved_requirements) == len(expected_active) and sorted(
+            resolved_requirements
+        ) == sorted(expected_active):
             problems.append(
                 "extension-set manifest resolved requirements are out of source order"
             )

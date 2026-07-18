@@ -788,8 +788,8 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     spec = _locked_environment_spec(tmp_path)
     monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
     monkeypatch.setattr(
-        build_environment.subprocess,
-        "run",
+        build_environment,
+        "_run_uv_sync",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 7),
     )
 
@@ -826,7 +826,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
         calls += 1
         if calls == 1:
             return subprocess.CompletedProcess(argv, 7)
-        environment_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        environment_root = Path(kwargs["environment"]["UV_PROJECT_ENVIRONMENT"])
         assert environment_root == spec[0]
         environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
@@ -835,7 +835,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
         environment_python.write_bytes(b"python")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(build_environment.subprocess, "run", run)
+    monkeypatch.setattr(build_environment, "_run_uv_sync", run)
 
     with pytest.raises(build_environment.SourceBuildEnvironmentError):
         build_environment.provision_source_build_environment(
@@ -869,8 +869,8 @@ def test_source_build_environment_rejects_foreign_unattested_root(
         spec[2].write_text(json.dumps(foreign_payload), encoding="utf-8")
     monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
     monkeypatch.setattr(
-        build_environment.subprocess,
-        "run",
+        build_environment,
+        "_run_uv_sync",
         lambda *_args, **_kwargs: pytest.fail("foreign root must never be mutated"),
     )
 
@@ -1009,8 +1009,8 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
         lambda _python: distributions,
     )
     monkeypatch.setattr(
-        build_environment.subprocess,
-        "run",
+        build_environment,
+        "_run_uv_sync",
         lambda *_args, **_kwargs: pytest.fail("complete root must not reprovision"),
     )
 
@@ -1036,10 +1036,10 @@ def test_concurrent_source_build_provision_runs_one_sync(
         lambda _python: distributions,
     )
 
-    def run(argv, **_kwargs):
+    def run(argv, **kwargs):
         with calls_lock:
             calls.append(tuple(argv))
-        environment_root = Path(_kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        environment_root = Path(kwargs["environment"]["UV_PROJECT_ENVIRONMENT"])
         assert environment_root == spec[0]
         environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
@@ -1052,7 +1052,7 @@ def test_concurrent_source_build_provision_runs_one_sync(
         launcher.write_text(f"#!{environment_python}\n", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(build_environment.subprocess, "run", run)
+    monkeypatch.setattr(build_environment, "_run_uv_sync", run)
     errors: list[BaseException] = []
 
     def provision() -> None:
@@ -1105,7 +1105,7 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
     )
 
     def run(argv, **kwargs):
-        environment_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        environment_root = Path(kwargs["environment"]["UV_PROJECT_ENVIRONMENT"])
         environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
         )
@@ -1113,7 +1113,7 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
         environment_python.write_bytes(b"python")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(build_environment.subprocess, "run", run)
+    monkeypatch.setattr(build_environment, "_run_uv_sync", run)
 
     with pytest.raises(
         build_environment.SourceBuildEnvironmentError,
