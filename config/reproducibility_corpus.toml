@@ -1,0 +1,9 @@
+schema = "molt.reproducibility-corpus.v1"
+
+[corpus]
+smoke = ["examples/hello.py"]
+full = [
+  "examples/hello.py",
+  "examples/simple_ret.py",
+  "examples/sieve_bench.py",
+]

@@ -69,4 +69,5 @@ class FuzzSummary:
     reject_fail: int = 0
     compile_only_ok: int = 0
     compile_only_crash: int = 0
+    generation_errors: int = 0
     failures: list[FuzzResult] = field(default_factory=list)

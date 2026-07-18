@@ -15,10 +15,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"
-  MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.6.0"
-  MOLT_QUINT_RUST_EVALUATOR_ASSET: "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"
-  MOLT_QUINT_RUST_EVALUATOR_SHA256: "61755a09d5052d93a4e75e840059edfd0d3674aeda164b9d2464be3d6e21b1c2"
 
 jobs:
   molt-conformance-full:
@@ -27,20 +23,16 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup conformance toolchains
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-
-      - uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Sync Python environment
-        run: uv sync --group dev
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--group dev"
 
       - name: Add local venv tools to PATH
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
@@ -55,7 +47,7 @@ jobs:
 
       - name: Upload conformance artifact
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: molt-conformance-full
           path: logs/conformance/full.json
@@ -66,20 +58,16 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup differential toolchains
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-
-      - uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Sync Python environment
-        run: uv sync --group dev
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--group dev"
 
       - name: Run differential correctness lane
         env:
@@ -97,40 +85,16 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Set up project Python
-        run: uv python install "$(cat .python-version)"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Cache cargo
-        uses: actions/cache@v5
+      - name: Setup regrtest toolchains
+        uses: ./.github/actions/setup-project
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-nightly-
-
-      - name: Cache uv
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-nightly-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            uv-${{ runner.os }}-nightly-
-
-      - name: Install dependencies
-        run: uv sync
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen"
 
       - name: Build Molt runtime
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build -p molt-runtime --profile dev-fast
@@ -141,16 +105,16 @@ jobs:
             uv run python3 tools/cpython_regrtest.py \
             --uv --uv-python "$(cat .python-version)" --uv-prepare \
             --timeout 600
-        continue-on-error: true
 
       - name: Upload regrtest results
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regrtest-results
           path: |
             regrtest_*.log
             regrtest_*.json
+          if-no-files-found: error
 
   determinism-sweep:
     name: Determinism Full Sweep
@@ -158,112 +122,48 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Set up project Python
-        run: uv python install "$(cat .python-version)"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Cache cargo
-        uses: actions/cache@v5
+      - name: Setup determinism toolchains
+        uses: ./.github/actions/setup-project
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-nightly-
-
-      - name: Install dependencies
-        run: uv sync
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen"
 
       - name: Build Molt runtime
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build -p molt-runtime --profile dev-fast
 
-      - name: Reproducible build sweep
-        run: |
-          REPRO_ROOT="$PWD/tmp/repro_sweep"
-          failures=0
-          for example in examples/*.py; do
-            echo "=== Testing $example ==="
-            rm -rf "$REPRO_ROOT"
-            mkdir -p "$REPRO_ROOT"
-            # Use --emit obj to skip linker and keep all sweep state repo-local.
-            # The A/B Molt caches and build-state roots are intentionally cold
-            # and separate; Cargo target artifacts stay shared through the
-            # default workspace target root so the sweep tests deterministic
-            # compiler output rather than Cargo rebuild behavior.
-            MOLT_CACHE="$REPRO_ROOT/cache_a" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_a" TMPDIR="$REPRO_ROOT/tmp_a" PYTHONPATH=src PYTHONHASHSEED=0 \
-              python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-              uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/a.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            MOLT_CACHE="$REPRO_ROOT/cache_b" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_b" TMPDIR="$REPRO_ROOT/tmp_b" PYTHONPATH=src PYTHONHASHSEED=0 \
-              python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-              uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/b.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-              uv run python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
-            rm -rf "$REPRO_ROOT"
-          done
-          echo "Reproducible build sweep: $failures failures"
-          [ "$failures" -eq 0 ]
-
       - name: Deterministic runtime sweep
+        if: always()
         run: |
-          for example in examples/*.py; do
-            echo "=== Testing $example ==="
-            PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-              uv run python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
-          done
+          mkdir -p proof-results
+          PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            uv run python3 tools/check_deterministic_runtime.py \
+            --corpus full --runs 3 --build-profile dev \
+            --json-out proof-results/deterministic-runtime.json
 
       - name: IR verification sweep
+        if: always()
         run: |
           PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             uv run python3 tools/verify_ir_suite.py \
-            --dir tests/differential/basic --examples
-        continue-on-error: true
+            --dir tests/differential/basic --examples \
+            --json-out proof-results/ir-verification.json
+
+      - name: Upload determinism proof results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-determinism-proof-results
+          path: proof-results/*.json
+          if-no-files-found: error
 
   formal-verification:
-    name: Formal Methods (Quint Verify)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24.16.0'
-          check-latest: true
-
-      - name: Install Quint
-        run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"
-
-      - name: Quint verify — build determinism
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_build_determinism.qnt \
-            --invariant=Inv --max-steps=10
-        continue-on-error: true
-
-      - name: Quint verify — runtime determinism
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_runtime_determinism.qnt \
-            --invariant=Inv --max-steps=10
-        continue-on-error: true
-
-      - name: Quint verify — midend pipeline
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_midend_pipeline.qnt \
-            --invariant=Inv --max-steps=10
-        continue-on-error: true
+    name: Formal Verification
+    uses: ./.github/workflows/formal.yml
 
   verification-gate-t3:
     name: Verification gate (Tier 3 - heavy)
@@ -271,72 +171,16 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Set up project Python
-        run: uv python install "$(cat .python-version)"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Setup exact Lean toolchain
-        uses: ./.github/actions/setup-lean
-
-      - uses: actions/setup-node@v6
+      - name: Setup Tier 3 toolchains
+        uses: ./.github/actions/setup-project
         with:
-          node-version: '24.16.0'
-          check-latest: true
-
-      - name: Install Quint
-        run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"
-
-      - name: Install Quint Rust evaluator
-        run: |
-          set -euo pipefail
-          evaluator_dir="$HOME/.quint/rust-evaluator-${MOLT_QUINT_RUST_EVALUATOR_VERSION}"
-          asset_path="$RUNNER_TEMP/${MOLT_QUINT_RUST_EVALUATOR_ASSET}"
-          mkdir -p "$evaluator_dir"
-          curl --fail --location --show-error --silent --retry 5 --retry-delay 2 \
-            "https://github.com/informalsystems/quint/releases/download/evaluator/${MOLT_QUINT_RUST_EVALUATOR_VERSION}/${MOLT_QUINT_RUST_EVALUATOR_ASSET}" \
-            --output "$asset_path"
-          echo "${MOLT_QUINT_RUST_EVALUATOR_SHA256}  ${asset_path}" | sha256sum --check
-          tar -xzf "$asset_path" -C "$evaluator_dir"
-          chmod +x "$evaluator_dir/quint_evaluator"
-          "$evaluator_dir/quint_evaluator" --help >/dev/null
-
-      - name: Cache Lean lake
-        uses: actions/cache@v5
-        with:
-          path: |
-            formal/lean/.lake
-            formal/lean/lake-packages
-          key: lean-${{ runner.os }}-${{ hashFiles('formal/lean/lean-toolchain', 'formal/lean/lakefile.lean') }}
-          restore-keys: |
-            lean-${{ runner.os }}-
-
-      - name: Cache cargo
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-nightly-
-
-      - name: Cache uv
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-nightly-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            uv-${{ runner.os }}-nightly-
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen"
 
       - name: Install clang
         run: |
@@ -345,21 +189,17 @@ jobs:
             sudo apt-get install -y clang
           fi
 
-      - name: Install dependencies
-        run: uv sync
-
       - name: Build Molt runtime
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build -p molt-runtime --profile dev-fast
 
       - name: Run Tier 3 gate
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- uv run python3 tools/ci_gate.py --tier 3 --verbose --json > ci_gate_tier3.json
-        continue-on-error: true
 
       - name: Report Tier 3 results
         if: always()
         run: |
-          if [ -f ci_gate_tier3.json ]; then
-            uv run python3 -c "
+          test -s ci_gate_tier3.json
+          uv run python3 -c "
           import json, sys
           data = json.load(open('ci_gate_tier3.json'))
           s = data['summary']
@@ -369,37 +209,13 @@ jobs:
                   print(f\"  FAIL: {c['name']} (tier {c['tier']}, rc={c['returncode']})\")
           sys.exit(0 if s['success'] else 1)
           "
-          fi
-        continue-on-error: true
 
       - name: Upload Tier 3 gate results
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gate-tier3
-          path: ci_gate_tier3.json
-          if-no-files-found: ignore
-
-  supply-chain:
-    name: Supply Chain Audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.1
-
-      - name: Install cargo-deny
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --locked
-
-      - name: cargo deny check
-        run: |
-          if [ -f deny.toml ]; then
-            python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check
-          else
-            echo "SKIP: deny.toml not found"
-          fi
+          path: |
+            ci_gate_tier3.json
+            proof-results/*.json
+          if-no-files-found: error

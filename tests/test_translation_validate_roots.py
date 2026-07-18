@@ -232,7 +232,9 @@ def test_main_wraps_run_in_conformance_memory_guard_scope(
         ),
     )
 
-    rc = translation_validate.main(["--json", "--python-version", "3.14", str(src)])
+    rc = translation_validate.main(
+        ["--json-out", "-", "--python-version", "3.14", str(src)]
+    )
 
     assert rc == 0
     assert calls[0]["prefix"] == "MOLT_CONFORMANCE"
@@ -241,3 +243,46 @@ def test_main_wraps_run_in_conformance_memory_guard_scope(
     assert validate_calls[0]["target_python"].short == "3.14"
     payload = json.loads(capsys.readouterr().out)
     assert payload["memory_guard"] == {"enabled": True, "sentinel": "unit"}
+
+
+def test_main_counts_mixed_missing_requested_target_as_error(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    present = tmp_path / "present.py"
+    missing = tmp_path / "missing.py"
+    present.write_text("print('ok')\n", encoding="utf-8")
+
+    @contextmanager
+    def fake_guarded_harness_scope(**kwargs):
+        class Scope:
+            limits = kwargs["limits"]
+            memory_guard = {"enabled": True}
+
+        yield Scope()
+
+    monkeypatch.setattr(
+        translation_validate.harness_memory_guard,
+        "guarded_harness_scope",
+        fake_guarded_harness_scope,
+    )
+    monkeypatch.setattr(
+        translation_validate,
+        "validate_file",
+        lambda source, **_kwargs: translation_validate.ValidationResult(
+            source_path=source,
+            cpython=translation_validate.RunResult("ok\n", "", 0, 1.0, "cpython"),
+            molt=translation_validate.RunResult("ok\n", "", 0, 1.0, "molt"),
+            match_molt_vs_cpython=True,
+        ),
+    )
+
+    rc = translation_validate.main(["--json-out", "-", str(present), str(missing)])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 2
+    assert payload["status"] == "failure"
+    assert payload["selected"] == 2
+    assert payload["executed"] == 1
+    assert payload["errors"] == 1
+    assert "requested target not found" in captured.err

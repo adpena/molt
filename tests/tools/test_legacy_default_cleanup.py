@@ -54,23 +54,6 @@ def test_test_report_defaults_use_repo_local_reports_root(
     assert mod._reports_root(str(override)) == override
 
 
-def test_nightly_suite_defaults_use_repo_local_artifact_root(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    mod = _load_tool_module(REPO_ROOT / "tools" / "nightly_test_suite.py")
-
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    expected_root = REPO_ROOT / "tmp" / "molt_testing"
-    assert mod._ext_root() == expected_root
-    assert mod._report_dir().parent == expected_root / "test_reports"
-    assert mod._fuzz_results_dir() == expected_root / "fuzz_results"
-
-    ext_root = tmp_path / "external"
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    assert mod._ext_root() == ext_root
-
-
 def test_mutation_defaults_use_repo_local_temp_and_target_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -79,16 +62,21 @@ def test_mutation_defaults_use_repo_local_temp_and_target_roots(
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "mutation-proof")
 
     assert mod._temp_root() == REPO_ROOT / "tmp" / "mutation_tmp"
-    assert mod._default_cargo_target_dir() == REPO_ROOT / "target"
+    assert mod._default_cargo_target_dir() == (
+        REPO_ROOT / "target" / "sessions" / "mutation-proof"
+    )
 
     ext_root = tmp_path / "external"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
 
     assert mod._temp_root() == ext_root / "mutation_tmp"
-    assert mod._default_cargo_target_dir() == ext_root / "target"
+    assert mod._default_cargo_target_dir() == (
+        ext_root / "target" / "sessions" / "mutation-proof"
+    )
 
 
 def test_wasm_strip_unused_defaults_output_next_to_input(

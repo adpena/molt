@@ -23,21 +23,16 @@ jobs:
       UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
       MOLT_UV_SYNC: "0"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
+      - name: Setup performance demo toolchains
+        uses: ./.github/actions/setup-project
         with:
-          version: "latest"
-      - name: Set up project Python
-        run: uv python install "$(cat .python-version)"
-      - name: Install deps (accel + dev)
-        run: uv sync --frozen --dev
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.96.1
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          cache-namespace: perf-demo
+          sync-args: "--frozen --dev"
       - name: Install k6
         run: |
           if ! command -v k6 >/dev/null 2>&1; then
@@ -72,7 +67,7 @@ jobs:
           print("Perf check OK")
           PY
       - name: Upload k6 artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: demo-k6
           path: bench/results/*.json

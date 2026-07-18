@@ -471,7 +471,7 @@ def main() -> int:
     if not reports_dir.exists():
         print(f"No reports directory found at: {reports_dir}", file=sys.stderr)
         print(
-            "Run tools/nightly_test_suite.py first to generate results.",
+            "Run the canonical hosted proof workflows to generate results.",
             file=sys.stderr,
         )
         return 1

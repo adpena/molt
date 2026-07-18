@@ -1,4 +1,4 @@
-name: Kani compatibility and bounded verification
+name: Kani Advisory Compatibility Probe
 
 on:
   workflow_dispatch:
@@ -12,28 +12,30 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  kani-verification:
-    name: Kani compatibility and bounded verification
+  kani-compatibility-advisory:
+    name: Kani advisory compatibility probe
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.96.1
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - name: Setup Kani Rust toolchain
+        uses: ./.github/actions/setup-project
+        with:
+          uv: "false"
+          cache-uv: "false"
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          cache-namespace: kani
       - name: Install Kani
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install --locked kani-verifier
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo kani setup
       - name: Check Kani toolchain compatibility
-        id: kani-toolchain
         run: |
           python3 - <<'PY'
           import json
-          import os
           import pathlib
           import re
           import subprocess
@@ -83,74 +85,37 @@ jobs:
               kani_rustc = match.group(1)
 
           compatible = version_key(kani_rustc) >= version_key(required)
-          output_path = pathlib.Path(os.environ["GITHUB_OUTPUT"])
-          with output_path.open("a", encoding="utf-8") as output:
-              print(f"compatible={'true' if compatible else 'false'}", file=output)
-              print(f"required_rust={required}", file=output)
-              print(f"kani_toolchain={kani_toolchain}", file=output)
-              print(f"kani_rustc={kani_rustc}", file=output)
-
           result = {
-              "schema": "molt.kani-proof-result.v1",
+              "schema": "molt.kani-compatibility.v1",
+              "authoritative": False,
+              "required": False,
               "required_rust": required,
               "kani_toolchain": kani_toolchain,
               "kani_rustc": kani_rustc,
               "compatible": compatible,
-              "proofs": {"nan_boxing": "not_run", "runtime": "not_run"},
-              "executed_proof_commands": 0,
+              "status": "compatible" if compatible else "unavailable",
+              "proofs_executed": 0,
+              "next_action": (
+                  "promote through the canonical proof plan only after the "
+                  "verifier toolchain satisfies the workspace Rust floor"
+              ),
           }
-          pathlib.Path("kani-proof-result.json").write_text(
+          pathlib.Path("kani-compatibility.json").write_text(
               json.dumps(result, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
 
           if not compatible:
-              raise SystemExit(
+              print(
                   f"Kani proof unavailable: {kani_toolchain} reports Rust "
                   f"{kani_rustc}, but verified crates require Rust {required}; "
-                  "zero executed proofs is a failure"
+                  "this advisory probe does not claim bounded verification"
               )
           PY
-      - name: Run NaN-boxing proofs
-        id: nan-boxing
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-obj-model -- cargo kani --tests
-      - name: Run runtime proofs
-        id: runtime
-        if: always() && steps.kani-toolchain.outcome == 'success'
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests --no-default-features
-      - name: Finalize Kani proof result
+      - name: Upload Kani advisory compatibility receipt
         if: always()
-        env:
-          NAN_BOXING_OUTCOME: ${{ steps.nan-boxing.outcome }}
-          RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import pathlib
-
-          path = pathlib.Path("kani-proof-result.json")
-          result = json.loads(path.read_text()) if path.is_file() else {
-              "schema": "molt.kani-proof-result.v1",
-              "compatible": False,
-              "proofs": {},
-          }
-          outcomes = {
-              "nan_boxing": os.environ.get("NAN_BOXING_OUTCOME", "not_run"),
-              "runtime": os.environ.get("RUNTIME_OUTCOME", "not_run"),
-          }
-          result["proofs"] = outcomes
-          result["executed_proof_commands"] = sum(
-              outcome in {"success", "failure"} for outcome in outcomes.values()
-          )
-          path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-          PY
-      - name: Upload Kani proof result
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kani-proof-result
-          path: kani-proof-result.json
+          name: kani-advisory-compatibility
+          path: kani-compatibility.json
           if-no-files-found: error

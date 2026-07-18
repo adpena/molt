@@ -1,37 +1,26 @@
 #!/usr/bin/env python3
 """Mutation testing infrastructure for Molt compiler correctness (MOL-282).
 
-Two modes of operation:
+Compiler mutation authority:
 
-**Mode 1 — Compiler mutation** (``--mode compiler``, default):
+**Compiler mutation**:
     Systematically mutates the Molt *compiler* Python source (under ``src/molt/``)
     and runs the differential test suite against each mutant.  Mutations that
     survive (tests still pass) reveal gaps in test coverage of the compiler
     itself.
 
-**Mode 2 — Program mutation** (``--mode program``):
-    Mutates test *programs* (under ``tests/differential/``) and verifies that
-    the compiler propagates each semantic change — i.e., the compiled output
-    differs from the unmutated original.  This is the original behavior.
-
 Mutation score = killed / (killed + survived).
 
 Usage examples:
-    # Compiler mutation (new, default)
+    # Compiler mutation
     uv run --python 3.12 python3 tools/mutation_test.py \\
         --target src/molt/frontend/__init__.py \\
         --max-mutations 20 \\
         --test-subset tests/differential/basic \\
         --timeout 120
 
-    # Program mutation (legacy)
-    uv run --python 3.12 python3 tools/mutation_test.py \\
-        --mode program \\
-        --source tests/differential/basic \\
-        --count 5
-
 Exit codes:
-    0 — all mutations were killed (score = 100%), or ``--no-fail``
+    0 — all mutations were killed (score = 100%)
     1 — at least one mutation survived
     2 — infrastructure error (build/setup failure)
 """
@@ -48,7 +37,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +55,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 
 DEFAULT_TARGET_DIR = SRC_ROOT / "molt"
@@ -259,8 +248,19 @@ class MutationReport:
             if r.status == "survived"
         ]
         return {
+            "schema": "molt.mutation-proof.v1",
+            "status": (
+                "success"
+                if self.killed > 0
+                and self.survived == 0
+                and self.build_fail == 0
+                and self.timeout == 0
+                and self.skipped == 0
+                else "failure"
+            ),
             "mutation_score": round(self.score, 4),
             "total": len(self.results),
+            "executed": self.killed + self.survived,
             "killed": self.killed,
             "survived": self.survived,
             "build_fail": self.build_fail,
@@ -1051,599 +1051,6 @@ def run_compiler_mutation_campaign(
 
 
 # ===========================================================================
-# MODE 2: Program mutation (original / legacy)
-# ===========================================================================
-
-# --- AST-level bulk operators (apply to entire test program) ---
-
-
-class ArithSwap(ast.NodeTransformer):
-    """Replace arithmetic operators: + <-> -, * <-> //, ** <-> %."""
-
-    name = "ArithSwap"
-    _swap = {
-        ast.Add: ast.Sub,
-        ast.Sub: ast.Add,
-        ast.Mult: ast.FloorDiv,
-        ast.FloorDiv: ast.Mult,
-        ast.Mod: ast.Pow,
-        ast.Pow: ast.Mod,
-    }
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_BinOp(self, node: ast.BinOp) -> ast.BinOp:
-        self.generic_visit(node)
-        replacement = self._swap.get(type(node.op))
-        if replacement is not None:
-            old_name = type(node.op).__name__
-            new_name = replacement.__name__
-            self.mutations.append(f"line {node.lineno}: {old_name} -> {new_name}")
-            node.op = replacement()
-        return node
-
-
-class CompSwap(ast.NodeTransformer):
-    """Replace comparison operators: == <-> !=, < <-> >=, > <-> <=."""
-
-    name = "CompSwap"
-    _swap = {
-        ast.Eq: ast.NotEq,
-        ast.NotEq: ast.Eq,
-        ast.Lt: ast.GtE,
-        ast.GtE: ast.Lt,
-        ast.Gt: ast.LtE,
-        ast.LtE: ast.Gt,
-    }
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_Compare(self, node: ast.Compare) -> ast.Compare:
-        self.generic_visit(node)
-        new_ops = []
-        for op in node.ops:
-            replacement = self._swap.get(type(op))
-            if replacement is not None:
-                old_name = type(op).__name__
-                new_name = replacement.__name__
-                self.mutations.append(f"line {node.lineno}: {old_name} -> {new_name}")
-                new_ops.append(replacement())
-            else:
-                new_ops.append(op)
-        node.ops = new_ops
-        return node
-
-
-class ConstPerturb(ast.NodeTransformer):
-    """Perturb integer literals by +1 or -1."""
-
-    name = "ConstPerturb"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
-        self.generic_visit(node)
-        if isinstance(node.value, int) and not isinstance(node.value, bool):
-            delta = random.choice([-1, 1])
-            old_val = node.value
-            node.value = old_val + delta
-            self.mutations.append(f"line {node.lineno}: {old_val} -> {node.value}")
-        return node
-
-
-class BoolFlip(ast.NodeTransformer):
-    """Replace True with False and vice versa."""
-
-    name = "BoolFlip"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
-        self.generic_visit(node)
-        if isinstance(node.value, bool):
-            old_val = node.value
-            node.value = not old_val
-            self.mutations.append(f"line {node.lineno}: {old_val} -> {node.value}")
-        return node
-
-
-class StringMutate(ast.NodeTransformer):
-    """Mutate string literals: append a character or remove the last."""
-
-    name = "StringMutate"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
-        self.generic_visit(node)
-        if isinstance(node.value, str) and node.value:
-            old_val = node.value
-            if random.random() < 0.5:
-                node.value = old_val + "X"
-                self.mutations.append(f"line {node.lineno}: appended 'X' to string")
-            elif len(old_val) > 1:
-                node.value = old_val[:-1]
-                self.mutations.append(
-                    f"line {node.lineno}: removed last char from string"
-                )
-            else:
-                node.value = chr((ord(old_val) + 1) % 128) if old_val else "X"
-                self.mutations.append(
-                    f"line {node.lineno}: replaced single-char string"
-                )
-        return node
-
-
-class ReturnDrop(ast.NodeTransformer):
-    """Remove return statements (replace with pass)."""
-
-    name = "ReturnDrop"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_Return(self, node: ast.Return) -> ast.Pass:
-        self.generic_visit(node)
-        self.mutations.append(f"line {node.lineno}: dropped return")
-        replacement = ast.Pass()
-        return ast.copy_location(replacement, node)
-
-
-class CondFlip(ast.NodeTransformer):
-    """Negate if-conditions by wrapping in ``not (...)``."""
-
-    name = "CondFlip"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_If(self, node: ast.If) -> ast.If:
-        self.generic_visit(node)
-        self.mutations.append(f"line {node.lineno}: negated if-condition")
-        negated = ast.UnaryOp(
-            op=ast.Not(),
-            operand=node.test,
-        )
-        ast.copy_location(negated, node.test)
-        node.test = negated
-        return node
-
-
-class LogicSwap(ast.NodeTransformer):
-    """Replace boolean operators: ``and`` <-> ``or``."""
-
-    name = "LogicSwap"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_BoolOp(self, node: ast.BoolOp) -> ast.BoolOp:
-        self.generic_visit(node)
-        if isinstance(node.op, ast.And):
-            self.mutations.append(f"line {node.lineno}: And -> Or")
-            node.op = ast.Or()
-        elif isinstance(node.op, ast.Or):
-            self.mutations.append(f"line {node.lineno}: Or -> And")
-            node.op = ast.And()
-        return node
-
-
-class ContainerEmpty(ast.NodeTransformer):
-    """Replace non-empty list/dict/set literals with empty ones."""
-
-    name = "ContainerEmpty"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-
-    def visit_List(self, node: ast.List) -> ast.List:
-        self.generic_visit(node)
-        if node.elts and isinstance(node.ctx, ast.Load):
-            self.mutations.append(
-                f"line {node.lineno}: emptied list ({len(node.elts)} elts)"
-            )
-            node.elts = []
-        return node
-
-    def visit_Dict(self, node: ast.Dict) -> ast.Dict:
-        self.generic_visit(node)
-        if node.keys:
-            self.mutations.append(
-                f"line {node.lineno}: emptied dict ({len(node.keys)} keys)"
-            )
-            node.keys = []
-            node.values = []
-        return node
-
-    def visit_Set(self, node: ast.Set) -> ast.Set:
-        self.generic_visit(node)
-        if len(node.elts) > 1:
-            self.mutations.append(f"line {node.lineno}: reduced set to 1 elt")
-            node.elts = [node.elts[0]]
-        return node
-
-
-class AssignDrop(ast.NodeTransformer):
-    """Drop assignment statements (replace with pass)."""
-
-    name = "AssignDrop"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutations: list[str] = []
-        self._count = 0
-
-    def visit_Assign(self, node: ast.Assign) -> ast.AST:
-        self.generic_visit(node)
-        self._count += 1
-        if self._count % 2 == 0:
-            self.mutations.append(f"line {node.lineno}: dropped assignment")
-            replacement = ast.Pass()
-            return ast.copy_location(replacement, node)
-        return node
-
-
-# All program-mode operators in application order.
-PROGRAM_OPERATORS: list[type[ast.NodeTransformer]] = [
-    ArithSwap,
-    CompSwap,
-    ConstPerturb,
-    BoolFlip,
-    StringMutate,
-    ReturnDrop,
-    CondFlip,
-    LogicSwap,
-    ContainerEmpty,
-    AssignDrop,
-]
-
-
-# ---------------------------------------------------------------------------
-# Program-mutation build + run helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_binary(build_json: dict) -> str | None:
-    """Extract the binary path from build JSON."""
-    data = build_json
-    if "data" in build_json and isinstance(build_json["data"], dict):
-        data = build_json["data"]
-    for key in (
-        "output",
-        "artifact",
-        "binary",
-        "path",
-        "output_path",
-    ):
-        if key in data:
-            return data[key]
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                return data["build"][key]
-    return None
-
-
-def _build_env() -> dict[str, str]:
-    """Build environment for Molt CLI invocations."""
-    env = os.environ.copy()
-    existing = env.get("PYTHONPATH", "")
-    src_dir = str(SRC_ROOT)
-    if src_dir not in existing.split(os.pathsep):
-        env["PYTHONPATH"] = src_dir + (os.pathsep + existing if existing else "")
-    env["PYTHONHASHSEED"] = "0"
-    env["MOLT_DETERMINISTIC"] = "1"
-    return env
-
-
-def _build_and_run(
-    source_path: str,
-    profile: str,
-    timeout: int,
-    env: dict[str, str],
-) -> tuple[str, str, int | None, str | None]:
-    """Build a Python file with Molt and run the binary.
-
-    Returns ``(stdout, stderr, returncode, error_msg)``.
-    """
-    build_cmd = [
-        sys.executable,
-        "-m",
-        "molt.cli",
-        "build",
-        "--profile",
-        profile,
-        "--deterministic",
-        "--json",
-        source_path,
-    ]
-    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
-    try:
-        build_result = harness_memory_guard.guarded_completed_process(
-            build_cmd,
-            prefix="MOLT_TEST_SUITE",
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-            limits=limits,
-        )
-    except subprocess.TimeoutExpired:
-        return "", "", None, "build timeout"
-
-    if build_result.returncode != 0:
-        stderr_snippet = (build_result.stderr or "")[:500]
-        return (
-            "",
-            "",
-            None,
-            f"build failed (exit {build_result.returncode}): {stderr_snippet}",
-        )
-
-    try:
-        build_info = json.loads(build_result.stdout)
-    except json.JSONDecodeError:
-        return (
-            "",
-            "",
-            None,
-            f"invalid build JSON: {build_result.stdout[:300]}",
-        )
-
-    binary = _extract_binary(build_info)
-    if binary is None:
-        return (
-            "",
-            "",
-            None,
-            f"no binary in build output (keys: {list(build_info.keys())})",
-        )
-
-    if not Path(binary).exists():
-        return "", "", None, f"binary not found: {binary}"
-
-    try:
-        run_result = harness_memory_guard.guarded_completed_process(
-            [binary],
-            prefix="MOLT_TEST_SUITE",
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-            limits=limits,
-        )
-    except subprocess.TimeoutExpired:
-        return "", "", None, "run timeout"
-
-    return (
-        run_result.stdout,
-        run_result.stderr,
-        run_result.returncode,
-        None,
-    )
-
-
-def _apply_program_mutation(
-    source: str,
-    operator_cls: type[ast.NodeTransformer],
-) -> tuple[str | None, str]:
-    """Apply a bulk mutation operator to a test program source.
-
-    Returns ``(mutated_source_or_None, description)``.
-    """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        return None, f"parse error: {e}"
-
-    tree_copy = copy.deepcopy(tree)
-    transformer = operator_cls()
-    mutated_tree = transformer.visit(tree_copy)
-
-    if not transformer.mutations:  # type: ignore[attr-defined]
-        return None, "no applicable nodes"
-
-    ast.fix_missing_locations(mutated_tree)
-
-    try:
-        mutated_source = ast.unparse(mutated_tree)
-    except Exception as e:
-        return None, f"unparse error: {e}"
-
-    try:
-        original_unparsed = ast.unparse(ast.parse(source))
-    except Exception:
-        original_unparsed = source
-
-    if mutated_source == original_unparsed:
-        return None, "mutation produced identical source"
-
-    desc_parts = [
-        f"{operator_cls.name}: {m}"  # type: ignore[attr-defined]
-        for m in transformer.mutations  # type: ignore[attr-defined]
-    ]
-    return mutated_source, "; ".join(desc_parts)
-
-
-def _mutate_program_file(
-    source_path: str,
-    profile: str,
-    timeout: int,
-    env: dict[str, str],
-    verbose: bool,
-    count: int,
-    report: MutationReport,
-) -> None:
-    """Apply all mutation operators to a single test program file."""
-    try:
-        source = Path(source_path).read_text()
-    except OSError as e:
-        report.results.append(
-            MutationResult(
-                source_file=source_path,
-                operator="N/A",
-                description=f"cannot read file: {e}",
-                status="skip",
-            )
-        )
-        return
-
-    try:
-        ast.parse(source)
-    except SyntaxError:
-        report.results.append(
-            MutationResult(
-                source_file=source_path,
-                operator="N/A",
-                description="syntax error in source",
-                status="skip",
-            )
-        )
-        return
-
-    orig_stdout, orig_stderr, orig_rc, orig_error = _build_and_run(
-        source_path, profile, timeout, env
-    )
-    if orig_error is not None:
-        if verbose:
-            print(f"  [skip] original build/run failed: {orig_error}")
-        report.results.append(
-            MutationResult(
-                source_file=source_path,
-                operator="N/A",
-                description=f"original build/run failed: {orig_error}",
-                status="skip",
-            )
-        )
-        return
-
-    if verbose:
-        print(f"  original output: {orig_stdout[:80]!r}...")
-
-    for operator_cls in PROGRAM_OPERATORS:
-        op_name = operator_cls.name  # type: ignore[attr-defined]
-        mutated_source, description = _apply_program_mutation(source, operator_cls)
-
-        if mutated_source is None:
-            if verbose:
-                print(f"  [{op_name}] skip: {description}")
-            report.results.append(
-                MutationResult(
-                    source_file=source_path,
-                    operator=op_name,
-                    description=description,
-                    status="skip",
-                )
-            )
-            continue
-
-        tmp_fd = None
-        tmp_path = None
-        try:
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                suffix=".py",
-                prefix=f"mutation_{op_name}_",
-                dir=str(_temp_root()),
-            )
-            os.write(tmp_fd, mutated_source.encode("utf-8"))
-            os.close(tmp_fd)
-            tmp_fd = None
-
-            mut_stdout, mut_stderr, mut_rc, mut_error = _build_and_run(
-                tmp_path, profile, timeout, env
-            )
-        finally:
-            if tmp_fd is not None:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-            if tmp_path is not None:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-
-        if mut_error is not None:
-            if verbose:
-                print(f"  [{op_name}] killed (build/run error): {mut_error[:80]}")
-            report.results.append(
-                MutationResult(
-                    source_file=source_path,
-                    operator=op_name,
-                    description=description,
-                    status="killed",
-                    original_output=orig_stdout,
-                    error=mut_error,
-                )
-            )
-            continue
-
-        output_changed = orig_stdout != mut_stdout or orig_rc != mut_rc
-
-        if output_changed:
-            if verbose:
-                print(f"  [{op_name}] killed: output changed")
-            report.results.append(
-                MutationResult(
-                    source_file=source_path,
-                    operator=op_name,
-                    description=description,
-                    status="killed",
-                    original_output=orig_stdout,
-                    mutated_output=mut_stdout,
-                )
-            )
-        else:
-            if verbose:
-                print(f"  [{op_name}] SURVIVED: output unchanged")
-                print(f"           mutation: {description}")
-                print(f"           output:   {mut_stdout[:120]!r}")
-            report.results.append(
-                MutationResult(
-                    source_file=source_path,
-                    operator=op_name,
-                    description=description,
-                    status="survived",
-                    original_output=orig_stdout,
-                    mutated_output=mut_stdout,
-                )
-            )
-
-        scoreable = sum(
-            1
-            for r in report.results
-            if r.source_file == source_path and r.status in ("killed", "survived")
-        )
-        if count > 0 and scoreable >= count:
-            break
-
-
-def _collect_python_files(source_dir: str) -> list[str]:
-    """Recursively collect .py files from a directory."""
-    root = Path(source_dir)
-    if root.is_file() and root.suffix == ".py":
-        return [str(root)]
-    if not root.is_dir():
-        return []
-    return sorted(str(p) for p in root.rglob("*.py") if p.is_file())
-
-
-# ===========================================================================
 # CLI + main
 # ===========================================================================
 
@@ -1676,22 +1083,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Mutation testing for the Molt compiler.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            Mode 'compiler' (default): mutate the compiler source
-            and run differential tests to verify detection.
-
-            Mode 'program': mutate test programs and verify the
-            compiler propagates the semantic change.
-        """),
+        epilog="Mutate compiler source and prove differential detection.",
     )
-    parser.add_argument(
-        "--mode",
-        choices=["compiler", "program"],
-        default="compiler",
-        help="Mutation target: 'compiler' (default) or 'program'",
-    )
-
-    # --- Compiler-mode flags ---
+# --- Compiler-mode flags ---
     parser.add_argument(
         "--target",
         type=Path,
@@ -1718,25 +1112,6 @@ def main() -> int:
         help="Differential test dir to run (compiler mode, "
         "default: tests/differential/basic)",
     )
-    parser.add_argument(
-        "--no-fail",
-        action="store_true",
-        help="Exit 0 even if mutations survived",
-    )
-
-    # --- Program-mode flags ---
-    parser.add_argument(
-        "--source",
-        default=None,
-        help="Test programs dir (program mode, default: tests/differential/basic/)",
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=0,
-        help="Max scoreable mutations per source file (program mode, 0=unlimited)",
-    )
-
     # --- Shared flags ---
     parser.add_argument(
         "--timeout",
@@ -1756,12 +1131,8 @@ def main() -> int:
         help="Random seed (default: 42)",
     )
     parser.add_argument(
-        "--json",
         "--json-out",
-        dest="json_out",
         default=None,
-        nargs="?",
-        const="-",
         help="Write JSON report (file path, or '-' for stdout)",
     )
     parser.add_argument(
@@ -1774,11 +1145,7 @@ def main() -> int:
     args = parser.parse_args()
     random.seed(args.seed)
 
-    if args.mode == "compiler":
-        return _main_compiler(args)
-    else:
-        return _main_program(args)
-
+    return _main_compiler(args)
 
 def _main_compiler(args: argparse.Namespace) -> int:
     """Compiler-mutation mode entry point."""
@@ -1814,64 +1181,11 @@ def _main_compiler(args: argparse.Namespace) -> int:
 
     _emit_output(report, args)
 
-    if args.no_fail:
-        return 0
-    return 1 if report.survived > 0 else 0
-
-
-def _main_program(args: argparse.Namespace) -> int:
-    """Program-mutation mode entry point (legacy)."""
-    source_dir = args.source or str(DEFAULT_TEST_SUBSET)
-    if not Path(source_dir).exists():
-        print(
-            f"Error: source path does not exist: {source_dir}",
-            file=sys.stderr,
-        )
-        return 2
-
-    files = _collect_python_files(source_dir)
-    if not files:
-        print(
-            f"Error: no .py files found in {source_dir}",
-            file=sys.stderr,
-        )
-        return 2
-
-    env = _build_env()
-    report = MutationReport()
-
-    print(
-        f"Mutation testing (program mode): "
-        f"{len(files)} source file(s) from {source_dir}"
+    return fail_closed_proof_exit_code(
+        executed=report.killed + report.survived,
+        failed=report.survived,
+        errors=report.build_fail + report.timeout + report.skipped,
     )
-    print(
-        f"Build profile: {args.build_profile}, "
-        f"timeout: {args.timeout}s, seed: {args.seed}"
-    )
-    print(
-        f"Operators: {', '.join(op.name for op in PROGRAM_OPERATORS)}"  # type: ignore[attr-defined]
-    )
-    print()
-
-    for i, fpath in enumerate(files, 1):
-        rel = os.path.relpath(fpath, str(REPO_ROOT))
-        print(f"[{i}/{len(files)}] {rel}")
-
-        _mutate_program_file(
-            source_path=fpath,
-            profile=args.build_profile,
-            timeout=args.timeout,
-            env=env,
-            verbose=args.verbose,
-            count=args.count,
-            report=report,
-        )
-
-    _emit_output(report, args)
-
-    if args.no_fail:
-        return 0
-    return 1 if report.survived > 0 else 0
 
 
 def _emit_output(report: MutationReport, args: argparse.Namespace) -> None:

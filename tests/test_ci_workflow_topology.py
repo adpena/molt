@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
+
+import pytest
+import yaml
+
+from tools.proof_counts import fail_closed_proof_exit_code
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,17 +41,77 @@ def _default_python_version() -> str:
     return version
 
 
+def test_setup_project_callers_use_declared_inputs() -> None:
+    action = yaml.safe_load(_read(".github/actions/setup-project/action.yml"))
+    declared = set(action["inputs"])
+    calls = 0
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        for job in payload.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if step.get("uses") != "./.github/actions/setup-project":
+                    continue
+                calls += 1
+                assert set(step.get("with", {})) <= declared, workflow
+    assert calls >= 10
+
+
+def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
+    action = _read(".github/actions/setup-project/action.yml")
+    for token in (
+        "inputs.cache-namespace",
+        "inputs.rust-toolchain",
+        "inputs.rust-components",
+        "inputs.rust-targets",
+        "rust-toolchain.toml",
+        "Cargo.lock",
+        "config/llvm_toolchain_releases.toml",
+        "config/llvm_toolchain_arches.toml",
+    ):
+        assert token in action
+    cargo_block = action.split("- name: Cache Cargo toolchain state", 1)[1].split(
+        "- name: Cache Lean lake artifacts", 1
+    )[0]
+    assert "~/.cargo/registry" in cargo_block
+    assert "~/.cargo/git" in cargo_block
+    assert "\n          target\n" not in cargo_block
+    assert "cache-uv requires uv" in action
+    assert "sync-args requires uv" in action
+    assert "cache-cargo requires rust-toolchain" in action
+
+
+@pytest.mark.parametrize(
+    ("event", "selected", "expected"),
+    [
+        ("schedule", False, True),
+        ("push", False, False),
+        ("pull_request", False, False),
+        ("workflow_dispatch", False, False),
+        ("push", True, True),
+        ("pull_request", True, True),
+        ("workflow_dispatch", True, True),
+    ],
+)
+def test_security_reusable_selection_truth_table(
+    event: str, selected: bool, expected: bool
+) -> None:
+    assert (event == "schedule" or selected) is expected
+    text = _read(".github/workflows/security_hardening.yml")
+    assert "if: github.event_name == 'schedule' || inputs.python_security" in text
+    assert "if: github.event_name == 'schedule' || inputs.rust_security" in text
+
+
 def test_ci_push_path_is_cheap_only() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
     docs_gate = ci_text.split("  docs-gates:", 1)[1].split("\n  classify-changes:", 1)[
         0
     ]
-    rustfmt_setup = docs_gate.index("uses: dtolnay/rust-toolchain@1.96.1")
+    rustfmt_setup = docs_gate.index("uses: ./.github/actions/setup-project")
     repository_executor = docs_gate.index("Execute repository policy partitions")
     assert rustfmt_setup < repository_executor
-    assert "components: rustfmt, clippy" in docs_gate
-    assert "targets: wasm32-wasip1" in docs_gate
+    assert "rust-components: rustfmt, clippy" in docs_gate
+    assert "rust-targets: wasm32-wasip1" in docs_gate
 
     assert "concurrency:" in ci_text
     assert "merge_group:" in ci_text
@@ -80,7 +146,8 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "runs-on: ubuntu-latest" in ci_text
     assert "runs-on: ${{ matrix.runner }}" in ci_text
     assert "matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}" in ci_text
-    assert "Swatinem/rust-cache@v2" in ci_text
+    assert "Swatinem/rust-cache@" not in ci_text
+    assert "uses: ./.github/actions/setup-project" in ci_text
     # Three rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
     # rust-build-unit-smoke, and the LLVM backend job.
     assert ci_text.count("Configure adaptive Rust parallelism") == 3
@@ -89,7 +156,7 @@ def test_ci_push_path_is_cheap_only() -> None:
         == 3
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
-    assert "uv sync --frozen --group dev" in ci_text
+    assert 'sync-args: "--frozen --group dev"' in ci_text
     proof_plan_text = _read("tools/proof_plan.toml")
     assert '"-m", "not slow"' in proof_plan_text
     assert "native.integration.bench-cli" in proof_plan_text
@@ -144,7 +211,7 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
         "--verify-selected '${{ needs.classify-changes.outputs.selected }}'" in ci_text
     )
     assert "--receipt-dir proof-receipts" in ci_text
-    assert "actions/download-artifact@v7" in ci_text
+    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in ci_text
     assert "== 'success' && 1 || 0" not in ci_text
     assert ci_text.count("fetch-depth: 0") == 1
 
@@ -192,19 +259,23 @@ def test_pr_trust_labeler_is_advisory_not_authoritative() -> None:
     assert "core.setFailed" in gate_text
 
 
-def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
+def test_kani_incompatibility_is_an_explicit_advisory_receipt_not_a_proof() -> None:
     kani_text = _read(".github/workflows/kani.yml")
-    runtime_blocks = [
-        block
-        for block in _named_step_blocks(kani_text)
-        if "- name: Run runtime proofs" in block
-    ]
 
-    assert len(runtime_blocks) == 1
-    runtime_block = runtime_blocks[0]
-    assert "cargo kani --tests --no-default-features" in runtime_block
-    assert "--all-features" not in runtime_block
-    assert "stdlib_full" not in runtime_block
+    assert "name: Kani Advisory Compatibility Probe" in kani_text
+    assert "name: Kani advisory compatibility probe" in kani_text
+    assert '"schema": "molt.kani-compatibility.v1"' in kani_text
+    assert '"authoritative": False' in kani_text
+    assert '"required": False' in kani_text
+    assert '"proofs_executed": 0' in kani_text
+    assert '"status": "compatible" if compatible else "unavailable"' in kani_text
+    assert "this advisory probe does not claim bounded verification" in kani_text
+    assert "cargo kani --tests" not in kani_text
+    assert not any(
+        "bounded verification" in line.lower()
+        for line in kani_text.splitlines()
+        if line.lstrip().startswith("name:")
+    )
 
 
 def test_kani_workflow_is_scheduled_manual_and_standalone() -> None:
@@ -222,17 +293,17 @@ def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
     kani_text = _read(".github/workflows/kani.yml")
 
     assert "Check Kani toolchain compatibility" in kani_text
-    assert "id: kani-toolchain" in kani_text
+    assert "id: kani-toolchain" not in kani_text
     assert 'workspace_manifest["workspace"]["package"]["rust-version"]' in kani_text
     assert 'runtime" / "molt-obj-model" / "Cargo.toml"' in kani_text
     assert 'runtime" / "molt-runtime" / "Cargo.toml"' in kani_text
     assert "compatible = version_key(kani_rustc) >= version_key(required)" in kani_text
-    assert "zero executed proofs is a failure" in kani_text
+    assert "this advisory probe does not claim bounded verification" in kani_text
     assert "outputs.compatible" not in kani_text
-    assert "if: always() && steps.kani-toolchain.outcome == 'success'" in kani_text
+    assert "GITHUB_OUTPUT" not in kani_text
     assert "Report skipped Kani proofs" not in kani_text
-    assert "molt.kani-proof-result.v1" in kani_text
-    assert "executed_proof_commands" in kani_text
+    assert "molt.kani-compatibility.v1" in kani_text
+    assert "proofs_executed" in kani_text
     assert "if-no-files-found: error" in kani_text
     assert "--ignore-rust-version" not in kani_text
 
@@ -271,6 +342,21 @@ def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
             assert action_pin not in text, (workflow, action_pin)
 
 
+def test_github_workflows_pin_every_external_action_to_full_sha() -> None:
+    action_files = [*WORKFLOW_ROOT.glob("*.yml"), *REPO_ROOT.glob(".github/actions/*/action.yml")]
+    uses_pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
+    sha_pattern = re.compile(r"^[^/@]+/[^/@]+@[0-9a-f]{40}$", re.IGNORECASE)
+    found = 0
+    for workflow in sorted(action_files):
+        text = workflow.read_text(encoding="utf-8")
+        for target in uses_pattern.findall(text):
+            if target.startswith("./") or target.startswith("docker://"):
+                continue
+            found += 1
+            assert sha_pattern.fullmatch(target), (workflow, target)
+    assert found > 0
+
+
 def test_github_workflows_use_current_setup_uv_release() -> None:
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
         text = workflow.read_text(encoding="utf-8")
@@ -280,7 +366,7 @@ def test_github_workflows_use_current_setup_uv_release() -> None:
         if not setup_uv_lines:
             continue
 
-        assert all("astral-sh/setup-uv@v8.2.0" in line for line in setup_uv_lines), (
+        assert all("# v8.2.0" in line for line in setup_uv_lines), (
             workflow,
             setup_uv_lines,
         )
@@ -293,7 +379,7 @@ def test_executable_proof_workflows_pin_uv_tool_version() -> None:
         ".github/workflows/security_hardening.yml",
     ):
         text = _read(relative)
-        assert text.count("astral-sh/setup-uv@v8.2.0") == text.count(
+        assert text.count("astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39") == text.count(
             'version: "0.11.24"'
         ), relative
 
@@ -375,8 +461,12 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in (
         rust_security
     )
-    assert "uses: Swatinem/rust-cache@v2" in rust_security
-    assert 'workspaces: ". -> target/sessions/rust-security"' in rust_security
+    assert "uses: ./.github/actions/setup-project" in rust_security
+    assert 'rust-toolchain: "1.96.1"' in rust_security
+    assert 'cache-cargo: "true"' in rust_security
+    setup_project = _read(".github/actions/setup-project/action.yml")
+    assert "~/.cargo/registry" in setup_project
+    assert "~/.cargo/git" in setup_project
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
     assert "rm -rf" not in rust_security
@@ -423,7 +513,13 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
         if command["family"] == "platform_portability"
     ]
     assert {command["cell"] for command in commands} == set(cells)
-    assert len({tuple(command["argv"]) for command in commands}) == 1
+    queue_commands = [command for command in commands if ".queue." in command["id"]]
+    ir_commands = [command for command in commands if ".ir." in command["id"]]
+    assert len({tuple(command["argv"]) for command in queue_commands}) == 1
+    assert {command["cell"] for command in ir_commands} == {
+        "macos-arm64-py312-queue-portability",
+        "windows-x86_64-py312-queue-portability",
+    }
 
 
 def test_checkouts_drop_persisted_credentials_and_permissions_are_bounded() -> None:
@@ -477,8 +573,10 @@ def test_default_ci_python_version_comes_from_single_file() -> None:
         assert f'python-version: "{default_python}"' not in text
         assert f"python-version: '{default_python}'" not in text
 
+    setup_project = _read(".github/actions/setup-project/action.yml")
+    assert "python-version-file: .python-version" in setup_project
     for workflow in ("ci.yml", "formal.yml", "release.yml"):
-        assert 'python-version-file: ".python-version"' in _read(
+        assert "uses: ./.github/actions/setup-project" in _read(
             f".github/workflows/{workflow}"
         )
 
@@ -572,10 +670,11 @@ def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
     assert ".sort()" not in kani_text
 
 
-def test_kani_workflow_has_single_cargo_cache_authority() -> None:
+def test_kani_advisory_probe_has_single_cargo_cache_authority() -> None:
     kani_workflow = _read(".github/workflows/kani.yml")
 
-    assert "swatinem/rust-cache@v2" in kani_workflow
+    assert "uses: ./.github/actions/setup-project" in kani_workflow
+    assert "cache-namespace: kani" in kani_workflow
     assert "actions/cache@v4" not in kani_workflow
     assert "Cache cargo registry and target" not in kani_workflow
     assert (
@@ -585,16 +684,9 @@ def test_kani_workflow_has_single_cargo_cache_authority() -> None:
     assert (
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo kani setup"
     ) in kani_workflow
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
-        "--cwd runtime/molt-obj-model -- cargo kani --tests"
-    ) in kani_workflow
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
-        "--cwd runtime/molt-runtime -- cargo kani --tests"
-    ) in kani_workflow
     assert "cd runtime/molt-obj-model && cargo kani --tests" not in kani_workflow
     assert "cd runtime/molt-runtime && cargo kani --tests" not in kani_workflow
+    assert "cargo kani --tests" not in kani_workflow
 
 
 def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
@@ -623,9 +715,12 @@ def test_lean_workflows_share_exact_provisioning_authority() -> None:
     assert 'expected_version="${toolchain##*:v}"' in setup_action
     assert '"$exact_version" != "Lean (version $expected_version,"*' in setup_action
     assert '"$selected_version" != "$exact_version"' in setup_action
-    assert "key: lean-toolchain-${{ runner.os }}-${{ hashFiles(" in setup_action
+    setup_project = _read(".github/actions/setup-project/action.yml")
+    assert "formal/lean/.lake" in setup_project
+    assert "~/.elan/toolchains" in setup_project
+    assert 'cache-lean: "true"' in formal_workflow
     assert formal_workflow.count("uses: ./.github/actions/setup-lean") == 1
-    assert nightly_workflow.count("uses: ./.github/actions/setup-lean") == 1
+    assert "uses: ./.github/actions/setup-lean" not in nightly_workflow
     assert "elan-init.sh" not in formal_workflow
     assert "elan-init.sh" not in nightly_workflow
 
@@ -634,9 +729,10 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     formal_workflow = _read(".github/workflows/formal.yml")
     nightly_workflow = _read(".github/workflows/nightly.yml")
 
-    assert "actions/setup-node@v6" in formal_workflow
+    setup_project = _read(".github/actions/setup-project/action.yml")
+    assert "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
     assert 'node-version: "24.16.0"' in formal_workflow
-    assert "check-latest: true" in formal_workflow
+    assert "check-latest: true" not in setup_project
     assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
         formal_workflow
     )
@@ -644,15 +740,10 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert "Install Quint Rust evaluator" in formal_workflow
     assert "sha256sum --check" in formal_workflow
 
-    assert nightly_workflow.count('npm install -g "$MOLT_QUINT_NPM_PACKAGE"') == 2
-    assert nightly_workflow.count("actions/setup-node@v6") >= 2
-    assert nightly_workflow.count("node-version: '24.16.0'") >= 2
-    assert nightly_workflow.count("check-latest: true") >= 2
-    assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
-        nightly_workflow
-    )
-    assert nightly_workflow.count("Install Quint Rust evaluator") >= 1
-    assert nightly_workflow.count("sha256sum --check") >= 1
+    assert 'npm install -g "$MOLT_QUINT_NPM_PACKAGE"' not in nightly_workflow
+    assert "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" not in nightly_workflow
+    assert "node-version: '24.16.0'" not in nightly_workflow
+    assert "Install Quint Rust evaluator" not in nightly_workflow
 
 
 def test_nightly_contains_correctness_jobs() -> None:
@@ -673,7 +764,15 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "MOLT_DIFF_RLIMIT_GB" not in nightly_text
     assert "tests/differential/basic" in nightly_text
     assert "tests/differential/stdlib" in nightly_text
-    assert 'REPRO_ROOT="$PWD/tmp/repro_sweep"' in nightly_text
+    assert "tools/check_reproducible_build.py" not in nightly_text
+    ci_gate_text = _read("tools/ci_gate.py")
+    assert '"--corpus",\n                "full"' in ci_gate_text
+    assert '"--audit-ir"' in ci_gate_text
+    assert '"proof-results/reproducibility-tier3.json"' in ci_gate_text
+    assert "tools/check_deterministic_runtime.py" in nightly_text
+    assert "--json-out proof-results/deterministic-runtime.json" in nightly_text
+    assert "--json-out proof-results/ir-verification.json" in nightly_text
+    assert "name: nightly-determinism-proof-results" in nightly_text
     assert "mkdir -p /tmp/repro_sweep" not in nightly_text
     assert "MOLT_CACHE=/tmp/repro_sweep" not in nightly_text
     assert "~/.molt/build/" not in nightly_text
@@ -682,9 +781,9 @@ def test_nightly_contains_correctness_jobs() -> None:
         "cargo build -p molt-runtime --profile dev-fast"
     ) in nightly_text
     assert "cargo build -p molt-runtime --release" not in nightly_text
-    assert "A/B Molt caches and build-state roots are intentionally cold" in (
-        nightly_text
-    )
+    assert "SKIP: build failed" not in nightly_text
+    assert "|| true" not in nightly_text
+    assert "continue-on-error: true" not in nightly_text
 
 
 def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
@@ -707,21 +806,15 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         "run: uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
         not in nightly_text
     )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "quint verify formal/quint/molt_build_determinism.qnt"
-    ) in nightly_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "quint verify formal/quint/molt_runtime_determinism.qnt"
-    ) in nightly_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "quint verify formal/quint/molt_midend_pipeline.qnt"
-    ) in nightly_text
+    assert "uses: ./.github/workflows/formal.yml" in nightly_text
+    assert '"formal-methods-full"' not in _read("tools/ci_gate.py")
+    assert '"formal-methods-quint-only"' not in _read("tools/ci_gate.py")
+    assert '"correspondence-check"' not in _read("tools/ci_gate.py")
+    assert "quint verify formal/quint/" not in nightly_text
     assert "run: cargo install cargo-deny --locked" not in nightly_text
     assert "run: cargo deny check" not in nightly_text
     assert "          quint verify formal/quint/" not in nightly_text
+    assert "uses: ./.github/workflows/security_hardening.yml" not in nightly_text
 
     assert "--run-command formal.lean.build --receipt" in formal_text
     assert "--run-command formal.lean.sorry-baseline --receipt" in formal_text
@@ -757,6 +850,47 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         release_text
     )
     assert "run: cargo build -p molt-worker --release" not in release_text
+
+
+def test_named_proof_lanes_fail_closed_and_share_counted_verdict_authority() -> None:
+    nightly_text = _read(".github/workflows/nightly.yml")
+    formal_text = _read(".github/workflows/formal.yml")
+    ci_gate_text = _read("tools/ci_gate.py")
+
+    for workflow_text in (nightly_text, formal_text):
+        assert "continue-on-error: true" not in workflow_text
+    assert "SKIP: build failed" not in nightly_text
+    assert "if-no-files-found: ignore" not in nightly_text
+    assert '"--no-fail"' not in ci_gate_text
+    assert '"success": passed + failed + errored > 0' in ci_gate_text
+    assert '"zero_work": passed + failed + errored == 0' in ci_gate_text
+    assert '"required": r.name in required_names' in ci_gate_text
+    for tool in (
+        "tools/check_deterministic_runtime.py",
+        "tools/check_reproducible_build.py",
+        "tools/verify_ir_suite.py",
+        "tools/mutation_test.py",
+        "tools/translation_validate.py",
+    ):
+        text = _read(tool)
+        assert "fail_closed_proof_exit_code(" in text
+    for tool in (
+        "tools/check_deterministic_runtime.py",
+        "tools/verify_ir_suite.py",
+    ):
+        text = _read(tool)
+        assert '"executed": passed + failed' in text
+    reproducibility_text = _read("tools/check_reproducible_build.py")
+    assert "def _write_proof_receipt(" in reproducibility_text
+    for count in ("selected", "executed", "passed", "failed", "errors"):
+        assert f'"{count}": {count}' in reproducibility_text
+
+    assert fail_closed_proof_exit_code(executed=1, failed=0, errors=0) == 0
+    assert fail_closed_proof_exit_code(executed=1, failed=1, errors=0) == 1
+    assert fail_closed_proof_exit_code(executed=0, failed=0, errors=0) == 2
+    assert fail_closed_proof_exit_code(executed=0, failed=0, errors=1) == 2
+    with pytest.raises(ValueError, match="cannot exceed"):
+        fail_closed_proof_exit_code(executed=0, failed=1, errors=0)
 
 
 def test_security_hardening_is_reusable_and_ci_uses_one_planner() -> None:
@@ -880,8 +1014,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"
         in wasm_text
     )
-    assert "enable-cache: true" in wasm_text
-    assert "cache-dependency-glob: uv.lock" in wasm_text
+    assert "uses: ./.github/actions/setup-project" in wasm_text
+    assert 'cache-cargo: "true"' in wasm_text
+    assert "cache-namespace: wasm-ci" in wasm_text
     assert (
         "uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b"
         in wasm_text

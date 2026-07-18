@@ -48,19 +48,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install nightly Rust with rust-src
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Setup ASAN nightly toolchain
+        uses: ./.github/actions/setup-project
         with:
-          components: rust-src
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          key: asan-${{ env.SANITIZER_TARGET }}
+          uv: "false"
+          cache-uv: "false"
+          rust-toolchain: nightly
+          rust-components: rust-src
+          cache-cargo: "true"
+          cache-namespace: asan-${{ env.SANITIZER_TARGET }}
 
       - name: AddressSanitizer — molt-runtime lib tests (stdlib_micro)
         env:
@@ -92,19 +92,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install nightly Rust with miri
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Setup Miri nightly toolchain
+        uses: ./.github/actions/setup-project
         with:
-          components: miri, rust-src
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          key: miri-obj-model
+          uv: "false"
+          cache-uv: "false"
+          rust-toolchain: nightly
+          rust-components: miri, rust-src
+          cache-cargo: "true"
+          cache-namespace: miri-obj-model
 
       - name: Miri — obj-model lib unit tests
         # Permissive provenance: molt's NaN-boxing recovers TAG_PTR values via

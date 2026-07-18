@@ -29,34 +29,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
-        with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-
-      - uses: actions/setup-node@v6
+      - name: Setup repository policy toolchains
+        uses: ./.github/actions/setup-project
         with:
           node-version: "24.16.0"
-          cache: npm
-          cache-dependency-path: tools/browser_asset_graph/package-lock.json
-
-      # Repository-policy generators render checked-in Rust and execute in
-      # parallel. Provision their shared formatter once before the DAG so
-      # rustup is never raced by first-use component installation.
-      - uses: dtolnay/rust-toolchain@1.96.1
-        with:
-          components: rustfmt, clippy
-          targets: wasm32-wasip1
-
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
+          node-cache-dependency-path: tools/browser_asset_graph/package-lock.json
+          rust-toolchain: "1.96.1"
+          rust-components: rustfmt, clippy
+          rust-targets: wasm32-wasip1
+          cache-cargo: "true"
+          actionlint: "true"
+          sync-args: "--frozen --group dev"
 
       - name: Provision browser asset parser
         run: uv run python3 tools/bootstrap_browser_asset_graph.py
@@ -69,7 +56,7 @@ jobs:
 
       - name: Upload repository policy receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-repository-policy
           path: proof-receipts/repository_policy.json
@@ -98,7 +85,7 @@ jobs:
       topology: ${{ steps.paths.outputs.topology }}
       selected: ${{ steps.paths.outputs.selected }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -117,11 +104,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@1.96.1
 
       - name: Configure verified ephemeral custody
         shell: pwsh
@@ -132,16 +117,12 @@ jobs:
           "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup portability toolchains
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen --group dev"
 
       - name: Execute selected platform portability partition
         run: >-
@@ -152,7 +133,7 @@ jobs:
 
       - name: Upload platform portability receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-platform-portability-${{ matrix.cell }}
           path: proof-receipts/platform-portability-${{ matrix.cell }}.json
@@ -188,27 +169,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup Python static toolchain
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
+          sync-args: "--frozen --group dev"
 
       - name: Execute selected Python static partitions
         run: python3 tools/proof_plan.py --run-family python_static --receipt proof-receipts/python_static.json
 
       - name: Upload Python static receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-python-static
           path: proof-receipts/python_static.json
@@ -225,22 +200,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup Python unit toolchain
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
+          sync-args: "--frozen --group dev"
       - name: Execute selected Python unit partitions
         run: python3 tools/proof_plan.py --run-family python_unit --receipt proof-receipts/python_unit.json
       - name: Upload Python unit receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-python-unit
           path: proof-receipts/python_unit.json
@@ -253,28 +224,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup native integration toolchains
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-      - uses: dtolnay/rust-toolchain@1.96.1
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen --group dev"
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
       - name: Setup canonical native linker SDK
         uses: ./.github/actions/setup-llvm
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-native-integration
           path: proof-receipts/native_integration.json
@@ -287,22 +254,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Setup Rust proof toolchains
+        uses: ./.github/actions/setup-project
         with:
-          targets: wasm32-wasip1, aarch64-unknown-linux-gnu
+          uv: "false"
+          cache-uv: "false"
+          rust-toolchain: "1.96.1"
+          rust-targets: wasm32-wasip1, aarch64-unknown-linux-gnu
+          cache-cargo: "true"
 
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: actions/setup-python@v6.3.0
-        with:
-          python-version-file: ".python-version"
 
       - name: Setup canonical WebAssembly linker and WASI sysroot
         uses: ./.github/actions/setup-llvm
@@ -315,7 +281,7 @@ jobs:
 
       - name: Upload Rust receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-rust
           path: |
@@ -334,39 +300,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Setup LLVM proof toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync-args: "--frozen --group dev"
 
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@v2
 
       # One local action owns package projection, versioned llvm-config
       # discovery, complete SDK verification, and environment projection.
       - name: Setup LLVM backend SDK
         uses: ./.github/actions/setup-llvm
 
-      - uses: actions/setup-python@v6.3.0
-        with:
-          python-version-file: ".python-version"
-
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: "0.11.24"
-
-      - name: Sync Python environment
-        run: uv sync --frozen --group dev
 
       - name: Execute selected LLVM, MLIR, and linker partitions
         run: python3 tools/proof_plan.py --run-family llvm --receipt proof-receipts/llvm.json
 
       - name: Upload LLVM/MLIR/linker receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-llvm
           path: proof-receipts/llvm.json
@@ -393,12 +352,17 @@ jobs:
       - wasm-validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+      - name: Setup proof verdict Python
+        uses: ./.github/actions/setup-project
+        with:
+          uv: "false"
+          cache-uv: "false"
       - name: Download executable proof receipts
         if: needs.classify-changes.outputs.selected != '[]'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: proof-receipt-*
           path: proof-receipts

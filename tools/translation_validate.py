@@ -20,7 +20,7 @@ Usage:
     uv run --python 3.12 python3 tools/translation_validate.py --verbose examples/hello.py
 
     # JSON output for CI integration
-    uv run --python 3.12 python3 tools/translation_validate.py --json examples/hello.py
+    uv run --python 3.12 python3 tools/translation_validate.py --json-out - examples/hello.py
 
     # Explicit Python target custody
     uv run --python 3.14 python3 tools/translation_validate.py --python-version 3.14 examples/hello.py
@@ -32,6 +32,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -54,6 +55,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
 _SRC_DIR = _REPO_ROOT / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -145,9 +147,9 @@ class RunResult:
         return self.returncode == 0
 
     @property
-    def output_key(self) -> str:
-        """Normalized output for comparison (stdout only, strip trailing ws)."""
-        return self.stdout.rstrip()
+    def output_key(self) -> tuple[str, str, int]:
+        """Normalized semantic observable used for cross-runtime comparison."""
+        return (self.stdout.rstrip(), self.stderr.rstrip(), self.returncode)
 
 
 @dataclass
@@ -579,7 +581,7 @@ def print_summary(summary: ValidationSummary, *, verbose: bool = False) -> None:
             _print_result_line(r)
         print()
 
-    if summary.mismatches == 0 and summary.errors == 0:
+    if summary.mismatches == 0 and summary.errors == 0 and summary.skipped == 0:
         print("All translation validations PASSED.")
 
 
@@ -607,15 +609,31 @@ def summary_to_json(
                 entry[attr] = {
                     "returncode": run.returncode,
                     "elapsed_ms": run.elapsed_ms,
-                    "stdout_lines": len(run.stdout.splitlines()),
+                    "stdout_sha256": hashlib.sha256(
+                        run.stdout.encode("utf-8")
+                    ).hexdigest(),
+                    "stderr_sha256": hashlib.sha256(
+                        run.stderr.encode("utf-8")
+                    ).hexdigest(),
                 }
         results_json.append(entry)
 
     payload: dict[str, Any] = {
-        "total": summary.total,
+        "schema": "molt.translation-validation.v1",
+        "status": (
+            "success"
+            if summary.passed > 0
+            and summary.mismatches == 0
+            and summary.errors == 0
+            and summary.skipped == 0
+            else "failure"
+        ),
+        "selected": summary.total,
+        "executed": summary.passed + summary.mismatches,
         "passed": summary.passed,
+        "failed": summary.mismatches,
         "mismatches": summary.mismatches,
-        "errors": summary.errors,
+        "errors": summary.errors + summary.skipped,
         "skipped": summary.skipped,
         "elapsed_ms": summary.elapsed_ms,
         "results": results_json,
@@ -661,10 +679,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show per-file results and output diffs on mismatch",
     )
     p.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Output results as JSON",
+        "--json-out",
+        metavar="FILE",
+        nargs="?",
+        const="-",
+        help="Write the counted JSON proof receipt to FILE, or stdout with '-'",
     )
     p.add_argument(
         "--no-cpython",
@@ -740,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
                     target_python=target_python,
                 )
                 all_summary.results.append(result)
-                if args.verbose and not args.json_output:
+                if args.verbose and args.json_out is None:
                     _print_result_line(result)
             elif p.is_dir():
                 sub = validate_directory(
@@ -755,7 +774,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 all_summary.results.extend(sub.results)
             else:
-                print(f"WARNING: {target} not found, skipping", file=sys.stderr)
+                all_summary.results.append(
+                    ValidationResult(
+                        source_path=target,
+                        error="requested validation target not found",
+                    )
+                )
+                print(f"ERROR: requested target not found: {target}", file=sys.stderr)
 
         all_summary.results.sort(key=lambda r: r.source_path)
         all_summary.elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
@@ -764,17 +789,20 @@ def main(argv: list[str] | None = None) -> int:
             guard_scope.limits
         )
 
-    if args.json_output:
-        print(
-            json.dumps(
-                summary_to_json(
-                    all_summary,
-                    memory_guard=memory_guard_summary,
-                ),
-                indent=2,
-            )
+    payload = summary_to_json(
+        all_summary,
+        memory_guard=memory_guard_summary,
+    )
+    if args.json_out and args.json_out != "-":
+        receipt = Path(args.json_out)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
-    else:
+    if args.json_out == "-":
+        print(json.dumps(payload, indent=2))
+    elif args.json_out is None:
         if not args.verbose:
             # Print compact result line for each non-skipped file
             for r in all_summary.results:
@@ -783,7 +811,11 @@ def main(argv: list[str] | None = None) -> int:
         print(memory_guard_status)
         print_summary(all_summary, verbose=args.verbose)
 
-    return 0 if all_summary.mismatches == 0 and all_summary.errors == 0 else 1
+    return fail_closed_proof_exit_code(
+        executed=all_summary.passed + all_summary.mismatches,
+        failed=all_summary.mismatches,
+        errors=all_summary.errors + all_summary.skipped,
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ authority_inputs = [
   ".gitattributes",
   ".github/actions/setup-lean/action.yml",
   ".github/actions/setup-llvm/action.yml",
+  ".github/actions/setup-project/action.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/formal.yml",
   ".github/workflows/molt-wasm-ci.yml",
@@ -20,6 +21,8 @@ authority_inputs = [
   ".gitignore",
   ".python-version",
   "config/ci_resource_policy.toml",
+  "config/actionlint.toml",
+  "config/reproducibility_corpus.toml",
   "config/llvm_toolchain_releases.toml",
   "formal/lean/lean-toolchain",
   "rust-toolchain.toml",
@@ -113,9 +116,7 @@ version_args = ["--version"]
 version_pattern = '^uv 0\.11\.24\b'
 setup_value = "0.11.24"
 setup_evidence = [
-  ".github/workflows/ci.yml::version: \"0.11.24\"",
-  ".github/workflows/molt-wasm-ci.yml::version: \"0.11.24\"",
-  ".github/workflows/security_hardening.yml::version: \"0.11.24\"",
+  ".github/actions/setup-project/action.yml::version: \"0.11.24\"",
 ]
 
 [[toolchain_policy]]
@@ -125,7 +126,7 @@ version_args = ["--version"]
 version_pattern = '^v24\.16\.0$'
 setup_value = "24.16.0"
 setup_evidence = [
-  ".github/workflows/ci.yml::node-version: \"24.16.0\"",
+  ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
   ".github/workflows/formal.yml::node-version: \"24.16.0\"",
 ]
 
@@ -139,9 +140,7 @@ version_pattern = '^rustc 1\.96\.1\b'
 setup_value = "1.96.1"
 setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
-  ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
-  ".github/workflows/molt-wasm-ci.yml::dtolnay/rust-toolchain@1.96.1",
-  ".github/workflows/security_hardening.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/actions/setup-project/action.yml::dtolnay/rust-toolchain@2fe4ca74464c5902a4f6e302d0a619b4ea911ccc",
 ]
 
 [[toolchain_policy]]
@@ -154,7 +153,7 @@ version_pattern = '^cargo 1\.96\.1\b'
 setup_value = "1.96.1"
 setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
-  ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/actions/setup-project/action.yml::dtolnay/rust-toolchain@2fe4ca74464c5902a4f6e302d0a619b4ea911ccc",
 ]
 
 [[toolchain_policy]]
@@ -214,7 +213,6 @@ setup_evidence = [
   "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
   ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
   ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
-  ".github/workflows/nightly.yml::uses: ./.github/actions/setup-lean",
 ]
 
 [[toolchain_policy]]
@@ -560,7 +558,7 @@ dependencies = []
 [[ci_family]]
 name = "platform_portability"
 description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py"]
+inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/verify_ir_suite.py", "tests/differential/basic/arith.py", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py"]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
 job = "platform-portability"
@@ -608,6 +606,42 @@ cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.ir.macos"
+family = "platform_portability"
+cell = "macos-arm64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--glob", "arith.py", "--json-out", "proof-receipts/evidence/portability-ir-macos.json"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "portability.ir.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--glob", "arith.py", "--json-out", "proof-receipts/evidence/portability-ir-windows.json"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.github-actions.static"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_github_actions.py"]
+toolchains = ["python", "uv"]
 
 [[command]]
 id = "repository.status-blocks.generated"
@@ -1446,7 +1480,7 @@ resource_class = "formal-tools"
 timeout_seconds = 300
 cache_domain = "none"
 dependencies = []
-argv = ["python3", "tools/check_formal_methods.py", "--check-correspondence"]
+argv = ["python3", "tools/check_correspondence.py", "--receipt", "proof-receipts/evidence/formal-correspondence.json"]
 toolchains = ["python"]
 
 # Local integration families retain their established command spelling below.
@@ -2038,16 +2072,37 @@ globs = [
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
+  "tools/proof_counts.py",
+  "tools/check_deterministic_runtime.py",
+  "tools/bootstrap_actionlint.py",
+  "tools/check_github_actions.py",
+  "config/actionlint.toml",
+  "tools/check_reproducible_build.py",
+  "config/reproducibility_corpus.toml",
+  "tools/verify_ir_suite.py",
+  "tools/mutation_test.py",
+  "tools/fuzz_compiler_cli.py",
+  "tools/fuzz_compiler_types.py",
+  "tools/check_formal_methods.py",
+  "tools/check_correspondence.py",
+  "tools/translation_validate.py",
+  "tools/ci_gate.py",
   "tools/ci_resource_env.py",
   "tools/resource_pressure.py",
   "tests/test_generator_manifest.py",
   "tests/test_proof_plan.py",
+  "tests/test_ci_workflow_topology.py",
   "tests/test_resource_pressure.py",
+  "tests/test_translation_validate_roots.py",
+  "tests/tools/test_ci_gate.py",
+  "tests/tools/test_fuzz_compiler_cli.py",
+  "tests/tools/test_formal_correspondence_truth.py",
+  "tests/tools/test_reproducible_build_truth.py",
   "tests/tools/test_ci_resource_env.py",
 ]
 gates = [
   "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-  "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/tools/test_ci_resource_env.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_reproducible_build_truth.py",
 ]
 
 # --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------

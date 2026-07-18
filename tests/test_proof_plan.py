@@ -82,7 +82,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "budget_seconds": 3600,
         "projected_makespan_seconds": 3300,
         "critical_path_seconds": 1500,
-        "resource_capacity_floor_seconds": {"repository-policy": 2625},
+        "resource_capacity_floor_seconds": {"repository-policy": 2655},
         "headroom_seconds": 300,
     }
     local = projection["local"]
@@ -292,7 +292,6 @@ def test_lean_toolchain_probe_cwd_is_project_authority() -> None:
         "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
         '.github/actions/setup-lean/action.yml::toolchain install "$toolchain"',
         ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
-        ".github/workflows/nightly.yml::uses: ./.github/actions/setup-lean",
     ]
 
 
@@ -536,7 +535,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         ("windows", "windows-2022"),
     ]
     assert all(entry["family"] == "platform_portability" for entry in matrix)
-    assert all(len(entry["command_ids"]) == 1 for entry in matrix)
+    assert [len(entry["command_ids"]) for entry in matrix] == [1, 2, 2]
     for entry in matrix:
         commands = proof_plan._topological_commands(
             PLAN,

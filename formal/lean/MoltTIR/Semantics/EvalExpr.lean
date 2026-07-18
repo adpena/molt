@@ -51,6 +51,14 @@ def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   -- comparison (bool × bool → bool)
   | .eq,  .bool x, .bool y => some (.bool (x == y))
   | .ne,  .bool x, .bool y => some (.bool (x != y))
+  -- Boolean operators preserve Python's operand-returning semantics on the
+  -- scalar Value universe. Identity is structural identity for these values.
+  | .and_, .bool false, _ => some (.bool false)
+  | .and_, .bool true, y => some y
+  | .or_, .bool true, _ => some (.bool true)
+  | .or_, .bool false, y => some y
+  | .is, x, y => some (.bool (x == y))
+  | .is_not, x, y => some (.bool (x != y))
   -- bitwise ops (bit_and, bit_or, bit_xor, lshift, rshift) are defined in
   -- the syntax but not evaluated here — they fall to the catch-all.
   -- Lean's Int lacks HAnd/HOr/HXor; add implementations when needed.
@@ -71,6 +79,8 @@ def evalUnOp (op : UnOp) (a : Value) : Option Value :=
   | .not, .str s => some (.bool (s == ""))
   | .not, .none => some (.bool true)
   | .abs, .int x => some (.int (if x < 0 then -x else x))
+  | .pos, .int x => some (.int x)
+  | .pos, .float x => some (.float x)
   | _, _ => none
 
 /-- Evaluate an expression in an environment. Total, deterministic. -/
