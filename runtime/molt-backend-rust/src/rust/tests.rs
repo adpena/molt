@@ -566,7 +566,7 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
     assert!(
         error.contains("rejected before source generation")
             && error.contains("code_slots_init")
-            && error.contains("unclassified"),
+            && error.contains("operation requires Python aliasing, cycles, None storage, hashing, and object protocols"),
         "the first unsupported semantic family must fail before emission: {error}"
     );
     assert!(backend.output.is_empty());

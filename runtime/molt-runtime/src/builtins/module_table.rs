@@ -107,7 +107,7 @@ pub(crate) struct RegistryRow {
     pub(crate) alias_target: Option<u32>,
     pub(crate) kind: u8,
     #[allow(dead_code)] // reinit policy flags; resurrect lane lands in PR4
-    pub(crate) flags: u8,
+    pub(crate) module_flags: u8,
 }
 
 #[derive(Debug)]
@@ -180,7 +180,7 @@ impl ModuleRegistry {
             parent: (parent != NO_MODULE_ID).then_some(parent),
             alias_target: (alias_target != NO_MODULE_ID).then_some(alias_target),
             kind: unsafe { row.add(24).read() },
-            flags: unsafe { row.add(25).read() },
+            module_flags: unsafe { row.add(25).read() },
         }
     }
 
@@ -413,7 +413,7 @@ pub(crate) fn module_execution_target_has_body(name: &str) -> Option<bool> {
     loop {
         let row = registry.row(id);
         if row.kind != MODULE_KIND_ALIAS {
-            return Some(row.flags & MODULE_FLAG_HAS_BODY != 0);
+            return Some(row.module_flags & MODULE_FLAG_HAS_BODY != 0);
         }
         id = row
             .alias_target
@@ -424,7 +424,7 @@ pub(crate) fn module_execution_target_has_body(name: &str) -> Option<bool> {
 pub(crate) fn module_catalog_is_package(name: &str) -> Option<bool> {
     let registry = module_registry()?;
     let id = registry.id_of(name)?;
-    Some(registry.row(id).flags & MODULE_FLAG_PACKAGE != 0)
+    Some(registry.row(id).module_flags & MODULE_FLAG_PACKAGE != 0)
 }
 
 pub(crate) fn module_catalog_origin(name: &str) -> Option<&'static str> {
@@ -1016,7 +1016,7 @@ fn run_init_transaction(
     }
 
     let row = registry.row(id);
-    if row.flags & MODULE_FLAG_HAS_BODY == 0 {
+    if row.module_flags & MODULE_FLAG_HAS_BODY == 0 {
         // Fail closed, exact CPython message so the importlib fallback ladder
         // (spec/runtime-roots imports) keeps its dynamic-path semantics; the
         // admission channel is the runtime import dispatch set (invariant I11).

@@ -137,10 +137,8 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
             .expect("read numeric protocol authority");
     assert!(!protocol.contains("left.bits() == right.bits()"));
     assert!(protocol.contains("a == b"));
-    let bridge = std::fs::read_to_string(
-        root.join("runtime/molt-cpython-abi/src/bridge/identity/lifecycle.rs"),
-    )
-    .expect("read bridge lifetime authority");
+    let bridge = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/bridge.rs"))
+        .expect("read bridge lifetime authority");
     for required in [
         "runtime_last_ref_dropped",
         "has_direct_c_refs",
@@ -152,9 +150,5 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
             "missing lifecycle authority: {required}"
         );
     }
-    let identity = std::fs::read_to_string(
-        root.join("runtime/molt-cpython-abi/src/bridge/identity/managed_objects.rs"),
-    )
-    .expect("read bridge identity authority");
-    assert!(identity.contains("try_mark_abi_view"));
+    assert!(bridge.contains("try_mark_abi_view"));
 }
