@@ -299,7 +299,9 @@ def test_optional_missing_toolchain_remains_skip(monkeypatch) -> None:
     )
 
     assert result.status == "skip"
-    assert module._results_to_dict([result])["summary"]["success"] is True
+    summary = module._results_to_dict([result])["summary"]
+    assert summary["success"] is False
+    assert summary["zero_work"] is True
 
 
 def test_missing_uv_run_script_is_detected_before_execution(monkeypatch) -> None:
@@ -557,7 +559,8 @@ def test_ci_gate_script_runs_directly_without_pythonpath() -> None:
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["summary"]["success"] is True
+    assert payload["summary"]["success"] is False
+    assert payload["summary"]["zero_work"] is True
 
 
 def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:

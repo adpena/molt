@@ -488,7 +488,7 @@ class ProofPlan:
                             f"{family.name}: workflow job does not execute {invocation!r}"
                         )
                     for receipt_token in (
-                        "actions/upload-artifact@v7",
+                        "actions/upload-artifact@",
                         "if-no-files-found: error",
                     ):
                         if receipt_token not in block:
@@ -753,7 +753,7 @@ class ProofPlan:
             expected_receipts = sum(
                 1 for command in self.commands if command.family == family.name
             )
-            for token in ("actions/upload-artifact@v7", "if-no-files-found: error"):
+            for token in ("actions/upload-artifact@", "if-no-files-found: error"):
                 if text.count(token) < expected_receipts:
                     errors.append(
                         f"{family.name}: workflow has fewer {token!r} receipt "
@@ -768,7 +768,7 @@ class ProofPlan:
             verdict_text = verdict_workflow.read_text(encoding="utf-8")
             verdict_block = _workflow_job_block(verdict_text, "proof-plan-verdict")
             for token in (
-                "actions/download-artifact@v7",
+                "actions/download-artifact@",
                 "--verify-selected",
                 "--receipt-dir proof-receipts",
             ):

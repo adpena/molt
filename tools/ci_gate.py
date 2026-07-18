@@ -4,16 +4,16 @@
 Runs ALL correctness verification tools in dependency order across three tiers:
 
   Tier 1 — Fast (< 60s, every commit):
-    Linting, formatting, correspondence checks, layout checks, coverage
+    Linting, formatting, layout checks, coverage
     analysis, perf-scoreboard contract checks, property/mutation/fuzz smoke
     tests.
 
   Tier 2 — Medium (< 10min, on PR):
-    Quint simulation, translation validation, full property tests,
+    Translation validation, full property tests,
     reproducible build spot-check.
 
   Tier 3 — Heavy (< 60min, nightly/weekly):
-    Full formal methods (Lean + Quint), deep reproducibility sweep,
+    Deep reproducibility sweep,
     extended fuzzing, mutation testing, model-based tests.
 
 Usage:
@@ -295,14 +295,6 @@ def _build_checks() -> list[Check]:
             ],
             timeout=180,
             needs_rust=True,
-        )
-    )
-    checks.append(
-        Check(
-            name="correspondence-check",
-            tier=1,
-            cmd=_uv_run(str(TOOLS / "check_correspondence.py"), "--json"),
-            timeout=60,
         )
     )
     checks.append(
@@ -904,24 +896,13 @@ def _build_checks() -> list[Check]:
 
     checks.append(
         Check(
-            name="formal-methods-quint-only",
-            tier=2,
-            cmd=_uv_run(
-                str(TOOLS / "check_formal_methods.py"),
-                "--skip-build",
-            ),
-            timeout=120,
-            needs_quint=True,
-        )
-    )
-    checks.append(
-        Check(
             name="translation-validate-core",
             tier=2,
             cmd=_uv_run(
                 str(TOOLS / "translation_validate.py"),
-                "--json",
-                str(TESTS / "differential" / "basic" / "core_types"),
+                "--json-out",
+                "proof-results/translation-tier2.json",
+                str(ROOT / "examples" / "hello.py"),
             ),
             timeout=300,
             needs_rust=True,
@@ -945,12 +926,14 @@ def _build_checks() -> list[Check]:
             name="reproducible-build-spot",
             tier=2,
             cmd=_uv_run(
-                str(TOOLS / "verify_reproducible.py"),
+                str(TOOLS / "check_reproducible_build.py"),
+                "--corpus",
+                "smoke",
                 "--runs",
                 "2",
-                "--programs",
-                "examples/hello.py",
-                "--object",
+                "--audit-ir",
+                "--json-out",
+                "proof-results/reproducibility-tier2.json",
             ),
             timeout=300,
             needs_rust=True,
@@ -961,23 +944,17 @@ def _build_checks() -> list[Check]:
 
     checks.append(
         Check(
-            name="formal-methods-full",
-            tier=3,
-            cmd=_uv_run(str(TOOLS / "check_formal_methods.py")),
-            timeout=1200,
-            needs_lean=True,
-            needs_quint=True,
-        )
-    )
-    checks.append(
-        Check(
             name="reproducible-build-sweep",
             tier=3,
             cmd=_uv_run(
-                str(TOOLS / "verify_reproducible.py"),
+                str(TOOLS / "check_reproducible_build.py"),
+                "--corpus",
+                "full",
                 "--runs",
                 "5",
-                "--object",
+                "--audit-ir",
+                "--json-out",
+                "proof-results/reproducibility-tier3.json",
             ),
             timeout=600,
             needs_rust=True,
@@ -993,6 +970,8 @@ def _build_checks() -> list[Check]:
                 "100",
                 "--timeout",
                 "300",
+                "--json-out",
+                "proof-results/fuzz-compiler-extended.json",
             ),
             timeout=600,
             needs_rust=True,
@@ -1008,7 +987,8 @@ def _build_checks() -> list[Check]:
                 "50",
                 "--timeout",
                 "60",
-                "--no-fail",
+                "--json-out",
+                "proof-results/mutation-tier3.json",
             ),
             timeout=3600,
             needs_rust=True,
@@ -1020,7 +1000,8 @@ def _build_checks() -> list[Check]:
             tier=3,
             cmd=_uv_run(
                 str(TOOLS / "translation_validate.py"),
-                "--json",
+                "--json-out",
+                "proof-results/translation-tier3.json",
                 str(TESTS / "differential"),
             ),
             timeout=1800,
@@ -1280,7 +1261,7 @@ def run_gate(
     """Run all checks for the requested tiers and return results."""
     resolved_memory_limits = _resolve_memory_limits(memory_limits)
     all_checks = _build_checks()
-    selected = [c for c in all_checks if c.tier in tiers]
+    selected = [check for check in all_checks if check.tier in tiers]
 
     if not selected:
         print("No checks selected.")
@@ -1446,8 +1427,11 @@ def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
     return metadata
 
 
-def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
+def _results_to_dict(
+    results: list[CheckResult],
+) -> dict[str, Any]:
     """Convert results to a JSON-serializable dict."""
+    required_names = {check.name for check in _build_checks() if check.required}
     passed = sum(1 for r in results if r.status == "pass")
     failed = sum(1 for r in results if r.status == "fail")
     errored = sum(1 for r in results if r.status == "error")
@@ -1464,12 +1448,18 @@ def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
             "unmet_prerequisite": unmet_prereq,
             "skipped": skipped,
             "total_time_s": round(total_time, 2),
-            "success": failed == 0 and errored == 0 and unmet_prereq == 0,
+            "success": passed + failed + errored > 0
+            and failed == 0
+            and errored == 0
+            and unmet_prereq == 0,
+            "executed": passed + failed + errored,
+            "zero_work": passed + failed + errored == 0,
         },
         "checks": [
             {
                 "name": r.name,
                 "tier": r.tier,
+                "required": r.name in required_names,
                 "status": r.status,
                 "duration_s": r.duration_s,
                 "returncode": r.returncode,
@@ -1690,7 +1680,7 @@ def main() -> None:
     # Exit code: 0 if no required failures
     all_checks = _build_checks()
     required_names = {c.name for c in all_checks if c.required}
-    has_required_failure = any(
+    has_required_failure = not results or any(
         r.status in REQUIRED_FAILURE_STATUSES and r.name in required_names
         for r in results
     )

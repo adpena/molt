@@ -237,12 +237,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe used before static file correspondence checks",
     ),
     AllowedRawSubprocessUse(
-        "tools/check_correspondence_extended.py",
-        "_find_repo_root",
-        "check_output",
-        "bounded git metadata probe used before static file correspondence checks",
-    ),
-    AllowedRawSubprocessUse(
         "tools/check_table_drift.py",
         "_find_repo_root",
         "check_output",

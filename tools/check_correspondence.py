@@ -34,6 +34,7 @@ try:
         parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
         parse_lean_hex_constants as _parse_lean_hex_constants,
         parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_enum_variants as _parse_rust_enum_variants,
         parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
         resolve_rust_or_hex_int as _normalize_hex,
     )
@@ -45,6 +46,7 @@ except ModuleNotFoundError:  # pragma: no cover - package-style import path
         parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
         parse_lean_hex_constants as _parse_lean_hex_constants,
         parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_enum_variants as _parse_rust_enum_variants,
         parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
         resolve_rust_or_hex_int as _normalize_hex,
     )
@@ -81,7 +83,10 @@ SCCP_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "SCCP.lean"
 
 # Rust sources
 CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
-LUAU_RS = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
+LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
+TIR_TYPES_RS = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "types.rs"
+FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
+LEAN_PASSES_DIR = LEAN_DIR / "MoltTIR" / "Passes"
 
 # Python sources
 FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
@@ -134,6 +139,7 @@ class CategoryResult:
     category: str
     description: str
     items: list[CheckItem] = field(default_factory=list)
+    metrics: dict[str, int] = field(default_factory=dict)
 
     @property
     def passed(self) -> int:
@@ -149,7 +155,7 @@ class CategoryResult:
 
     @property
     def ok(self) -> bool:
-        return self.failed == 0
+        return self.total > 0 and self.failed == 0
 
 
 # Source loading
@@ -159,6 +165,14 @@ def _read(path: Path) -> str:
     if path.exists():
         return path.read_text(errors="replace")
     return ""
+
+
+def _read_tree(path: Path, pattern: str) -> str:
+    if not path.is_dir():
+        return ""
+    return "\n".join(
+        source.read_text(errors="replace") for source in sorted(path.rglob(pattern))
+    )
 
 
 #
@@ -325,24 +339,29 @@ def check_operator_enums() -> CategoryResult:
 def check_type_system() -> CategoryResult:
     result = CategoryResult(
         "types",
-        "Type system (Lean Types <-> Python frontend type tags)",
+        "Type system (Lean Ty <-> Rust TirType <-> Python-visible type tags)",
     )
 
     lean_text = _read(TYPES_LEAN)
-    python_text = _read(FRONTEND_PY)
+    rust_text = _read(TIR_TYPES_RS)
+    python_text = _read(FRONTEND_TYPES_PY)
 
     if not lean_text:
         result.items.append(CheckItem("source", False, f"Lean missing: {TYPES_LEAN}"))
         return result
+    if not rust_text:
+        result.items.append(CheckItem("source", False, f"Rust missing: {TIR_TYPES_RS}"))
+        return result
     if not python_text:
         result.items.append(
-            CheckItem("source", False, f"Python missing: {FRONTEND_PY}")
+            CheckItem("source", False, f"Python missing: {FRONTEND_TYPES_PY}")
         )
         return result
 
     lean_types = _parse_lean_inductive_variants(lean_text, "Ty")
     lean_values = _parse_lean_inductive_variants(_read(SYNTAX_LEAN), "Value")
 
+    rust_types = set(_parse_rust_enum_variants(rust_text, "TirType"))
     py_type_tags: set[str] = set()
     for m in re.finditer(r'"(\w+)":\s*\d+', python_text):
         py_type_tags.add(m.group(1))
@@ -364,17 +383,53 @@ def check_type_system() -> CategoryResult:
             )
         )
 
+    rust_mapping = {
+        "int": "I64",
+        "float": "F64",
+        "bool": "Bool",
+        "none": "None",
+        "str": "Str",
+        "bytes": "Bytes",
+        "list": "List",
+        "dict": "Dict",
+        "set": "Set",
+        "tuple": "Tuple",
+        "box": "Box",
+        "dynBox": "DynBox",
+        "func": "Func",
+        "bigInt": "BigInt",
+        "ptr": "Ptr",
+        "union": "Union",
+        "never": "Never",
+        "obj": "UserClass",
+    }
+    python_mapping = {
+        "int": "int",
+        "float": "float",
+        "bool": "bool",
+        "str": "str",
+        "bytes": "bytes",
+        "list": "list",
+        "dict": "dict",
+        "set": "set",
+        "tuple": "tuple",
+        "bigInt": "int",
+        "obj": "object",
+    }
     for ty in lean_types:
-        if ty in py_type_tags:
-            result.items.append(
-                CheckItem(f"Ty.{ty}", True, "present in Python type tags")
-            )
-        elif ty == "obj" and "object" in py_type_tags:
-            result.items.append(
-                CheckItem(f"Ty.{ty}", True, "maps to 'object' in Python")
-            )
-        else:
-            result.items.append(CheckItem(f"Ty.{ty}", False, "NOT in Python type tags"))
+        rust_name = rust_mapping.get(ty)
+        python_name = python_mapping.get(ty)
+        rust_ok = rust_name in rust_types if rust_name else False
+        python_ok = python_name in py_type_tags if python_name else True
+        details = [f"Rust TirType::{rust_name}" if rust_name else "no Rust mapping"]
+        details.append(
+            f"Python tag {python_name!r}"
+            if python_name
+            else "compiler-internal type"
+        )
+        result.items.append(
+            CheckItem(f"Ty.{ty}", rust_ok and python_ok, ", ".join(details))
+        )
 
     return result
 
@@ -387,11 +442,11 @@ def check_type_system() -> CategoryResult:
 def check_luau_builtins() -> CategoryResult:
     result = CategoryResult(
         "luau_builtins",
-        "Luau builtin mappings (Lean LuauEmit <-> Rust luau.rs)",
+        "Luau builtin mappings (Lean LuauEmit <-> Rust Luau backend family)",
     )
 
     lean_text = _read(LUAU_EMIT_LEAN)
-    rust_text = _read(LUAU_RS)
+    rust_text = _read_tree(LUAU_BACKEND_SRC, "*.rs")
 
     if not lean_text:
         result.items.append(
@@ -399,15 +454,18 @@ def check_luau_builtins() -> CategoryResult:
         )
         return result
     if not rust_text:
-        result.items.append(CheckItem("source", False, f"Rust missing: {LUAU_RS}"))
+        result.items.append(
+            CheckItem("source", False, f"Rust missing: {LUAU_BACKEND_SRC}")
+        )
         return result
 
     lean_mappings = _parse_lean_builtin_mappings(lean_text)
+    result.metrics["builtin_mappings_parsed"] = len(lean_mappings)
 
     result.items.append(
         CheckItem(
             "mapping count",
-            True,
+            bool(lean_mappings),
             f"Lean defines {len(lean_mappings)} builtin mappings",
         )
     )
@@ -415,17 +473,12 @@ def check_luau_builtins() -> CategoryResult:
     for ir_name, luau_name in lean_mappings:
         ir_found = ir_name in rust_text
         luau_found = luau_name in rust_text
-        if ir_found or luau_found:
-            parts = []
-            if ir_found:
-                parts.append("IR name")
-            if luau_found:
-                parts.append("Luau name")
+        if ir_found and luau_found:
             result.items.append(
                 CheckItem(
                     f"{ir_name} -> {luau_name}",
                     True,
-                    f"{' + '.join(parts)} found in Rust",
+                    "IR name and emitted Luau target found in Rust backend family",
                 )
             )
         else:
@@ -433,9 +486,13 @@ def check_luau_builtins() -> CategoryResult:
                 CheckItem(
                     f"{ir_name} -> {luau_name}",
                     False,
-                    "NEITHER name found in Rust luau.rs",
+                    f"IR found={ir_found}, Luau target found={luau_found}",
                 )
             )
+
+    result.metrics["builtin_mappings_mapped"] = sum(
+        item.passed for item in result.items[1:]
+    )
 
     return result
 
@@ -578,6 +635,10 @@ def check_eval_rules() -> CategoryResult:
 
     binop_rules = _parse_lean_evalBinOp_rules(eval_text)
     covered_binops = {r[0] for r in binop_rules}
+    covered_binops.update(
+        _normalize_lean_variant_name(name)
+        for name in re.findall(r"\|\s*\.(\w+),", eval_text)
+    )
 
     unop_rules = _parse_lean_evalUnOp_rules(eval_text)
     covered_unops = {r[0] for r in unop_rules}
@@ -607,16 +668,26 @@ def check_eval_rules() -> CategoryResult:
         "div",
         "floordiv",
         "pow",
+        # The formal Value universe has no container value, so membership is
+        # deliberately outside expression evaluation rather than a silent gap.
+        "in",
+        "not_in",
     }
 
     for op in binops:
         if op in covered_binops:
             rules_for = [(a, b) for (o, a, b) in binop_rules if o == op]
+            detail = (
+                f"{len(rules_for)} typed rule(s): "
+                + ", ".join(f"{a}x{b}" for a, b in rules_for)
+                if rules_for
+                else "generic scalar semantic rule"
+            )
             result.items.append(
                 CheckItem(
                     f"evalBinOp .{op}",
                     True,
-                    f"{len(rules_for)} rule(s): {', '.join(f'{a}x{b}' for a, b in rules_for)}",
+                    detail,
                 )
             )
         elif op in intentional_gaps:
@@ -830,6 +901,41 @@ def check_structural_invariants() -> CategoryResult:
     return result
 
 
+def check_compiler_passes() -> CategoryResult:
+    """Require every modeled optimization to retain its correctness module."""
+    result = CategoryResult(
+        "compiler_passes",
+        "Lean pass definitions and their correctness proof modules",
+    )
+    passes = {
+        "ConstFold": ("ConstFold.lean", "constFoldFunc"),
+        "DCE": ("DCE.lean", "dceFunc"),
+        "SCCP": ("SCCP.lean", "sccpFunc"),
+        "CSE": ("CSE.lean", "cseFunc"),
+        "LICM": ("LICM.lean", "licmFunc"),
+        "GuardHoist": ("GuardHoist.lean", "guardHoistFunc"),
+        "JoinCanon": ("JoinCanon.lean", "joinCanonFunc"),
+        "EdgeThread": ("EdgeThread.lean", "edgeThreadFunc"),
+    }
+    for pass_name, (filename, function_name) in passes.items():
+        implementation = LEAN_PASSES_DIR / filename
+        proof = LEAN_PASSES_DIR / f"{pass_name}Correct.lean"
+        implementation_text = _read(implementation)
+        ok = (
+            bool(implementation_text)
+            and function_name in implementation_text
+            and proof.is_file()
+        )
+        result.items.append(
+            CheckItem(
+                pass_name,
+                ok,
+                f"definition={implementation.name}:{function_name}, proof={proof.name}",
+            )
+        )
+    return result
+
+
 #
 # Orchestration
 #
@@ -843,6 +949,7 @@ ALL_CATEGORIES: dict[str, callable] = {
     "eval_rules": check_eval_rules,
     "sccp_lattice": check_sccp_lattice,
     "structural": check_structural_invariants,
+    "compiler_passes": check_compiler_passes,
 }
 
 
@@ -896,7 +1003,7 @@ def print_report(results: list[CategoryResult], *, verbose: bool = False) -> int
     )
     print(bold("=" * 76))
 
-    if total_failed:
+    if total_failed or any(not category.ok for category in results):
         print(f"\n{red('correspondence check: FAILED')}")
         return 1
     print(f"\n{green('correspondence check: ok')}")
@@ -904,21 +1011,36 @@ def print_report(results: list[CategoryResult], *, verbose: bool = False) -> int
 
 
 def json_report(results: list[CategoryResult]) -> dict:
-    total_passed = sum(c.passed for c in results)
-    total_items = sum(c.total for c in results)
+    selected = sum(c.total for c in results)
+    passed = sum(c.passed for c in results)
+    failed = sum(c.failed for c in results)
+    errors = 0
     return {
-        "score": round(total_passed / total_items * 100, 1) if total_items else 0,
-        "total_passed": total_passed,
-        "total_failed": sum(c.failed for c in results),
-        "total_items": total_items,
+        "schema": "molt.correspondence-proof.v2",
+        "status": (
+            "success"
+            if results and selected > 0 and failed == 0 and errors == 0
+            else "failure"
+        ),
+        "selected": selected,
+        "executed": selected,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "zero_work": selected == 0,
+        "score": round(passed / selected * 100, 1) if selected else 0,
         "categories": [
             {
                 "name": c.category,
                 "description": c.description,
-                "ok": c.ok,
+                "status": "success" if c.ok else "failure",
+                "selected": c.total,
+                "executed": c.total,
                 "passed": c.passed,
                 "failed": c.failed,
-                "total": c.total,
+                "errors": 0,
+                "zero_work": c.total == 0,
+                "metrics": c.metrics,
                 "items": [
                     {
                         "name": i.name,
@@ -941,6 +1063,11 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="Output JSON report")
     parser.add_argument(
+        "--receipt",
+        metavar="FILE",
+        help="Write the counted correspondence receipt to FILE",
+    )
+    parser.add_argument(
         "--category",
         type=str,
         choices=list(ALL_CATEGORIES.keys()),
@@ -957,9 +1084,17 @@ def main() -> int:
     categories = [args.category] if args.category else None
     results = run_checks(categories)
 
+    report = json_report(results)
+    if args.receipt:
+        receipt_path = Path(args.receipt)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     if args.json:
-        print(json.dumps(json_report(results), indent=2))
-        return 0 if all(c.ok for c in results) else 1
+        print(json.dumps(report, indent=2))
+        return 0 if report["status"] == "success" else 1
 
     return print_report(results, verbose=args.verbose)
 

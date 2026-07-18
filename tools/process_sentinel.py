@@ -48,7 +48,6 @@ MOLT_PROCESS_TOKENS = tuple(
             "bench_exception_heavy",
             "exception-repro",
             "cpython_regrtest",
-            "nightly_test_suite.py",
             "adapt_monty_tests.py",
             "run_molt_conformance.py",
             "run_monty_conformance.py",

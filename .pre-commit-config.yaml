@@ -26,6 +26,12 @@ repos:
         entry: git diff --cached --check
         language: system
         pass_filenames: false
+      - id: actionlint
+        name: GitHub Actions static validation
+        entry: uv run python3 tools/check_github_actions.py
+        language: system
+        files: ^\.github/(?:actions|workflows)/.*\.ya?ml$
+        pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:

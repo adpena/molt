@@ -5,13 +5,11 @@ Checks:
   1. Lean 4 proofs build (lake build)
   2. All Quint models pass invariant checks (quint run)
   3. Known-bad Quint model FAILS (meta-test)
-  4. Proof-code correspondence (NaN-boxing constants match Rust codegen ABI)
 
 Usage:
     uv run --python 3.12 python3 tools/check_formal_methods.py
     uv run --python 3.12 python3 tools/check_formal_methods.py --lean-only
     uv run --python 3.12 python3 tools/check_formal_methods.py --quint-only
-    uv run --python 3.12 python3 tools/check_formal_methods.py --check-correspondence
 """
 
 from __future__ import annotations
@@ -29,25 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.correspondence_sources import (  # noqa: E402
-    parse_lean_builtin_mappings,
-    parse_lean_hex_constants,
-    parse_rust_unsigned_constants,
-)
 from tools import harness_memory_guard  # noqa: E402
 
 FORMAL_DIR = ROOT / "formal"
 LEAN_DIR = FORMAL_DIR / "lean"
 QUINT_DIR = FORMAL_DIR / "quint"
-
-# Rust source for NaN-boxing constants
-CODEGEN_ABI_LIB = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
-# Lean formalization of NaN-boxing constants
-NANBOX_LEAN = LEAN_DIR / "MoltTIR" / "Runtime" / "NanBox.lean"
-# Lean Luau backend builtin mapping
-LUAU_EMIT_LEAN = LEAN_DIR / "MoltTIR" / "Backend" / "LuauEmit.lean"
-# Canonical Rust Luau backend authority (the legacy molt-backend copy was deleted).
-LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
 
 # Terminal colors
 
@@ -149,19 +133,6 @@ KNOWN_BAD_VIOLATION_MARKERS = (
     "found an issue",
     "invariant violated",
 )
-
-# NaN-boxing constants to cross-check between Rust and Lean.
-NANBOX_CONSTANTS: dict[str, str] = {
-    "QNAN": "QNAN",
-    "TAG_INT": "TAG_INT",
-    "TAG_BOOL": "TAG_BOOL",
-    "TAG_NONE": "TAG_NONE",
-    "TAG_PTR": "TAG_PTR",
-    "TAG_PEND": "TAG_PENDING",
-    "TAG_MASK": "TAG_MASK",
-    "INT_MASK": "INT_MASK",
-}
-
 
 # Result tracking
 
@@ -426,108 +397,6 @@ def check_known_bad_model() -> CheckResult:
     )
 
 
-# Check 4: Proof-Code Correspondence
-
-
-def check_nanbox_correspondence() -> CheckResult:
-    """Verify NaN-boxing constants match between Rust and Lean."""
-    if not CODEGEN_ABI_LIB.exists():
-        return CheckResult(
-            "NaN-box correspondence", False, f"Rust source not found: {CODEGEN_ABI_LIB}"
-        )
-    if not NANBOX_LEAN.exists():
-        return CheckResult(
-            "NaN-box correspondence", False, f"Lean source not found: {NANBOX_LEAN}"
-        )
-
-    rust_consts = parse_rust_unsigned_constants(CODEGEN_ABI_LIB.read_text())
-    lean_consts = parse_lean_hex_constants(NANBOX_LEAN.read_text())
-
-    mismatches: list[str] = []
-    matched = 0
-
-    for lean_name, rust_name in NANBOX_CONSTANTS.items():
-        if rust_name not in rust_consts:
-            mismatches.append(f"{rust_name}: not found in Rust source")
-            continue
-        if lean_name not in lean_consts:
-            mismatches.append(f"{lean_name}: not found in Lean source")
-            continue
-
-        rust_val = rust_consts[rust_name]
-        lean_val = lean_consts[lean_name]
-
-        if rust_val != lean_val:
-            mismatches.append(
-                f"{lean_name}/{rust_name}: "
-                f"Rust=0x{rust_val:016x} Lean=0x{lean_val:016x} MISMATCH"
-            )
-        else:
-            matched += 1
-
-    if mismatches:
-        detail = f"{matched} matched, {len(mismatches)} mismatched:\n" + "\n".join(
-            f"  - {m}" for m in mismatches
-        )
-        return CheckResult("NaN-box correspondence", False, detail)
-
-    return CheckResult("NaN-box correspondence", True, f"all {matched} constants match")
-
-
-def check_luau_builtin_correspondence() -> CheckResult:
-    """Verify Lean builtinMapping entries exist in the canonical Rust backend."""
-    if not LUAU_EMIT_LEAN.exists():
-        return CheckResult(
-            "Luau builtin correspondence",
-            False,
-            f"Lean source not found: {LUAU_EMIT_LEAN}",
-        )
-    rust_sources = sorted(LUAU_BACKEND_SRC.rglob("*.rs"))
-    if not rust_sources:
-        return CheckResult(
-            "Luau builtin correspondence",
-            False,
-            f"Rust source family not found: {LUAU_BACKEND_SRC}",
-        )
-
-    lean_mappings = parse_lean_builtin_mappings(LUAU_EMIT_LEAN.read_text())
-    rust_text = "\n".join(path.read_text() for path in rust_sources)
-
-    if not lean_mappings:
-        return CheckResult(
-            "Luau builtin correspondence",
-            True,
-            "SKIPPED (no builtin mappings found in Lean)",
-            ["Could not parse builtinMapping from LuauEmit.lean"],
-        )
-
-    missing: list[str] = []
-    found = 0
-
-    for ir_name, luau_name in lean_mappings:
-        # Check if either the IR name or Luau name appears in the Rust backend
-        if ir_name not in rust_text and luau_name not in rust_text:
-            missing.append(f"{ir_name} -> {luau_name}")
-        else:
-            found += 1
-
-    warnings: list[str] = []
-    if missing:
-        warnings.append(
-            f"{len(missing)} Lean builtins not found in the Rust backend source family: "
-            f"{', '.join(missing[:5])}"
-            + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
-        )
-
-    # This is a warning, not a hard failure; the Lean model may be a subset.
-    return CheckResult(
-        "Luau builtin correspondence",
-        True,
-        f"{found}/{len(lean_mappings)} Lean builtins verified in Rust backend",
-        warnings,
-    )
-
-
 # Check: File Inventory
 
 
@@ -614,11 +483,6 @@ def main() -> int:
         "--quint-only", action="store_true", help="Run Quint model checks only"
     )
     parser.add_argument(
-        "--check-correspondence",
-        action="store_true",
-        help="Run proof-code correspondence checks only",
-    )
-    parser.add_argument(
         "--inventory-only",
         action="store_true",
         help="Check file inventory only (no builds)",
@@ -626,14 +490,13 @@ def main() -> int:
     parser.add_argument(
         "--skip-build",
         action="store_true",
-        help="Skip actual Lean/Quint builds (inventory + correspondence only)",
+        help="Skip actual Lean/Quint builds while inspecting their inventories",
     )
     args = parser.parse_args()
 
     run_all = not (
         args.lean_only
         or args.quint_only
-        or args.check_correspondence
         or args.inventory_only
     )
     results: list[CheckResult] = []
@@ -663,12 +526,6 @@ def main() -> int:
             # Known-bad meta-test
             print("[formal-methods] Running known-bad model meta-test ...")
             results.append(check_known_bad_model())
-
-    # Proof-code correspondence
-    if run_all or args.check_correspondence:
-        print("[formal-methods] Checking proof-code correspondence ...")
-        results.append(check_nanbox_correspondence())
-        results.append(check_luau_builtin_correspondence())
 
     return print_summary(results)
 

@@ -55,7 +55,7 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -82,15 +82,13 @@ jobs:
             echo "PYTHON_BIN=python" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/setup-python@v6.3.0
-        if: ${{ !matrix.self_hosted }}
+      - name: Setup release project toolchains
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
-
-      - name: Install uv
-        shell: bash
-        run: |
-          "$PYTHON_BIN" -m pip install --upgrade uv
+          python: ${{ !matrix.self_hosted && 'true' || 'false' }}
+          rust-toolchain: ${{ !matrix.self_hosted && '1.96.1' || '' }}
+          cache-cargo: ${{ !matrix.self_hosted && 'true' || 'false' }}
+          cache-namespace: release-${{ matrix.platform }}-${{ matrix.arch }}
 
       - name: Verify version matches pyproject.toml
         shell: bash
@@ -106,9 +104,6 @@ jobs:
           if version != expected:
               raise SystemExit(f"pyproject.toml version {version} != {expected}")
           PY
-
-      - uses: dtolnay/rust-toolchain@1.96.1
-        if: ${{ !matrix.self_hosted }}
 
       - name: Install Rust toolchain (self-hosted)
         if: ${{ matrix.self_hosted }}
@@ -183,13 +178,13 @@ jobs:
             --output "dist/molt-worker-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: |
             dist/*.whl
@@ -197,7 +192,7 @@ jobs:
 
       - name: Upload release assets
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: v${{ env.VERSION }}
           files: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
@@ -214,7 +209,7 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -232,11 +227,13 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup release manifest Python
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
+          uv: "false"
+          cache-uv: "false"
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: dist
           pattern: release-*
@@ -249,7 +246,7 @@ jobs:
           python tools/release/release_manifest.py --version "$VERSION" --out dist/release_manifest.json dist/molt-*.*
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: |
             dist/SHA256SUMS
@@ -257,7 +254,7 @@ jobs:
 
       - name: Upload release manifest assets
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: v${{ env.VERSION }}
           files: |
@@ -269,12 +266,12 @@ jobs:
     needs: manifest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
       - name: Deploy Cloudflare Worker
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: deploy/cloudflare
@@ -297,13 +294,15 @@ jobs:
     needs: manifest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6.3.0
+      - name: Setup Modal deployment Python
+        uses: ./.github/actions/setup-project
         with:
-          python-version-file: ".python-version"
+          uv: "false"
+          cache-uv: "false"
 
       - name: Install Modal
         run: pip install modal

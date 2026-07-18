@@ -66,6 +66,7 @@ class CompileOnlyFuzzer:
                         random=Random(program_seed),
                     )
                 except Exception as e:
+                    summary.generation_errors += 1
                     if verbose:
                         _log(f"  [#{i:4d}] GENERATE_ERROR: {type(e).__name__}: {e}")
                     continue
