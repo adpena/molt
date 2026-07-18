@@ -25,7 +25,6 @@ from molt.compiler_analysis.python_binding_facts import (
     IdentityMask,
     MemberMask,
     PythonBindingIndex,
-    PythonBindingState,
     PythonCallSiteFact,
     PythonExpressionFact,
     PythonIdentity,
@@ -64,7 +63,7 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 2
+_ANALYSIS_SCHEMA: Final = 3
 _MAX_LOOP_FIXPOINT_STEPS: Final = 8
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -73,6 +72,9 @@ _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
 _IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = (
     ALL_INVALID_MEMBERS & ~int(PythonMember.TYPING_TYPE_CHECKING)
 )
+_BINDING_CHUNK_SHIFT: Final = 5
+_BINDING_CHUNK_SIZE: Final = 1 << _BINDING_CHUNK_SHIFT
+_BINDING_CHUNK_MASK: Final = _BINDING_CHUNK_SIZE - 1
 
 
 _BUILTIN_IDENTITIES: Final[dict[str, IdentityMask]] = {
@@ -93,6 +95,7 @@ _CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
     "inspect": PythonIdentity.INSPECT_MODULE,
     "typing": PythonIdentity.TYPING_MODULE,
     "typing_extensions": PythonIdentity.TYPING_MODULE,
+    "_intrinsics": PythonIdentity.INTRINSICS_MODULE,
 }
 
 
@@ -109,78 +112,187 @@ class PythonBindingPolicy:
     standard_imports_are_canonical: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class _BindingChunk:
+    identities: tuple[IdentityMask, ...]
+    static_values: tuple[PythonStaticValue, ...]
+    active_mask: int
+
+
+_EMPTY_BINDING_CHUNK: Final = _BindingChunk(
+    (UNBOUND_IDENTITY,) * _BINDING_CHUNK_SIZE,
+    (None,) * _BINDING_CHUNK_SIZE,
+    0,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingState:
+    """One interned persistent control-flow environment node."""
+
+    parents: tuple[int, ...] = ()
+    updated_slot: int = -1
+    updated_value: IdentityMask = UNBOUND_IDENTITY
+    updated_static_value: PythonStaticValue = None
+    clean_slots: int = 0
+    maybe_invalidated_members: MemberMask = 0
+    definitely_invalidated_members: MemberMask = 0
+
+
 class _StatePool:
     def __init__(self) -> None:
-        initial = PythonBindingState()
-        self._states: list[PythonBindingState] = [initial]
-        self._ids: dict[PythonBindingState, int] = {initial: 0}
-        self._binding_maps: list[dict[int, IdentityMask]] = [{}]
-        self._static_maps: list[dict[int, PythonStaticValue]] = [{}]
+        initial = _BindingState()
+        self._states: list[_BindingState] = [initial]
+        self._ids: dict[_BindingState, int] = {initial: 0}
+        self._binding_chunks: list[tuple[_BindingChunk, ...]] = [()]
 
-    def intern(self, state: PythonBindingState) -> int:
+    @staticmethod
+    def _raw_binding(
+        chunks: tuple[_BindingChunk, ...], slot: int
+    ) -> IdentityMask:
+        chunk_index = slot >> _BINDING_CHUNK_SHIFT
+        if chunk_index >= len(chunks):
+            return UNBOUND_IDENTITY
+        chunk = chunks[chunk_index]
+        chunk_offset = slot & _BINDING_CHUNK_MASK
+        if not chunk.active_mask & (1 << chunk_offset):
+            return UNBOUND_IDENTITY
+        return chunk.identities[chunk_offset]
+
+    @staticmethod
+    def _raw_static_value(
+        chunks: tuple[_BindingChunk, ...], slot: int
+    ) -> PythonStaticValue:
+        chunk_index = slot >> _BINDING_CHUNK_SHIFT
+        if chunk_index >= len(chunks):
+            return None
+        chunk = chunks[chunk_index]
+        chunk_offset = slot & _BINDING_CHUNK_MASK
+        if not chunk.active_mask & (1 << chunk_offset):
+            return None
+        return chunk.static_values[chunk_offset]
+
+    @staticmethod
+    def _updated_environment(
+        chunks: tuple[_BindingChunk, ...],
+        slot: int,
+        identity: IdentityMask,
+        static_value: PythonStaticValue,
+    ) -> tuple[_BindingChunk, ...]:
+        chunk_index = slot >> _BINDING_CHUNK_SHIFT
+        chunk_offset = slot & _BINDING_CHUNK_MASK
+        updated_chunks = list(chunks)
+        if chunk_index >= len(updated_chunks):
+            updated_chunks.extend(
+                (_EMPTY_BINDING_CHUNK,) * (chunk_index + 1 - len(updated_chunks))
+            )
+        previous = updated_chunks[chunk_index]
+        identities = list(previous.identities)
+        identities[chunk_offset] = identity
+        static_values = previous.static_values
+        if static_values[chunk_offset] != static_value:
+            updated_static_values = list(static_values)
+            updated_static_values[chunk_offset] = static_value
+            static_values = tuple(updated_static_values)
+        slot_bit = 1 << chunk_offset
+        active_mask = previous.active_mask
+        if identity == UNBOUND_IDENTITY and static_value is None:
+            active_mask &= ~slot_bit
+        else:
+            active_mask |= slot_bit
+        updated_chunks[chunk_index] = _BindingChunk(
+            tuple(identities), static_values, active_mask
+        )
+        while updated_chunks and not updated_chunks[-1].active_mask:
+            updated_chunks.pop()
+        return tuple(updated_chunks)
+
+    def _joined_environment(
+        self, parents: tuple[int, ...]
+    ) -> tuple[_BindingChunk, ...]:
+        parent_environments = tuple(self._binding_chunks[parent] for parent in parents)
+        chunk_count = max(map(len, parent_environments), default=0)
+        joined_chunks: list[_BindingChunk] = []
+        for chunk_index in range(chunk_count):
+            parent_chunks = tuple(
+                environment[chunk_index]
+                if chunk_index < len(environment)
+                else _EMPTY_BINDING_CHUNK
+                for environment in parent_environments
+            )
+            first = parent_chunks[0]
+            if all(chunk is first for chunk in parent_chunks[1:]):
+                joined_chunks.append(first)
+                continue
+            candidate_mask = 0
+            for chunk in parent_chunks:
+                candidate_mask |= chunk.active_mask
+            identities = [UNBOUND_IDENTITY] * _BINDING_CHUNK_SIZE
+            static_values: list[PythonStaticValue] = [None] * _BINDING_CHUNK_SIZE
+            active_mask = 0
+            remaining = candidate_mask
+            while remaining:
+                slot_bit = remaining & -remaining
+                chunk_offset = slot_bit.bit_length() - 1
+                remaining ^= slot_bit
+                identity = 0
+                first_static = parent_chunks[0].static_values[chunk_offset]
+                static_value = first_static
+                for chunk in parent_chunks:
+                    identity |= (
+                        chunk.identities[chunk_offset]
+                        if chunk.active_mask & slot_bit
+                        else UNBOUND_IDENTITY
+                    )
+                    if (
+                        chunk.static_values[chunk_offset]
+                        if chunk.active_mask & slot_bit
+                        else None
+                    ) != first_static:
+                        static_value = None
+                if identity == UNBOUND_IDENTITY and static_value is None:
+                    continue
+                identities[chunk_offset] = identity
+                static_values[chunk_offset] = static_value
+                active_mask |= slot_bit
+            joined_chunks.append(
+                _BindingChunk(tuple(identities), tuple(static_values), active_mask)
+                if active_mask
+                else _EMPTY_BINDING_CHUNK
+            )
+        while joined_chunks and not joined_chunks[-1].active_mask:
+            joined_chunks.pop()
+        return tuple(joined_chunks)
+
+    def intern(self, state: _BindingState) -> int:
         known = self._ids.get(state)
         if known is not None:
             return known
         index = len(self._states)
         self._states.append(state)
         if not state.parents:
-            bindings: dict[int, IdentityMask] = {}
+            chunks: tuple[_BindingChunk, ...] = ()
         elif len(state.parents) == 1:
-            bindings = self._binding_maps[state.parents[0]]
+            parent = state.parents[0]
+            chunks = self._binding_chunks[parent]
         else:
-            bindings = {}
-            slots = {
-                slot
-                for parent in state.parents
-                for slot in self._binding_maps[parent]
-            }
-            for slot in slots:
-                value = 0
-                for parent in state.parents:
-                    value |= self._binding_maps[parent].get(slot, UNBOUND_IDENTITY)
-                if value != UNBOUND_IDENTITY:
-                    bindings[slot] = value
+            chunks = self._joined_environment(state.parents)
         if state.updated_slot >= 0:
-            bindings = bindings.copy()
-            if state.updated_value == UNBOUND_IDENTITY:
-                bindings.pop(state.updated_slot, None)
-            else:
-                bindings[state.updated_slot] = state.updated_value
-        if not state.parents:
-            static_values: dict[int, PythonStaticValue] = {}
-        elif len(state.parents) == 1:
-            static_values = self._static_maps[state.parents[0]]
-        else:
-            static_values = dict[int, PythonStaticValue]()
-            static_slots = {
-                slot for parent in state.parents for slot in self._static_maps[parent]
-            }
-            for slot in static_slots:
-                values = tuple(
-                    self._static_maps[parent].get(slot)
-                    for parent in state.parents
-                )
-                joined = values[0] if values else None
-                if joined is not None and all(
-                    value == joined for value in values[1:]
-                ):
-                    static_values[slot] = joined
-        if state.updated_slot >= 0:
-            static_values = static_values.copy()
-            if state.updated_static_value is None:
-                static_values.pop(state.updated_slot, None)
-            else:
-                static_values[state.updated_slot] = state.updated_static_value
-        self._binding_maps.append(bindings)
-        self._static_maps.append(static_values)
+            chunks = self._updated_environment(
+                chunks,
+                state.updated_slot,
+                state.updated_value,
+                state.updated_static_value,
+            )
+        self._binding_chunks.append(chunks)
         self._ids[state] = index
         return index
 
-    def get(self, state_id: int) -> PythonBindingState:
+    def get(self, state_id: int) -> _BindingState:
         return self._states[state_id]
 
     def binding(self, state_id: int, slot: int) -> IdentityMask:
-        value = self._binding_maps[state_id].get(slot, UNBOUND_IDENTITY)
+        value = self._raw_binding(self._binding_chunks[state_id], slot)
         if (
             value != UNBOUND_IDENTITY
             and not self._states[state_id].clean_slots & (1 << slot)
@@ -191,7 +303,7 @@ class _StatePool:
     def static_value(self, state_id: int, slot: int) -> PythonStaticValue:
         if not self._states[state_id].clean_slots & (1 << slot):
             return None
-        return self._static_maps[state_id].get(slot)
+        return self._raw_static_value(self._binding_chunks[state_id], slot)
 
     def set_binding(
         self,
@@ -208,7 +320,7 @@ class _StatePool:
             return state_id
         state = self._states[state_id]
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=(state_id,),
                 updated_slot=slot,
                 updated_value=value,
@@ -225,7 +337,7 @@ class _StatePool:
         if clean_slots == state.clean_slots:
             return state_id
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=(state_id,),
                 clean_slots=clean_slots,
                 maybe_invalidated_members=state.maybe_invalidated_members,
@@ -249,7 +361,7 @@ class _StatePool:
         ):
             return state_id
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=(state_id,),
                 clean_slots=state.clean_slots,
                 maybe_invalidated_members=maybe,
@@ -267,7 +379,7 @@ class _StatePool:
         ):
             return state_id
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=(state_id,),
                 clean_slots=state.clean_slots,
                 maybe_invalidated_members=maybe,
@@ -281,7 +393,7 @@ class _StatePool:
         state = self._states[state_id]
         summary = self._states[summary_id]
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=(state_id,),
                 clean_slots=(state.clean_slots & ~summarized_slots)
                 | (
@@ -315,7 +427,7 @@ class _StatePool:
             definitely_invalidated &= state.definitely_invalidated_members
             clean_slots &= state.clean_slots
         return self.intern(
-            PythonBindingState(
+            _BindingState(
                 parents=parents,
                 clean_slots=clean_slots,
                 maybe_invalidated_members=maybe_invalidated,
@@ -329,20 +441,16 @@ class _StatePool:
         left = self._states[left_id]
         right = self._states[right_id]
         if (
-            left.maybe_invalidated_members != right.maybe_invalidated_members
+            left.clean_slots != right.clean_slots
+            or left.maybe_invalidated_members != right.maybe_invalidated_members
             or left.definitely_invalidated_members
             != right.definitely_invalidated_members
         ):
             return False
-        slots = self._binding_maps[left_id].keys() | self._binding_maps[right_id].keys()
-        return all(
-            self.binding(left_id, slot) == self.binding(right_id, slot)
-            and self.static_value(left_id, slot) == self.static_value(right_id, slot)
-            for slot in slots
-        )
+        return self._binding_chunks[left_id] == self._binding_chunks[right_id]
 
-    def export(self) -> tuple[PythonBindingState, ...]:
-        return tuple(self._states)
+    def __len__(self) -> int:
+        return len(self._states)
 
 
 _ScopeKind = Literal["module", "function", "class", "comprehension", "lambda"]
@@ -682,7 +790,6 @@ class _Analyzer:
         self,
         node: ast.AST,
         scope: _Scope,
-        state_before: int,
         identities: IdentityMask,
         effects: EffectMask,
         static_value: PythonStaticValue,
@@ -690,7 +797,6 @@ class _Analyzer:
         self.expressions[_node_key(node)] = PythonExpressionFact(
             _node_key(node),
             scope.scope_id,
-            state_before,
             identities,
             effects,
             static_value,
@@ -797,6 +903,12 @@ class _Analyzer:
                 PythonMember.TYPING_TYPE_CHECKING,
                 PythonIdentity.STATIC_FALSE,
             )
+        elif member == "require_intrinsic":
+            value |= admitted(
+                PythonIdentity.INTRINSICS_MODULE,
+                PythonMember.INTRINSICS_REQUIRE,
+                PythonIdentity.INTRINSICS_REQUIRE,
+            )
         elif member in {"f_globals", "__globals__"}:
             owners = int(PythonIdentity.CURRENT_FRAME | PythonIdentity.USER_FUNCTION)
             if base & owners:
@@ -829,6 +941,8 @@ class _Analyzer:
             members |= int(PythonMember.UTIL_FIND_SPEC)
         if base & int(PythonIdentity.TYPING_MODULE) and member == "TYPE_CHECKING":
             members |= int(PythonMember.TYPING_TYPE_CHECKING)
+        if base & int(PythonIdentity.INTRINSICS_MODULE) and member == "require_intrinsic":
+            members |= int(PythonMember.INTRINSICS_REQUIRE)
         if base & int(PythonIdentity.MODULE_SPEC_CLASS):
             members |= int(PythonMember.MODULE_SPEC_CLASS)
         if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
@@ -903,7 +1017,6 @@ class _Analyzer:
         return fact.identities if fact is not None else OTHER_IDENTITY
 
     def eval_expr(self, node: ast.expr, state_id: int, scope: _Scope) -> _ExpressionResult:
-        before = state_id
         effects = NO_EFFECTS
         identities = OTHER_IDENTITY
         static_value: PythonStaticValue = None
@@ -973,7 +1086,7 @@ class _Analyzer:
             )
             state_id = self._apply_effects(state_id, effects)
             self.calls[_node_key(node)] = PythonCallSiteFact(
-                _node_key(node), scope.scope_id, before, callee_result.identities,
+                _node_key(node), scope.scope_id, callee_result.identities,
                 identities,
                 effects,
                 self.states.get(state_id).maybe_invalidated_members,
@@ -1100,9 +1213,7 @@ class _Analyzer:
                 effects |= INVOKES_COMPARISON_CALLBACK
         if not isinstance(node, ast.Call):
             state_id = self._apply_effects(state_id, effects)
-        self._record_expression(
-            node, scope, before, identities, effects, static_value
-        )
+        self._record_expression(node, scope, identities, effects, static_value)
         self._record_state(state_id)
         return _ExpressionResult(state_id, identities, effects, static_value)
 
@@ -1263,6 +1374,7 @@ class _Analyzer:
             ("inspect", "currentframe"): PythonIdentity.INSPECT_CURRENTFRAME,
             ("typing", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
             ("typing_extensions", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
+            ("_intrinsics", "require_intrinsic"): PythonIdentity.INTRINSICS_REQUIRE,
         }.get((module, name))
         if identity is None:
             return OTHER_IDENTITY
@@ -1685,8 +1797,6 @@ class _Analyzer:
                         if (slot := self._slot_for_name(scope, name)) is not None
                     )
                 ),
-                scope.entry_state_id,
-                scope.exit_state_id,
             )
             for scope in self.scopes
         )
@@ -1707,7 +1817,19 @@ class _Analyzer:
         )
         if _module_import_flow_required(tree):
             module_import_flow = _analyze_module_import_flow_uncached(
-                tree, import_context
+                tree,
+                import_context,
+                metadata_preserving_globals_calls=frozenset(
+                    (
+                        fact.node.lineno,
+                        fact.node.col_offset,
+                        fact.node.end_lineno,
+                        fact.node.end_col_offset,
+                        fact.node.kind,
+                    )
+                    for fact in self.calls.values()
+                    if fact.callee_may_be(PythonIdentity.INTRINSICS_REQUIRE)
+                ),
             )
         else:
             import_state = context_import_state(import_context)
@@ -1726,7 +1848,7 @@ class _Analyzer:
             expressions=tuple(sorted(self.expressions.values(), key=lambda fact: fact.node)),
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
-            states=self.states.export(),
+            state_count=len(self.states),
             slot_names=tuple(self.slot_names),
         )
 

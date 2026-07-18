@@ -76,6 +76,19 @@ def test_find_spec_member_rebinding_invalidates_all_aliases() -> None:
     )
 
 
+def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
+    index = analyze_python_source_bindings(
+        "from _intrinsics import require_intrinsic as require\n"
+        "require('molt_demo', globals())\n"
+    )
+    call = next(
+        fact
+        for fact in index.calls
+        if fact.node.col_offset == 0
+    )
+    assert call.callee_is(PythonIdentity.INTRINSICS_REQUIRE)
+
+
 @pytest.mark.parametrize(
     "conditional",
     [
@@ -399,6 +412,19 @@ def test_binding_cache_evicts_fifo_in_constant_time_authority() -> None:
     assert fetch("b") is indexes["b"]
     assert fetch("a") is indexes["a"]
     assert calls == Counter(a=2, b=1, c=1)
+
+
+def test_loop_fixpoint_does_not_conflate_identical_storage_with_tainted_binding() -> None:
+    states = python_binding_flow._StatePool()
+    exact = states.set_binding(
+        0, 0, int(PythonIdentity.IMPORTLIB_MODULE)
+    )
+    tainted = states.taint_slots(exact, 1)
+    loop_header = states.join(exact, tainted)
+
+    assert states.binding(exact, 0) == int(PythonIdentity.IMPORTLIB_MODULE)
+    assert states.binding(loop_header, 0) & OTHER_IDENTITY
+    assert not states.equivalent(exact, loop_header)
 
 
 def test_binding_cache_single_flight_exception_wakes_waiters_and_recovers() -> None:
