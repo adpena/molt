@@ -26,6 +26,7 @@ from molt.frontend._types import (
 from molt.frontend.sema import FunctionKind, SemaResult
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.frontend._protocol import _GeneratorProtocol
     from molt.type_facts import TypeFacts
 
@@ -282,6 +283,7 @@ class GeneratorStateMixin(_MixinBase):
         module_name: str | None = None,
         module_spec_name: str | None = None,
         module_is_namespace: bool = False,
+        module_execution_kind: ModuleExecutionKind | None = None,
         entry_module: str | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
@@ -440,12 +442,14 @@ class GeneratorStateMixin(_MixinBase):
             module_name=module_name,
             module_spec_name=module_spec_name,
             module_is_namespace=module_is_namespace,
+            module_execution_kind=module_execution_kind,
             entry_module=entry_module,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             known_modules=known_modules,
             direct_call_modules=direct_call_modules,
             stdlib_allowlist=stdlib_allowlist,
+            target_python=target_python,
         )
         self.type_facts_module = type_facts_module or self.module_name
         self.enable_phi = enable_phi

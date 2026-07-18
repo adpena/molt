@@ -47,13 +47,19 @@ def _measure(import_count: int, iterations: int) -> dict[str, object]:
     policy = PythonBindingPolicy()
 
     # Warm Python's own allocators and validate the representative shape first.
-    reference = analyze_python_bindings(tree, source_digest=digest, policy=policy)
+    reference = analyze_python_bindings(
+        tree, source_digest=f"{digest}:reference", policy=policy
+    )
     assert len(reference.calls) == import_count
 
     cold_ns: list[int] = []
-    for _iteration in range(iterations):
+    for iteration in range(iterations):
         start = time.perf_counter_ns()
-        index = analyze_python_bindings(tree, source_digest=digest, policy=policy)
+        index = analyze_python_bindings(
+            tree,
+            source_digest=f"{digest}:cold:{iteration}",
+            policy=policy,
+        )
         cold_ns.append(time.perf_counter_ns() - start)
         assert len(index.calls) == import_count
 
@@ -62,7 +68,9 @@ def _measure(import_count: int, iterations: int) -> dict[str, object]:
     try:
         allocation_start = time.perf_counter_ns()
         allocation_index = analyze_python_bindings(
-            tree, source_digest=digest, policy=policy
+            tree,
+            source_digest=f"{digest}:allocation",
+            policy=policy,
         )
         allocation_profile_ns = time.perf_counter_ns() - allocation_start
         assert len(allocation_index.calls) == import_count

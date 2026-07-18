@@ -11,9 +11,12 @@ import ast
 from dataclasses import dataclass
 from enum import IntFlag
 from types import MappingProxyType
-from typing import Final, Mapping, TypeAlias
+from typing import TYPE_CHECKING, Final, Mapping, TypeAlias
 
 from molt.compiler_analysis.python_effects_generated import EffectMask
+
+if TYPE_CHECKING:
+    from molt.compiler_analysis.python_imports import ModuleImportFlow
 
 
 class PythonIdentity(IntFlag):
@@ -49,6 +52,8 @@ class PythonIdentity(IntFlag):
     INERT_VALUE = 1 << 23
     IMPORTLIB_UTIL_MODULE = 1 << 24
     IMPORTLIB_FIND_SPEC = 1 << 25
+    TYPING_MODULE = 1 << 26
+    STATIC_FALSE = 1 << 27
     OTHER = 1 << 30
     UNBOUND = 1 << 31
 
@@ -59,6 +64,14 @@ OTHER_IDENTITY: Final[IdentityMask] = int(PythonIdentity.OTHER)
 UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 _SENTINEL_IDENTITIES: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
+
+
+@dataclass(frozen=True, slots=True)
+class PythonParameterRef:
+    name: str
+
+
+PythonStaticValue: TypeAlias = str | int | tuple[str, ...] | PythonParameterRef | None
 
 
 class PythonMember(IntFlag):
@@ -74,6 +87,7 @@ class PythonMember(IntFlag):
     IMPORT_HOOKS = 1 << 7
     IMPORTLIB_UTIL = 1 << 8
     UTIL_FIND_SPEC = 1 << 9
+    TYPING_TYPE_CHECKING = 1 << 10
 
 
 MemberMask: TypeAlias = int
@@ -138,6 +152,7 @@ class PythonExpressionFact:
     state_id: int
     identities: IdentityMask
     effects: EffectMask
+    static_value: PythonStaticValue = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +199,7 @@ class PythonBindingState:
     parents: tuple[int, ...] = ()
     updated_slot: int = -1
     updated_value: IdentityMask = UNBOUND_IDENTITY
+    updated_static_value: PythonStaticValue = None
     clean_slots: int = 0
     maybe_invalidated_members: MemberMask = 0
     definitely_invalidated_members: MemberMask = 0
@@ -195,6 +211,12 @@ class PythonBindingIndex:
 
     source_digest: str
     target_python: tuple[int, int]
+    target_sys_platform: str | None
+    module_name: str | None
+    module_spec_name: str | None
+    module_is_package: bool
+    module_execution_kind: str
+    module_import_flow: ModuleImportFlow
     expressions: tuple[PythonExpressionFact, ...]
     calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
@@ -209,6 +231,12 @@ class PythonBindingIndex:
         *,
         source_digest: str,
         target_python: tuple[int, int],
+        target_sys_platform: str | None,
+        module_name: str | None,
+        module_spec_name: str | None,
+        module_is_package: bool,
+        module_execution_kind: str,
+        module_import_flow: ModuleImportFlow,
         expressions: tuple[PythonExpressionFact, ...],
         calls: tuple[PythonCallSiteFact, ...],
         scopes: tuple[PythonScopeFact, ...],
@@ -218,6 +246,12 @@ class PythonBindingIndex:
         return cls(
             source_digest=source_digest,
             target_python=target_python,
+            target_sys_platform=target_sys_platform,
+            module_name=module_name,
+            module_spec_name=module_spec_name,
+            module_is_package=module_is_package,
+            module_execution_kind=module_execution_kind,
+            module_import_flow=module_import_flow,
             expressions=expressions,
             calls=calls,
             scopes=scopes,
@@ -233,55 +267,17 @@ class PythonBindingIndex:
     def call_fact(self, node: ast.Call) -> PythonCallSiteFact | None:
         return self._call_lookup.get(PythonNodeKey.from_node(node))
 
-    def state_slot_binding(self, state_id: int, slot: int) -> IdentityMask:
-        values: dict[int, IdentityMask] = {}
-        stack: list[tuple[int, bool]] = [(state_id, False)]
-        while stack:
-            current_id, expanded = stack.pop()
-            if current_id in values:
-                continue
-            state = self.states[current_id]
-            if state.updated_slot == slot:
-                value = state.updated_value
-                if value != UNBOUND_IDENTITY and not state.clean_slots & (1 << slot):
-                    value |= OTHER_IDENTITY
-                values[current_id] = value
-                continue
-            if not state.parents:
-                values[current_id] = UNBOUND_IDENTITY
-                continue
-            if not expanded:
-                stack.append((current_id, True))
-                stack.extend(
-                    (parent, False)
-                    for parent in state.parents
-                    if parent not in values
-                )
-                continue
-            value = 0
-            for parent in state.parents:
-                value |= values[parent]
-            if value != UNBOUND_IDENTITY and not state.clean_slots & (1 << slot):
-                value |= OTHER_IDENTITY
-            values[current_id] = value
-        return values[state_id]
+    def static_truth(self, node: ast.expr) -> bool | None:
+        """Return truth known by the source-ordered identity analysis in O(1)."""
 
-    def binding_before(
-        self, node: ast.AST, name: str
-    ) -> IdentityMask | None:
-        key = PythonNodeKey.from_node(node)
-        expression = self._expression_lookup.get(key)
-        call = self._call_lookup.get(key)
-        fact = expression if expression is not None else call
-        if fact is None:
-            return None
-        scope = self.scopes[fact.scope_id]
-        slot = next(
-            (slot for candidate, slot in scope.binding_slots if candidate == name),
-            None,
-        )
-        return None if slot is None else self.state_slot_binding(fact.state_id, slot)
+        fact = self._expression_lookup.get(PythonNodeKey.from_node(node))
+        if fact is not None and fact.identities == int(PythonIdentity.STATIC_FALSE):
+            return False
+        return None
 
+    def static_value(self, node: ast.expr) -> PythonStaticValue:
+        fact = self._expression_lookup.get(PythonNodeKey.from_node(node))
+        return None if fact is None else fact.static_value
 
 __all__ = [
     "ALL_INVALID_MEMBERS",
@@ -296,6 +292,8 @@ __all__ = [
     "PythonIdentity",
     "PythonMember",
     "PythonNodeKey",
+    "PythonParameterRef",
+    "PythonStaticValue",
     "PythonScopeFact",
     "UNKNOWN_IDENTITY",
     "UNBOUND_IDENTITY",

@@ -57,6 +57,9 @@ from molt.frontend._types import (
 
 if TYPE_CHECKING:
     from molt.frontend.sema import FunctionKind
+    from molt.compiler_analysis.python_imports import ModuleExecutionKind
+    from molt.compiler_analysis.python_imports import ModuleImportContext
+    from molt.compiler_analysis.python_imports import ModuleImportFlow
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
     from molt.compiler_analysis.static_truth import SysPlatformStaticTruthKwargs
@@ -64,6 +67,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
@@ -110,6 +114,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_declared_funcs: dict[str, FunctionKind]
     module_defined_funcs: set[str]
     module_elided_deleted_funcs: set[str]
+    module_execution_kind: ModuleExecutionKind
     module_frame_code_id: int | None
     module_frame_emitted: Any
     module_frame_entered: Any
@@ -117,18 +122,15 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_func_defaults: dict[str, dict[str, Any]]
     module_global_mutations: set[str]
     module_globals_dict_escaped: Any
+    module_import_flow: ModuleImportFlow | None
+    module_import_state: Any
     module_intrinsic_globals: dict[str, str]
     module_is_namespace: Any
     module_is_package: Any
     module_name: Any
     module_obj: MoltValue | None
-    module_package_override: str | None
-    module_package_override_set: Any
     module_prefix: Any
     module_spec_name: Any
-    module_spec_override: str | None
-    module_spec_override_is_package: bool | None
-    module_spec_override_set: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[str]
     native_callable_exports: dict[str, dict[str, Any]]
@@ -177,6 +179,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_name: str | None = None,
         module_spec_name: str | None = None,
         module_is_namespace: bool = False,
+        module_execution_kind: ModuleExecutionKind | None = None,
         entry_module: str | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
@@ -1616,12 +1619,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_name: str | None,
         module_spec_name: str | None,
         module_is_namespace: bool,
+        module_execution_kind: ModuleExecutionKind | None,
         entry_module: str | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
         direct_call_modules: set[str] | None,
         stdlib_allowlist: set[str] | None,
+        target_python: tuple[int, int],
     ) -> None: ...
 
     def _init_return_slot(self) -> None: ...
@@ -1698,9 +1703,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _is_known_project_module(self, module_name: str | None) -> bool: ...
 
     def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool: ...
-
-    @staticmethod
-    def _is_modulespec_ctor(node: ast.AST) -> bool: ...
 
     def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
 
@@ -1865,10 +1867,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
 
-    def _maybe_record_module_overrides(
-        self, targets: Sequence[ast.AST], value: ast.AST
-    ) -> None: ...
-
     def _maybe_report_midend_stats(self) -> None: ...
 
     def _maybe_spill_receiver(
@@ -1929,6 +1927,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool: ...
 
     def _module_has_future_annotations(self, node: ast.Module) -> bool: ...
+
+    def _module_import_contexts(
+        self, node: ast.AST
+    ) -> tuple[ModuleImportContext, ...]: ...
 
     def _module_live_statements_for_target(
         self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
@@ -1998,10 +2000,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _parse_gpu_launch_config_expr(
         self, config_expr: ast.expr
     ) -> tuple[MoltValue, MoltValue] | None: ...
-
-    def _parse_modulespec_override(
-        self, value: ast.AST
-    ) -> tuple[str, bool | None] | None: ...
 
     def _parse_molt_buffer_call(
         self, node: ast.Call, name: str
@@ -2140,8 +2138,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         round_snapshots: list[dict[str, Any]] | None = None,
     ) -> None: ...
 
-    def _record_module_override(self, target: ast.AST, value: ast.AST) -> None: ...
-
     def _reduction_acc_numeric_hint(
         self, name: str, value: MoltValue
     ) -> str | None: ...
@@ -2149,8 +2145,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _refresh_midend_env_config_if_needed(self) -> None: ...
 
     def _register_code_symbol(self, symbol: str) -> int: ...
-
-    def _relative_import_package(self) -> str: ...
 
     def _reload_async_value(self, offset: int, hint: str) -> MoltValue: ...
 
@@ -2200,10 +2194,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         function_name: str | None = None,
         block_count: int = 1,
     ) -> MidendFunctionPolicy: ...
-
-    def _resolve_relative_import(
-        self, module: str | None, level: int
-    ) -> tuple[str | None, str | None]: ...
 
     def _resolve_super_method_info(
         self, class_name: str, method: str
@@ -2311,15 +2301,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _should_fast_int(self, op: MoltOp) -> bool: ...
 
-    def _should_track_module_overrides(self) -> bool: ...
-
     @staticmethod
     def _side_effect_free_module_function_def(node: ast.FunctionDef) -> bool: ...
 
     def _source_imports_use_transaction(self) -> bool: ...
-
-    @staticmethod
-    def _spec_parent(spec_name: str, is_package: bool) -> str: ...
 
     def _spill_async_temporaries(self) -> None: ...
 
