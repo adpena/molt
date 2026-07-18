@@ -30,9 +30,10 @@ pub fn scan_and_write_callable_table_attestation(
     writer
         .write_all(b"\0asm\x01\0\0\0")
         .map_err(|error| error.to_string())?;
-    let mut emit_section = |id, payload: &[u8]| write_raw_section(writer, id, payload);
-    let mut facts = scan_wasm_link_facts_with_sections(bytes, Some(&mut emit_section))?;
-    drop(emit_section);
+    let mut facts = {
+        let mut emit_section = |id, payload: &[u8]| write_raw_section(writer, id, payload);
+        scan_wasm_link_facts_with_sections(bytes, Some(&mut emit_section))?
+    };
     validate_callable_table_topology(&facts)?;
     if !facts.forbidden_callable_alias_exports.is_empty() {
         return Err(format!(
@@ -97,17 +98,16 @@ fn validate_callable_table_topology(facts: &WasmLinkFacts) -> Result<(), String>
             "indirect callable dispatch escapes canonical table 0 through table {table_index}"
         ));
     }
-    if facts.reachable_function_reference_dispatch {
-        if let Some(read) = facts
+    if facts.reachable_function_reference_dispatch
+        && let Some(read) = facts
             .reachable_table_reads
             .iter()
             .find(|read| read.table_index != 0)
-        {
-            return Err(format!(
-                "function-reference dispatch can escape canonical table 0 through reachable table.get {} in function {}",
-                read.table_index, read.function_index
-            ));
-        }
+    {
+        return Err(format!(
+            "function-reference dispatch can escape canonical table 0 through reachable table.get {} in function {}",
+            read.table_index, read.function_index
+        ));
     }
     if let Some(mutation) = facts
         .reachable_table_mutations

@@ -41,7 +41,7 @@ fn emit_wasm_link_facts_result(
             serde_json::to_writer(
                 io::stdout().lock(),
                 &WasmLinkFactsSuccess {
-                    schema_version: 3,
+                    schema_version: molt_wasm_facts::WASM_LINK_FACTS_SCHEMA_VERSION,
                     ok: true,
                     facts: &facts,
                 },
@@ -52,7 +52,7 @@ fn emit_wasm_link_facts_result(
             serde_json::to_writer(
                 io::stdout().lock(),
                 &WasmLinkFactsFailure {
-                    schema_version: 3,
+                    schema_version: molt_wasm_facts::WASM_LINK_FACTS_SCHEMA_VERSION,
                     ok: false,
                     error: &error,
                 },

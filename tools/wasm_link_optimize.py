@@ -11,7 +11,6 @@ from wasm_link_edit import _strip_internal_exports
 from wasm_link_facts import (
     active_function_element_rows,
     fact_index_set,
-    function_reference_rows,
     table_mutation_rows,
 )
 from wasm_link_format import (
@@ -43,15 +42,6 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
     return stripped if stripped != data else None
 
 
-def _function_reference_graph(
-    facts: dict[str, object],
-) -> dict[int, set[int]]:
-    graph: dict[int, set[int]] = {}
-    for function_index, direct_calls, ref_funcs in function_reference_rows(facts):
-        graph[function_index] = {*direct_calls, *ref_funcs}
-    return graph
-
-
 def _fact_index_set(
     facts: dict[str, object],
     field: str,
@@ -59,47 +49,12 @@ def _fact_index_set(
     return fact_index_set(facts, field)
 
 
-def _root_function_indices(facts: dict[str, object]) -> set[int]:
-    return _fact_index_set(facts, "root_function_indices")
-
-
 def _reachable_function_indices(facts: dict[str, object]) -> set[int]:
-    graph = _function_reference_graph(facts)
-    reachable: set[int] = set()
-    worklist = list(_root_function_indices(facts))
-    exported_tables = _fact_index_set(facts, "exported_table_indices")
-    if facts.get("reachable_dynamic_dispatch") is True or 0 in exported_tables:
-        for table_index, _slot, function_index in active_function_element_rows(facts):
-            if table_index != 0:
-                continue
-            worklist.append(function_index)
-    while worklist:
-        function_index = worklist.pop()
-        if function_index in reachable:
-            continue
-        reachable.add(function_index)
-        worklist.extend(graph.get(function_index, set()) - reachable)
-    if any(
-        function_index in reachable and operation == "table.init"
-        for function_index, operation, _table_index, _source_table_index in table_mutation_rows(facts)
-    ):
-        worklist = list(_fact_index_set(facts, "element_function_indices") - reachable)
-        while worklist:
-            function_index = worklist.pop()
-            if function_index in reachable:
-                continue
-            reachable.add(function_index)
-            worklist.extend(graph.get(function_index, set()) - reachable)
-    return reachable
+    return _fact_index_set(facts, "reachable_function_indices")
 
 
 def _referenced_function_indices(facts: dict[str, object]) -> set[int]:
-    referenced = _root_function_indices(facts)
-    referenced.update(_fact_index_set(facts, "element_function_indices"))
-    referenced.update(_fact_index_set(facts, "declared_function_indices"))
-    for targets in _function_reference_graph(facts).values():
-        referenced.update(targets)
-    return referenced
+    return _fact_index_set(facts, "referenced_function_indices")
 
 
 def _has_opaque_function_reference_dispatch(facts: dict[str, object]) -> bool:
@@ -139,9 +94,9 @@ def _neutralize_dead_element_entries(
     # indices. Those targets are not statically attributable to direct call
     # edges, so element neutralization is unsound when any call_indirect
     # remains in the module.
-    if facts.get("reachable_dynamic_dispatch") is True or _has_opaque_function_reference_dispatch(
-        facts
-    ):
+    if facts.get(
+        "reachable_dynamic_dispatch"
+    ) is True or _has_opaque_function_reference_dispatch(facts):
         return None
 
     exported_tables = _fact_index_set(facts, "exported_table_indices")
@@ -151,7 +106,9 @@ def _neutralize_dead_element_entries(
     reachable = _reachable_function_indices(facts)
     if any(
         function_index in reachable and operation == "table.init"
-        for function_index, operation, _table_index, _source_table_index in table_mutation_rows(facts)
+        for function_index, operation, _table_index, _source_table_index in table_mutation_rows(
+            facts
+        )
     ):
         return None
 
@@ -945,9 +902,7 @@ def _post_link_optimize(
 
     preserved_export_names = set(preserve_exports or ())
     if preserve_reference_exports and reference_data is not None:
-        preserved_export_names.update(
-            _collect_function_exports(reference_data)
-        )
+        preserved_export_names.update(_collect_function_exports(reference_data))
 
     updated = _strip_debug_sections(data)
     if updated is not None:

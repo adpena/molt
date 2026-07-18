@@ -21,6 +21,7 @@ def _load_wasm_link():
 
 
 wasm_link = _load_wasm_link()
+_REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
 
 
 def _rust_facts_fixture(data: bytes) -> dict[str, object]:
@@ -34,20 +35,17 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
     module_facts = wasm_link.parse_wasm_module_facts(data)
     total_functions = import_count + defined_count
     exported_tables = sorted(
-        index
-        for kind, index in module_facts.export_kinds.values()
-        if kind == 1
+        index for kind, index in module_facts.export_kinds.values() if kind == 1
     )
     table_min = wasm_link._table_import_min(data)
     app_base = table_min or 0
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "function_import_count": import_count,
         "defined_function_count": defined_count,
-        "function_references": [],
-        "root_function_indices": list(range(total_functions)),
-        "element_function_indices": [],
-        "declared_function_indices": [],
+        "reachable_function_indices": list(range(total_functions)),
+        "referenced_function_indices": list(range(total_functions)),
+        "main_module_init_direct_calls": [],
         "active_function_elements": [],
         "callable_table_entries": [],
         "callable_table_attestation_present": True,
@@ -76,10 +74,24 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    def facts_provider(_scanner, _scratch_root, metrics=None):  # type: ignore[no-untyped-def]
+        if metrics is not None:
+            metrics.update(
+                {
+                    "wasm_facts_hash_ms": 0.0,
+                    "wasm_facts_scan_ms": 0.0,
+                    "wasm_facts_scan_calls": 0.0,
+                    "wasm_facts_cache_hits": 0.0,
+                    "wasm_facts_input_bytes": 0.0,
+                    "wasm_facts_response_chars": 0.0,
+                }
+            )
+        return _rust_facts_fixture
+
     monkeypatch.setattr(
         wasm_link,
         "_make_rust_wasm_facts_provider",
-        lambda _scanner, _scratch_root: _rust_facts_fixture,
+        facts_provider,
     )
 
     def publish(_scanner, artifact: Path, *, layout=None, role="monolithic"):
@@ -107,6 +119,52 @@ def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-de
 
 def _facts_provider(data: bytes) -> dict[str, object]:
     return _rust_facts_fixture(data)
+
+
+def test_rust_facts_provider_attests_scan_cost_and_content_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scanner = tmp_path / "molt-backend"
+    scanner.write_bytes(b"scanner")
+    payload = json.dumps(
+        {
+            "schema_version": 4,
+            "ok": True,
+            "facts": {
+                "schema_version": 4,
+                "reachable_function_indices": [0],
+                "referenced_function_indices": [0],
+            },
+        }
+    )
+    calls = 0
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+
+        class Result:
+            returncode = 0
+            stdout = payload
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    metrics: dict[str, float] = {}
+    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(scanner, tmp_path, metrics)
+
+    first = provider(b"representative-wasm")
+    second = provider(b"representative-wasm")
+
+    assert first is second
+    assert calls == 1
+    assert metrics["wasm_facts_scan_calls"] == 1.0
+    assert metrics["wasm_facts_cache_hits"] == 1.0
+    assert metrics["wasm_facts_input_bytes"] == len(b"representative-wasm")
+    assert metrics["wasm_facts_response_chars"] == len(payload)
+    assert metrics["wasm_facts_hash_ms"] >= 0.0
+    assert metrics["wasm_facts_scan_ms"] >= 0.0
 
 
 def test_snapshot_link_input_retries_until_source_is_stable(
@@ -2198,6 +2256,12 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         "split_runtime_processing",
         "wasm_strip",
         "fail_closed_validation",
+        "wasm_facts_hash_ms",
+        "wasm_facts_scan_ms",
+        "wasm_facts_scan_calls",
+        "wasm_facts_cache_hits",
+        "wasm_facts_input_bytes",
+        "wasm_facts_response_chars",
     }
 
 
@@ -3115,10 +3179,7 @@ def test_oz_publication_pipeline_is_bounded_and_size_focused() -> None:
 
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
     facts = {
-        "root_function_indices": [],
-        "element_function_indices": [],
-        "declared_function_indices": [],
-        "function_references": [],
+        "reachable_function_indices": [],
         "active_function_elements": [],
         "reachable_dynamic_dispatch": True,
         "reachable_function_reference_dispatch": False,
@@ -3133,7 +3194,9 @@ def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() 
     )
 
 
-def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_controls() -> None:
+def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_controls() -> (
+    None
+):
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = [
         (1, write_varuint(1) + b"\x60\x00\x00"),
@@ -3150,10 +3213,7 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
     ]
     module = wasm_link._build_sections(sections)
     facts = {
-        "root_function_indices": [0],
-        "element_function_indices": [1],
-        "declared_function_indices": [],
-        "function_references": [],
+        "reachable_function_indices": [0],
         "active_function_elements": [[0, 0, 1]],
         "reachable_dynamic_dispatch": False,
         "reachable_function_reference_dispatch": False,
@@ -3164,7 +3224,8 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
     neutralized = wasm_link._neutralize_dead_element_entries(module, facts)
     assert neutralized is not None
     element_payload = next(
-        payload for section_id, payload in wasm_link._parse_sections(neutralized)
+        payload
+        for section_id, payload in wasm_link._parse_sections(neutralized)
         if section_id == 9
     )
     assert element_payload.endswith(b"\x00")
@@ -3172,27 +3233,28 @@ def test_neutralize_dead_element_entries_uses_reachable_roots_and_fail_closed_co
 
     observable = dict(facts)
     observable["exported_table_indices"] = [0]
+    observable["reachable_function_indices"] = [0, 1]
     assert wasm_link._reachable_function_indices(observable) == {0, 1}
     nonzero_observable = dict(facts)
     nonzero_observable["exported_table_indices"] = [1]
     assert wasm_link._reachable_function_indices(nonzero_observable) == {0}
     dynamic = dict(facts)
     dynamic["reachable_dynamic_dispatch"] = True
+    dynamic["reachable_function_indices"] = [0, 1]
     assert wasm_link._reachable_function_indices(dynamic) == {0, 1}
     reachable_ref = dict(facts)
-    reachable_ref["function_references"] = [[0, [], [1]], [2, [], [1]]]
+    reachable_ref["reachable_function_indices"] = [0, 1]
     assert wasm_link._reachable_function_indices(reachable_ref) == {0, 1}
     table_init = dict(facts)
     table_init["table_mutations"] = [[0, "table.init", 0, None]]
+    table_init["reachable_function_indices"] = [0, 1]
     assert wasm_link._reachable_function_indices(table_init) == {0, 1}
 
     for override in (
         {"reachable_dynamic_dispatch": True},
         {"reachable_function_reference_dispatch": True},
         {"exported_table_indices": [0]},
-        {
-            "table_mutations": [[0, "table.init", 0, None]]
-        },
+        {"table_mutations": [[0, "table.init", 0, None]]},
     ):
         controlled = dict(facts)
         controlled.update(override)
@@ -3213,8 +3275,8 @@ def test_import_walkers_handle_tag_imports_before_host_call_indirect() -> None:
 def test_strip_unused_module_function_imports_remaps_indices() -> None:
     module = _build_runtime_import_strip_module()
     facts = _rust_facts_fixture(module)
-    facts["root_function_indices"] = [2]
-    facts["function_references"] = [[2, [1], []]]
+    facts["reachable_function_indices"] = [1, 2]
+    facts["referenced_function_indices"] = [1, 2]
 
     stripped = wasm_link._strip_unused_module_function_imports(
         module,
@@ -4154,10 +4216,8 @@ def test_entry_module_prefix_from_main_init_prefers_main_module() -> None:
     module = wasm_link._build_sections(sections)
     exports = wasm_link._collect_function_exports(module)
     facts = _rust_facts_fixture(module)
-    facts["function_references"] = [[1, [0], []]]
-    assert wasm_link._entry_module_prefix_from_main_init(
-        exports, facts
-    ) == "main_molt"
+    facts["main_module_init_direct_calls"] = [0]
+    assert wasm_link._entry_module_prefix_from_main_init(exports, facts) == "main_molt"
 
 
 def test_collect_output_wrapper_specs_prefers_main_module_prefix_over_dominant_stdlib() -> (
@@ -4219,7 +4279,7 @@ def test_collect_output_wrapper_specs_prefers_main_module_prefix_over_dominant_s
 
     module = wasm_link._build_sections(sections)
     facts = _rust_facts_fixture(module)
-    facts["function_references"] = [[5, [0], []]]
+    facts["main_module_init_direct_calls"] = [0]
     specs = wasm_link._collect_output_wrapper_specs(module, facts)
     kept = {name for name, _alias, _type_idx, _func_idx in specs}
     assert "main_molt__init" in kept
@@ -5000,9 +5060,7 @@ def test_required_linked_table_min_respects_final_active_elements() -> None:
 
     data = wasm_link._build_sections(sections)
 
-    facts = {
-        "callable_table_entries": [[20, 0, 0, 0]]
-    }
+    facts = {"callable_table_entries": [[20, 0, 0, 0]]}
     assert wasm_link._table_import_min(data) == 10
     assert wasm_link._required_linked_table_min(data, 5, facts) == 21
     updated = wasm_link._rewrite_table_import_min(
@@ -5054,10 +5112,7 @@ def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> N
 
     data = wasm_link._build_sections(sections)
     facts = {
-        "root_function_indices": [],
-        "element_function_indices": [0],
-        "declared_function_indices": [],
-        "function_references": [],
+        "reachable_function_indices": [0],
         "active_function_elements": [[0, 0, 0]],
         "reachable_dynamic_dispatch": True,
         "reachable_function_reference_dispatch": False,

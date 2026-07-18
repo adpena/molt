@@ -4,9 +4,7 @@ from collections.abc import Mapping
 from typing import cast
 
 
-def _rows(
-    facts: Mapping[str, object], field: str, width: int
-) -> list[list[object]]:
+def _rows(facts: Mapping[str, object], field: str, width: int) -> list[list[object]]:
     raw_rows = facts.get(field)
     if not isinstance(raw_rows, list):
         raise ValueError(f"WASM facts {field} must be a list")
@@ -29,31 +27,6 @@ def fact_index_set(facts: Mapping[str, object], field: str) -> set[int]:
     if not isinstance(raw_indices, list):
         raise ValueError(f"WASM facts {field} must be a list")
     return {_index(value, field) for value in raw_indices}
-
-
-def function_reference_rows(
-    facts: Mapping[str, object],
-) -> list[tuple[int, list[int], list[int]]]:
-    result: list[tuple[int, list[int], list[int]]] = []
-    for function_index, raw_direct_calls, raw_ref_funcs in _rows(
-        facts, "function_references", 3
-    ):
-        if not isinstance(raw_direct_calls, list) or not isinstance(raw_ref_funcs, list):
-            raise ValueError("WASM facts function references must contain index lists")
-        result.append(
-            (
-                _index(function_index, "function_references"),
-                [
-                    _index(value, "function_references.direct_calls")
-                    for value in raw_direct_calls
-                ],
-                [
-                    _index(value, "function_references.ref_funcs")
-                    for value in raw_ref_funcs
-                ],
-            )
-        )
-    return result
 
 
 def active_function_element_rows(

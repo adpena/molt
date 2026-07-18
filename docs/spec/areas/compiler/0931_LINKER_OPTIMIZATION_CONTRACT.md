@@ -72,6 +72,23 @@ WASM link commands must:
   optimizers may not infer GC/reference support from Cargo profile names,
   browser-family assumptions, or `wasm-opt` availability.
 
+### WASM link-facts authority
+
+`runtime/molt-wasm-facts` owns the one validated, single-pass scan of final
+WebAssembly functions, operators, references, tables, elements, mutations, and
+callable-table attestations. Schema 4 projects the classifications consumed by
+the linker directly: reachable function indices, referenced function indices,
+and the direct callees of `molt_init___main__`. The exhaustive call graph and
+intermediate root sets remain scanner-internal; Python link and optimization
+code must not rebuild liveness from a serialized graph.
+
+The scan is `O(module bytes + operators + reference edges + functions)`. Its
+memory is `O(functions + reference edges + active elements + table facts)`;
+Python consumers allocate only the projected index sets they use. The phase
+timing artifact records scanner hash time, child scan time, calls, content-cache
+hits, input bytes, and response characters, so a scanner/schema/toolchain change
+cannot silently tax final-link wall clock.
+
 ### Linker Source and Loader Closure
 
 The link fingerprint covers the complete local Python source closure rooted at
@@ -120,11 +137,13 @@ the non-GC artifact it replaces.
 
 ## Current High-Value Work
 
-1. Add a measured `wasm-opt -Oz --converge` lane for release artifacts with
-   export-contract verification.
-2. Add native link command snapshot tests for Darwin GPU framework propagation,
-   extension-module dynamic lookup, and Cargo-emitted native deps.
-3. Add size dashboards for linked Falcon artifacts: raw size, gzip size,
+1. Attribute child CPU and whole-process-tree RSS independently for `wasm-ld`,
+   facts scanning, Binaryen, validation, and atomic publication on real release
+   artifacts; preserve the per-phase evidence in the linker benchmark report.
+2. Execute and retain the native/WASM linker matrix on Windows, Linux, and macOS
+   for x86_64/aarch64 rather than treating cross-target plan construction as
+   execution evidence.
+3. Add size dashboards for linked representative artifacts: raw size, gzip size,
    function count, data segment count, and export count.
 4. Add regression tests for runtime table initialization and signature
    normalization before enabling any more aggressive ICF/export pruning.

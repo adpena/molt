@@ -282,12 +282,44 @@ fn scans_import_adjusted_calls_refs_and_active_elements() {
     assert_eq!(facts.function_references[0].function_index, 2);
     assert_eq!(facts.function_references[0].direct_calls, [0]);
     assert_eq!(facts.function_references[0].ref_funcs, [1]);
+    assert!(facts.reachable_function_indices.is_empty());
+    assert_eq!(facts.referenced_function_indices, [0, 1, 2]);
     assert!(facts.root_function_indices.is_empty());
     assert_eq!(facts.element_function_indices, [1, 2]);
     assert!(facts.declared_function_indices.is_empty());
     assert_eq!(facts.active_element_segments[0].base, 7);
     assert_eq!(facts.active_element_segments[0].item_count, 2);
     assert_eq!(facts.active_function_elements[0].slot, 7);
+}
+
+#[test]
+fn projects_main_module_init_callees_without_publishing_the_call_graph() {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("molt_init___main__", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut entry = Function::new([]);
+    entry.instruction(&Instruction::Call(1));
+    entry.instruction(&Instruction::End);
+    code.function(&entry);
+    let mut callee = Function::new([]);
+    callee.instruction(&Instruction::End);
+    code.function(&callee);
+    module.section(&code);
+
+    let facts = scan_wasm_link_facts(&module.finish()).expect("scan main module init");
+
+    assert_eq!(facts.main_module_init_direct_calls, [1]);
+    assert_eq!(facts.reachable_function_indices, [0, 1]);
+    assert_eq!(facts.referenced_function_indices, [0, 1]);
 }
 
 #[test]
