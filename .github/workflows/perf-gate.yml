@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           # Full history so the provenance check can resolve origin/main and
           # the merge-base (authoritative requires local tip == origin/main).
           fetch-depth: 0

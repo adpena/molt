@@ -278,11 +278,13 @@ examples below remain source-checkout diagnostics and CI/bootstrap forms; they
 are not a second queue authority. The portability tests intentionally include
 spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
 detached-runner assertions; update those tests with any queue launch change.
-The path-filtered `Proof Queue Portability` workflow runs those queue tests on
-Ubuntu, macOS, and Windows whenever queue launch or checkout-custody surfaces
-change. Its shard includes the DX provenance contract, scientific/source-build
-custody, and the queue suite so the hosted checkout is exercised before test
-collection as well as through the product wrapper.
+The canonical proof plan selects its generated `platform_portability` matrix
+whenever queue launch or checkout-custody surfaces change. The single CI
+executor expands that authority into Linux, macOS, and Windows cells and emits
+one receipt per cell; there is no second path-filter or handwritten queue-test
+command in workflow YAML. Its shard includes the DX provenance contract,
+scientific/source-build custody, and the queue suite so the hosted checkout is
+exercised before test collection as well as through the product wrapper.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on

@@ -24,6 +24,8 @@ jobs:
       MOLT_UV_SYNC: "0"
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
         with:

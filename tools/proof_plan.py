@@ -438,7 +438,15 @@ class ProofPlan:
         if len(cell_ids) != len(set(cell_ids)):
             errors.append("matrix_cell IDs must be unique")
         for cell in self.matrix_cells:
-            for field in ("os", "arch", "python", "backend", "target", "profile"):
+            for field in (
+                "runner",
+                "os",
+                "arch",
+                "python",
+                "backend",
+                "target",
+                "profile",
+            ):
                 if not isinstance(cell.data.get(field), str) or not cell.data[field]:
                     errors.append(f"{cell.id}: matrix cell missing non-empty {field}")
         names = [family.name for family in self.families]
@@ -452,6 +460,9 @@ class ProofPlan:
             for field in REQUIRED_FAMILY_FIELDS:
                 if field not in family.data:
                     errors.append(f"{family.name}: missing {field}")
+            executor = family.data.get("executor")
+            if executor not in {"github-job", "github-matrix", "github-workflow"}:
+                errors.append(f"{family.name}: unknown executor {executor!r}")
             if family.data.get("resource_class") not in set(resource_names):
                 errors.append(
                     f"{family.name}: unknown resource class "
@@ -464,7 +475,7 @@ class ProofPlan:
             workflow = ROOT / str(family.data.get("workflow", ""))
             if not workflow.is_file():
                 errors.append(f"{family.name}: workflow does not exist: {workflow}")
-            elif family.data.get("executor") == "github-job":
+            elif family.data.get("executor") in {"github-job", "github-matrix"}:
                 job = str(family.data.get("job", ""))
                 workflow_text = workflow.read_text(encoding="utf-8")
                 block = _workflow_job_block(workflow_text, job)
@@ -629,6 +640,7 @@ class ProofPlan:
                     command.family,
                     tuple(argv),
                     str(command.data.get("cwd", ".")),
+                    str(command.data.get("cell", "")),
                 )
                 if shape in command_shapes:
                     errors.append(f"{command.id}: duplicate executable command shape")
@@ -683,6 +695,23 @@ class ProofPlan:
                     errors.append(
                         f"{command_id}: command dependency {dependency!r} crosses families"
                     )
+                if (
+                    command is not None
+                    and dependency_command is not None
+                    and command.family == dependency_command.family
+                ):
+                    family = next(
+                        item for item in self.families if item.name == command.family
+                    )
+                    if family.data.get(
+                        "executor"
+                    ) == "github-matrix" and command.data.get(
+                        "cell"
+                    ) != dependency_command.data.get("cell"):
+                        errors.append(
+                            f"{command_id}: matrix command dependency {dependency!r} "
+                            "crosses runner cells"
+                        )
                 visit_command(dependency)
             visiting_commands.pop()
             visited_commands.add(command_id)
@@ -768,12 +797,12 @@ class ProofPlan:
                     errors.append(f"{name}: {field} must be a list of strings")
         return errors
 
-    def all_selected(self, *, reason: str) -> Selection:
+    def all_selected(self, *, reason: str, fail_closed: bool = True) -> Selection:
         return Selection(
             changed_paths=(),
             selected=self.families,
             reasons={family.name: (reason,) for family in self.families},
-            fail_closed_reason=reason,
+            fail_closed_reason=reason if fail_closed else None,
         )
 
     def select(self, paths: list[str] | tuple[str, ...]) -> Selection:
@@ -967,8 +996,15 @@ def selection_for_event(
             base = before or str(payload.get("before", ""))
             head = after or str(payload.get("after", "")) or "HEAD"
             return plan.select(_diff_paths(base, head))
-        if event_name in {"schedule", "workflow_dispatch", "workflow_call"}:
-            return plan.all_selected(reason=f"{event_name}: full proof plan")
+        if event_name in {
+            "merge_group",
+            "schedule",
+            "workflow_dispatch",
+            "workflow_call",
+        }:
+            return plan.all_selected(
+                reason=f"{event_name}: full proof plan", fail_closed=False
+            )
         raise RuntimeError(f"unsupported or missing event {event_name!r}")
     except Exception as exc:
         return plan.all_selected(reason=f"fail-closed event selection: {exc}")
@@ -980,7 +1016,7 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
         family.name: "true" if family.name in selected else "false"
         for family in plan.families
     }
-    matrix = [
+    topology = [
         {
             "name": family.name,
             **{
@@ -1008,6 +1044,49 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
         }
         for family in selection.selected
     ]
+    matrix_family_names = {
+        family.name
+        for family in selection.selected
+        if family.data["executor"] == "github-matrix"
+    }
+    matrix = []
+    for cell in plan.matrix_cells:
+        command_ids = [
+            command.id
+            for command in plan.commands
+            if command.family in matrix_family_names and command.data["cell"] == cell.id
+        ]
+        if not command_ids:
+            continue
+        families = {
+            plan_command.family
+            for plan_command in plan.commands
+            if plan_command.id in command_ids
+        }
+        if len(families) != 1:
+            raise ValueError(f"{cell.id}: executable matrix cell spans families")
+        family_name = families.pop()
+        matrix.append(
+            {
+                "family": family_name,
+                "cell": cell.id,
+                **{
+                    key: cell.data[key]
+                    for key in (
+                        "runner",
+                        "os",
+                        "arch",
+                        "python",
+                        "backend",
+                        "target",
+                        "profile",
+                    )
+                },
+                "command_ids": command_ids,
+                "selected_by": list(selection.reasons.get(family_name, ())),
+            }
+        )
+    outputs["topology"] = json.dumps({"include": topology}, separators=(",", ":"))
     outputs["matrix"] = json.dumps({"include": matrix}, separators=(",", ":"))
     outputs["selected"] = json.dumps(sorted(selected), separators=(",", ":"))
     outputs["changed_paths"] = json.dumps(
@@ -1223,13 +1302,23 @@ def _required_toolchains(command: ProofCommand) -> tuple[str, ...]:
 
 
 def _topological_commands(
-    plan: ProofPlan, *, family: str | None = None, command_id: str | None = None
+    plan: ProofPlan,
+    *,
+    family: str | None = None,
+    command_id: str | None = None,
+    matrix_cell: str | None = None,
 ) -> tuple[ProofCommand, ...]:
     by_id = {command.id: command for command in plan.commands}
     if family is not None:
-        selected = {command.id for command in plan.commands if command.family == family}
+        selected = {
+            command.id
+            for command in plan.commands
+            if command.family == family
+            and (matrix_cell is None or command.data["cell"] == matrix_cell)
+        }
         if not selected:
-            raise ValueError(f"unknown or empty proof family {family!r}")
+            suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
+            raise ValueError(f"unknown or empty proof family {family!r}{suffix}")
     elif command_id is not None:
         if command_id not in by_id:
             raise ValueError(f"unknown proof command {command_id!r}")
@@ -1936,6 +2025,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt-dir", type=Path)
     parser.add_argument("--run-family")
     parser.add_argument("--run-command")
+    parser.add_argument("--matrix-cell")
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--base-ref", default=os.environ.get("GITHUB_BASE_REF", ""))
@@ -1962,12 +2052,21 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.matrix_cell is not None and args.run_family is None:
+            print(
+                "proof-plan: --matrix-cell requires --run-family",
+                file=sys.stderr,
+            )
+            return 2
         if args.receipt is None:
             print("proof-plan: executable proofs require --receipt", file=sys.stderr)
             return 2
         try:
             commands = _topological_commands(
-                plan, family=args.run_family, command_id=args.run_command
+                plan,
+                family=args.run_family,
+                command_id=args.run_command,
+                matrix_cell=args.matrix_cell,
             )
             return execute_commands(plan, commands, args.receipt)
         except (OSError, ValueError) as exc:

@@ -26,9 +26,9 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 10
-    assert len(PLAN.commands) >= 66
-    assert len(PLAN.matrix_cells) >= 14
+    assert len(PLAN.families) == 11
+    assert len(PLAN.commands) >= 69
+    assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
     assert PLAN.executor_max_workers == 4
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
@@ -42,6 +42,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
     }
     assert all("metadata_mode" not in family.data for family in PLAN.families)
     assert all(family.data["required"] for family in PLAN.families)
+    assert all(cell.data["runner"] for cell in PLAN.matrix_cells)
     assert len(PLAN.local_rules) >= 30
     assert not (proof_plan.ROOT / "tools" / "molt_dev_gates.toml").exists()
     assert not (proof_plan.ROOT / "tools" / "ci_changed_paths.py").exists()
@@ -174,6 +175,27 @@ def test_dependency_cycles_are_rejected() -> None:
     )
     errors = replace(PLAN, families=families).validate()
     assert "dependency cycle: rust -> llvm -> rust" in errors
+
+
+def test_matrix_command_dependencies_cannot_cross_runner_cells() -> None:
+    commands = tuple(
+        replace(
+            command,
+            data={
+                **command.data,
+                "dependencies": ["portability.queue.linux"],
+            },
+        )
+        if command.id == "portability.queue.macos"
+        else command
+        for command in PLAN.commands
+    )
+
+    errors = replace(PLAN, commands=commands).validate()
+    assert (
+        "portability.queue.macos: matrix command dependency "
+        "'portability.queue.linux' crosses runner cells"
+    ) in errors
 
 
 def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
@@ -436,15 +458,56 @@ def test_forced_or_null_push_fails_closed(tmp_path: Path) -> None:
     assert selection.fail_closed_reason is not None
 
 
+def test_merge_group_selects_full_plan_without_unknown_event_fallback() -> None:
+    selection = proof_plan.selection_for_event(
+        PLAN,
+        event_name="merge_group",
+        base_ref="",
+        event_path="",
+        before="",
+        after="2" * 40,
+    )
+
+    assert selection.selected == PLAN.families
+    assert selection.fail_closed_reason is None
+    assert all(
+        reasons == ("merge_group: full proof plan",)
+        for reasons in selection.reasons.values()
+    )
+
+
 def test_generated_matrix_records_selection_reason() -> None:
     selection = PLAN.select(["Cargo.lock"])
     outputs = proof_plan.family_outputs(PLAN, selection)
-    matrix = json.loads(outputs["matrix"])["include"]
-    by_name = {entry["name"]: entry for entry in matrix}
+    topology = json.loads(outputs["topology"])["include"]
+    by_name = {entry["name"]: entry for entry in topology}
     assert by_name["rust"]["selected_by"] == ["Cargo.lock"]
     assert by_name["rust"]["resource_class"] == "compiler-build-resource"
     assert "rust.test.default-truth" in by_name["rust"]["command_ids"]
     assert "linux-x86_64-rust-wasi-dev" in by_name["rust"]["matrix_cells"]
+    assert json.loads(outputs["matrix"]) == {"include": []}
+
+
+def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None:
+    selection = PLAN.select(["tools/proof_queue.py"])
+    outputs = proof_plan.family_outputs(PLAN, selection)
+    matrix = json.loads(outputs["matrix"])["include"]
+
+    assert [(entry["os"], entry["runner"]) for entry in matrix] == [
+        ("linux", "ubuntu-latest"),
+        ("macos", "macos-14"),
+        ("windows", "windows-2022"),
+    ]
+    assert all(entry["family"] == "platform_portability" for entry in matrix)
+    assert all(len(entry["command_ids"]) == 1 for entry in matrix)
+    for entry in matrix:
+        commands = proof_plan._topological_commands(
+            PLAN,
+            family="platform_portability",
+            matrix_cell=entry["cell"],
+        )
+        assert [command.id for command in commands] == entry["command_ids"]
+        assert all(command.data["cell"] == entry["cell"] for command in commands)
 
 
 def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:

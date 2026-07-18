@@ -12,15 +12,19 @@ on:
         type: string
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build:
+    # This job currently attests and publishes its matrix artifact. Keep write
+    # authority local to the publishing job instead of granting it workflow-wide.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,6 +56,8 @@ jobs:
       INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Resolve version
         shell: bash
@@ -197,6 +203,10 @@ jobs:
           files: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
 
   manifest:
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-24.04
     needs: build
     env:
@@ -205,6 +215,8 @@ jobs:
       INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Resolve version
         shell: bash
@@ -258,6 +270,8 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Deploy Cloudflare Worker
         uses: cloudflare/wrangler-action@v3
@@ -284,6 +298,8 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v6.3.0
         with:

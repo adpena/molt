@@ -156,6 +156,22 @@ def _markdown_projection(plan: ProofPlan) -> str:
     lines.extend(
         [
             "",
+            "## Matrix cells",
+            "",
+            "`github-matrix` families project these cells directly into the "
+            "workflow strategy. The runner is therefore generated policy, not "
+            "a second handwritten OS list.",
+            "",
+            "| Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |",
+            "|---|---|---|---|---|---|---|---|",
+            *[
+                f"| `{cell.id}` | `{cell.data['runner']}` | `{cell.data['os']}` | "
+                f"`{cell.data['arch']}` | `{cell.data['python']}` | "
+                f"`{cell.data['backend']}` | `{cell.data['target']}` | "
+                f"`{cell.data['profile']}` |"
+                for cell in plan.matrix_cells
+            ],
+            "",
             "## Toolchain contracts",
             "",
             "Receipts record resolved path, version text, and the repository-relative "
@@ -210,9 +226,11 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "Pull requests use the merge-base diff. Pushes use the event's "
             "`before..after` identities. Forced pushes, null SHAs, missing refs, "
-            "and unknown events fail closed to the full plan. Scheduled and manual "
-            "runs intentionally select the full plan. The selected matrix records "
-            "the exact paths that caused every family to run.",
+            "and unknown events fail closed to the full plan. Merge-group, "
+            "scheduled, and manual runs intentionally select the full plan. The "
+            "topology projection "
+            "records why every family was selected; the executable matrix expands "
+            "selected `github-matrix` families into exact runner cells.",
             "",
         ]
     )

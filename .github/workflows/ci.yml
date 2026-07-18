@@ -5,10 +5,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR revisions are disposable. Main and merge-queue proofs bind a
+  # concrete commit SHA and must run to a terminal verdict.
+  group: >-
+    ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -22,6 +30,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v6.3.0
         with:
@@ -83,16 +93,70 @@ jobs:
       python_security: ${{ steps.paths.outputs.python_security }}
       rust_security: ${{ steps.paths.outputs.rust_security }}
       formal: ${{ steps.paths.outputs.formal }}
+      platform_portability: ${{ steps.paths.outputs.platform_portability }}
       matrix: ${{ steps.paths.outputs.matrix }}
+      topology: ${{ steps.paths.outputs.topology }}
       selected: ${{ steps.paths.outputs.selected }}
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Classify changed paths
         id: paths
         run: python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"
+
+  platform-portability:
+    name: Platform Portability (${{ matrix.os }} / ${{ matrix.arch }})
+    needs: classify-changes
+    if: needs.classify-changes.outputs.platform_portability == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.96.1
+
+      - name: Configure verified ephemeral custody
+        shell: pwsh
+        run: |
+          $name = "molt-platform-${env:GITHUB_RUN_ID}-${env:GITHUB_RUN_ATTEMPT}-${env:RUNNER_OS}-${env:RUNNER_ARCH}"
+          $custodyRoot = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $custodyRoot | Out-Null
+          "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.24"
+
+      - name: Sync Python environment
+        run: uv sync --frozen --group dev
+
+      - name: Execute selected platform portability partition
+        run: >-
+          python tools/proof_plan.py
+          --run-family platform_portability --receipt
+          proof-receipts/platform-portability-${{ matrix.cell }}.json
+          --matrix-cell "${{ matrix.cell }}"
+
+      - name: Upload platform portability receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-platform-portability-${{ matrix.cell }}
+          path: proof-receipts/platform-portability-${{ matrix.cell }}.json
+          if-no-files-found: error
 
   security-hardening:
     name: Security Hardening
@@ -125,6 +189,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v6.3.0
         with:
@@ -160,6 +226,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
@@ -186,6 +254,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
@@ -218,6 +288,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
@@ -254,6 +326,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@1.96.1
 
@@ -302,6 +376,7 @@ jobs:
       - python-static
       - python-unit
       - native-integration
+      - platform-portability
       - rust-build-unit-smoke
       - llvm-backend
       - security-hardening
@@ -310,6 +385,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Download executable proof receipts
         if: needs.classify-changes.outputs.selected != '[]'
         uses: actions/download-artifact@v7
