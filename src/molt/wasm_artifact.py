@@ -609,12 +609,10 @@ def _read_wasm_const_expr_i32(data: bytes, offset: int) -> tuple[int, int]:
     return value, offset
 
 
-def _read_wasm_table_min(path: Path) -> int | None:
-    try:
-        imports = _iter_wasm_imports(_parse_wasm_file_sections(path))
-    except (OSError, ValueError):
-        return None
-    for wasm_import in imports:
+def _wasm_table_min_from_sections(
+    sections: Sequence[tuple[int, bytes]],
+) -> int | None:
+    for wasm_import in _iter_wasm_imports(sections):
         if (
             wasm_import.kind == 1
             and wasm_import.module == "env"
@@ -624,25 +622,38 @@ def _read_wasm_table_min(path: Path) -> int | None:
     return None
 
 
+def _read_wasm_table_min(path: Path) -> int | None:
+    try:
+        return _wasm_table_min_from_sections(_parse_wasm_file_sections(path))
+    except (OSError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class WasmSplitRuntimeCallableLayout:
     runtime_callable_base: int
     runtime_occupied_end: int
-    finalized_app_base: int
+    runtime_table_min: int
     fixed_prefix_len: int
 
 
 def read_wasm_split_runtime_callable_layout(
     path: Path,
 ) -> WasmSplitRuntimeCallableLayout:
-    table_boundary = _read_wasm_table_min(path)
+    try:
+        data = path.read_bytes()
+        table_boundary = _wasm_table_min_from_sections(_parse_wasm_sections(data))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"invalid split runtime wasm: {exc}") from exc
     if table_boundary is None:
         raise ValueError("split runtime must import the shared callable table")
-    # Backend layout selection happens before the linker publishes the final
-    # attestation.  Derive the pre-link runtime boundary from the executable
-    # active-element authority itself; final publication later binds the same
-    # map (including function/type signatures) into the attestation section.
-    slots = set(_collect_wasm_active_table_function_slots(path.read_bytes()))
+    # Backend layout selection happens before the linker knows the app's exact
+    # runtime-export subset.  The conservative runtime artifact's table minimum
+    # is therefore an app-placement input, not a permanent claim that every
+    # smaller final runtime owns the whole region.  Final publication preserves
+    # the compiled app boundary and proves the deploy runtime's active entries
+    # fit below it.
+    slots = set(_collect_wasm_active_table_function_slots(data))
     if not slots:
         raise ValueError("split runtime active callable-table layout is empty")
     runtime_base = min(slots)
@@ -670,7 +681,7 @@ def read_wasm_split_runtime_callable_layout(
     return WasmSplitRuntimeCallableLayout(
         runtime_callable_base=runtime_base,
         runtime_occupied_end=runtime_occupied_end,
-        finalized_app_base=table_boundary,
+        runtime_table_min=table_boundary,
         fixed_prefix_len=fixed_prefix_len,
     )
 

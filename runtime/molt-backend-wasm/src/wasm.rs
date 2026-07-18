@@ -18,7 +18,6 @@ mod method_ic_select;
 mod module_abi;
 mod module_registry;
 mod multi_return_layout;
-mod object_new_bound_select;
 mod op_loop;
 mod state_dispatch;
 mod task_runtime;

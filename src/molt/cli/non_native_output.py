@@ -860,6 +860,8 @@ def _prepare_non_native_build_result(
             for native_input in wasm_static_link_native_inputs:
                 link_cmd.extend(["--native-object", str(native_input)])
             if _split_runtime:
+                if runtime_wasm is not None:
+                    link_cmd.extend(["--deploy-runtime", str(runtime_wasm)])
                 split_dir = output_wasm.parent
                 link_cmd.extend(
                     [
@@ -890,7 +892,7 @@ def _prepare_non_native_build_result(
             try:
                 link_tool_sources = local_python_import_closure(molt_root, (tool,))
                 deploy_asset_root = molt_root / "wasm"
-                deploy_runtime_sources = (
+                browser_deploy_sources = (
                     (
                         deploy_asset_root / "browser_asset_graph.generated.json",
                         *(
@@ -915,8 +917,13 @@ def _prepare_non_native_build_result(
                 inputs=[
                     output_wasm,
                     runtime_reloc_wasm,
+                    *(
+                        (runtime_wasm,)
+                        if _split_runtime and runtime_wasm is not None
+                        else ()
+                    ),
                     *link_tool_sources,
-                    *deploy_runtime_sources,
+                    *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
                 ],
                 link_cmd=link_cmd,

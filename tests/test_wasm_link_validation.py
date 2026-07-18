@@ -95,14 +95,18 @@ def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     def publish(_scanner, artifact: Path, *, layout=None, role="monolithic"):
-        del role
         facts = _rust_facts_fixture(artifact.read_bytes())
         if layout is not None:
+            app_entry_count = (
+                len(facts["callable_table_entries"])
+                if role == "app"
+                else layout.app_entry_count
+            )
             facts["callable_table_layout"] = {
                 "fixed_prefix_base": layout.fixed_prefix_base,
                 "fixed_prefix_len": layout.fixed_prefix_len,
                 "finalized_app_base": layout.finalized_app_base,
-                "app_entry_count": layout.app_entry_count,
+                "app_entry_count": app_entry_count,
             }
         return facts
 
@@ -114,7 +118,32 @@ _REAL_RUN_WASM_LD = wasm_link._run_wasm_ld
 
 def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-def]
     kwargs.setdefault("wasm_facts_scanner", Path("rust-facts-fixture"))
-    return _REAL_RUN_WASM_LD(*args, **kwargs)
+    if not kwargs.get("split_runtime"):
+        return _REAL_RUN_WASM_LD(*args, **kwargs)
+
+    # These linker unit fixtures intentionally use minimal synthetic modules.
+    # Bind their executable-runtime layout authority to the synthetic app facts
+    # so the tests exercise linker behavior without weakening the production
+    # reader's fail-closed WASM validation.
+    output_layout = wasm_link._callable_layout_from_wasm_facts(
+        _rust_facts_fixture(Path(args[2]).read_bytes())
+    )
+    assert output_layout is not None
+    runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
+        runtime_callable_base=output_layout.fixed_prefix_base,
+        runtime_occupied_end=(
+            output_layout.fixed_prefix_base + output_layout.fixed_prefix_len
+        ),
+        runtime_table_min=output_layout.finalized_app_base,
+        fixed_prefix_len=output_layout.fixed_prefix_len,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            wasm_link,
+            "read_wasm_split_runtime_callable_layout",
+            lambda _path: runtime_layout,
+        )
+        return _REAL_RUN_WASM_LD(*args, **kwargs)
 
 
 def _facts_provider(data: bytes) -> dict[str, object]:
@@ -2263,6 +2292,63 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         "wasm_facts_input_bytes",
         "wasm_facts_response_chars",
     }
+
+
+def test_explicit_deploy_runtime_outranks_ambient_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloc = tmp_path / "molt_runtime_reloc.wasm"
+    sibling = tmp_path / "molt_runtime.wasm"
+    explicit = tmp_path / "explicit_runtime.wasm"
+    ambient = tmp_path / "ambient_runtime.wasm"
+    for path in (reloc, sibling, explicit, ambient):
+        path.write_bytes(b"\0asm\x01\0\0\0")
+    monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(ambient))
+
+    assert wasm_link._resolve_deploy_runtime(reloc, explicit) == explicit
+    with pytest.raises(FileNotFoundError, match="explicit split deploy runtime"):
+        wasm_link._resolve_deploy_runtime(reloc, tmp_path / "missing.wasm")
+
+
+def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
+    app_layout = wasm_link.CallableTableLayout(
+        fixed_prefix_base=1,
+        fixed_prefix_len=81,
+        finalized_app_base=2_794,
+        app_entry_count=8_440,
+    )
+    final_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
+        runtime_callable_base=1,
+        runtime_occupied_end=1_849,
+        runtime_table_min=1_849,
+        fixed_prefix_len=81,
+    )
+
+    assert wasm_link._reconcile_split_callable_layout(
+        app_layout,
+        final_runtime_layout,
+    ) == app_layout
+
+
+def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
+    app_layout = wasm_link.CallableTableLayout(
+        fixed_prefix_base=1,
+        fixed_prefix_len=81,
+        finalized_app_base=2_794,
+        app_entry_count=8_440,
+    )
+    overlapping_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
+        runtime_callable_base=1,
+        runtime_occupied_end=2_795,
+        runtime_table_min=2_795,
+        fixed_prefix_len=81,
+    )
+
+    with pytest.raises(ValueError, match="overlap the app-owned callable region"):
+        wasm_link._reconcile_split_callable_layout(
+            app_layout,
+            overlapping_runtime_layout,
+        )
 
 
 def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocations(
@@ -5514,94 +5600,6 @@ def test_split_runtime_data_alias_fails_loud_on_missing_deploy_export(
                 deploy_runtime=deploy_runtime,
                 temp_dir=temp_dir,
             )
-
-
-# --- Final callable-table attestation -------------------------------------
-
-
-def _callable_entry(slot: int) -> wasm_link.CallableTableEntry:
-    return wasm_link.CallableTableEntry(
-        slot=slot,
-        func_index=slot,
-        type_index=0,
-        params=(),
-        results=(),
-    )
-
-
-def test_split_callable_table_ownership_accepts_disjoint_contiguous_publication() -> (
-    None
-):
-    layout = wasm_link.CallableTableLayout(10, 2, 20, 2)
-    wasm_link._validate_split_callable_table_ownership(
-        (_callable_entry(20), _callable_entry(21)),
-        (_callable_entry(10), _callable_entry(11), _callable_entry(15)),
-        layout,
-    )
-
-
-@pytest.mark.parametrize(
-    ("app_slots", "runtime_slots", "message"),
-    [
-        ((20,), (10, 11), "not contiguous"),
-        ((20, 21), (10, 20), "overlaps at slot 20"),
-        ((20, 21), (10, 11, 22), "reaches finalized app base"),
-        ((20, 21), (10,), "fixed prefix is incomplete"),
-        ((20, 21), (9, 10, 11), "fixed prefix base is not the runtime base"),
-    ],
-)
-def test_split_callable_table_ownership_rejects_drift(
-    app_slots: tuple[int, ...],
-    runtime_slots: tuple[int, ...],
-    message: str,
-) -> None:
-    layout = wasm_link.CallableTableLayout(10, 2, 20, 2)
-    with pytest.raises(ValueError, match=message):
-        wasm_link._validate_split_callable_table_ownership(
-            tuple(_callable_entry(slot) for slot in app_slots),
-            tuple(_callable_entry(slot) for slot in runtime_slots),
-            layout,
-        )
-
-
-def test_split_callable_table_ownership_rejects_huge_app_span_in_bounded_space() -> (
-    None
-):
-    import tracemalloc
-
-    layout = wasm_link.CallableTableLayout(0, 0, 0, 0xFFFF_FFFF)
-    tracemalloc.start()
-    try:
-        with pytest.raises(ValueError, match="missing app slot 1"):
-            wasm_link._validate_split_callable_table_ownership(
-                (_callable_entry(0),),
-                (),
-                layout,
-            )
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 1_000_000
-
-
-def test_split_callable_table_ownership_rejects_huge_fixed_span_in_bounded_space() -> (
-    None
-):
-    import tracemalloc
-
-    layout = wasm_link.CallableTableLayout(0, 0xFFFF_FFFE, 0xFFFF_FFFE, 1)
-    tracemalloc.start()
-    try:
-        with pytest.raises(ValueError, match="missing slot 1"):
-            wasm_link._validate_split_callable_table_ownership(
-                (_callable_entry(0xFFFF_FFFE),),
-                (_callable_entry(0),),
-                layout,
-            )
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 1_000_000
 
 
 def test_shared_runtime_exports_cpython_abi_data_symbols_as_globals() -> None:

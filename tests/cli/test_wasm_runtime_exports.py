@@ -558,14 +558,14 @@ def test_reached_runtime_import_names_use_public_async_sleep_symbol() -> None:
     assert "async_sleep_new" not in names
 
 
-def test_wasm_codegen_env_digest_tracks_split_runtime_table_min() -> None:
+def test_wasm_codegen_env_digest_tracks_split_runtime_app_table_base() -> None:
     base_env = {
         "MOLT_WASM_DATA_BASE": "1048576",
         "MOLT_WASM_TABLE_BASE": "4096",
     }
     split_env = {
         **base_env,
-        "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN": "8192",
+        "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE": "8192",
     }
 
     assert _backend_codegen_env_digest(

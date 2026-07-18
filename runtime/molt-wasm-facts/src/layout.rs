@@ -13,7 +13,10 @@ pub(crate) fn validate_callable_table_layout(
         .fixed_prefix_base
         .checked_add(layout.fixed_prefix_len)
         .ok_or("callable-table fixed prefix overflows u32")?;
-    let app_end = layout
+    if layout.fixed_prefix_len == 0 && layout.fixed_prefix_base != 0 {
+        return Err("empty callable-table fixed prefix must have base zero".to_string());
+    }
+    layout
         .finalized_app_base
         .checked_add(layout.app_entry_count)
         .ok_or("callable-table app region overflows u32")?;
@@ -42,16 +45,11 @@ pub(crate) fn validate_callable_table_layout(
         validate_contiguous_entries(&entries[fixed_count..], layout.finalized_app_base, "app")?;
         return Ok(());
     }
-    let (expected_base, expected_count, label) = match role {
-        CallableTableArtifactRole::Monolithic | CallableTableArtifactRole::App => {
-            (layout.finalized_app_base, layout.app_entry_count, "app")
-        }
-        CallableTableArtifactRole::Runtime => (
-            layout.fixed_prefix_base,
-            layout.fixed_prefix_len,
-            "runtime fixed prefix",
-        ),
-    };
+    if role == CallableTableArtifactRole::Runtime {
+        return validate_runtime_entries(layout, entries);
+    }
+    let (expected_base, expected_count, label) =
+        (layout.finalized_app_base, layout.app_entry_count, "app");
     if usize::try_from(expected_count).ok() != Some(entries.len()) {
         return Err(format!(
             "callable-table layout {label} entry count does not match final active elements: layout={expected_count}, final={}",
@@ -59,7 +57,41 @@ pub(crate) fn validate_callable_table_layout(
         ));
     }
     validate_contiguous_entries(entries, expected_base, label)?;
-    let _ = app_end;
+    Ok(())
+}
+
+fn validate_runtime_entries(
+    layout: CallableTableLayout,
+    entries: &[WasmCallableTableEntryFact],
+) -> Result<(), String> {
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.slot >= layout.finalized_app_base)
+    {
+        return Err(format!(
+            "callable-table runtime slot reaches finalized app base: {} >= {}",
+            entry.slot, layout.finalized_app_base
+        ));
+    }
+    if layout.fixed_prefix_len == 0 {
+        return Ok(());
+    }
+    if entries.first().map(|entry| entry.slot) != Some(layout.fixed_prefix_base) {
+        return Err("callable-table fixed prefix base is not the runtime base".to_string());
+    }
+    let fixed_count = usize::try_from(layout.fixed_prefix_len)
+        .map_err(|_| "callable-table fixed prefix exceeds host usize")?;
+    if entries.len() < fixed_count {
+        return Err(format!(
+            "callable-table runtime fixed prefix is incomplete: expected {fixed_count} entries, found {}",
+            entries.len()
+        ));
+    }
+    validate_contiguous_entries(
+        &entries[..fixed_count],
+        layout.fixed_prefix_base,
+        "runtime fixed prefix",
+    )?;
     Ok(())
 }
 
@@ -104,6 +136,9 @@ pub(crate) fn decode_callable_table_layout(payload: &[u8]) -> Result<CallableTab
         app_entry_count: decoder.read_u32()?,
     };
     decoder.finish("callable-table layout")?;
+    if layout.fixed_prefix_len == 0 && layout.fixed_prefix_base != 0 {
+        return Err("empty callable-table fixed prefix must have base zero".to_string());
+    }
     layout
         .fixed_prefix_base
         .checked_add(layout.fixed_prefix_len)

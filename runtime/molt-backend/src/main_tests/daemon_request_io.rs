@@ -139,7 +139,7 @@ fn daemon_request_parse_rejects_duplicate_ir_authority() {
 }
 
 #[test]
-fn daemon_request_parse_reads_split_runtime_table_min() {
+fn daemon_request_parse_reads_split_runtime_app_table_base() {
     let _env_guard = ENV_TEST_MUTEX
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
