@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import target_python_runtime
+from molt import python_interpreter
 from molt.dx import development_artifact_env
 from tests.compliance.process_guard import run_compliance_process
 
@@ -43,10 +43,12 @@ def _python_for(min_version: tuple[int, int]) -> list[str]:
     Windows `py -3.14`, uv-managed interpreters, and explicit overrides are all
     verified before use.
     """
-    return target_python_runtime.python_command_for_min_version(
-        min_version,
-        override=os.environ.get("MOLT_COMPLIANCE_PYTHON", "").strip() or None,
-        cwd=MOLT_DIR,
+    return list(
+        python_interpreter.python_command_for_min_version(
+            min_version,
+            override=os.environ.get("MOLT_COMPLIANCE_PYTHON", "").strip() or None,
+            cwd=MOLT_DIR,
+        )
     )
 
 

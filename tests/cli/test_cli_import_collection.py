@@ -25223,7 +25223,11 @@ def test_compare_uses_build_profile_flag_for_nested_build(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli_commands, "_resolve_python_exe", lambda exe: "python3")
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_python_selector",
+        lambda exe, **_kwargs: ("python3",),
+    )
     monkeypatch.setattr(
         cli_commands, "_resolve_binary_output", lambda output: built_binary
     )

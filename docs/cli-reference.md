@@ -372,9 +372,17 @@ Build and run a Python file with both CPython and Molt, then compare output side
 
 ```bash
 molt compare app.py
-molt compare app.py --python 3.13
+molt compare --python 3.13 app.py
 molt compare app.py -- --flag
 ```
+
+`--python` accepts an explicit executable path/command or a supported CPython
+minor. Version selectors use one identity-verified resolver: an already-matching
+current interpreter is retained, otherwise `uv python find`, the Windows `py`
+launcher, and versioned `pythonX.Y` commands are tried in deterministic platform
+order. A candidate is accepted only when it reports the requested CPython minor.
+Put compare options before the file; everything after the file belongs to the
+script argument remainder.
 
 #### `molt diff`
 
@@ -392,7 +400,7 @@ Run the entrypoint with CPython only (no Molt compilation). Useful for establish
 
 ```bash
 molt parity-run app.py
-molt parity-run app.py --python 3.12
+molt parity-run --python 3.12 app.py
 ```
 
 #### `molt profile`

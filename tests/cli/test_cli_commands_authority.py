@@ -9,7 +9,6 @@ _COMMAND_AUTHORITY_NAMES = (
     "_format_duration",
     "_internal_batch_build_server",
     "_normalize_internal_batch_stdlib_profile",
-    "_resolve_python_exe",
     "_run_command",
     "_run_command_timed",
     "_run_script_cross",

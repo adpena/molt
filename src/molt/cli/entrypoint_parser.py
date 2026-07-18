@@ -1229,7 +1229,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  molt compare app.py                    Compare output side by side\n"
-            "  molt compare app.py --python 3.13      Compare against Python 3.13\n"
+            "  molt compare --python 3.13 app.py      Compare against Python 3.13\n"
             "  molt compare app.py -- --flag           Pass args to both interpreters\n"
         ),
     )
@@ -1240,7 +1240,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     compare_parser.add_argument(
         "--python",
-        help="Python interpreter (path) or version (e.g. 3.12).",
+        help=(
+            "CPython interpreter path/command or exact supported minor (e.g. 3.12). "
+            "Versions are resolved and identity-verified across platforms."
+        ),
     )
     compare_parser.add_argument(
         "--python-version",
@@ -1296,7 +1299,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     parity_run_parser.add_argument(
         "--python",
-        help="Python interpreter (path) or version (e.g. 3.12).",
+        help=(
+            "CPython interpreter path/command or exact supported minor (e.g. 3.12). "
+            "Versions are resolved and identity-verified across platforms."
+        ),
     )
     parity_run_parser.add_argument(
         "--python-version",

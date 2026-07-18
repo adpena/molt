@@ -129,7 +129,6 @@ import argparse
 import filecmp
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -138,7 +137,13 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from molt_dev_common import (
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from molt import python_interpreter  # noqa: E402
+
+from molt_dev_common import (  # noqa: E402
     DEFAULT_REPO,
     EXIT_FAIL,
     EXIT_OK,
@@ -154,9 +159,13 @@ from molt_dev_common import (
     _step,
     _warn,
 )
-from molt_dev_detached import DETACHED_STATE_ROOT, cmd_detached_run, cmd_detached_verify
-from molt_dev_probe import probe_path, probe_pid
-from dirty_tree_policy import (
+from molt_dev_detached import (  # noqa: E402
+    DETACHED_STATE_ROOT,
+    cmd_detached_run,
+    cmd_detached_verify,
+)
+from molt_dev_probe import probe_path, probe_pid  # noqa: E402
+from dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
 )
@@ -443,87 +452,6 @@ class GateConfig:
                 matched_rules.append(rule)
                 _add(rule.gates)
         return selected, matched_rules
-
-
-# --------------------------------------------------------------------------
-# python-oracle (hazard 7): resolve + PIN + verify a CPython version
-# --------------------------------------------------------------------------
-
-
-def _verify_interpreter_version(exe: str, want: str) -> tuple[bool, str]:
-    """Run `exe -c 'print(sys.version)'` and confirm it starts with `want`.
-
-    Returns (ok, reported_version_first_line). The check is the major.minor
-    PREFIX match against `sys.version_info`, computed by the interpreter itself
-    (not parsed from a path or a `uv` claim), so a .venv symlink flip cannot
-    masquerade as the requested version.
-    """
-    proc = _run_driver_command(
-        [
-            exe,
-            "-c",
-            "import sys; print('%d.%d' % sys.version_info[:2]); "
-            "print(sys.version.replace(chr(10), ' '))",
-        ],
-        timeout=30.0,
-    )
-    if proc.returncode != 0:
-        return False, proc.stderr.strip() or f"exit {proc.returncode}"
-    lines = proc.stdout.strip().splitlines()
-    if not lines:
-        return False, "no output"
-    reported_mm = lines[0].strip()
-    full = lines[1].strip() if len(lines) > 1 else reported_mm
-    return reported_mm == want, full
-
-
-def resolve_python(version: str, *, prefer_uv: bool = True) -> str:
-    """Resolve a CPython interpreter PINNED to `version` (e.g. '3.12').
-
-    Resolution order, each VERIFIED before acceptance (hazard 7 — never trust a
-    name; verify `sys.version_info`):
-      1. `uv python find <version>` (when uv is present and prefer_uv) — uv's
-         own managed interpreter for that exact version.
-      2. the bare `python<version>` / `pythonX.Y` on PATH.
-      3. the current `sys.executable`, only if it already IS `version`.
-    The first candidate whose interpreter self-reports `version` wins. If none
-    does, raise LOUDLY listing what each candidate reported (so a flip is
-    diagnosable, never silent).
-    """
-    if version.count(".") != 1 or not all(p.isdigit() for p in version.split(".")):
-        raise DriverError(
-            f"python version {version!r} must be 'MAJOR.MINOR' (e.g. '3.12')",
-            code=EXIT_USAGE,
-        )
-
-    candidates: list[tuple[str, str]] = []  # (label, exe)
-    if prefer_uv and shutil.which("uv"):
-        proc = _run_driver_command(
-            ["uv", "python", "find", version],
-            timeout=30.0,
-        )
-        if proc.returncode == 0:
-            exe = proc.stdout.strip().splitlines()[0].strip() if proc.stdout else ""
-            if exe:
-                candidates.append((f"uv python find {version}", exe))
-    bare = shutil.which(f"python{version}")
-    if bare:
-        candidates.append((f"python{version} on PATH", bare))
-    candidates.append(("sys.executable", sys.executable))
-
-    reports: list[str] = []
-    for label, exe in candidates:
-        ok, reported = _verify_interpreter_version(exe, version)
-        if ok:
-            return exe
-        reports.append(f"      {label}: {exe} -> reported {reported!r}")
-
-    raise DriverError(
-        f"could not resolve a verified CPython {version}. Candidates tried:\n"
-        + "\n".join(reports)
-        + "\n    (hazard 7: an interpreter that does not self-report the "
-        "requested version is refused, never used.)"
-    )
 
 
 # --------------------------------------------------------------------------
@@ -1390,19 +1318,30 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def cmd_python_oracle(args: argparse.Namespace) -> int:
-    exe = resolve_python(args.python_version, prefer_uv=not args.no_uv)
-    ok, full = _verify_interpreter_version(exe, args.python_version)
-    if not ok:
-        # resolve_python already verified; this is belt-and-suspenders.
-        raise DriverError(
-            f"resolved interpreter {exe} no longer reports {args.python_version} "
-            f"(now {full!r})"
+    try:
+        target = python_interpreter.parse_target_python_version(args.python_version)
+        resolved = python_interpreter.resolve_target_python(
+            target,
+            cwd=DEFAULT_REPO,
+            prefer_uv=not args.no_uv,
         )
+    except (ValueError, python_interpreter.PythonInterpreterError) as exc:
+        raise DriverError(str(exc), code=EXIT_USAGE) from exc
+    exe = resolved.executable
     if args.json:
-        print(json.dumps({"python": exe, "version": args.python_version, "full": full}))
+        print(
+            json.dumps(
+                {
+                    "python": exe,
+                    "command": list(resolved.command),
+                    "version": target.short,
+                    "full": resolved.version,
+                }
+            )
+        )
     else:
         print(exe)
-    _ok(f"pinned CPython {args.python_version}: {exe} ({full})")
+    _ok(f"pinned CPython {target.short}: {exe} ({resolved.version})")
     return EXIT_OK
 
 
@@ -1622,16 +1561,30 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     # the requested version (hazard 7) and can actually import molt from --root
     # (a loud refusal, never a mid-build ImportError credited as a test fail).
     # --oracle-python overrides the interpreter explicitly.
-    cpython = args.oracle_python or sys.executable
-    ok, full = _verify_interpreter_version(cpython, args.python_version)
-    if not ok:
+    cpython_command = python_interpreter.explicit_python_command(
+        args.oracle_python or sys.executable
+    )
+    try:
+        target_python = python_interpreter.parse_target_python_version(
+            args.python_version
+        )
+        cpython_identity = python_interpreter.probe_python_command(
+            cpython_command,
+            cwd=root,
+            timeout=30.0,
+        )
+    except (ValueError, python_interpreter.PythonInterpreterError) as exc:
+        raise DriverError(f"difftest: {exc}", code=EXIT_USAGE) from exc
+    if cpython_identity.major_minor != target_python.short:
         raise DriverError(
-            f"difftest: interpreter {cpython} reports {full!r}, not "
+            f"difftest: interpreter {python_interpreter.format_python_command(cpython_command)} "
+            f"reports {cpython_identity.version!r}, not "
             f"{args.python_version}. Run molt_dev.py under python "
             f"{args.python_version} (it doubles as the byte-exact CPython "
             f"oracle), or pass --oracle-python.",
             code=EXIT_USAGE,
         )
+    cpython = cpython_identity.executable
     prog_args = list(args.prog_args or [])
 
     # One coherent toolchain root: frontend (PYTHONPATH) AND runtime/backend
@@ -1656,7 +1609,7 @@ def cmd_difftest(args: argparse.Namespace) -> int:
             f"difftest: {cpython} cannot import molt from {root} "
             f"(frontend deps missing?): {last}"
         )
-    _ok(f"interpreter {cpython} ({full}) imports molt from {root}")
+    _ok(f"interpreter {cpython} ({cpython_identity.version}) imports molt from {root}")
 
     # CPython oracle (the same verified interpreter; programs need no molt deps).
     cpy_rc, cpy_out, _ = _difftest_capture(
