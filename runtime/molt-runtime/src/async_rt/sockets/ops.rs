@@ -177,16 +177,15 @@ pub extern "C" fn molt_socket_new(
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let socket_ptr = ptr_from_bits(sock_bits);
-            if socket_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
+    crate::with_gil_entry_nopanic!(_py, {
+        let socket_ptr = ptr_from_bits(sock_bits);
+        if socket_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
             socket_close_ptr(_py, socket_ptr);
             MoltObject::none().bits()
-        })
-    }
+        }
+    })
 }
 
 #[cfg(molt_has_net_io)]
@@ -194,16 +193,13 @@ pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let socket_ptr = ptr_from_bits(sock_bits);
-            if socket_ptr.is_null() {
-                return;
-            }
+    crate::with_gil_entry_nopanic!(_py, {
+        let socket_ptr = ptr_from_bits(sock_bits);
+        if !socket_ptr.is_null() {
             socket_close_ptr(_py, socket_ptr);
             socket_ref_dec(_py, socket_ptr);
-        })
-    }
+        }
+    })
 }
 
 #[cfg(molt_has_net_io)]
@@ -1291,14 +1287,13 @@ pub unsafe extern "C" fn molt_socket_getsockopt(
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_detach(sock_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let socket_ptr = ptr_from_bits(sock_bits);
-            if socket_ptr.is_null() {
-                return MoltObject::from_int(-1).bits();
-            }
+    crate::with_gil_entry_nopanic!(_py, {
+        let socket_ptr = ptr_from_bits(sock_bits);
+        if socket_ptr.is_null() {
+            MoltObject::from_int(-1).bits()
+        } else {
             let raw = socket_detach_raw(_py, socket_ptr);
             MoltObject::from_int(raw).bits()
-        })
-    }
+        }
+    })
 }
