@@ -49,7 +49,7 @@ from wasm_link_format import (
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from molt.cli.external_link_providers import wasm_external_link_provider_symbols
-from wasm_link_facts import callable_table_entry_rows, function_reference_rows
+from wasm_link_facts import callable_table_entry_rows
 
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
@@ -463,12 +463,15 @@ def _entry_module_prefix_from_main_init(
     main_init_index = export_indices.get("molt_init___main__")
     if main_init_index is None:
         return None
-    callees: list[int] = []
-    for function_index, direct_calls, _ref_funcs in function_reference_rows(facts):
-        if function_index != main_init_index:
-            continue
-        callees = direct_calls
-        break
+    raw_callees = facts.get("main_module_init_direct_calls")
+    if not isinstance(raw_callees, list) or not all(
+        isinstance(callee, int) and not isinstance(callee, bool) and callee >= 0
+        for callee in raw_callees
+    ):
+        raise ValueError(
+            "WASM facts main_module_init_direct_calls must be an index list"
+        )
+    callees = raw_callees
     inverse_exports: dict[int, list[str]] = {}
     for name, index in export_indices.items():
         inverse_exports.setdefault(index, []).append(name)

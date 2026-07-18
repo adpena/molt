@@ -10,15 +10,19 @@ use wasmparser::{
 use crate::encoding::validate_callable_table_attestation;
 use crate::layout::decode_callable_table_layout;
 use crate::model::*;
-use crate::{CALLABLE_TABLE_LAYOUT_SECTION_NAME, CALLABLE_TABLE_SECTION_NAME};
+use crate::{
+    CALLABLE_TABLE_LAYOUT_SECTION_NAME, CALLABLE_TABLE_SECTION_NAME, WASM_LINK_FACTS_SCHEMA_VERSION,
+};
 
 pub fn scan_wasm_link_facts(bytes: &[u8]) -> Result<WasmLinkFacts, String> {
     scan_wasm_link_facts_with_sections(bytes, None)
 }
 
+type SectionEmitter<'a> = dyn FnMut(u8, &[u8]) -> Result<(), String> + 'a;
+
 pub(crate) fn scan_wasm_link_facts_with_sections(
     bytes: &[u8],
-    mut emit_section: Option<&mut dyn FnMut(u8, &[u8]) -> Result<(), String>>,
+    mut emit_section: Option<&mut SectionEmitter<'_>>,
 ) -> Result<WasmLinkFacts, String> {
     let mut function_import_count = 0u32;
     let mut function_import_type_indices = Vec::new();
@@ -32,6 +36,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut element_function_indices = Vec::new();
     let mut declared_function_indices = Vec::new();
     let mut forbidden_callable_alias_exports = Vec::new();
+    let mut main_module_init_function_index = None;
     let mut dynamic_table_dispatch = false;
     let mut dynamic_dispatch_imports = BTreeSet::new();
     let mut dynamic_dispatch_functions = Vec::new();
@@ -158,6 +163,9 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     let export = export.map_err(|error| error.to_string())?;
                     if matches!(export.kind, ExternalKind::Func | ExternalKind::FuncExact) {
                         root_function_indices.push(export.index);
+                        if export.name == "molt_init___main__" {
+                            main_module_init_function_index = Some(export.index);
+                        }
                     }
                     if export.kind == ExternalKind::Table {
                         exported_table_indices.push(export.index);
@@ -452,15 +460,15 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             }
             _ => {}
         }
-        if !replaced_custom_section && !deferred_code_section {
-            if let Some((id, range)) = raw_section {
-                if let Some(emitter) = emit_section.as_mut() {
-                    (**emitter)(
-                        id,
-                        bytes.get(range).ok_or("wasm section range exceeds input")?,
-                    )?;
-                }
-            }
+        if !replaced_custom_section
+            && !deferred_code_section
+            && let Some((id, range)) = raw_section
+            && let Some(emitter) = emit_section.as_mut()
+        {
+            (**emitter)(
+                id,
+                bytes.get(range).ok_or("wasm section range exceeds input")?,
+            )?;
         }
     }
 
@@ -642,12 +650,50 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         .collect::<Vec<_>>();
     reachable_indirect_call_tables.sort_unstable();
     reachable_indirect_call_tables.dedup();
+    let reachable_function_indices = reachable_functions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, reachable)| reachable.then_some(index as u32))
+        .collect::<Vec<_>>();
+    let mut referenced_functions = vec![false; function_type_indices.len()];
+    for function_index in root_function_indices
+        .iter()
+        .chain(&element_function_indices)
+        .chain(&declared_function_indices)
+        .copied()
+        .chain(
+            function_references
+                .iter()
+                .flat_map(|row| row.direct_calls.iter().chain(&row.ref_funcs).copied()),
+        )
+    {
+        let referenced = referenced_functions
+            .get_mut(function_index as usize)
+            .ok_or_else(|| format!("function reference index {function_index} is out of range"))?;
+        *referenced = true;
+    }
+    let referenced_function_indices = referenced_functions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, referenced)| referenced.then_some(index as u32))
+        .collect::<Vec<_>>();
+    let main_module_init_direct_calls = main_module_init_function_index
+        .and_then(|function_index| {
+            reference_row_by_function
+                .get(function_index as usize)
+                .and_then(|row| *row)
+        })
+        .map(|row| function_references[row].direct_calls.clone())
+        .unwrap_or_default();
     Ok(WasmLinkFacts {
-        schema_version: 3,
+        schema_version: WASM_LINK_FACTS_SCHEMA_VERSION,
         function_import_count,
         defined_function_count: declared_function_count,
         code_body_count: defined_function_index,
         operator_count,
+        reachable_function_indices,
+        referenced_function_indices,
+        main_module_init_direct_calls,
         function_references,
         function_types,
         function_type_indices,
