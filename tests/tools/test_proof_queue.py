@@ -4198,6 +4198,31 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert command[15:17] == ["-p", "molt-runtime"]
     assert command[-1] == "--lib"
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
+    notebook = tmp_path / "notebooks" / f"{rows[0]['run_id']}.py"
+    assert notebook.exists()
+    assert '"proof_receipt"' not in notebook.read_text(encoding="utf-8")
+
+    requested_toolchains: list[tuple[str, ...]] = []
+
+    def fake_fingerprints(_plan: object, names: tuple[str, ...]) -> dict[str, dict]:
+        requested_toolchains.append(names)
+        return {name: {"identity_sha256": name} for name in names}
+
+    monkeypatch.setattr(
+        evidence_module.proof_plan, "toolchain_fingerprints", fake_fingerprints
+    )
+    conn = state._connect(db)
+    state._update_run(conn, rows[0]["run_id"], status="passed", returncode=0)
+    conn.row_factory = sqlite3.Row
+    terminal_row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?", (rows[0]["run_id"],)
+    ).fetchone()
+    assert terminal_row is not None
+    terminal_payload = evidence_module._row_to_payload(terminal_row)
+    conn.close()
+
+    assert requested_toolchains == [("python", "cargo", "rustc")]
+    assert terminal_payload["proof_receipt"]["status"] == "success"
 
 
 def test_proof_queue_cargo_rejects_pre_delimiter_residue(tmp_path: Path) -> None:
