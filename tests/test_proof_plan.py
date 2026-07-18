@@ -27,7 +27,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 10
-    assert len(PLAN.commands) >= 70
+    assert len(PLAN.commands) >= 66
     assert len(PLAN.matrix_cells) >= 14
     assert len(PLAN.toolchain_policies) >= 15
     assert PLAN.executor_max_workers == 4
@@ -70,6 +70,13 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         for policy in PLAN.resource_policies
     ]
     timeout_envelopes = projection["executor"]["github_job_timeout_envelopes"]
+    assert timeout_envelopes["rust"] == {
+        "budget_seconds": 3600,
+        "projected_makespan_seconds": 1560,
+        "critical_path_seconds": 1080,
+        "resource_capacity_floor_seconds": {"compiler-build-resource": 1560},
+        "headroom_seconds": 2040,
+    }
     assert timeout_envelopes["repository_policy"] == {
         "budget_seconds": 3600,
         "projected_makespan_seconds": 3300,

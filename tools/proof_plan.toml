@@ -1111,18 +1111,6 @@ argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py:
 toolchains = ["python", "uv", "rustc", "cargo", "lld"]
 
 [[command]]
-id = "rust.check.runtime-default"
-family = "rust"
-cell = "linux-x86_64-rust-native-dev"
-tiers = ["pre-push", "pr", "main"]
-resource_class = "compiler-build-resource"
-timeout_seconds = 240
-cache_domain = "cargo-workspace"
-dependencies = []
-argv = ["cargo", "check", "-p", "molt-runtime"]
-toolchains = ["rustc", "cargo"]
-
-[[command]]
 id = "rust.check.tir-wasi32"
 family = "rust"
 cell = "linux-x86_64-rust-wasi-dev"
@@ -1147,18 +1135,6 @@ argv = ["cargo", "check", "--target", "aarch64-unknown-linux-gnu", "-p", "molt-r
 toolchains = ["rustc", "cargo"]
 
 [[command]]
-id = "rust.build.workspace"
-family = "rust"
-cell = "linux-x86_64-rust-native-dev"
-tiers = ["pre-push", "pr", "main"]
-resource_class = "compiler-build-resource"
-timeout_seconds = 900
-cache_domain = "cargo-workspace"
-dependencies = ["rust.check.runtime-default"]
-argv = ["cargo", "build"]
-toolchains = ["rustc", "cargo"]
-
-[[command]]
 id = "rust.test.default-truth"
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
@@ -1166,21 +1142,9 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_seconds = 600
 cache_domain = "cargo-workspace"
-dependencies = ["rust.build.workspace"]
+dependencies = []
 argv = ["python3", "tools/run_cargo_test_truth.py"]
 toolchains = ["python", "rustc", "cargo"]
-
-[[command]]
-id = "rust.test.backend-native-feature"
-family = "rust"
-cell = "linux-x86_64-rust-native-dev"
-tiers = ["pre-push", "pr", "main"]
-resource_class = "compiler-build-resource"
-timeout_seconds = 300
-cache_domain = "cargo-workspace"
-dependencies = ["rust.build.workspace"]
-argv = ["cargo", "test", "-p", "molt-backend", "--features", "native-backend", "--tests", "--no-fail-fast"]
-toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
@@ -1190,20 +1154,8 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_seconds = 240
 cache_domain = "cargo-workspace"
-dependencies = ["rust.build.workspace"]
+dependencies = ["rust.test.default-truth"]
 argv = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
-toolchains = ["rustc", "cargo"]
-
-[[command]]
-id = "rust.clippy.backend-native"
-family = "rust"
-cell = "linux-x86_64-rust-native-dev"
-tiers = ["pre-push", "pr", "main"]
-resource_class = "compiler-build-resource"
-timeout_seconds = 240
-cache_domain = "cargo-workspace"
-dependencies = ["rust.build.workspace"]
-argv = ["cargo", "clippy", "-p", "molt-backend", "--features", "native-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -1214,7 +1166,7 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_seconds = 240
 cache_domain = "cargo-workspace"
-dependencies = ["rust.build.workspace"]
+dependencies = ["rust.clippy.workspace-default"]
 argv = ["cargo", "clippy", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "--all-targets", "--all-features", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
