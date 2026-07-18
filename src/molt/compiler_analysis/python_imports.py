@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from threading import RLock
 from typing import Literal
 
 from molt.compiler_analysis.python_effects import (
@@ -18,6 +17,7 @@ from molt.compiler_analysis.python_effects import (
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
+ImportNodeKey = tuple[int, int, int, int, str]
 ImportResolutionError = Literal[
     "no_parent",
     "beyond_top",
@@ -196,7 +196,7 @@ class UnresolvedStaticImportError(ValueError):
 class ModuleImportFlow:
     """Source-ordered abstract metadata states at import/call AST sites."""
 
-    states_by_node: Mapping[int, tuple[ModuleImportState, ...]]
+    states_by_node: Mapping[ImportNodeKey, tuple[ModuleImportState, ...]]
     final_states: tuple[ModuleImportState, ...]
     all_states: tuple[ModuleImportState, ...]
 
@@ -205,17 +205,21 @@ class ModuleImportFlow:
         # bodies, or a newly introduced AST form) must never inherit the final
         # module snapshot. Unioning the observed source-order states is the
         # conservative runtime anchor until that phase has an explicit event.
-        return self.states_by_node.get(id(node), self.all_states)
-
-
-_FLOW_CACHE_INIT_LOCK = RLock()
-_RLOCK_TYPE = type(RLock())
-_FLOW_CACHE_ATTR = "_molt_import_flow_cache"
-_FLOW_LOCK_ATTR = "_molt_import_flow_lock"
+        return self.states_by_node.get(_import_node_key(node), self.all_states)
 
 
 def module_spec_parent(spec_name: str, is_package: bool) -> str:
     return spec_name if is_package else spec_name.rpartition(".")[0]
+
+
+def _import_node_key(node: ast.AST) -> ImportNodeKey:
+    return (
+        int(getattr(node, "lineno", 0)),
+        int(getattr(node, "col_offset", 0)),
+        int(getattr(node, "end_lineno", getattr(node, "lineno", 0))),
+        int(getattr(node, "end_col_offset", getattr(node, "col_offset", 0))),
+        type(node).__name__,
+    )
 
 
 def loader_module_import_state(context: ModuleImportContext) -> ModuleImportState:
@@ -548,24 +552,38 @@ def _merge_states(*groups: Iterable[ModuleImportState]) -> tuple[ModuleImportSta
     )
 
 
-def _tree_has_import_state_events(tree: ast.AST) -> bool:
+def _normalized_import_context(context: ModuleImportContext) -> ModuleImportContext:
+    if context.spec_name is not None or context.state is not None:
+        return context
+    return replace(context, spec_name=context.module_name)
+
+
+def _module_import_flow_required(tree: ast.AST) -> bool:
+    """Cheap fail-closed aperture before the metadata dataflow engine."""
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            if any(_metadata_target_name(target) in _IMPORT_METADATA_NAMES for target in node.targets):
-                return True
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            if _metadata_target_name(node.target) in _IMPORT_METADATA_NAMES:
-                return True
-        elif isinstance(node, ast.Delete):
-            if any(_metadata_target_name(target) in _IMPORT_METADATA_NAMES for target in node.targets):
-                return True
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)):
-            # Binding and protocol execution are source-order state events.
+        if isinstance(node, ast.Assign) and any(
+            _metadata_target_name(target) in _IMPORT_METADATA_NAMES
+            for target in node.targets
+        ):
             return True
-        elif isinstance(node, ast.Call):
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and (
+            _metadata_target_name(node.target) in _IMPORT_METADATA_NAMES
+        ):
+            return True
+        if isinstance(node, ast.Delete) and any(
+            _metadata_target_name(target) in _IMPORT_METADATA_NAMES
+            for target in node.targets
+        ):
+            return True
+        if isinstance(
+            node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)
+        ):
+            return True
+        if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "exec":
                 return True
-            if any(
+            writes_named_metadata = any(
                 isinstance(argument, ast.Constant)
                 and argument.value in _IMPORT_METADATA_NAMES
                 for argument in node.args
@@ -573,27 +591,10 @@ def _tree_has_import_state_events(tree: ast.AST) -> bool:
                 isinstance(node.func, ast.Name) and node.func.id == "setattr"
                 or isinstance(node.func, ast.Attribute)
                 and node.func.attr == "__setitem__"
-            ):
+            )
+            if writes_named_metadata:
                 return True
     return False
-
-
-def _normalized_import_context(context: ModuleImportContext) -> ModuleImportContext:
-    if context.spec_name is not None or context.state is not None:
-        return context
-    return replace(context, spec_name=context.module_name)
-
-
-def _tree_flow_lock(tree: ast.AST) -> RLock:
-    lock = getattr(tree, _FLOW_LOCK_ATTR, None)
-    if isinstance(lock, _RLOCK_TYPE):
-        return lock
-    with _FLOW_CACHE_INIT_LOCK:
-        lock = getattr(tree, _FLOW_LOCK_ATTR, None)
-        if lock is None:
-            lock = RLock()
-            setattr(tree, _FLOW_LOCK_ATTR, lock)
-        return lock
 
 
 def _analyze_module_import_flow_uncached(
@@ -603,7 +604,7 @@ def _analyze_module_import_flow_uncached(
     """Build one conservative O(AST + states*metadata-writes) event/dataflow pass."""
 
     initial = (context_import_state(context),)
-    by_node: dict[int, tuple[ModuleImportState, ...]] = {}
+    by_node: dict[ImportNodeKey, tuple[ModuleImportState, ...]] = {}
     all_states: set[ModuleImportState] = set(initial)
     deferred_bodies: list[tuple[Sequence[ast.stmt], bool]] = []
     metadata_mutator_functions: set[str] = set()
@@ -616,8 +617,9 @@ def _analyze_module_import_flow_uncached(
 
     def record(node: ast.AST, states: tuple[ModuleImportState, ...]) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
-            previous = by_node.get(id(node), ())
-            by_node[id(node)] = _merge_states(previous, states)
+            key = _import_node_key(node)
+            previous = by_node.get(key, ())
+            by_node[key] = _merge_states(previous, states)
         if isinstance(
             node,
             (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.GeneratorExp),
@@ -1082,33 +1084,35 @@ def analyze_module_import_flow(
     tree: ast.AST,
     context: ModuleImportContext,
 ) -> ModuleImportFlow:
-    """Return one mutation-safe, per-tree single-flight import plan."""
+    """Return import facts from the canonical binding/capability index."""
+
+    from molt.compiler_analysis.python_binding_flow import (
+        PythonBindingPolicy,
+        analyze_python_bindings,
+        python_ast_digest,
+    )
 
     context = _normalized_import_context(context)
-    has_events = _tree_has_import_state_events(tree)
-    fingerprint = (
-        ast.dump(tree, annotate_fields=True, include_attributes=False)
-        if has_events
-        else "constant"
+    if isinstance(tree, ast.Module):
+        module = tree
+    elif isinstance(tree, ast.stmt):
+        module = ast.Module(body=[tree], type_ignores=[])
+    elif isinstance(tree, ast.expr):
+        module = ast.Module(body=[ast.Expr(value=tree)], type_ignores=[])
+    else:
+        module = ast.Module(body=[], type_ignores=[])
+    index = analyze_python_bindings(
+        module,
+        source_digest=python_ast_digest(tree),
+        policy=PythonBindingPolicy(
+            target_python=context.target_python,
+            module_name=context.module_name,
+            module_spec_name=context.spec_name,
+            module_is_package=context.is_package,
+            module_execution_kind=context.execution_kind,
+        ),
     )
-    lock = _tree_flow_lock(tree)
-    with lock:
-        cached_fingerprint, cached_by_context = getattr(
-            tree, _FLOW_CACHE_ATTR, (None, {})
-        )
-        if cached_fingerprint != fingerprint:
-            cached_by_context = {}
-            setattr(tree, _FLOW_CACHE_ATTR, (fingerprint, cached_by_context))
-        cached = cached_by_context.get(context)
-        if cached is not None:
-            return cached
-        if not has_events:
-            state = context_import_state(context)
-            flow = ModuleImportFlow({}, (state,), (state,))
-        else:
-            flow = _analyze_module_import_flow_uncached(tree, context)
-        cached_by_context[context] = flow
-        return flow
+    return index.module_import_flow
 
 
 def final_module_import_states(

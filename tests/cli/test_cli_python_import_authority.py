@@ -253,6 +253,22 @@ def test_import_flow_cache_invalidates_after_ast_mutation() -> None:
     assert updated is not original
 
 
+def test_import_flow_cache_is_content_addressed_across_reparse() -> None:
+    source = "__package__ = 'pkg'\nfrom .child import value\n"
+    context = ModuleImportContext("pkg.entry", False)
+    first_tree = ast.parse(source, filename="first.py")
+    second_tree = ast.parse(source, filename="second.py")
+
+    first = analyze_module_import_flow(first_tree, context)
+    second = analyze_module_import_flow(second_tree, context)
+    second_request = second_tree.body[1]
+
+    assert second is first
+    assert second.states_for(second_request)[0].package == StaticMetadataValue.known(
+        "pkg"
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     (

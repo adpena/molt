@@ -4820,6 +4820,7 @@ def test_external_native_artifact_plan_rejects_fake_module_attr_export(
     )
 
     assert plan is None
+    assert errors, errors
     assert any(
         "not declared by a PyMethodDef entry" in error
         and "nativepkg.ndimage.gaussian_filter" in error
@@ -4903,7 +4904,7 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
     ] == [("nativepkg.ndimage._filters", "gaussian_filter")]
 
 
-def test_external_native_artifact_plan_shadows_later_duplicate_module_roots(
+def test_external_native_artifact_plan_rejects_duplicate_module_roots(
     tmp_path: Path,
 ) -> None:
     staged_root = tmp_path / "staged"
@@ -4915,7 +4916,7 @@ def test_external_native_artifact_plan_shadows_later_duplicate_module_roots(
         encoding="utf-8",
     )
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
-    staged_artifact, _staged_manifest = _write_external_native_artifact(
+    _staged_artifact, _staged_manifest = _write_external_native_artifact(
         staged_root,
         package="nativepkg",
         relative_module="ndimage._nd_image",
@@ -4983,20 +4984,10 @@ def test_external_native_artifact_plan_shadows_later_duplicate_module_roots(
         admitted_packages={"nativepkg"},
     )
 
-    assert errors == []
-    assert plan is not None
-    assert [artifact.path for artifact in plan.artifacts] == [staged_artifact.resolve()]
-    assert plan.native_callable_exports_by_qualified_name() == {
-        "nativepkg.ndimage.gaussian_filter": {
-            "module": "nativepkg.ndimage",
-            "name": "gaussian_filter",
-            "binding": "module_attr",
-            "abi": "molt.object_callargs_v1",
-            "provider_module": "nativepkg.ndimage._filters",
-            "effects": [],
-            "deterministic": False,
-        }
-    }
+    assert plan is None
+    assert len(errors) == 1
+    assert "conflicting native artifact providers" in errors[0]
+    assert "Module-root order is not provider authority" in errors[0]
 
 
 def test_scoped_native_callable_exports_include_provider_module() -> None:
@@ -6115,7 +6106,7 @@ def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
         assert c_api_status[symbol] == "runtime_backed"
 
 
-def test_external_native_artifact_plan_rejects_undefined_source_compile_only_symbol(
+def test_external_native_artifact_plan_rejects_undefined_numpy_c_api_symbol(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -6149,9 +6140,9 @@ def test_external_native_artifact_plan_rejects_undefined_source_compile_only_sym
     assert plan is None
     assert any(
         "object_closure undefined C-API symbol 'PyArray_NDIM' is "
-        "source_compile_only; primitive_class=numpy_c_api" in error
+        "missing; primitive_class=numpy_c_api" in error
         for error in errors
-    )
+    ), errors
 
 
 def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
@@ -7213,6 +7204,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         pgo_hot_function_names=set(),
         generated_module_source_paths=dict(import_plan.generated_module_source_paths),
         entry_module="field_solve",
+        entry_execution_kind="script",
         namespace_module_names=set(import_plan.namespace_module_names),
         module_source_catalog=analysis.module_source_catalog,
         is_wasm=True,
@@ -15070,7 +15062,6 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
             type_facts=None,
         ),
         scoped_known_classes={"MainClass": {"module": "main", "fields": {}}},
-        target_python=cli._parse_target_python_version("3.14"),
         target_sys_platform=None,
     )
 
@@ -15084,8 +15075,6 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.native_python_exports == {"alpha.native_call"}
     assert gen.midend_hot_functions == {"main::hot"}
     assert gen.classes["MainClass"]["module"] == "main"
-    assert gen.target_python == (3, 14)
-    assert gen.eager_annotations is False
 
 
 def test_module_lowering_context_digest_for_module_reuses_precomputed_views() -> None:
@@ -17223,6 +17212,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         pgo_hot_function_names=set(),
         generated_module_source_paths={},
         entry_module="entry",
+        entry_execution_kind="script",
         namespace_module_names=set(),
         module_source_catalog=cli_module_source._build_module_source_catalog(
             {"entry": source_path},
@@ -17278,6 +17268,7 @@ def test_prepare_frontend_lowering_config_skips_ty_for_source_recompiled_native_
         pgo_hot_function_names=set(),
         generated_module_source_paths={},
         entry_module="entry",
+        entry_execution_kind="script",
         namespace_module_names=set(),
         module_source_catalog=cli_module_source._build_module_source_catalog(
             {"entry": source_path},
