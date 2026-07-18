@@ -42,7 +42,8 @@ jobs:
       # rustup is never raced by first-use component installation.
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+          targets: wasm32-wasip1
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev
