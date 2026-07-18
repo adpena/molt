@@ -972,6 +972,51 @@ def test_github_actions_flag_alone_cannot_self_attest_custody(tmp_path: Path) ->
     assert custody.custody_root == tmp_path.resolve()
 
 
+def test_explicit_scratch_preserves_explicit_external_artifact_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external" / "Molt"
+    repo_root.mkdir()
+    external_root.mkdir(parents=True)
+    monkeypatch.setattr(dx.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    custody = dx.checkout_custody(repo_root)
+    env = RunContext(
+        repo_root,
+        session_prefix="scratch",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        create_dirs=True,
+    )
+
+    assert custody.kind == "explicit-scratch"
+    assert not custody.source_only
+    assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
+
+
+def test_workflow_issued_scratch_root_does_not_depend_on_tempfile_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner_temp = tmp_path / "runner-temp"
+    env = _github_actions_custody_env(workspace, runner_temp)
+    issued_root = Path(env[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV])
+    repo_root = issued_root / "tmp" / "pytest" / "repo"
+    repo_root.mkdir(parents=True)
+    monkeypatch.setattr(dx.tempfile, "gettempdir", lambda: str(tmp_path / "ambient"))
+
+    custody = dx.checkout_custody(repo_root, env)
+
+    assert custody.kind == "explicit-scratch"
+    assert custody.custody_root == repo_root.resolve()
+
+
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
