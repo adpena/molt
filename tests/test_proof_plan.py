@@ -163,6 +163,74 @@ def test_toolchain_setup_projection_drift_is_rejected() -> None:
     assert any("uv: setup evidence token missing" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    ("probe_cwd", "expected"),
+    [
+        ("./formal/lean", "canonical repository-relative directory"),
+        ("../outside", "canonical repository-relative directory"),
+        ("formal/does-not-exist", "must resolve inside the repository"),
+        ("formal/lean/lean-toolchain", "is not a directory"),
+    ],
+)
+def test_toolchain_probe_cwd_is_existing_repo_contained_directory(
+    probe_cwd: str, expected: str
+) -> None:
+    policies = tuple(
+        replace(policy, data={**policy.data, "probe_cwd": probe_cwd})
+        if policy.name == "lean"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    assert any(
+        error.startswith("lean: probe_cwd") and expected in error for error in errors
+    )
+
+
+def test_lean_toolchain_probe_cwd_is_project_authority() -> None:
+    lean = next(policy for policy in PLAN.toolchain_policies if policy.name == "lean")
+    assert lean.data["probe_cwd"] == "formal/lean"
+
+
+def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) -> None:
+    policy = proof_plan.ToolchainPolicy(
+        "probe",
+        {
+            "executable": "probe",
+            "probe_cwd": "formal/lean",
+            "version_args": ["--version"],
+            "version_pattern": r"version 4\.28\.0",
+            "content_path_command": ["probe-content"],
+        },
+    )
+    calls: list[tuple[tuple[str, ...], Path]] = []
+
+    def fake_run(argv, *, cwd, **_kwargs):
+        command = tuple(argv)
+        calls.append((command, cwd))
+        output = (
+            "lean-toolchain\n"
+            if command == ("probe-content",)
+            else "Lean (version 4.28.0)\n"
+        )
+        return proof_plan.subprocess.CompletedProcess(argv, 0, output)
+
+    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    monkeypatch.setattr(proof_plan.subprocess, "run", fake_run)
+
+    fingerprint = proof_plan._version_fingerprint(policy)
+    expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
+    assert fingerprint is not None
+    assert calls == [
+        (("probe-content",), expected_cwd),
+        ((sys.executable, "--version"), expected_cwd),
+    ]
+    assert fingerprint["probe_cwd"] == "formal/lean"
+    assert fingerprint["content_path"] == str(
+        (expected_cwd / "lean-toolchain").resolve()
+    )
+
+
 def test_manifest_rejects_missing_repository_command_inputs() -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.unit.harness"
@@ -320,6 +388,7 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, object]:
         launcher_path = f"{path}/launcher"
         content_path = f"{path}/content"
         version = versions[name]
+        probe_cwd = str(policies[name].data.get("probe_cwd", "."))
         launcher_sha256 = hashlib.sha256(
             f"{launcher_path}\0binary".encode()
         ).hexdigest()
@@ -331,11 +400,12 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, object]:
             "content_path": content_path,
             "version": version,
             "version_pattern": str(policies[name].data["version_pattern"]),
+            "probe_cwd": probe_cwd,
             "executable_sha256": executable_sha256,
             "identity_sha256": hashlib.sha256(
                 (
                     f"{path}\0{launcher_path}\0{launcher_sha256}\0{content_path}\0"
-                    f"{executable_sha256}\0{version}"
+                    f"{executable_sha256}\0{version}\0{probe_cwd}"
                 ).encode()
             ).hexdigest(),
         }
@@ -463,12 +533,34 @@ def test_receipt_verdict_enforces_toolchain_version_contract(tmp_path: Path) -> 
     uv["identity_sha256"] = hashlib.sha256(  # type: ignore[index]
         (
             f"{uv['path']}\0{uv['launcher_path']}\0{uv['launcher_sha256']}\0"  # type: ignore[index]
-            f"{uv['content_path']}\0{uv['executable_sha256']}\0{uv['version']}"  # type: ignore[index]
+            f"{uv['content_path']}\0{uv['executable_sha256']}\0{uv['version']}\0"  # type: ignore[index]
+            f"{uv['probe_cwd']}"  # type: ignore[index]
         ).encode()
     ).hexdigest()
     (tmp_path / "wrong-version.json").write_text(json.dumps(receipt), encoding="utf-8")
     errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("uv version violates" in error for error in errors)
+
+
+def test_receipt_verdict_enforces_toolchain_probe_cwd_contract(tmp_path: Path) -> None:
+    command = next(
+        command for command in PLAN.commands if command.id == "formal.lean.build"
+    )
+    receipt = _receipt_for(command)
+    lean = receipt["toolchains"]["lean"]  # type: ignore[index]
+    lean["probe_cwd"] = "."  # type: ignore[index]
+    lean["identity_sha256"] = hashlib.sha256(  # type: ignore[index]
+        (
+            f"{lean['path']}\0{lean['launcher_path']}\0{lean['launcher_sha256']}\0"  # type: ignore[index]
+            f"{lean['content_path']}\0{lean['executable_sha256']}\0"  # type: ignore[index]
+            f"{lean['version']}\0{lean['probe_cwd']}"  # type: ignore[index]
+        ).encode()
+    ).hexdigest()
+    (tmp_path / "wrong-probe-cwd.json").write_text(
+        json.dumps(receipt), encoding="utf-8"
+    )
+    errors = proof_plan.verify_receipts(PLAN, ["formal"], tmp_path)
+    assert any("invalid lean toolchain identity" in error for error in errors)
 
 
 def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> None:
@@ -482,6 +574,7 @@ def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> Non
             "content_path": f"/toolchain/{policy.name}",
             "version": "arbitrary 999",
             "version_pattern": policy.data["version_pattern"],
+            "probe_cwd": str(policy.data.get("probe_cwd", ".")),
             "executable_sha256": "0" * 64,
             "identity_sha256": "0" * 64,
         },
@@ -515,6 +608,7 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
             "content_path": f"/toolchain/{policy.name}",
             "version": f"{policy.name} 1.96.1",
             "version_pattern": str(policy.data["version_pattern"]),
+            "probe_cwd": str(policy.data.get("probe_cwd", ".")),
             "executable_sha256": "0" * 64,
             "identity_sha256": "0" * 64,
         }

@@ -106,18 +106,20 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "## Toolchain contracts",
             "",
-            "Receipts record resolved path and version text, bind their identity "
-            "hash to both, and fail unless the version satisfies this authority.",
+            "Receipts record resolved path, version text, and the repository-relative "
+            "probe working directory, bind their identity hash to all three, and fail "
+            "unless the version satisfies this authority.",
             "",
-            "| Toolchain | Required version | Setup value | Setup evidence |",
-            "|---|---|---|---:|",
+            "| Toolchain | Required version | Probe cwd | Setup value | Setup evidence |",
+            "|---|---|---|---|---:|",
         ]
     )
     for policy in plan.toolchain_policies:
         data = policy.data
         lines.append(
             f"| `{policy.name}` | `{data['version_pattern']}` | "
-            f"`{data['setup_value']}` | {len(data['setup_evidence'])} |"
+            f"`{data.get('probe_cwd', '.')}` | `{data['setup_value']}` | "
+            f"{len(data['setup_evidence'])} |"
         )
     lines.extend(
         [

@@ -32,25 +32,25 @@ Every selected family expands to stable command IDs. Each command binds an exact
 
 ## Toolchain contracts
 
-Receipts record resolved path and version text, bind their identity hash to both, and fail unless the version satisfies this authority.
+Receipts record resolved path, version text, and the repository-relative probe working directory, bind their identity hash to all three, and fail unless the version satisfies this authority.
 
-| Toolchain | Required version | Setup value | Setup evidence |
-|---|---|---|---:|
-| `python` | `^Python 3\.12\.` | `3.12` | 1 |
-| `uv` | `^uv 0\.11\.24\b` | `0.11.24` | 3 |
-| `node` | `^v24\.16\.0$` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `1.96.1` | 5 |
-| `cargo` | `^cargo 1\.96\.1\b` | `1.96.1` | 2 |
-| `clang` | `clang version 22\.1\.8\b` | `22.1.8` | 1 |
-| `llvm-config` | `^22\.1\.8$` | `22.1.8` | 1 |
-| `mlir-opt` | `version 22\.1\.8\b` | `22.1.8` | 1 |
-| `lld` | `\bLLD 22\.1\.8\b` | `22.1.8` | 1 |
-| `lean` | `version 4\.28\.0\b` | `4.28.0` | 1 |
-| `quint` | `^(?:Quint\s+)?0\.32\.0$` | `0.32.0` | 1 |
-| `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `0.20.2` | 1 |
-| `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `0.22.2` | 1 |
-| `wasm-ld` | `\bLLD 22\.1\.8\b` | `22.1.8` | 1 |
-| `wasm-tools` | `^wasm-tools 1\.253\.0$` | `1.253.0` | 1 |
+| Toolchain | Required version | Probe cwd | Setup value | Setup evidence |
+|---|---|---|---|---:|
+| `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
+| `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 3 |
+| `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
+| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 5 |
+| `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 2 |
+| `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
+| `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 1 |
+| `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
+| `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
+| `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
+| `wasm-ld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `wasm-tools` | `^wasm-tools 1\.253\.0$` | `.` | `1.253.0` | 1 |
 
 ## Executable partitions
 

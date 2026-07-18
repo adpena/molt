@@ -34,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "4c30bfa6908ef8e4e61aa5e4d9de8153cb8cfb24b3261300a4ded05fe81b61cc",
+  "authority_sha256": "79f5abc9ea6e92106a1bd61c9f2088961fe438e6598bd29f45d119965103edcf",
   "ci_families": [
     {
       "dependencies": [],
@@ -3538,6 +3538,7 @@
     {
       "executable": "lean",
       "name": "lean",
+      "probe_cwd": "formal/lean",
       "setup_evidence": [
         "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0"
       ],
