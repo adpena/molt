@@ -107,6 +107,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "tests/test_harness_layers.py" in proof_plan_text
     assert "tests/test_monty_conformance_runner.py" in proof_plan_text
     assert "Setup canonical native linker SDK" in ci_text
+    assert "proof-receipts/evidence/cargo-test-truth.json" in ci_text
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "sudo apt-get install -y lld" not in ci_text
     assert "timeout_seconds" in proof_plan_text
@@ -161,10 +162,18 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "steps.contract.outputs.apt_packages" in action_text
     assert "steps.contract.outputs.apt_installer_url" in action_text
     assert "steps.contract.outputs.apt_installer_sha256" in action_text
+    assert "steps.contract.outputs.wasi_sysroot_url" in action_text
+    assert "steps.contract.outputs.wasi_sysroot_sha256" in action_text
+    assert "steps.contract.outputs.wasi_sysroot_archive_root" in action_text
     assert 'installer="$RUNNER_TEMP/molt-llvm-apt.sh"' in action_text
     assert "sha256sum --check --strict" in action_text
     assert "wget -qO /tmp" not in action_text
     assert "--verify" in action_text
+    assert "--verify-wasm" in action_text
+    assert "--wasi-sysroot" in action_text
+    assert "Setup canonical WebAssembly linker and WASI sysroot" in ci_text
+    assert "profile: wasm" in ci_text
+    assert 'wasi: "true"' in ci_text
     assert "grep -oE" not in ci_text
     assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text
