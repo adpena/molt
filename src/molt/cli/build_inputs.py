@@ -42,7 +42,6 @@ from molt.cli.models import (
     _ResolvedBuildEntry,
 )
 from molt.cli.module_graph_discovery import _record_module_reason
-from molt.cli.module_import_scanner import _infer_module_overrides, _spec_parent
 from molt.cli.module_resolution import (
     _entry_module_root_for_path,
     _is_stdlib_resolved_path,
@@ -388,42 +387,6 @@ def _resolve_build_entry(
             json_output,
             command=command,
         )
-    (
-        entry_pkg_override_set,
-        entry_pkg_override,
-        entry_spec_override_set,
-        entry_spec_override,
-        entry_spec_override_is_package,
-    ) = _infer_module_overrides(entry_tree)
-    if entry_pkg_override_set and entry_pkg_override:
-        root = _package_root_for_override(source_path, entry_pkg_override)
-        if root is not None:
-            source_parent = source_path.parent.resolve()
-            module_roots = [
-                candidate
-                for candidate in module_roots
-                if candidate.resolve() != source_parent
-            ]
-            module_roots.append(root)
-            entry_module = _module_name_from_path(source_path, [root], stdlib_root)
-    elif entry_spec_override_set and entry_spec_override:
-        override_is_package = (
-            entry_spec_override_is_package
-            if entry_spec_override_is_package is not None
-            else source_path.name == "__init__.py"
-        )
-        package_name = _spec_parent(entry_spec_override, override_is_package)
-        if package_name:
-            root = _package_root_for_override(source_path, package_name)
-            if root is not None:
-                source_parent = source_path.parent.resolve()
-                module_roots = [
-                    candidate
-                    for candidate in module_roots
-                    if candidate.resolve() != source_parent
-                ]
-                module_roots.append(root)
-                entry_module = _module_name_from_path(source_path, [root], stdlib_root)
     return _ResolvedBuildEntry(
         source_path=source_path,
         entry_module=entry_module,
@@ -1063,21 +1026,6 @@ def _resolve_wrapper_build_entry(
         target_python=target_python,
         build_config=build_cfg,
     )
-
-
-def _package_root_for_override(source_path: Path, package_name: str) -> Path | None:
-    parts = [part for part in package_name.split(".") if part]
-    if not parts:
-        return None
-    package_dir = source_path.parent
-    if len(parts) > len(package_dir.parts):
-        return None
-    if tuple(package_dir.parts[-len(parts) :]) != tuple(parts):
-        return None
-    root = package_dir
-    for _ in parts:
-        root = root.parent
-    return root
 
 
 def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:

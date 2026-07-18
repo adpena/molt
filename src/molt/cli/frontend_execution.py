@@ -101,6 +101,7 @@ def _lower_entry_module_as_main(
         type_facts_module=lowering_context.entry_module,
         module_name="__main__",
         module_spec_name=lowering_context.entry_module,
+        module_execution_kind="module",
         entry_module=None,
         enable_phi=lowering_context.enable_phi,
         known_modules=set(lowering_context.known_modules),

@@ -45,6 +45,7 @@ BinaryImageKind = Literal[
     "project_entry_package",
 ]
 BinaryImageClosureMode = Literal["reachable_only"]
+ModuleExecutionKind = Literal["imported", "module", "script"]
 BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
 BuildEntrySelectorTarget = Literal["file", "module"]
 
@@ -243,6 +244,7 @@ class _ModuleGraphMetadata:
     entry_override_by_module: Mapping[str, str | None]
     module_is_namespace_by_module: Mapping[str, bool]
     module_is_package_by_module: Mapping[str, bool]
+    module_execution_kind_by_module: Mapping[str, ModuleExecutionKind]
     frontend_module_costs: Mapping[str, float] | None
     stdlib_like_by_module: Mapping[str, bool] | None
 
@@ -308,6 +310,10 @@ class _BinaryImageScope:
             "closure_mode": self.closure_mode,
         }
 
+    @property
+    def entry_execution_kind(self) -> ModuleExecutionKind:
+        return "script" if self.kind.endswith("entry_script") else "module"
+
     def with_root_modules(
         self,
         root_modules: Collection[str],
@@ -335,6 +341,7 @@ class _ModuleLoweringMetadataView:
     entry_override: str | None
     module_is_namespace: bool
     is_package: bool
+    module_execution_kind: ModuleExecutionKind
     path_stat: os.stat_result | None
 
 
@@ -1453,6 +1460,7 @@ class _PreparedEntryModuleGraph:
     spawn_enabled: bool
     runtime_import_support_policy: _RuntimeImportSupportPolicy
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
+    target_python: TargetPythonVersion
 
 
 @dataclass(frozen=True)
