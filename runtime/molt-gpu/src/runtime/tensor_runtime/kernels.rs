@@ -1,10 +1,6 @@
 use super::*;
 
-pub(super) fn parse_shape(
-    _py: &crate::PyToken<'_>,
-    bits: u64,
-    role: &str,
-) -> Result<Vec<usize>, u64> {
+pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<usize>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
@@ -25,7 +21,7 @@ pub(super) fn parse_shape(
         Negative,
     }
     let decoded = unsafe {
-        crate::object::seq_access::with_borrowed(ptr, |dims| {
+        seq_access::with_borrowed(ptr, |dims| {
             let mut out = Vec::with_capacity(dims.len());
             for &dim_bits in dims {
                 let Some(dim) = to_i64(obj_from_bits(dim_bits)) else {
@@ -67,11 +63,7 @@ pub(super) fn strides(shape: &[usize]) -> Vec<usize> {
     out
 }
 
-pub(super) fn validate_permutation(
-    _py: &crate::PyToken<'_>,
-    dims: &[usize],
-    ndim: usize,
-) -> Result<(), u64> {
+pub(super) fn validate_permutation(_py: &PyToken, dims: &[usize], ndim: usize) -> Result<(), u64> {
     if dims.len() != ndim {
         return Err(raise_exception::<_>(
             _py,
@@ -93,12 +85,7 @@ pub(super) fn validate_permutation(
     Ok(())
 }
 
-pub(super) fn apply_binary_op(
-    _py: &crate::PyToken<'_>,
-    op_code: i64,
-    a: f64,
-    b: f64,
-) -> Result<f64, u64> {
+pub(super) fn apply_binary_op(_py: &PyToken, op_code: i64, a: f64, b: f64) -> Result<f64, u64> {
     match op_code {
         0 => Ok(a + b),
         1 => Ok(a - b),

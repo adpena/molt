@@ -8,14 +8,14 @@ and record any 3.13/3.14 divergences in specs/tests.
 
 ## Runtime CPU Kernel Fast-Path Matrix
 
-The hot tensor kernels in `runtime/molt-runtime/src/builtins/gpu.rs` must not
+The hot tensor kernels in `runtime/molt-gpu/src/runtime/` must not
 have silent performance coverage gaps. Current contract:
 
 | Target | Fast path | Scope | Verification |
 | --- | --- | --- | --- |
-| `aarch64` native | NEON direct-store helpers plus scalar unaligned asm loads/stores | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo test -p molt-runtime gpu_ -- --nocapture` plus native workload sample |
-| `x86_64` native | SSE unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-runtime --target x86_64-apple-darwin` or the relevant host target |
-| `wasm32` with `simd128` | `wasm32` SIMD128 unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-runtime --target wasm32-unknown-unknown` with the SIMD-enabled target config used by the lane |
+| `aarch64` native | NEON direct-store helpers plus scalar unaligned asm loads/stores | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo test -p molt-gpu --no-default-features --features cpu-backend,runtime-integration --lib runtime::tensor_runtime::tests::` plus native workload sample |
+| `x86_64` native | SSE unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-gpu --target x86_64-unknown-linux-gnu --no-default-features --features cpu-backend,runtime-integration,webgpu-backend` or the relevant host target |
+| `wasm32` with `simd128` | `wasm32` SIMD128 unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-gpu --target wasm32-unknown-unknown --no-default-features --features wasm-backend,runtime-integration` with the SIMD-enabled target config used by the lane |
 | Other targets | Scalar fallback only | Same semantics, lower throughput | Explicitly treat as a perf gap until a target-specific fast path lands |
 
 Rules:

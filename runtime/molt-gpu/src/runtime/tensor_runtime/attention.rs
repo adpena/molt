@@ -45,7 +45,7 @@ fn hadamard_invert_with_signs(values: &[f32], signs: &[f32]) -> Vec<f32> {
     out
 }
 
-fn decode_float_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<Vec<f32>, u64> {
+fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<Vec<f32>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -62,7 +62,7 @@ fn decode_float_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Resu
         ));
     }
     let decoded = unsafe {
-        crate::object::seq_access::with_borrowed(ptr, |elems| {
+        seq_access::with_borrowed(ptr, |elems| {
             let mut out = Vec::with_capacity(elems.len());
             for &elem_bits in elems {
                 let elem = obj_from_bits(elem_bits);
@@ -87,11 +87,11 @@ fn decode_float_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Resu
     })
 }
 
-fn decode_u64_sequence_bits<'a, 'py>(
-    _py: &'a PyToken<'py>,
+fn decode_u64_sequence_bits(
+    _py: &PyToken,
     bits: u64,
     label: &str,
-) -> Result<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>, u64> {
+) -> Result<seq_access::PinnedSequenceSnapshot, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -107,20 +107,18 @@ fn decode_u64_sequence_bits<'a, 'py>(
             &format!("{label} must be a list or tuple"),
         ));
     }
-    unsafe {
-        crate::object::seq_access::snapshot(_py, ptr, "GPU sequence snapshot allocation failed")
-    }
-    .ok_or_else(|| MoltObject::none().bits())
+    unsafe { seq_access::snapshot(_py, ptr, "GPU sequence snapshot allocation failed") }
+        .ok_or_else(|| MoltObject::none().bits())
 }
 
 fn require_attr_bits(
-    _py: &PyToken<'_>,
+    _py: &PyToken,
     target_bits: u64,
     attr_name_bits: u64,
     attr_name: &str,
 ) -> Result<u64, u64> {
-    let missing = crate::missing_bits(_py);
-    let bits = crate::molt_getattr_builtin(target_bits, attr_name_bits, missing);
+    let missing = missing_bits(_py);
+    let bits = molt_getattr_builtin(target_bits, attr_name_bits, missing);
     if bits == missing {
         return Err(raise_exception::<u64>(
             _py,
@@ -132,7 +130,7 @@ fn require_attr_bits(
 }
 
 fn decode_i64_attr(
-    _py: &PyToken<'_>,
+    _py: &PyToken,
     target_bits: u64,
     attr_name_bits: u64,
     attr_name: &str,
@@ -149,7 +147,7 @@ fn decode_i64_attr(
 }
 
 fn decode_rotation_signs_from_codec(
-    _py: &PyToken<'_>,
+    _py: &PyToken,
     codec_bits: u64,
     rotation_attr_bits: u64,
     signs_attr_bits: u64,
@@ -183,8 +181,8 @@ fn decode_mask_value(
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 fn expand_attention_mask_to_webgpu_bytes(
     mask: &TensorRuntimeView,
@@ -308,7 +306,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -500,10 +498,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                 let grid = if out_elems == 0 {
                     0
                 } else {
-                    u32::try_from(
-                        (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
-                    )
-                    .map_err(|_| {
+                    u32::try_from(out_elems.div_ceil(workgroup_size as usize)).map_err(|_| {
                         raise_exception::<u64>(_py, "OverflowError", "attention grid exceeds u32")
                     })?
                 };
@@ -545,20 +540,20 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                         q.class_bits,
                         q.buffer.class_bits,
                         data_bits,
-                        crate::builtins::classes::builtin_classes(_py).float,
+                        builtin_float(_py),
                         out_elems,
                         format_bits,
                         ScalarFormat::F32.itemsize(),
                         shape_bits,
-                        crate::builtins::classes::builtin_classes(_py).float,
+                        builtin_float(_py),
                     )
                 } {
                     Ok(bits) => bits,
                     Err(bits) => bits,
                 };
-                crate::dec_ref_bits(_py, data_bits);
-                crate::dec_ref_bits(_py, format_bits);
-                crate::dec_ref_bits(_py, shape_bits);
+                dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, format_bits);
+                dec_ref_bits(_py, shape_bits);
                 Ok(tensor_bits)
             })();
             return match browser_result {
@@ -696,15 +691,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         let format_bits = match alloc_string_bits(_py, b"f") {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, data_bits);
                 return bits;
             }
         };
         let shape_bits = match alloc_tuple_bits_from_usize(_py, &[batch, heads, seq_q, value_dim]) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, data_bits);
-                crate::dec_ref_bits(_py, format_bits);
+                dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, format_bits);
                 return bits;
             }
         };
@@ -714,7 +709,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                 q.class_bits,
                 q.buffer.class_bits,
                 data_bits,
-                crate::builtins::classes::builtin_classes(_py).float,
+                builtin_float(_py),
                 out_elems,
                 format_bits,
                 ScalarFormat::F32.itemsize(),
@@ -725,9 +720,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, data_bits);
-        crate::dec_ref_bits(_py, format_bits);
-        crate::dec_ref_bits(_py, shape_bits);
+        dec_ref_bits(_py, data_bits);
+        dec_ref_bits(_py, format_bits);
+        dec_ref_bits(_py, shape_bits);
         tensor_bits
     })
 }
@@ -741,7 +736,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -765,15 +760,15 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
-        #[cfg(not(feature = "molt_gpu_cuda"))]
+        #[cfg(not(feature = "cuda-backend"))]
         if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
-                "cuda gpu backend requested but runtime was built without molt_gpu_cuda",
+                "cuda gpu backend requested but molt-gpu was built without cuda-backend",
             );
         }
-        #[cfg(feature = "molt_gpu_cuda")]
+        #[cfg(feature = "cuda-backend")]
         if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
@@ -781,15 +776,15 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "cuda turboquant attention path is not yet implemented",
             );
         }
-        #[cfg(not(feature = "molt_gpu_hip"))]
+        #[cfg(not(feature = "hip-backend"))]
         if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
-                "hip gpu backend requested but runtime was built without molt_gpu_hip",
+                "hip gpu backend requested but molt-gpu was built without hip-backend",
             );
         }
-        #[cfg(feature = "molt_gpu_hip")]
+        #[cfg(feature = "hip-backend")]
         if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
@@ -798,7 +793,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
-        let missing = crate::missing_bits(_py);
+        let missing = missing_bits(_py);
         let Some(kv_cache_name) = attr_name_bits_from_bytes(_py, b"_kv_cache") else {
             return raise_exception::<_>(
                 _py,
@@ -926,8 +921,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         };
 
-        let k_cache_bits = crate::molt_getattr_builtin(k_bits, kv_cache_name, missing);
-        let v_cache_bits = crate::molt_getattr_builtin(v_bits, kv_cache_name, missing);
+        let k_cache_bits = molt_getattr_builtin(k_bits, kv_cache_name, missing);
+        let v_cache_bits = molt_getattr_builtin(v_bits, kv_cache_name, missing);
         if k_cache_bits == missing || v_cache_bits == missing || k_cache_bits != v_cache_bits {
             return raise_exception::<_>(
                 _py,
@@ -936,8 +931,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
-        let k_role_bits = crate::molt_getattr_builtin(k_bits, role_name, missing);
-        let v_role_bits = crate::molt_getattr_builtin(v_bits, role_name, missing);
+        let k_role_bits = molt_getattr_builtin(k_bits, role_name, missing);
+        let v_role_bits = molt_getattr_builtin(v_bits, role_name, missing);
         let Some(k_role) = string_obj_to_owned(obj_from_bits(k_role_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -960,9 +955,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
         let runtime_mse_signs_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_mse_signs_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_mse_signs_name, missing);
         let runtime_qjl_signs_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_qjl_signs_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_qjl_signs_name, missing);
         let (mse_signs, qjl_signs) =
             if runtime_mse_signs_bits != missing && runtime_qjl_signs_bits != missing {
                 let (mse_signs_tensor, mse_signs_shape) = match unsafe {
@@ -1105,20 +1100,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         };
 
         let runtime_key_mse_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_key_mse_rows_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_key_mse_rows_name, missing);
         let runtime_key_sign_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_key_sign_rows_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_key_sign_rows_name, missing);
         let runtime_key_scale_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_key_scale_rows_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_key_scale_rows_name, missing);
         let runtime_value_bits =
-            crate::molt_getattr_builtin(k_cache_bits, runtime_value_rows_name, missing);
+            molt_getattr_builtin(k_cache_bits, runtime_value_rows_name, missing);
 
         if runtime_key_mse_bits != missing
             && runtime_key_sign_bits != missing
             && runtime_key_scale_bits != missing
             && runtime_value_bits != missing
         {
-            #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
             if requested_gpu_backend() == Some(GpuBackend::WebGpu)
                 && runtime_mse_signs_bits != missing
                 && runtime_qjl_signs_bits != missing
@@ -1129,40 +1124,34 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 let native_webgpu_result: Result<u64, u64> = (|| {
                     let (mse_signs_tensor, mse_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_mse, key_mse_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_mse_bits,
                             "_runtime_key_mse_weight_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_sign, key_sign_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_sign_bits,
                             "_runtime_key_residual_sign_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_scale, key_scale_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_scale_bits,
                             "_runtime_key_residual_scale_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (value_rows, value_rows_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     if mse_signs_shape != vec![dim]
                         || qjl_signs_shape != vec![dim]
                         || key_mse_shape.len() != 4
@@ -1330,16 +1319,15 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let grid = if out_elems == 0 {
                         0
                     } else {
-                        u32::try_from(
-                            (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
-                        )
-                        .map_err(|_| {
-                            raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "turboquant attention grid exceeds u32",
-                            )
-                        })?
+                        u32::try_from(out_elems.div_ceil(workgroup_size as usize)).map_err(
+                            |_| {
+                                raise_exception::<u64>(
+                                    _py,
+                                    "OverflowError",
+                                    "turboquant attention grid exceeds u32",
+                                )
+                            },
+                        )?
                     };
 
                     let device = RuntimeWebGpuDevice::new()
@@ -1395,7 +1383,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ) {
                         Ok(bits) => bits,
                         Err(bits) => {
-                            crate::dec_ref_bits(_py, data_bits);
+                            dec_ref_bits(_py, data_bits);
                             return Err(bits);
                         }
                     };
@@ -1410,9 +1398,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     )?;
                     let rebuilt_ptr = alloc_bytearray(_py, rebuilt.as_slice());
                     if rebuilt_ptr.is_null() {
-                        crate::dec_ref_bits(_py, data_bits);
-                        crate::dec_ref_bits(_py, format_bits);
-                        crate::dec_ref_bits(_py, shape_bits);
+                        dec_ref_bits(_py, data_bits);
+                        dec_ref_bits(_py, format_bits);
+                        dec_ref_bits(_py, shape_bits);
                         return Err(MoltObject::none().bits());
                     }
                     let rebuilt_bits = MoltObject::from_ptr(rebuilt_ptr).bits();
@@ -1422,7 +1410,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             q.class_bits,
                             q.buffer.class_bits,
                             rebuilt_bits,
-                            crate::builtins::classes::builtin_classes(_py).float,
+                            builtin_float(_py),
                             out_elems,
                             format_bits,
                             out_format.itemsize(),
@@ -1433,10 +1421,10 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         Ok(bits) => bits,
                         Err(bits) => bits,
                     };
-                    crate::dec_ref_bits(_py, data_bits);
-                    crate::dec_ref_bits(_py, rebuilt_bits);
-                    crate::dec_ref_bits(_py, format_bits);
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, data_bits);
+                    dec_ref_bits(_py, rebuilt_bits);
+                    dec_ref_bits(_py, format_bits);
+                    dec_ref_bits(_py, shape_bits);
                     Ok(tensor_bits)
                 })();
                 return match native_webgpu_result {
@@ -1445,7 +1433,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 };
             }
 
-            #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+            #[cfg(all(target_os = "macos", feature = "metal-backend"))]
             if requested_gpu_backend() == Some(GpuBackend::Metal)
                 && runtime_mse_signs_bits != missing
                 && runtime_qjl_signs_bits != missing
@@ -1456,40 +1444,34 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 let metal_result: Result<u64, u64> = (|| {
                     let (mse_signs_tensor, mse_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_mse, key_mse_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_mse_bits,
                             "_runtime_key_mse_weight_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_sign, key_sign_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_sign_bits,
                             "_runtime_key_residual_sign_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_scale, key_scale_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_scale_bits,
                             "_runtime_key_residual_scale_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (value_rows, value_rows_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     if mse_signs_shape != vec![dim]
                         || qjl_signs_shape != vec![dim]
                         || key_mse_shape.len() != 4
@@ -1700,7 +1682,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ) {
                         Ok(bits) => bits,
                         Err(bits) => {
-                            crate::dec_ref_bits(_py, data_bits);
+                            dec_ref_bits(_py, data_bits);
                             return Err(bits);
                         }
                     };
@@ -1715,9 +1697,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     )?;
                     let rebuilt_ptr = alloc_bytearray(_py, rebuilt.as_slice());
                     if rebuilt_ptr.is_null() {
-                        crate::dec_ref_bits(_py, data_bits);
-                        crate::dec_ref_bits(_py, format_bits);
-                        crate::dec_ref_bits(_py, shape_bits);
+                        dec_ref_bits(_py, data_bits);
+                        dec_ref_bits(_py, format_bits);
+                        dec_ref_bits(_py, shape_bits);
                         return Err(MoltObject::none().bits());
                     }
                     let rebuilt_bits = MoltObject::from_ptr(rebuilt_ptr).bits();
@@ -1727,7 +1709,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             q.class_bits,
                             q.buffer.class_bits,
                             rebuilt_bits,
-                            crate::builtins::classes::builtin_classes(_py).float,
+                            builtin_float(_py),
                             out_elems,
                             format_bits,
                             out_format.itemsize(),
@@ -1738,10 +1720,10 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         Ok(bits) => bits,
                         Err(bits) => bits,
                     };
-                    crate::dec_ref_bits(_py, data_bits);
-                    crate::dec_ref_bits(_py, rebuilt_bits);
-                    crate::dec_ref_bits(_py, format_bits);
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, data_bits);
+                    dec_ref_bits(_py, rebuilt_bits);
+                    dec_ref_bits(_py, format_bits);
+                    dec_ref_bits(_py, shape_bits);
                     Ok(tensor_bits)
                 })();
                 return match metal_result {
@@ -1758,40 +1740,34 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 let browser_result: Result<u64, u64> = (|| {
                     let (mse_signs_tensor, mse_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_mse, key_mse_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_mse_bits,
                             "_runtime_key_mse_weight_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_sign, key_sign_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_sign_bits,
                             "_runtime_key_residual_sign_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (key_scale, key_scale_shape) = unsafe {
                         tensor_runtime_view(
                             _py,
                             runtime_key_scale_bits,
                             "_runtime_key_residual_scale_rows",
                         )
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     let (value_rows, value_rows_shape) = unsafe {
                         tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
-                    }
-                    .map_err(|bits| bits)?;
+                    }?;
                     if mse_signs_shape != vec![dim]
                         || qjl_signs_shape != vec![dim]
                         || key_mse_shape.len() != 4
@@ -1959,16 +1935,15 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let grid = if out_elems == 0 {
                         0
                     } else {
-                        u32::try_from(
-                            (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
-                        )
-                        .map_err(|_| {
-                            raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "turboquant attention grid exceeds u32",
-                            )
-                        })?
+                        u32::try_from(out_elems.div_ceil(workgroup_size as usize)).map_err(
+                            |_| {
+                                raise_exception::<u64>(
+                                    _py,
+                                    "OverflowError",
+                                    "turboquant attention grid exceeds u32",
+                                )
+                            },
+                        )?
                     };
                     let source = render_webgpu_turboquant_attention_source(
                         "turboquant_attention_packed",
@@ -2005,20 +1980,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             q.class_bits,
                             q.buffer.class_bits,
                             data_bits,
-                            crate::builtins::classes::builtin_classes(_py).float,
+                            builtin_float(_py),
                             out_elems,
                             format_bits,
                             ScalarFormat::F32.itemsize(),
                             shape_bits,
-                            crate::builtins::classes::builtin_classes(_py).float,
+                            builtin_float(_py),
                         )
                     } {
                         Ok(bits) => bits,
                         Err(bits) => bits,
                     };
-                    crate::dec_ref_bits(_py, data_bits);
-                    crate::dec_ref_bits(_py, format_bits);
-                    crate::dec_ref_bits(_py, shape_bits);
+                    dec_ref_bits(_py, data_bits);
+                    dec_ref_bits(_py, format_bits);
+                    dec_ref_bits(_py, shape_bits);
                     Ok(tensor_bits)
                 })();
                 return match browser_result {
@@ -2243,7 +2218,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             ) {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    crate::dec_ref_bits(_py, data_bits);
+                    dec_ref_bits(_py, data_bits);
                     return bits;
                 }
             };
@@ -2251,8 +2226,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 match alloc_tuple_bits_from_usize(_py, &[batch, query_heads, query_seq, dim]) {
                     Ok(bits) => bits,
                     Err(bits) => {
-                        crate::dec_ref_bits(_py, data_bits);
-                        crate::dec_ref_bits(_py, format_bits);
+                        dec_ref_bits(_py, data_bits);
+                        dec_ref_bits(_py, format_bits);
                         return bits;
                     }
                 };
@@ -2262,20 +2237,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     q.class_bits,
                     q.buffer.class_bits,
                     data_bits,
-                    crate::builtins::classes::builtin_classes(_py).float,
+                    builtin_float(_py),
                     out_elems,
                     format_bits,
                     out_format.itemsize(),
                     shape_bits,
-                    crate::builtins::classes::builtin_classes(_py).float,
+                    builtin_float(_py),
                 )
             } {
                 Ok(bits) => bits,
                 Err(bits) => bits,
             };
-            crate::dec_ref_bits(_py, data_bits);
-            crate::dec_ref_bits(_py, format_bits);
-            crate::dec_ref_bits(_py, shape_bits);
+            dec_ref_bits(_py, data_bits);
+            dec_ref_bits(_py, format_bits);
+            dec_ref_bits(_py, shape_bits);
             return tensor_bits;
         }
 
@@ -2593,7 +2568,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         ) {
             Ok(bits) => bits,
             Err(bits) => {
-                crate::dec_ref_bits(_py, data_bits);
+                dec_ref_bits(_py, data_bits);
                 return bits;
             }
         };
@@ -2601,8 +2576,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             match alloc_tuple_bits_from_usize(_py, &[batch, query_heads, query_seq, dim]) {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    crate::dec_ref_bits(_py, data_bits);
-                    crate::dec_ref_bits(_py, format_bits);
+                    dec_ref_bits(_py, data_bits);
+                    dec_ref_bits(_py, format_bits);
                     return bits;
                 }
             };
@@ -2612,20 +2587,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 q.class_bits,
                 q.buffer.class_bits,
                 data_bits,
-                crate::builtins::classes::builtin_classes(_py).float,
+                builtin_float(_py),
                 out_elems,
                 format_bits,
                 out_format.itemsize(),
                 shape_bits,
-                crate::builtins::classes::builtin_classes(_py).float,
+                builtin_float(_py),
             )
         } {
             Ok(bits) => bits,
             Err(bits) => bits,
         };
-        crate::dec_ref_bits(_py, data_bits);
-        crate::dec_ref_bits(_py, format_bits);
-        crate::dec_ref_bits(_py, shape_bits);
+        dec_ref_bits(_py, data_bits);
+        dec_ref_bits(_py, format_bits);
+        dec_ref_bits(_py, shape_bits);
         tensor_bits
     })
 }
