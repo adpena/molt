@@ -112,8 +112,8 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
 
 #[test]
 fn gpu_context_runtime_ops_are_manifest_backed() {
-    let mut ret = wasm_test_op("ret", None, vec!["tid"]);
-    ret.var = Some("tid".to_string());
+    let mut ret = wasm_test_op("ret", None, vec!["context_sum"]);
+    ret.var = Some("context_sum".to_string());
     let func = wasm_test_function(
         "gpu_context_runtime_ops",
         vec![],
@@ -124,6 +124,9 @@ fn gpu_context_runtime_ops_are_manifest_backed() {
             wasm_test_op("gpu_block_dim", Some("bdim"), vec![]),
             wasm_test_op("gpu_grid_dim", Some("gdim"), vec![]),
             wasm_test_op("gpu_barrier", Some("barrier"), vec![]),
+            wasm_test_op("add", Some("thread_block"), vec!["tid", "bid"]),
+            wasm_test_op("add", Some("block_geometry"), vec!["thread_block", "bdim"]),
+            wasm_test_op("add", Some("context_sum"), vec!["block_geometry", "gdim"]),
             ret,
         ],
     );

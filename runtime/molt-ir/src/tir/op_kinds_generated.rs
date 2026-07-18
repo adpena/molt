@@ -181,6 +181,7 @@ pub fn simpleir_kind_is_wasm_split_barrier(kind: &str) -> bool {
             | "async_for_start"
             | "async_for_end"
             | "check_exception"
+            | "async_work_poll"
     )
 }
 
@@ -227,6 +228,7 @@ pub fn simpleir_kind_is_wasm_dispatch_block_terminator(kind: &str) -> bool {
             | "try_start"
             | "try_end"
             | "check_exception"
+            | "async_work_poll"
     )
 }
 
