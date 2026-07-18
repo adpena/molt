@@ -1,5 +1,5 @@
-use super::def_use::{split_ir_defined_names, split_ir_read_names};
 use super::runtime_roots::is_protected_runtime_entrypoint;
+use crate::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,10 +26,10 @@ fn split_live_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
     let mut live_before = vec![BTreeSet::new(); ops.len() + 1];
     live_before[ops.len()] = live.clone();
     for idx in (0..ops.len()).rev() {
-        for name in split_ir_defined_names(&ops[idx]) {
+        for name in simple_ir_defined_names(&ops[idx]) {
             live.remove(&name);
         }
-        for name in split_ir_read_names(&ops[idx]) {
+        for name in simple_ir_read_names(&ops[idx]) {
             live.insert(name);
         }
         live_before[idx] = live.clone();
@@ -79,7 +79,7 @@ fn split_defined_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
     let mut defined_before = vec![BTreeSet::new(); ops.len() + 1];
     defined_before[0] = defined.clone();
     for (idx, op) in ops.iter().enumerate() {
-        for name in split_ir_defined_names(op) {
+        for name in simple_ir_defined_names(op) {
             defined.insert(name);
         }
         defined_before[idx + 1] = defined.clone();
@@ -91,12 +91,12 @@ fn split_suffix_external_reads(ops: &[OpIR]) -> BTreeSet<String> {
     let mut defined = BTreeSet::new();
     let mut external_reads = BTreeSet::new();
     for op in ops {
-        for name in split_ir_read_names(op) {
+        for name in simple_ir_read_names(op) {
             if !defined.contains(&name) {
                 external_reads.insert(name);
             }
         }
-        for name in split_ir_defined_names(op) {
+        for name in simple_ir_defined_names(op) {
             defined.insert(name);
         }
     }
@@ -117,7 +117,7 @@ fn split_available_names_for_suffix_clone(
         .collect();
     available.extend(live_before[start].iter().cloned());
     for op in &ops[start..end] {
-        for name in split_ir_defined_names(op) {
+        for name in simple_ir_defined_names(op) {
             available.insert(name.to_string());
         }
     }
@@ -131,10 +131,10 @@ fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
         .cloned()
         .collect();
     for op in ops {
-        for name in split_ir_read_names(op) {
+        for name in simple_ir_read_names(op) {
             names.insert(name);
         }
-        for name in split_ir_defined_names(op) {
+        for name in simple_ir_defined_names(op) {
             names.insert(name);
         }
     }
@@ -239,7 +239,7 @@ fn split_rewrite_void_terminals_to_status(
 pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), String> {
     let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
     for (idx, op) in func.ops.iter().enumerate() {
-        for name in split_ir_read_names(op) {
+        for name in simple_ir_read_names(op) {
             if !defined.contains(&name) {
                 return Err(format!(
                     "function `{}` op {} `{}` reads `{}` before definition",
@@ -247,7 +247,7 @@ pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), Str
                 ));
             }
         }
-        for name in split_ir_defined_names(op) {
+        for name in simple_ir_defined_names(op) {
             defined.insert(name);
         }
     }

@@ -7,9 +7,9 @@ pub mod tests_roundtrip;
 pub mod verify_lir;
 pub mod verify_lir_repr;
 pub use molt_ir::tir::{
-    blocks, call_targets, cfg, dominators, effect_proof, function, numeric_facts,
-    op_kinds_generated, ops, printer, serialize, ssa, target_info, types, value_range, values,
-    verify,
+    blocks, call_targets, cfg, cfg_liveness, dominators, effect_proof, function, numeric_facts,
+    op_kinds_generated, ops, printer, serialize, simple_def_use, ssa, target_info, types,
+    value_range, values, verify,
 };
 pub use molt_passes::tir::{
     analysis, bolt, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,
