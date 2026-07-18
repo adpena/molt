@@ -261,6 +261,7 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
             "type_hint_policy": "ignore",
             "fallback_policy": "error",
             "module_is_namespace": False,
+            "module_execution_kind": "imported",
             "entry_module": None,
             "enable_phi": True,
             "known_modules": ["slow_module"],

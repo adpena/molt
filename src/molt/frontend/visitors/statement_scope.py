@@ -715,8 +715,8 @@ class StatementScopeVisitorMixin(_MixinBase):
                     return None
                 else:
                     runtime_relative = True
-                if runtime_relative:
-                    module_name = node.module or ""
+            if runtime_relative:
+                module_name = node.module or ""
         else:
             transaction_level = 0
         if module_name is None:
