@@ -64,6 +64,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install receipt toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
+
       - name: Configure verified ephemeral custody
         shell: pwsh
         run: |

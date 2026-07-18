@@ -216,6 +216,13 @@ class ProofPlan:
                 errors.append(
                     f"{policy.name}: content_path_command must be a non-empty string list"
                 )
+            fingerprint_domain = policy.data.get("fingerprint_domain")
+            if fingerprint_domain is not None and (
+                not isinstance(fingerprint_domain, str) or not fingerprint_domain
+            ):
+                errors.append(
+                    f"{policy.name}: fingerprint_domain must be a non-empty string"
+                )
             pattern = policy.data.get("version_pattern")
             if not isinstance(pattern, str) or not pattern:
                 errors.append(f"{policy.name}: version_pattern must be non-empty")
@@ -415,6 +422,17 @@ class ProofPlan:
                 elif not set(tiers).issubset(set(family.data["tiers"])):
                     errors.append(f"{command.id}: command tiers escape family tiers")
             if isinstance(argv, list) and all(isinstance(part, str) for part in argv):
+                for part in argv:
+                    candidate = part.split("::", 1)[0]
+                    if (
+                        candidate.startswith(
+                            ("examples/", "formal/", "src/", "tests/", "tools/")
+                        )
+                        and not (ROOT / candidate).exists()
+                    ):
+                        errors.append(
+                            f"{command.id}: repository input does not exist: {candidate!r}"
+                        )
                 shape = (
                     command.family,
                     tuple(argv),
@@ -895,17 +913,33 @@ def toolchain_fingerprints(
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     fingerprints: dict[str, dict[str, str]] = {}
     errors: list[str] = []
-    worker_count = min(4, len(names))
-    if worker_count == 0:
-        return fingerprints
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            name: executor.submit(_version_fingerprint, policies[name])
-            for name in names
-        }
+    domains: dict[str, list[str]] = {}
     for name in names:
         policy = policies[name]
-        fingerprint = futures[name].result()
+        domain = str(policy.data.get("fingerprint_domain", f"toolchain:{name}"))
+        domains.setdefault(domain, []).append(name)
+    worker_count = min(4, len(domains))
+    if worker_count == 0:
+        return fingerprints
+
+    def fingerprint_domain(
+        domain_names: list[str],
+    ) -> dict[str, dict[str, str] | None]:
+        # Launchers in one provisioning domain can share mutable install state
+        # (notably rustup). Probe that domain serially while independent
+        # toolchains retain bounded parallelism.
+        return {name: _version_fingerprint(policies[name]) for name in domain_names}
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            domain: executor.submit(fingerprint_domain, domain_names)
+            for domain, domain_names in domains.items()
+        }
+    domain_results = {domain: future.result() for domain, future in futures.items()}
+    for name in names:
+        policy = policies[name]
+        domain = str(policy.data.get("fingerprint_domain", f"toolchain:{name}"))
+        fingerprint = domain_results[domain][name]
         if fingerprint is None:
             errors.append(f"{name}: executable {policy.data['executable']!r} not found")
             continue
