@@ -37,8 +37,6 @@ def _plan(
     for path in (output_obj, stub_path, runtime_lib):
         path.write_bytes(b"x")
 
-    monkeypatch.setattr(native_link_command.sys, "platform", host_platform)
-    monkeypatch.setattr(native_link_command.platform, "machine", lambda: host_arch)
     fake_driver = tmp_path / "clang.exe"
     fake_driver.write_bytes(b"clang")
     monkeypatch.setenv("CC", cc.replace("clang", str(fake_driver), 1))
@@ -69,6 +67,8 @@ def _plan(
         source_root=tmp_path,
         source_fingerprint={},
         bolt_requested=bolt_requested,
+        host_platform=host_platform,
+        host_arch=host_arch,
     )
 
 
@@ -119,17 +119,17 @@ def test_explicit_driver_linker_selection_gets_matching_capability_policy(
 def test_fast_linker_auto_detection_does_not_leak_across_target_formats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_link_command.sys, "platform", "darwin")
     monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)
     monkeypatch.setattr(
         native_link_command,
         "_resolve_available_fast_linker",
-        lambda *_args: "mold",
+        lambda *_args, **_kwargs: "mold",
     )
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
             target_triple=None,
+            host_platform="darwin",
         )
         is None
     )
@@ -138,17 +138,17 @@ def test_fast_linker_auto_detection_does_not_leak_across_target_formats(
 def test_windows_native_link_selects_available_lld_explicitly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_link_command.sys, "platform", "win32")
     monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)
     monkeypatch.setattr(
         native_link_command,
         "_resolve_available_fast_linker",
-        lambda *_args: "lld",
+        lambda *_args, **_kwargs: "lld",
     )
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
             target_triple=None,
+            host_platform="win32",
         )
         == "lld"
     )
@@ -156,6 +156,7 @@ def test_windows_native_link_selects_available_lld_explicitly(
         native_link_command._resolve_native_linker_hint(
             profile="release",
             target_triple=None,
+            host_platform="win32",
         )
         == "lld"
     )
@@ -167,7 +168,6 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
     managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
     clang = _managed_tool(managed_bin, "clang")
     _managed_tool(managed_bin, "lld-link")
-    monkeypatch.setattr(native_link_command.sys, "platform", "win32")
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
     monkeypatch.delenv("CC", raising=False)
     monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)
@@ -178,6 +178,8 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
             target_triple=None,
             sysroot_path=None,
             profile="dev",
+            host_platform="win32",
+            host_arch="AMD64",
         )
     )
 
@@ -227,13 +229,13 @@ def test_coff_librarian_prefers_managed_llvm_lib(
 def test_explicit_mold_non_elf_selection_fails_before_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_link_command.sys, "platform", "darwin")
     monkeypatch.setenv("MOLT_DEV_LINKER", "mold")
 
     with pytest.raises(RuntimeError, match="Linux ELF"):
         native_link_command._resolve_native_linker_hint(
             profile="dev",
             target_triple=None,
+            host_platform="darwin",
         )
 
 
