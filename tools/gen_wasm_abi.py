@@ -14,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 from wasm_abi_gen.manifest import (
     CONTAINER_RUNTIME_SELECTOR_FACTS,
     CONTAINER_RUNTIME_SELECTOR_OPS,
@@ -170,7 +172,9 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
     return {name: formatted[name] for name in modules}
 
 
-def _materialize_rustfmt_modules(root: Path, modules: dict[str, str]) -> dict[str, Path]:
+def _materialize_rustfmt_modules(
+    root: Path, modules: dict[str, str]
+) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for name, source in modules.items():
         path = root / name
@@ -2505,7 +2509,9 @@ def render_py(data: dict) -> str:
     for name, primitive_class in external_native_link_imports.items():
         lines.append(f'    "{name}": "{primitive_class}",\n')
     lines.append("}\n\n")
-    lines.append("WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {\n")
+    lines.append(
+        "WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {\n"
+    )
     cpython_abi_split_import_by_export: dict[str, str] = {}
     for name, primitive_class in sorted(external_native_link_imports.items()):
         if primitive_class != CPYTHON_ABI_LINK_IMPORT_CLASS:
@@ -2644,7 +2650,7 @@ def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
         return False
-    if path.read_text(encoding="utf-8") != rendered:
+    if not generated_file_matches(path, rendered):
         print(
             f"STALE generated file: {path}\n"
             "  run `python tools/gen_wasm_abi.py` to regenerate.",
@@ -2714,13 +2720,9 @@ def _write_rs_modules(rendered_modules: dict[str, str]) -> None:
 
 
 def _write_if_changed(path: Path, rendered: str) -> None:
-    try:
-        if path.read_text(encoding="utf-8") == rendered:
-            return
-    except FileNotFoundError:
-        pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8", newline="\n")
+    if generated_file_matches(path, rendered):
+        return
+    write_generated_text(path, rendered)
 
 
 def main(argv: list[str]) -> int:

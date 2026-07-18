@@ -10,8 +10,9 @@ import json
 from pathlib import Path
 import re
 import sys
-import tempfile
 import tomllib
+
+from generator_io import generated_file_matches, write_generated_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,16 +214,6 @@ def validate_consumers(
     return total, dict(sorted(used.items()))
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", newline="\n", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(text)
-        temporary = Path(handle.name)
-    temporary.replace(path)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
@@ -231,12 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     validate_consumers(diagnostics)
     expected = render(diagnostics)
     if args.check:
-        actual = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
-        if actual != expected:
+        if not generated_file_matches(OUTPUT, expected):
             print(f"stale generated frontend diagnostics: {OUTPUT}", file=sys.stderr)
             return 1
         return 0
-    _write_atomic(OUTPUT, expected)
+    write_generated_text(OUTPUT, expected)
     return 0
 
 

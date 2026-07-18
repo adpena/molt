@@ -20,11 +20,17 @@ CI : python3 tools/check_generator_manifest.py --check  (the same gate)
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
+import shlex
+import subprocess
 import sys
 from pathlib import Path
+import time
 
 import pytest
+
+from tools.generator_io import generated_file_matches, write_generated_text
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "check_generator_manifest.py"
@@ -57,6 +63,37 @@ def test_manifest_loads_and_self_validates():
     assert not missing, f"generators on disk but not in the manifest: {sorted(missing)}"
 
 
+def test_generated_io_is_checkout_newline_invariant(tmp_path: Path) -> None:
+    output = tmp_path / "generated.py"
+    output.write_bytes(b"first\r\nsecond\r\n")
+
+    assert generated_file_matches(output, "first\nsecond\n")
+
+    write_generated_text(output, "first\r\nsecond\r\n")
+    assert output.read_bytes() == b"first\nsecond\n"
+
+
+def test_manifest_text_generators_share_canonical_output_io() -> None:
+    """Every generated authority is textual and must use the one newline policy."""
+    manifest = CGM.load_manifest(ROOT)
+    violations: list[str] = []
+    for generator in manifest.generators:
+        tool = str(generator["tool"])
+        source_authority = str(generator.get("source", ""))
+        implementation = (ROOT / tool).read_text(encoding="utf-8")
+        missing = [
+            symbol
+            for symbol in ("generated_file_matches", "write_generated_text")
+            if symbol not in implementation
+        ]
+        if "tools/generator_io.py" not in source_authority:
+            missing.append("manifest source authority")
+        if missing:
+            violations.append(f"{tool}: missing {', '.join(missing)}")
+
+    assert violations == []
+
+
 def test_live_gate_has_no_gating_violations():
     """The whole meta-gate is green on the live tree (the CI --check contract)."""
     _violations, summary, gating = CGM.run_all(ROOT)
@@ -67,6 +104,73 @@ def test_live_gate_has_no_gating_violations():
     assert summary["by_kind"]["orphan"] == 0
     assert summary["by_kind"]["ungated"] == 0
     assert summary["regressions"] == 0
+
+
+def test_generator_family_parallel_checks_preserve_source_state() -> None:
+    """The repository-policy fanout must remain source-pure at peak concurrency."""
+    manifest = CGM.load_manifest(ROOT)
+    generators = [
+        generator
+        for generator in manifest.generators
+        if generator.get("check_mode", False) and generator.get("ci_checkable", True)
+    ]
+    assert len(generators) >= 16
+    baseline = subprocess.check_output(
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+        cwd=ROOT,
+    )
+
+    def run_check(generator: dict[str, object]) -> tuple[str, int, str]:
+        command = str(generator["check_command"])
+        completed = subprocess.run(
+            [sys.executable, *shlex.split(command, posix=True)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=180,
+        )
+        return command, completed.returncode, completed.stdout + completed.stderr
+
+    transient_states: list[bytes] = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(run_check, generator) for generator in generators]
+        while not all(future.done() for future in futures):
+            current = subprocess.check_output(
+                [
+                    "git",
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignore-submodules=none",
+                ],
+                cwd=ROOT,
+            )
+            if current != baseline:
+                transient_states.append(current)
+            time.sleep(0.01)
+        results = [future.result() for future in futures]
+
+    failures = [
+        f"{tool}: rc={returncode}\n{output}"
+        for tool, returncode, output in results
+        if returncode != 0
+    ]
+    assert failures == []
+    assert transient_states == [], (
+        "parallel generator checks transiently changed source state:\n"
+        + "\n".join(repr(state) for state in transient_states[:5])
+    )
 
 
 def test_closed_domains_parse_to_live_enums():
@@ -298,12 +402,13 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
     # command; workflows retain executor mechanics only.
     proof_lines = ['schema = "synthetic"']
     command_ids = {
-        g["tool"]: f"generator-{index}"
-        for index, g in enumerate(manifest.generators)
+        g["tool"]: f"generator-{index}" for index, g in enumerate(manifest.generators)
     }
     for g in manifest.generators:
         if g.get("ci_checkable", True) and not g.get("discovery_only", False):
-            dependencies = [command_ids[tool] for tool in g.get("upstream_generators", [])]
+            dependencies = [
+                command_ids[tool] for tool in g.get("upstream_generators", [])
+            ]
             proof_lines.extend(
                 (
                     "[[command]]",

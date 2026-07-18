@@ -14,6 +14,8 @@ import re
 import sys
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STUB_PATH = REPO_ROOT / "runtime/molt-runtime-core/src/bridge_test_stubs.rs"
@@ -134,14 +136,13 @@ def main(argv: list[str] | None = None) -> int:
     expected = rendered_stub(expected_symbols)
 
     if args.fix:
-        STUB_PATH.write_text(expected, encoding="utf-8")
+        write_generated_text(STUB_PATH, expected)
         print(
             f"wrote {STUB_PATH.relative_to(REPO_ROOT)} ({len(expected_symbols)} symbols)"
         )
         return 0
 
-    actual = STUB_PATH.read_text(encoding="utf-8") if STUB_PATH.exists() else ""
-    if actual == expected:
+    if generated_file_matches(STUB_PATH, expected):
         print(
             f"runtime bridge test stubs are in sync ({len(expected_symbols)} symbols)"
         )

@@ -16,6 +16,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
@@ -38,9 +40,7 @@ _OP_KIND_TABLE = tomllib.loads(
 
 
 def _kind_set(*keys: str) -> frozenset[str]:
-    return frozenset(
-        kind for key in keys for kind in _OP_KIND_TABLE.get(key, [])
-    )
+    return frozenset(kind for key in keys for kind in _OP_KIND_TABLE.get(key, []))
 
 
 _PRE_SOURCE_NOT_ADMITTED = _kind_set(
@@ -79,6 +79,7 @@ for _table in ("simpleir_control_kind", "frontend_effect_kind"):
     )
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
+
 
 @dataclass(frozen=True)
 class Row:
@@ -428,17 +429,11 @@ def main(argv: list[str] | None = None) -> int:
 
     output = build_output(args.source)
     if args.write:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(output, encoding="utf-8")
+        write_generated_text(args.output, output)
         print(f"wrote {args.output}")
         return 0
     if args.check:
-        try:
-            current = args.output.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            print(f"missing generated file: {args.output}", file=sys.stderr)
-            return 1
-        if current != output:
+        if not generated_file_matches(args.output, output):
             print(
                 f"generated Luau support matrix is stale: {args.output}",
                 file=sys.stderr,

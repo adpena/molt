@@ -58,6 +58,14 @@ unsafe extern "C" {
 def _point_tool_at(tool: ModuleType, monkeypatch, root: Path, stub: Path) -> None:
     monkeypatch.setattr(tool, "REPO_ROOT", root)
     monkeypatch.setattr(tool, "STUB_PATH", stub)
+    monkeypatch.setattr(
+        tool,
+        "bridge_sources",
+        lambda: [
+            root / "runtime/molt-runtime-core/src/lib.rs",
+            root / "runtime/molt-runtime-compression/src/bridge.rs",
+        ],
+    )
 
 
 def test_parser_covers_core_plain_and_unsafe_externs(monkeypatch, tmp_path):

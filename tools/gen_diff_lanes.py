@@ -17,6 +17,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 COVERAGE_INDEX = ROOT / "tests" / "differential" / "COVERAGE_INDEX.yaml"
 CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
@@ -105,11 +107,7 @@ def _check(rendered: dict[Path, str]) -> bool:
     ok = True
     for path, text in rendered.items():
         rel = path.relative_to(ROOT)
-        if not path.exists():
-            print(f"MISSING generated file: {rel}", file=sys.stderr)
-            ok = False
-            continue
-        if path.read_text(encoding="utf-8") != text:
+        if not generated_file_matches(path, text):
             print(
                 f"STALE generated file: {rel}\n"
                 "  run `python3 tools/gen_diff_lanes.py` to regenerate",
@@ -137,8 +135,7 @@ def main() -> int:
         return 1
 
     for path, text in rendered.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        write_generated_text(path, text)
         # Test lines are the non-comment, non-blank lines of the manifest body.
         n_tests = sum(
             1 for line in text.splitlines() if line and not line.startswith("#")

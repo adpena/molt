@@ -1,0 +1,9 @@
+schema = "molt.ci-resource-policy.v1"
+
+[cargo_build]
+max_jobs = 4
+measured_peak_rss_bytes = 2347479040
+headroom_ratio = 0.40
+measurement_run_id = 29646901351
+measurement_commit = "4002a0956af24736d39bc6b077045a1c278f0adc"
+measurement_command = "python3 tools/run_cargo_test_truth.py"

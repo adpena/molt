@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "runtime/molt-stdlib-text/src/codec_registry.rs"
 ENCODINGS = ROOT / "src/molt/stdlib/encodings"
@@ -513,14 +515,12 @@ def main() -> int:
     )
     if args.check:
         for path, rendered in outputs:
-            try:
-                current = path.read_text(encoding="utf-8")
-            except FileNotFoundError:
+            if not path.exists():
                 print(
                     f"missing generated file: {path.relative_to(ROOT)}", file=sys.stderr
                 )
                 return 1
-            if current != rendered:
+            if not generated_file_matches(path, rendered):
                 print(
                     f"stale generated file: {path.relative_to(ROOT)}\n"
                     "  run `python tools/gen_codecs.py` to regenerate.",
@@ -530,7 +530,7 @@ def main() -> int:
         return 0
 
     for path, rendered in outputs:
-        path.write_text(rendered, encoding="utf-8")
+        write_generated_text(path, rendered)
         print(f"generated {path.relative_to(ROOT)}")
     return 0
 

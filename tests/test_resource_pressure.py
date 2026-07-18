@@ -47,6 +47,8 @@ def test_resource_pressure_json_contract_scales_dev_policies() -> None:
     assert payload["schema"] == resource_pressure.SCHEMA_VERSION
     assert plan.pressure_level == "low"
     assert plan.cargo_build_jobs == 4
+    assert payload["cargo"]["memory_source"] == "declared"
+    assert payload["cargo"]["measured_peak_rss_bytes"] is None
     assert plan.compile_max_slots == 2
     assert plan.diff_scheduler_per_job_gb == pytest.approx(7.1392)
     assert plan.diff_max_jobs == 12

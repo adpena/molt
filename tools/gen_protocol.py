@@ -73,6 +73,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -802,8 +804,7 @@ def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
         return False
-    current = path.read_text(encoding="utf-8")
-    if current != rendered:
+    if not generated_file_matches(path, rendered):
         print(
             f"STALE generated file: {path.relative_to(ROOT)}\n"
             "  run `python3 tools/gen_protocol.py` to regenerate from the "
@@ -834,7 +835,7 @@ def main(argv: list[str]) -> int:
         return 0 if ok else 1
 
     for path, text in rendered.items():
-        path.write_text(text, encoding="utf-8", newline="\n")
+        write_generated_text(path, text)
         print(f"wrote {path.relative_to(ROOT)}")
     return 0
 

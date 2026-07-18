@@ -23,6 +23,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TOML = ROOT / "src/molt/target_feature_manifest.toml"
 OUT_PY = ROOT / "src/molt/_target_feature_manifest.py"
@@ -463,10 +465,7 @@ def _unsupported_reason(
             "makes the target profile invalid."
         )
     if support == "excluded":
-        return (
-            f"{feature_id} is excluded from {target_id}; use fallback "
-            f"{fallback}."
-        )
+        return f"{feature_id} is excluded from {target_id}; use fallback {fallback}."
     return (
         f"{feature_id} for {target_id} requires {gate}; use fallback "
         f"{fallback} when the gate is not proven."
@@ -501,17 +500,11 @@ def _validate_feature_contracts(features: list[dict[str, Any]]) -> None:
             )
     if by_id["webgpu.api"]["browser_probe"]["kind"] != "webgpu_api":
         raise TargetFeatureManifestError("webgpu.api must own the WebGPU API probe")
-    if (
-        by_id["webgpu.f16"]["browser_probe"].get("adapter_feature")
-        != "shader-f16"
-    ):
+    if by_id["webgpu.f16"]["browser_probe"].get("adapter_feature") != "shader-f16":
         raise TargetFeatureManifestError(
             "webgpu.f16 must own the shader-f16 adapter probe"
         )
-    if (
-        by_id["webgpu.subgroups"]["browser_probe"].get("adapter_feature")
-        != "subgroups"
-    ):
+    if by_id["webgpu.subgroups"]["browser_probe"].get("adapter_feature") != "subgroups":
         raise TargetFeatureManifestError(
             "webgpu.subgroups must own the subgroups adapter probe"
         )
@@ -522,7 +515,10 @@ def _validate_feature_contracts(features: list[dict[str, Any]]) -> None:
         raise TargetFeatureManifestError(
             "webgpu.timestamp_queries must own the timestamp-query adapter probe"
         )
-    if by_id["webgpu.timestamp_queries"]["browser_probe"].get("observability") is not True:
+    if (
+        by_id["webgpu.timestamp_queries"]["browser_probe"].get("observability")
+        is not True
+    ):
         raise TargetFeatureManifestError(
             "webgpu.timestamp_queries must be marked observability-only"
         )
@@ -806,8 +802,7 @@ def _check_output(path: Path, expected: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path.relative_to(ROOT)}", file=sys.stderr)
         return False
-    current = path.read_text(encoding="utf-8")
-    if current != expected:
+    if not generated_file_matches(path, expected):
         print(
             f"STALE generated file: {path.relative_to(ROOT)}\n"
             "  run `python3 tools/gen_target_feature_manifest.py`",
@@ -845,9 +840,9 @@ def main(argv: list[str]) -> int:
             print("target feature manifest: in sync")
         return 0 if ok else 1
 
-    OUT_PY.write_text(py_text, encoding="utf-8", newline="\n")
-    OUT_JSON.write_text(json_text, encoding="utf-8", newline="\n")
-    OUT_JS.write_text(js_text, encoding="utf-8", newline="\n")
+    write_generated_text(OUT_PY, py_text)
+    write_generated_text(OUT_JSON, json_text)
+    write_generated_text(OUT_JS, js_text)
     print(f"wrote {OUT_PY.relative_to(ROOT)}")
     print(f"wrote {OUT_JSON.relative_to(ROOT)}")
     print(f"wrote {OUT_JS.relative_to(ROOT)}")

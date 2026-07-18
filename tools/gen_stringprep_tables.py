@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "runtime/molt-runtime-stringprep/src/tables.rs"
 
@@ -154,8 +156,8 @@ def main() -> int:
 
     rendered = _rustfmt_text(render())
     if args.check:
-        current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
-        if current != rendered:
+        if not generated_file_matches(OUT, rendered):
+            current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
             diff = difflib.unified_diff(
                 current.splitlines(keepends=True),
                 rendered.splitlines(keepends=True),
@@ -166,7 +168,7 @@ def main() -> int:
             return 1
         print("stringprep tables: in sync")
         return 0
-    OUT.write_text(rendered, encoding="utf-8")
+    write_generated_text(OUT, rendered)
     print(f"wrote {OUT}")
     return 0
 
