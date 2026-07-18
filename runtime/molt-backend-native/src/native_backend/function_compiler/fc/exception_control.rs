@@ -25,6 +25,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     entry_block: Block,
     loop_depth: i32,
     label_blocks: &BTreeMap<i64, Block>,
+    label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
+    cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
     rc_authority: NativeRcAuthority,
@@ -35,6 +37,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
+    slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -42,8 +45,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     tracked_obj_vars_set: &mut std::collections::HashSet<String>,
     tracked_vars_set: &mut std::collections::HashSet<String>,
     last_use: &BTreeMap<String, usize>,
-    first_defined_at: &BTreeMap<String, usize>,
-    slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     alias_roots: &BTreeMap<String, String>,
     already_decrefed: &mut BTreeSet<String>,
     entry_vars: &mut BTreeMap<String, Value>,
@@ -287,22 +288,23 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 }
             }
             let fallthrough = builder.create_block();
-            // Snapshot every non-slot live value in the dominating block before
-            // the split, then restore FunctionBuilder's variable map in the
-            // sole-predecessor fallthrough. Without the rebind, a later use_var
-            // asks Cranelift to synthesize a definition for the sealed block and
-            // silently receives the variable's zero initializer. Dominating SSA
-            // values need no block parameter, branch argument, load, or store.
-            let live_fallthrough_vars =
-                live_rebind_vars_for_op(vars, last_use, first_defined_at, op_idx);
-            let mut fallthrough_transport = Vec::with_capacity(live_fallthrough_vars.len());
-            for (name, var) in live_fallthrough_vars {
-                if scrubbed_names.contains(&name) || slot_backed_join_slots.contains_key(&name) {
-                    continue;
-                }
-                let value = builder.use_var(var);
-                fallthrough_transport.push((name, var, value));
-            }
+            let fallthrough_transport = if op_idx + 1 < cfg_liveness.live_after_op.len() {
+                let block_id = cfg_liveness.block_for_op(op_idx + 1);
+                BlockTransportPlan::from_live_names(
+                    &cfg_liveness.live_in_by_block[block_id],
+                    vars,
+                    representation_plan,
+                    slot_backed_join_slots,
+                )
+            } else {
+                BlockTransportPlan::from_live_names(
+                    &BTreeSet::new(),
+                    vars,
+                    representation_plan,
+                    slot_backed_join_slots,
+                )
+            };
+            fallthrough_transport.append_block_params(&mut *builder, fallthrough);
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
             let (pending_observer, pending_flag_slot) = if op.kind == "async_work_poll" {
@@ -322,7 +324,19 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 pending_observer,
                 pending_flag_slot,
             );
-            brif_block(&mut *builder, cond, target_block, &[], fallthrough, &[]);
+            let target_args = label_transport_plans
+                .get(&target_id)
+                .map(|plan| plan.edge_args(&mut *builder))
+                .unwrap_or_default();
+            let fallthrough_args = fallthrough_transport.edge_args(&mut *builder);
+            brif_block(
+                &mut *builder,
+                cond,
+                target_block,
+                &target_args,
+                fallthrough,
+                &fallthrough_args,
+            );
             // The fallthrough block is always fresh and has its only
             // predecessor emitted here. Seal it immediately so later
             // `use_var` calls in the fallthrough block cannot
@@ -331,10 +345,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             // functions; exception labels are separate target blocks.
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
-            switch_to_block_with_rebind(&mut *builder, fallthrough, &mut *is_block_filled, true);
-            for (_, var, value) in fallthrough_transport {
-                builder.def_var(var, value);
-            }
+            crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
+            fallthrough_transport.bind_block_params(&mut *builder, fallthrough);
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

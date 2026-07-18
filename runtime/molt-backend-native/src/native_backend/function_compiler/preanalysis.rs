@@ -7,6 +7,8 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     pub(in crate::native_backend::function_compiler) has_store: bool,
     pub(in crate::native_backend::function_compiler) var_names: Vec<String>,
     pub(in crate::native_backend::function_compiler) last_use: BTreeMap<String, usize>,
+    pub(in crate::native_backend::function_compiler) cfg_liveness:
+        crate::tir::cfg_liveness::SimpleCfgLiveness,
     pub(in crate::native_backend::function_compiler) alias_roots: BTreeMap<String, String>,
     pub(in crate::native_backend::function_compiler) if_to_end_if: BTreeMap<usize, usize>,
     pub(in crate::native_backend::function_compiler) if_to_else: BTreeMap<usize, usize>,
@@ -1098,6 +1100,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     }
 
     let scalar_slot_exclusion_unsafe = representation_plan.scalar_slot_exclusion_unsafe();
+    let cfg_liveness = crate::tir::cfg_liveness::analyze_simple_cfg_liveness(&func_ir.ops);
 
     FunctionPreanalysis {
         has_ret,
@@ -1105,6 +1108,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         has_store,
         var_names,
         last_use,
+        cfg_liveness,
         alias_roots,
         if_to_end_if,
         if_to_else,

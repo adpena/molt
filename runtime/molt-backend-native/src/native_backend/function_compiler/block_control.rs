@@ -1,5 +1,156 @@
 use super::*;
 
+/// Deterministic typed transport for values live into a semantic TIR block.
+///
+/// Stack/frame-backed names already have explicit memory custody and are not
+/// duplicated here. Every remaining name receives one Cranelift block param,
+/// and every semantic predecessor must emit the matching argument vector.
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Debug)]
+pub(in crate::native_backend::function_compiler) struct BlockTransportPlan {
+    names: Vec<String>,
+    vars: Vec<Variable>,
+    types: Vec<cranelift_codegen::ir::Type>,
+}
+
+#[cfg(feature = "native-backend")]
+impl BlockTransportPlan {
+    #[cfg(test)]
+    pub(in crate::native_backend::function_compiler) fn for_test(
+        names: Vec<String>,
+        vars: Vec<Variable>,
+        types: Vec<cranelift_codegen::ir::Type>,
+    ) -> Self {
+        Self { names, vars, types }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn from_live_names(
+        live_names: &BTreeSet<String>,
+        vars: &BTreeMap<String, Variable>,
+        representation_plan: &ScalarRepresentationPlan,
+        slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+    ) -> Self {
+        let mut names = Vec::new();
+        let mut plan_vars = Vec::new();
+        let mut types = Vec::new();
+        for name in live_names {
+            if name == "none" || slot_backed_join_slots.contains_key(name) {
+                continue;
+            }
+            let Some(&var) = vars.get(name) else {
+                continue;
+            };
+            names.push(name.clone());
+            plan_vars.push(var);
+            types.push(if representation_plan.is_float_unboxed(name) {
+                types::F64
+            } else {
+                types::I64
+            });
+        }
+        Self {
+            names,
+            vars: plan_vars,
+            types,
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn append_block_params(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+    ) {
+        for &ty in &self.types {
+            builder.append_block_param(block, ty);
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn edge_args(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+    ) -> Vec<Value> {
+        self.vars.iter().map(|&var| builder.use_var(var)).collect()
+    }
+
+    pub(in crate::native_backend::function_compiler) fn bind_block_params(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+    ) {
+        let params = builder.block_params(block).to_vec();
+        assert_eq!(
+            params.len(),
+            self.names.len(),
+            "semantic transport block parameter arity drift"
+        );
+        for (&var, param) in self.vars.iter().zip(params) {
+            builder.def_var(var, param);
+        }
+    }
+}
+
+/// Zero-runtime-cost preservation of unrelated SSA values across a backend
+/// mini-CFG emitted while lowering one SimpleIR operation.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct OpLiveThroughSnapshot {
+    origin_block: Option<Block>,
+    vars: Vec<Variable>,
+    values: Vec<Value>,
+}
+
+#[cfg(feature = "native-backend")]
+impl OpLiveThroughSnapshot {
+    pub(in crate::native_backend::function_compiler) fn empty() -> Self {
+        Self {
+            origin_block: None,
+            vars: Vec::new(),
+            values: Vec::new(),
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn capture(
+        builder: &mut FunctionBuilder<'_>,
+        live_after: &BTreeSet<String>,
+        defined_by_op: &[String],
+        vars: &BTreeMap<String, Variable>,
+        slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+    ) -> Self {
+        let defined: BTreeSet<&str> = defined_by_op.iter().map(String::as_str).collect();
+        let mut snapshot_vars = Vec::new();
+        let mut values = Vec::new();
+        for name in live_after {
+            if name == "none"
+                || defined.contains(name.as_str())
+                || slot_backed_join_slots.contains_key(name)
+            {
+                continue;
+            }
+            let Some(&var) = vars.get(name) else {
+                continue;
+            };
+            snapshot_vars.push(var);
+            values.push(builder.use_var(var));
+        }
+        Self {
+            origin_block: builder.current_block(),
+            vars: snapshot_vars,
+            values,
+        }
+    }
+
+    pub(in crate::native_backend::function_compiler) fn rebind(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+    ) {
+        if builder.current_block() == self.origin_block {
+            return;
+        }
+        for (&var, &value) in self.vars.iter().zip(&self.values) {
+            builder.def_var(var, value);
+        }
+    }
+}
+
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_names(
     ops: &[OpIR],
@@ -120,46 +271,11 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn live_rebind_vars_for_op(
-    vars: &BTreeMap<String, Variable>,
-    transport_last_use: &BTreeMap<String, usize>,
-    first_defined_at: &BTreeMap<String, usize>,
-    op_idx: usize,
-) -> BTreeMap<String, Variable> {
-    vars.iter()
-        .filter_map(|(name, var)| {
-            let last = transport_last_use.get(name).copied()?;
-            let has_reaching_def = first_defined_at
-                .get(name)
-                .copied()
-                .is_some_and(|first| first <= op_idx);
-            (has_reaching_def && last > op_idx).then_some((name.clone(), *var))
-        })
-        .collect()
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn switch_to_block_with_rebind(
-    builder: &mut FunctionBuilder,
-    block: Block,
-    is_block_filled: &mut bool,
-    _has_exception_labels: bool,
-) {
-    crate::switch_to_block_tracking(builder, block, is_block_filled);
-    // Do not synthesize implicit SSA transport here.
-    //
-    // Cranelift materializes missing `use_var` state at a block switch by
-    // appending block params. That is only correct when the predecessor edges
-    // explicitly transport those values. Merge payloads and exception
-    // fallthrough state must therefore be modeled by real block params or
-    // slot-backed joins at the call site, not by opportunistic rebinding here.
-}
-
-#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn materialize_label_block(
     builder: &mut FunctionBuilder,
     block: Block,
     is_block_filled: &mut bool,
+    transport: Option<&BlockTransportPlan>,
 ) {
     ensure_block_in_layout(builder, block);
     // If we're already inside `block` and it's still open, the label has
@@ -172,9 +288,15 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
     let already_in_target = builder.current_block() == Some(block);
     if !already_in_target {
         if !*is_block_filled {
-            jump_block(builder, block, &[]);
+            let args = transport
+                .map(|plan| plan.edge_args(builder))
+                .unwrap_or_default();
+            jump_block(builder, block, &args);
         }
         crate::switch_to_block_tracking(builder, block, is_block_filled);
+    }
+    if let Some(plan) = transport {
+        plan.bind_block_params(builder, block);
     }
 }
 
