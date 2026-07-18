@@ -381,7 +381,7 @@ def _wasi_sdk_root_for_sysroot(sysroot: Path) -> Path | None:
     return None
 
 
-def _wasi_sysroot_llvm_version(sysroot: Path) -> str | None:
+def wasi_sysroot_llvm_version(sysroot: Path) -> str | None:
     version_file = sysroot / "VERSION"
     if not version_file.is_file():
         return None
@@ -389,9 +389,7 @@ def _wasi_sysroot_llvm_version(sysroot: Path) -> str | None:
         text = version_file.read_text(encoding="utf-8")
     except OSError:
         return None
-    match = re.search(
-        r"^llvm-version:\s*(\d+\.\d+(?:\.\d+)?)\s*$", text, re.MULTILINE
-    )
+    match = re.search(r"^llvm-version:\s*(\d+\.\d+(?:\.\d+)?)\s*$", text, re.MULTILINE)
     return match.group(1) if match is not None else None
 
 
@@ -441,7 +439,7 @@ def resolve_wasm_linker() -> WasmLinkerIdentity | None:
     version = _wasm_linker_version(linker)
     expected = None
     if sysroot is not None:
-        expected = _wasi_sysroot_llvm_version(sysroot)
+        expected = wasi_sysroot_llvm_version(sysroot)
         if expected is not None and _llvm_release_line(version) != _llvm_release_line(
             expected
         ):

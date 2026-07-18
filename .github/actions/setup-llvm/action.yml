@@ -1,5 +1,15 @@
-name: Setup canonical LLVM SDK
-description: Install and verify Molt's manifest-owned LLVM, MLIR, LLD, and Polly SDK
+name: Setup canonical LLVM and WASI SDK
+description: Install and verify Molt's manifest-owned LLVM profiles and pinned WASI sysroot
+
+inputs:
+  profile:
+    description: Full LLVM/MLIR SDK or the minimal WebAssembly linker profile
+    required: false
+    default: full
+  wasi:
+    description: Provision and verify the manifest-owned WASI sysroot
+    required: false
+    default: "false"
 
 outputs:
   major:
@@ -8,6 +18,9 @@ outputs:
   env_var:
     description: llvm-sys prefix environment variable
     value: ${{ steps.contract.outputs.env_var }}
+  wasi_sysroot:
+    description: Verified WASI sysroot path when wasi=true
+    value: ${{ steps.wasi-path.outputs.path }}
 
 runs:
   using: composite
@@ -27,6 +40,7 @@ runs:
         LLVM_APT_PACKAGES: ${{ steps.contract.outputs.apt_packages }}
         LLVM_APT_INSTALLER_URL: ${{ steps.contract.outputs.apt_installer_url }}
         LLVM_APT_INSTALLER_SHA256: ${{ steps.contract.outputs.apt_installer_sha256 }}
+        LLVM_PROFILE: ${{ inputs.profile }}
       run: |
         set -euo pipefail
         installer="$RUNNER_TEMP/molt-llvm-apt.sh"
@@ -36,14 +50,54 @@ runs:
           | sha256sum --check --strict
         chmod +x "$installer"
         sudo "$installer" "$LLVM_MAJOR"
-        read -r -a packages <<< "$LLVM_APT_PACKAGES"
+        case "$LLVM_PROFILE" in
+          full) read -r -a packages <<< "$LLVM_APT_PACKAGES" ;;
+          wasm) packages=("lld-$LLVM_MAJOR") ;;
+          *) printf 'unsupported LLVM SDK profile: %s\n' "$LLVM_PROFILE" >&2; exit 2 ;;
+        esac
         sudo apt-get install -y "${packages[@]}"
 
-    - name: Verify and project SDK identity
+    - name: Provision pinned WASI sysroot
+      if: inputs.wasi == 'true'
+      id: wasi-path
+      shell: bash
+      env:
+        WASI_SYSROOT_URL: ${{ steps.contract.outputs.wasi_sysroot_url }}
+        WASI_SYSROOT_SIZE: ${{ steps.contract.outputs.wasi_sysroot_size }}
+        WASI_SYSROOT_SHA256: ${{ steps.contract.outputs.wasi_sysroot_sha256 }}
+        WASI_SYSROOT_ARCHIVE_ROOT: ${{ steps.contract.outputs.wasi_sysroot_archive_root }}
+      run: |
+        set -euo pipefail
+        archive="$RUNNER_TEMP/${WASI_SYSROOT_ARCHIVE_ROOT}.tar.gz"
+        sysroot="$RUNNER_TEMP/$WASI_SYSROOT_ARCHIVE_ROOT"
+        curl --fail --location --proto '=https' --tlsv1.2 \
+          --output "$archive" "$WASI_SYSROOT_URL"
+        test "$(stat --format '%s' "$archive")" = "$WASI_SYSROOT_SIZE"
+        printf '%s  %s\n' "$WASI_SYSROOT_SHA256" "$archive" \
+          | sha256sum --check --strict
+        tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP"
+        printf 'path=%s\n' "$sysroot" >> "$GITHUB_OUTPUT"
+
+    - name: Verify and project full SDK identity
+      if: inputs.profile == 'full'
       shell: bash
       run: |
         set -euo pipefail
         PYTHONPATH=src python3 -m molt.llvm_toolchain \
           --verify \
+          --format json \
+          --github-env "$GITHUB_ENV"
+
+    - name: Verify and project WebAssembly SDK identity
+      if: inputs.wasi == 'true'
+      shell: bash
+      env:
+        WASI_SYSROOT: ${{ steps.wasi-path.outputs.path }}
+      run: |
+        set -euo pipefail
+        test -n "$WASI_SYSROOT"
+        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+          --verify-wasm \
+          --wasi-sysroot "$WASI_SYSROOT" \
           --format json \
           --github-env "$GITHUB_ENV"

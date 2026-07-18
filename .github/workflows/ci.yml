@@ -303,6 +303,13 @@ jobs:
       - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
+
+      - name: Setup canonical WebAssembly linker and WASI sysroot
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: wasm
+          wasi: "true"
+
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json
 
@@ -311,7 +318,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: proof-receipt-rust
-          path: proof-receipts/rust.json
+          path: |
+            proof-receipts/rust.json
+            proof-receipts/evidence/cargo-test-truth.json
           if-no-files-found: error
 
       - name: Summarize guarded command hotspots

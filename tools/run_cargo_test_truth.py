@@ -3,13 +3,20 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import check_suite_honesty
 
 ROOT = Path(__file__).resolve().parents[1]
+RECEIPT = ROOT / "proof-receipts" / "evidence" / "cargo-test-truth.json"
+TARGET_RUNNER = ROOT / "tools" / "cargo_test_binary_runner.py"
+LOCKED_WORKSPACES = (ROOT / "Cargo.toml", ROOT / "runtime" / "Cargo.toml")
 CANONICAL_COMMAND = (
     "cargo",
     "test",
@@ -65,9 +72,33 @@ def verdict(output: str, returncode: int, context: dict[str, str]) -> list[str]:
     return problems
 
 
-def main() -> int:
+def host_target() -> str:
+    process = subprocess.run(
+        ["rustc", "-vV"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if process.returncode != 0:
+        raise RuntimeError(process.stderr.strip() or "rustc -vV failed")
+    for line in process.stdout.splitlines():
+        if line.startswith("host: "):
+            return line.removeprefix("host: ").strip()
+    raise RuntimeError("rustc -vV did not report a host target")
+
+
+def target_runner_config(target: str) -> str:
+    argv = [sys.executable, str(TARGET_RUNNER)]
+    encoded = ",".join(json.dumps(item) for item in argv)
+    return f"target.{target}.runner=[{encoded}]"
+
+
+def run_streamed(command: tuple[str, ...]) -> tuple[int, str]:
     process = subprocess.Popen(
-        CANONICAL_COMMAND,
+        command,
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -81,8 +112,97 @@ def main() -> int:
     for line in process.stdout:
         print(line, end="")
         captured.append(line)
-    returncode = process.wait()
-    problems = verdict("".join(captured), returncode, host_context())
+    return process.wait(), "".join(captured)
+
+
+def write_receipt(payload: dict) -> None:
+    RECEIPT.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=RECEIPT.parent,
+        prefix=f".{RECEIPT.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(encoded)
+        temporary = Path(handle.name)
+    os.replace(temporary, RECEIPT)
+
+
+def main() -> int:
+    started = datetime.now(timezone.utc)
+    context = host_context()
+    phases: list[dict] = []
+    combined: list[str] = []
+    failed = False
+    for manifest in LOCKED_WORKSPACES:
+        command = (
+            "cargo",
+            "fetch",
+            "--locked",
+            "--manifest-path",
+            str(manifest),
+        )
+        returncode, output = run_streamed(command)
+        combined.append(output)
+        phases.append(
+            {
+                "kind": "dependency-prefetch",
+                "manifest": str(manifest.relative_to(ROOT)).replace("\\", "/"),
+                "argv": list(command),
+                "returncode": returncode,
+            }
+        )
+        if returncode != 0:
+            failed = True
+            break
+
+    target = ""
+    if not failed:
+        try:
+            target = host_target()
+            command = (
+                *CANONICAL_COMMAND,
+                "--config",
+                target_runner_config(target),
+            )
+            returncode, output = run_streamed(command)
+        except RuntimeError as exc:
+            returncode = 2
+            output = f"cargo-test-truth-runner: {exc}\n"
+            print(output, end="", file=sys.stderr)
+        combined.append(output)
+        phases.append(
+            {
+                "kind": "workspace-test",
+                "host_target": target,
+                "argv": list(command) if target else list(CANONICAL_COMMAND),
+                "returncode": returncode,
+            }
+        )
+        failed = returncode != 0
+
+    output = "".join(combined)
+    rows = parse_test_results(output, context)
+    failures = sorted(row["identity"] for row in rows if row.get("status") == "fail")
+    problems = verdict(output, 1 if failed else 0, context)
+    finished = datetime.now(timezone.utc)
+    receipt = {
+        "schema": "molt.cargo-test-truth.v1",
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "duration_seconds": round((finished - started).total_seconds(), 3),
+        "context": context,
+        "status": "success" if not problems else "failed",
+        "phases": phases,
+        "observed_test_count": len(rows),
+        "failed_tests": failures,
+        "problems": problems,
+    }
+    write_receipt(receipt)
+    print(f"cargo-test-truth-runner: receipt={RECEIPT}")
     if problems:
         print("cargo-test-truth-runner: FAIL", file=sys.stderr)
         for problem in problems:

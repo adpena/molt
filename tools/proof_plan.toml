@@ -38,6 +38,7 @@ authority_inputs = [
   "tools/proof_queue_pkg/diagnostics.py",
   "tools/proof_queue_pkg/state.py",
   "tools/check_subprocess_guard_coverage.py",
+  "tools/cargo_test_binary_runner.py",
   "tools/generator_manifest.toml",
   "tools/guarded_exec.py",
   "tools/harness_memory_guard.py",
@@ -494,7 +495,7 @@ dependencies = ["python_unit", "rust"]
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -1252,7 +1253,7 @@ timeout_seconds = 1800
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/run_cargo_test_truth.py"]
-toolchains = ["python", "rustc", "cargo"]
+toolchains = ["python", "rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
