@@ -168,31 +168,32 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/ops.rs"])
 
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
-    assert "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings" in (
-        gates
-    )
-    assert "cargo test -p molt-tir --all-features --no-fail-fast" in gates
     assert (
-        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        "cargo clippy --locked -p molt-tir --all-targets --all-features -- -D warnings"
+        in (gates)
+    )
+    assert "cargo test --locked -p molt-tir --all-features --no-fail-fast" in gates
+    assert (
+        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
+    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
     assert (
-        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
+    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
     assert (
-        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
+    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
 
 
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
@@ -223,7 +224,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         "rust-ffi-blocks",
     ]
     assert (
-        "cargo test --profile release-fast -p molt-backend-native --features llvm --lib"
+        "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
         in gates
     )
     assert "python3 tools/audit_op_kinds.py --check" in gates
@@ -264,8 +265,8 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
 
     assert [r.name for r in matched] == ["wasm-host", "rust-ffi-blocks"]
-    assert "cargo clippy -p molt-wasm-host -- -D warnings" in gates
-    assert "cargo build --profile release-fast -p molt-wasm-host" in gates
+    assert "cargo clippy --locked -p molt-wasm-host -- -D warnings" in gates
+    assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 
 
 def _write_gates(tmp_path: Path) -> Path:

@@ -2992,7 +2992,7 @@ def test_polyhedral_opcodes_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    polyhedral = _read_rs_module_cluster(tir_path("passes/polyhedral.rs"))
+    polyhedral = tir_path("passes/polyhedral.rs").read_text(encoding="utf-8")
 
     loop_headers = {"ForIter", "ScfFor"}
     affine_body = {
@@ -3236,9 +3236,9 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
     drop_insertion = tir_path("passes/drop_insertion/util.rs").read_text(
         encoding="utf-8"
     )
-    drop_insertion_runner = tir_path(
-        "passes/drop_insertion/runner.rs"
-    ).read_text(encoding="utf-8")
+    drop_insertion_runner = tir_path("passes/drop_insertion/runner.rs").read_text(
+        encoding="utf-8"
+    )
 
     expected = {"DecRef", "Free", "IncRef"}
     assert set(data["drop_insertion_return_deferral_barrier_opcodes"]) == expected
@@ -3733,8 +3733,7 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     data = gen.load_table()
     rendered = gen.render_rs(data)
     llvm_lowering = (
-        ROOT
-        / "runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs"
+        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs"
     ).read_text(encoding="utf-8")
 
     expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
@@ -3947,7 +3946,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    alias = _read_rs_module_cluster(tir_path("passes/alias_analysis.rs"))
+    alias = tir_path("passes/alias_analysis.rs").read_text(encoding="utf-8")
 
     expected_direct = {
         "AllocTask",
@@ -4018,7 +4017,9 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    alias = _read_rs_module_cluster(tir_path("passes/alias_analysis.rs"))
+    alias_root = tir_path("passes/alias_analysis.rs")
+    alias = alias_root.read_text(encoding="utf-8")
+    alias_regions = (alias_root.parent / "regions.rs").read_text(encoding="utf-8")
 
     expected_scalar = {
         "Add",
@@ -4149,9 +4150,9 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in transparent_body
     assert "OpCode::" not in transparent_body
 
-    typed_start = alias.index("fn typed_slot_field_kind(")
-    typed_end = alias.index("fn typed_slot_obj_offset(", typed_start)
-    typed_body = alias[typed_start:typed_end]
+    typed_start = alias_regions.index("fn typed_slot_field_kind(")
+    typed_end = alias_regions.index("fn typed_slot_obj_offset(", typed_start)
+    typed_body = alias_regions[typed_start:typed_end]
     assert "opcode_alias_typed_slot_role_table" in typed_body
     assert "match op.opcode" not in typed_body
     assert "OpCode::" not in typed_body
