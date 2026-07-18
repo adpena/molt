@@ -57,8 +57,8 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
     .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
 }
 
-pub(super) fn wasm_object_new_bound_ir(payload_size: Option<i64>) -> SimpleIR {
-    let mut allocate = wasm_test_op("object_new_bound", Some("obj"), vec!["cls"]);
+pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) -> SimpleIR {
+    let mut allocate = wasm_test_op(kind, Some("obj"), vec!["cls"]);
     allocate.value = payload_size;
     let mut ret = wasm_test_op("ret", None, vec!["obj"]);
     ret.var = Some("obj".to_string());

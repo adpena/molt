@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -83,24 +83,6 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
     _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 )
 
-CALLABLE_TABLE_ATTESTATION_SECTION = _WASM_ABI.WASM_CALLABLE_TABLE_SECTION_NAME
-CALLABLE_TABLE_ATTESTATION_VERSION = _WASM_ABI.WASM_CALLABLE_TABLE_SECTION_VERSION
-CALLABLE_TABLE_LAYOUT_SECTION = _WASM_ABI.WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME
-CALLABLE_TABLE_LAYOUT_VERSION = _WASM_ABI.WASM_CALLABLE_TABLE_LAYOUT_VERSION
-CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = _WASM_ABI.WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE
-CALLABLE_TABLE_VALUE_TYPE_FORMAT = _WASM_ABI.WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT
-
-
-@dataclass(frozen=True, slots=True)
-class CallableTableEntry:
-    slot: int
-    func_index: int
-    type_index: int
-    params: tuple[bytes, ...]
-    results: tuple[bytes, ...]
-    role: int = CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE
-
-
 @dataclass(frozen=True, slots=True)
 class CallableTableLayout:
     fixed_prefix_base: int
@@ -129,89 +111,6 @@ class CallableTableLayout:
         app_end = self.finalized_app_base + self.app_entry_count
         if app_end > 0xFFFF_FFFF:
             raise ValueError("callable-table finalized app boundary overflows u32")
-
-
-def _validate_split_callable_table_ownership(
-    app_entries: Sequence[CallableTableEntry],
-    runtime_entries: Sequence[CallableTableEntry],
-    layout: CallableTableLayout,
-) -> None:
-    """Prove the final split artifacts publish one disjoint table authority."""
-    layout.validate()
-    app_slots = sorted(entry.slot for entry in app_entries)
-    runtime_slots = sorted(entry.slot for entry in runtime_entries)
-    for offset, slot in enumerate(app_slots):
-        if offset >= layout.app_entry_count:
-            raise ValueError(
-                "split callable-table app publication is not contiguous: "
-                f"unexpected app slot {slot}"
-            )
-        expected = layout.finalized_app_base + offset
-        if slot > expected:
-            raise ValueError(
-                "split callable-table app publication is not contiguous: "
-                f"missing app slot {expected}"
-            )
-        if slot < expected:
-            raise ValueError(
-                "split callable-table app publication is not contiguous: "
-                f"unexpected app slot {slot}"
-            )
-    if len(app_slots) < layout.app_entry_count:
-        raise ValueError(
-            "split callable-table app publication is not contiguous: "
-            f"missing app slot {layout.finalized_app_base + len(app_slots)}"
-        )
-
-    app_index = 0
-    runtime_index = 0
-    overlap_slot: int | None = None
-    while app_index < len(app_slots) and runtime_index < len(runtime_slots):
-        app_slot = app_slots[app_index]
-        runtime_slot = runtime_slots[runtime_index]
-        if app_slot == runtime_slot:
-            overlap_slot = app_slot
-            break
-        if app_slot < runtime_slot:
-            app_index += 1
-        else:
-            runtime_index += 1
-    if overlap_slot is not None:
-        raise ValueError(
-            "split callable-table ownership overlaps at slot " f"{overlap_slot}"
-        )
-    runtime_at_or_above_app = next(
-        (slot for slot in runtime_slots if slot >= layout.finalized_app_base),
-        None,
-    )
-    if runtime_at_or_above_app is not None:
-        raise ValueError(
-            "split callable-table runtime slot reaches finalized app base: "
-            f"{runtime_at_or_above_app} >= {layout.finalized_app_base}"
-        )
-    fixed_start = layout.fixed_prefix_base
-    fixed_end = fixed_start + layout.fixed_prefix_len
-    if layout.fixed_prefix_len and runtime_slots and runtime_slots[0] != fixed_start:
-        raise ValueError(
-            "split callable-table fixed prefix base is not the runtime base"
-        )
-    expected_fixed = fixed_start
-    for slot in runtime_slots:
-        if slot < fixed_start:
-            continue
-        if slot >= fixed_end:
-            break
-        if slot > expected_fixed:
-            break
-        if slot == expected_fixed:
-            expected_fixed += 1
-    if expected_fixed != fixed_end:
-        raise ValueError(
-            "split callable-table runtime fixed prefix is incomplete: "
-            f"missing slot {expected_fixed}"
-        )
-
-
 def wasm_runtime_import_name(name: str) -> str | None:
     return _WASM_ABI.wasm_runtime_import_name(name)
 

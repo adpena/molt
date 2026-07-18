@@ -172,6 +172,35 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     assert output.is_file()
 
 
+def test_backend_command_prefix_uses_canonical_split_table_boundary(
+    tmp_path: Path,
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+
+    assert factgraph_module.backend_command_prefix(
+        backend_bin=backend_bin,
+        is_luau_transpile=False,
+        is_rust_transpile=False,
+        is_wasm=True,
+        target_triple=None,
+        wasm_link=True,
+        wasm_data_base=67_108_864,
+        wasm_table_base=1,
+        wasm_split_runtime_app_table_base=8_192,
+    ) == [
+        str(backend_bin),
+        "--target",
+        "wasm",
+        "--wasm-link",
+        "--wasm-data-base",
+        "67108864",
+        "--wasm-table-base",
+        "1",
+        "--wasm-split-runtime-app-table-base",
+        "8192",
+    ]
+
+
 def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     tmp_path: Path,
 ) -> None:

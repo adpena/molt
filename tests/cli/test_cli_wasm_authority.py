@@ -154,6 +154,63 @@ def test_cli_wasm_binary_inspection_reads_active_data_end(tmp_path) -> None:
     assert wasm_artifact._read_wasm_data_end(wasm_path) == 4099
 
 
+def test_split_runtime_callable_layout_reads_artifact_once(
+    tmp_path, monkeypatch
+) -> None:
+    fixed_prefix_len = wasm_artifact.WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
+        wasm_artifact.WASM_RESERVED_RUNTIME_CALLABLES
+    )
+    app_base = 1 + fixed_prefix_len + 16
+    import_section = (
+        wasm_artifact._write_wasm_varuint(1)
+        + _wasm_import(
+            "env",
+            "__indirect_function_table",
+            1,
+            b"\x70"
+            + wasm_artifact._write_wasm_varuint(0)
+            + wasm_artifact._write_wasm_varuint(app_base),
+        )
+    )
+    element_section = (
+        wasm_artifact._write_wasm_varuint(1)
+        + wasm_artifact._write_wasm_varuint(0)
+        + b"\x41"
+        + wasm_artifact._write_wasm_varuint(1)
+        + b"\x0b"
+        + wasm_artifact._write_wasm_varuint(fixed_prefix_len)
+        + b"".join(
+            wasm_artifact._write_wasm_varuint(index)
+            for index in range(fixed_prefix_len)
+        )
+    )
+    wasm_path = tmp_path / "runtime.wasm"
+    wasm_path.write_bytes(
+        wasm_artifact._build_wasm_sections(
+            [(2, import_section), (9, element_section)]
+        )
+    )
+    path_type = type(wasm_path)
+    real_read_bytes = path_type.read_bytes
+    reads = 0
+
+    def counted_read_bytes(path):
+        nonlocal reads
+        if path == wasm_path:
+            reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(path_type, "read_bytes", counted_read_bytes)
+
+    layout = wasm_artifact.read_wasm_split_runtime_callable_layout(wasm_path)
+
+    assert reads == 1
+    assert layout.runtime_callable_base == 1
+    assert layout.runtime_occupied_end == 1 + fixed_prefix_len
+    assert layout.runtime_table_min == app_base
+    assert layout.fixed_prefix_len == fixed_prefix_len
+
+
 def test_cli_wasm_binary_inspection_reads_section_and_function_facts(
     tmp_path,
 ) -> None:

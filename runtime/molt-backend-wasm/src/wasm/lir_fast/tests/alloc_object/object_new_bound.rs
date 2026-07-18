@@ -62,5 +62,15 @@ fn object_new_bound_stays_lir_fast_and_uses_class_owned_layout_size() {
             "{name} must not also call {absent_call}; got {:?}",
             output.runtime_calls
         );
+        if let Some(payload_size) = payload_size {
+            assert!(
+                !output
+                    .instructions
+                    .iter()
+                    .any(|instruction| matches!(instruction, Instruction::I64Const(value) if *value == payload_size)),
+                "{name} must not pass class-owned layout size to unary {expected_call}; instructions={:?}",
+                output.instructions
+            );
+        }
     }
 }

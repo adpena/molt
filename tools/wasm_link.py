@@ -49,14 +49,14 @@ from molt._wasm_abi_generated import (  # noqa: E402
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
 )
 from molt.wasm_artifact import (  # noqa: E402
+    WasmSplitRuntimeCallableLayout,
+    read_wasm_split_runtime_callable_layout,
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
     CALL_INDIRECT_RE as CALL_INDIRECT_RE,
-    CALLABLE_TABLE_ATTESTATION_SECTION as CALLABLE_TABLE_ATTESTATION_SECTION,
-    CallableTableEntry as CallableTableEntry,
     CallableTableLayout as CallableTableLayout,
     FLAG_BINDING_GLOBAL as FLAG_BINDING_GLOBAL,
     FLAG_EXPLICIT_NAME as FLAG_EXPLICIT_NAME,
@@ -109,13 +109,9 @@ from wasm_link_format import (  # noqa: E402
     _skip_init_expr as _skip_init_expr,
     _validate_elements as _validate_elements,
     _validate_linked_table_import_contract as _validate_linked_table_import_contract,
-    _validate_split_callable_table_ownership as _validate_split_callable_table_ownership,
     _write_string as _write_string,
     _write_varuint as _write_varuint,
 )
-from wasm_link_facts import callable_table_entry_rows  # noqa: E402
-
-
 from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
     _canonicalize_standard_section_order as _canonicalize_standard_section_order,
@@ -1146,40 +1142,24 @@ def _resolve_deploy_runtime(
     ``*.wasm``). The returned artifact is the one whose linear-memory data
     addresses the split app must agree with.
     """
-    env_deploy_runtime = os.environ.get("MOLT_WASM_DEPLOY_RUNTIME", "").strip()
-    deploy_runtime = (
-        Path(env_deploy_runtime).expanduser()
-        if env_deploy_runtime
-        else deploy_runtime_override or runtime
-    )
-    if not deploy_runtime.exists():
-        fallback_candidates: list[Path] = []
-        if deploy_runtime_override is not None:
-            fallback_candidates.append(deploy_runtime_override)
-        fallback_candidates.append(runtime)
-        if deploy_runtime.name.endswith("_reloc.wasm"):
-            fallback_candidates.append(
-                deploy_runtime.with_name(
-                    deploy_runtime.name.replace("_reloc.wasm", ".wasm")
-                )
+    if deploy_runtime_override is not None:
+        if not deploy_runtime_override.exists():
+            raise FileNotFoundError(
+                f"explicit split deploy runtime not found: {deploy_runtime_override}"
             )
-        for candidate in fallback_candidates:
-            if candidate.exists():
-                deploy_runtime = candidate
-                break
-        else:
-            raise FileNotFoundError(f"split deploy runtime not found: {deploy_runtime}")
-    if (
-        not env_deploy_runtime
-        and deploy_runtime_override is None
-        and deploy_runtime.name.endswith("_reloc.wasm")
-    ):
-        non_reloc = deploy_runtime.with_name(
-            deploy_runtime.name.replace("_reloc.wasm", ".wasm")
-        )
+        return deploy_runtime_override
+    env_deploy_runtime = os.environ.get("MOLT_WASM_DEPLOY_RUNTIME", "").strip()
+    if env_deploy_runtime:
+        ambient = Path(env_deploy_runtime).expanduser()
+        if ambient.exists():
+            return ambient
+    if runtime.name.endswith("_reloc.wasm"):
+        non_reloc = runtime.with_name(runtime.name.replace("_reloc.wasm", ".wasm"))
         if non_reloc.exists():
-            deploy_runtime = non_reloc
-    return deploy_runtime
+            return non_reloc
+    if runtime.exists():
+        return runtime
+    raise FileNotFoundError(f"split deploy runtime not found: {runtime}")
 
 
 def _split_runtime_data_alias_object(
@@ -2960,24 +2940,6 @@ def _publish_rust_wasm_link_facts(
     return facts
 
 
-def _callable_entries_from_wasm_facts(
-    facts: Mapping[str, object],
-) -> tuple[CallableTableEntry, ...]:
-    entries: list[CallableTableEntry] = []
-    for slot, function_index, type_index, role in callable_table_entry_rows(facts):
-        entries.append(
-            CallableTableEntry(
-                slot=slot,
-                func_index=function_index,
-                type_index=type_index,
-                params=(),
-                results=(),
-                role=role,
-            )
-        )
-    return tuple(entries)
-
-
 def _callable_layout_from_wasm_facts(
     facts: Mapping[str, object],
 ) -> CallableTableLayout | None:
@@ -3002,6 +2964,36 @@ def _callable_layout_from_wasm_facts(
         raise ValueError("WASM facts callable-table layout fields must be u32 integers")
     layout_values = tuple(cast(int, value) for value in values)
     return CallableTableLayout(*layout_values)
+
+
+def _reconcile_split_callable_layout(
+    app_layout: CallableTableLayout,
+    runtime_layout: WasmSplitRuntimeCallableLayout,
+) -> CallableTableLayout:
+    if (
+        app_layout.fixed_prefix_base != runtime_layout.runtime_callable_base
+        or app_layout.fixed_prefix_len != runtime_layout.fixed_prefix_len
+    ):
+        raise ValueError(
+            "app compiler callable prefix disagrees with the executable runtime: "
+            f"app=({app_layout.fixed_prefix_base},{app_layout.fixed_prefix_len}) "
+            f"runtime=({runtime_layout.runtime_callable_base},"
+            f"{runtime_layout.fixed_prefix_len})"
+        )
+    if runtime_layout.runtime_occupied_end > app_layout.finalized_app_base:
+        raise ValueError(
+            "runtime callable entries overlap the app-owned callable region: "
+            f"runtime_occupied_end={runtime_layout.runtime_occupied_end}, "
+            f"app_base={app_layout.finalized_app_base}"
+        )
+    reconciled = CallableTableLayout(
+        runtime_layout.runtime_callable_base,
+        runtime_layout.fixed_prefix_len,
+        app_layout.finalized_app_base,
+        app_layout.app_entry_count,
+    )
+    reconciled.validate()
+    return reconciled
 
 
 def _run_wasm_ld_with_custodied_inputs(
@@ -3102,6 +3094,8 @@ def _run_wasm_ld_with_custodied_inputs(
         return 1
     output_memory_min = _memory_import_min(output_data)
     output_table_min = _table_import_min(output_data)
+    split_callable_layout: CallableTableLayout | None = None
+    deploy_runtime_path: Path | None = None
     if split_runtime:
         if output_callable_layout is None:
             print(
@@ -3110,8 +3104,31 @@ def _run_wasm_ld_with_custodied_inputs(
             )
             temp_dir.cleanup()
             return 1
-        expected_table_min = output_callable_layout.finalized_app_base + (
-            output_callable_layout.app_entry_count
+        try:
+            deploy_runtime_path = _resolve_deploy_runtime(
+                runtime, deploy_runtime_override
+            )
+            runtime_callable_layout = read_wasm_split_runtime_callable_layout(
+                deploy_runtime_path
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                f"Split runtime executable callable layout is invalid: {exc}",
+                file=sys.stderr,
+            )
+            temp_dir.cleanup()
+            return 1
+        try:
+            split_callable_layout = _reconcile_split_callable_layout(
+                output_callable_layout,
+                runtime_callable_layout,
+            )
+        except ValueError as exc:
+            print(f"Split callable-table layout is invalid: {exc}", file=sys.stderr)
+            temp_dir.cleanup()
+            return 1
+        expected_table_min = split_callable_layout.finalized_app_base + (
+            split_callable_layout.app_entry_count
         )
         table_boundary_matches = output_table_min == expected_table_min or (
             expected_table_min == 0 and output_table_min is None
@@ -3336,19 +3353,16 @@ def _run_wasm_ld_with_custodied_inputs(
         # loader change) and does not disturb any statically resolved symbol.
         if native_objects:
             try:
+                assert deploy_runtime_path is not None
                 data_alias_object = _split_runtime_data_alias_object(
                     native_objects=native_link_inputs,
-                    deploy_runtime=_resolve_deploy_runtime(
-                        runtime, deploy_runtime_override
-                    ),
+                    deploy_runtime=deploy_runtime_path,
                     temp_dir=temp_dir,
                     reloc_runtime=link_runtime_path,
                 )
                 split_app_got_runtime_addresses = (
                     _runtime_exported_data_symbol_addresses(
-                        _resolve_deploy_runtime(
-                            runtime, deploy_runtime_override
-                        ).read_bytes()
+                        deploy_runtime_path.read_bytes()
                     )
                 )
             except ValueError as exc:
@@ -3365,7 +3379,8 @@ def _run_wasm_ld_with_custodied_inputs(
         split_linked_app_path = Path(temp_dir.name) / "app_split_linked.wasm"
         split_app_global_base = _split_app_global_base(output_data)
         assert output_callable_layout is not None
-        split_app_table_base = output_callable_layout.finalized_app_base
+        assert split_callable_layout is not None
+        split_app_table_base = split_callable_layout.finalized_app_base
         split_app_prefix = [
             f"--allow-undefined-file={split_native_allowlist}"
             if part.startswith("--allow-undefined-file=")
@@ -3756,7 +3771,8 @@ def _run_wasm_ld_with_custodied_inputs(
             app_stage.write_bytes(optimized_app)
 
             # Resolve the deploy-ready (non-relocatable) runtime.
-            deploy_runtime = _resolve_deploy_runtime(runtime, deploy_runtime_override)
+            assert deploy_runtime_path is not None
+            deploy_runtime = deploy_runtime_path
 
             # Tree-shake the runtime against its OWN canonical, app-independent
             # public export surface â€” never against the current app's import
@@ -3874,7 +3890,6 @@ def _run_wasm_ld_with_custodied_inputs(
             _publish_rust_wasm_link_facts(
                 wasm_facts_scanner,
                 work_linked,
-                layout=output_callable_layout,
             )
         except ValueError as exc:
             print(
@@ -3905,17 +3920,24 @@ def _run_wasm_ld_with_custodied_inputs(
             app_stage.write_bytes(published_app)
             rt_stage.write_bytes(published_runtime)
             try:
-                assert output_callable_layout is not None
+                assert split_callable_layout is not None
                 app_facts = _publish_rust_wasm_link_facts(
                     wasm_facts_scanner,
                     app_stage,
-                    layout=output_callable_layout,
+                    layout=split_callable_layout,
                     role="app",
                 )
-                runtime_facts = _publish_rust_wasm_link_facts(
+                final_split_callable_layout = _callable_layout_from_wasm_facts(
+                    app_facts
+                )
+                if final_split_callable_layout is None:
+                    raise ValueError(
+                        "final split app publication omitted callable-table layout"
+                    )
+                _publish_rust_wasm_link_facts(
                     wasm_facts_scanner,
                     rt_stage,
-                    layout=output_callable_layout,
+                    layout=final_split_callable_layout,
                     role="runtime",
                 )
             except ValueError as exc:
@@ -3923,17 +3945,6 @@ def _run_wasm_ld_with_custodied_inputs(
                     f"Failed to attest final split callable table: {exc}",
                     file=sys.stderr,
                 )
-                return 1
-            app_entries = _callable_entries_from_wasm_facts(app_facts)
-            runtime_entries = _callable_entries_from_wasm_facts(runtime_facts)
-            try:
-                _validate_split_callable_table_ownership(
-                    app_entries,
-                    runtime_entries,
-                    output_callable_layout,
-                )
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
                 return 1
             assert size_attestation_stage is not None
             size_attestation["published"] = {
