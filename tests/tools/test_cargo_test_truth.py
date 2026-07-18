@@ -55,6 +55,27 @@ gates = ["cargo test -p molt-ir a_test_filter"]
     assert any("lacks --no-fail-fast" in failure for failure in MODULE.violations())
 
 
+def test_every_cargo_compilation_gate_requires_locked_dependency_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = tmp_path / "proof_plan.toml"
+    plan.write_text(
+        """
+[[command]]
+id = "rust.test.default-truth"
+argv = ["python3", "tools/run_cargo_test_truth.py"]
+
+[[rule]]
+name = "unlocked-package-test"
+gates = ["cargo check -p molt-ir"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "PROOF_PLAN", plan)
+
+    assert any("lacks --locked" in failure for failure in MODULE.violations())
+
+
 def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
     runner_path = ROOT / "tools" / "run_cargo_test_truth.py"
     spec = importlib.util.spec_from_file_location("run_cargo_test_truth", runner_path)
@@ -62,7 +83,10 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)
     context = {"platform": "windows", "target": "default"}
-    registered = [entry["identity"] for entry in runner.check_suite_honesty.load_manifest()["execution_reds"]]
+    registered = [
+        entry["identity"]
+        for entry in runner.check_suite_honesty.load_manifest()["execution_reds"]
+    ]
     output = "\n".join(f"test {identity} ... FAILED" for identity in registered)
     returncode = 101 if registered else 0
     assert runner.verdict(output, returncode, context) == []
@@ -73,7 +97,9 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
 
 def test_truth_runner_rejects_compile_failures_without_test_identity() -> None:
     runner_path = ROOT / "tools" / "run_cargo_test_truth.py"
-    spec = importlib.util.spec_from_file_location("run_cargo_test_truth_compile", runner_path)
+    spec = importlib.util.spec_from_file_location(
+        "run_cargo_test_truth_compile", runner_path
+    )
     assert spec is not None and spec.loader is not None
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)

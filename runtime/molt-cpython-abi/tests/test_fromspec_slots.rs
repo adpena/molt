@@ -29,10 +29,16 @@ use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_uint, c_ulong};
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+fn pytype_spec_flags(flags: c_ulong) -> c_uint {
+    flags
+        .try_into()
+        .expect("CPython PyType_Spec.flags accepts only its unsigned-int flag domain")
+}
 
 // ── Minimal fake runtime backend (mirrors the cfunction bridge test) ─────────
 
@@ -227,7 +233,7 @@ fn fromspec_installs_all_slot_families() {
         name: c"molt.SpecType".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as c_int,
         itemsize: 0,
-        flags: Py_TPFLAGS_BASETYPE,
+        flags: pytype_spec_flags(Py_TPFLAGS_BASETYPE),
         slots: slots.as_mut_ptr(),
     };
 
@@ -396,7 +402,7 @@ fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
         name: c"mymod.MyHeapType".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as c_int,
         itemsize: 0,
-        flags: Py_TPFLAGS_BASETYPE,
+        flags: pytype_spec_flags(Py_TPFLAGS_BASETYPE),
         slots: term.as_mut_ptr(),
     };
     let obj = unsafe {

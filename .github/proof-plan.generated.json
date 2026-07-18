@@ -20,6 +20,7 @@
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
     "tools/check_generator_manifest.py",
+    "tools/check_cargo_test_truth.py",
     "tools/ff_land.py",
     "tools/proof_plan.py",
     "tools/proof_plan.toml",
@@ -36,11 +37,13 @@
     "tools/memory_guard.py",
     "tools/process_sentinel.py",
     "tools/process_spawn.py",
+    "tools/run_cargo_test_truth.py",
     "tests/test_proof_plan.py",
     "tests/test_ci_workflow_topology.py",
-    "tests/test_generator_manifest.py"
+    "tests/test_generator_manifest.py",
+    "tests/tools/test_cargo_test_truth.py"
   ],
-  "authority_sha256": "07340213f9325a227ad2511312a2feec408cab6e9a1e20d65d0919f901c570e7",
+  "authority_sha256": "b57fad2f961a642471a50dcf4cc897ec7e993fa705f41b87880e893438fa61c3",
   "ci_families": [
     {
       "dependencies": [],
@@ -1233,6 +1236,7 @@
       "argv": [
         "cargo",
         "build",
+        "--locked",
         "--profile",
         "dev-fast",
         "-p",
@@ -1267,6 +1271,7 @@
       "argv": [
         "cargo",
         "build",
+        "--locked",
         "--profile",
         "dev-fast",
         "-p",
@@ -1787,6 +1792,7 @@
       "argv": [
         "cargo",
         "check",
+        "--locked",
         "--target",
         "wasm32-wasip1",
         "-p",
@@ -1813,6 +1819,7 @@
       "argv": [
         "cargo",
         "check",
+        "--locked",
         "--target",
         "aarch64-unknown-linux-gnu",
         "-p",
@@ -1862,6 +1869,7 @@
       "argv": [
         "cargo",
         "clippy",
+        "--locked",
         "--workspace",
         "--all-targets",
         "--",
@@ -1891,6 +1899,7 @@
       "argv": [
         "cargo",
         "clippy",
+        "--locked",
         "-p",
         "molt-ir",
         "-p",
@@ -1930,6 +1939,7 @@
       "argv": [
         "cargo",
         "build",
+        "--locked",
         "-p",
         "molt-backend",
         "--features",
@@ -1959,6 +1969,7 @@
       "argv": [
         "cargo",
         "test",
+        "--locked",
         "-p",
         "molt-backend",
         "--features",
@@ -1993,6 +2004,7 @@
       "argv": [
         "cargo",
         "test",
+        "--locked",
         "-p",
         "molt-backend",
         "--features",
@@ -2028,6 +2040,7 @@
       "argv": [
         "cargo",
         "clippy",
+        "--locked",
         "-p",
         "molt-backend",
         "--features",
@@ -2063,6 +2076,7 @@
       "argv": [
         "cargo",
         "test",
+        "--locked",
         "--all-targets",
         "--no-fail-fast"
       ],
@@ -2479,9 +2493,9 @@
       "local.apparatus-learning-protection.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
-      "local.backend-llvm.0": "cargo test --profile release-fast -p molt-backend-native --features llvm --lib",
-      "local.backend-native.0": "cargo clippy -p molt-backend --features native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --profile release-fast -p molt-backend --features native-backend --lib",
+      "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
+      "local.backend-native.0": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
+      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend --features native-backend --lib",
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
@@ -2501,9 +2515,9 @@
       "local.frontend-python.0": "python3 tools/venv_exec.py python -m ty check src",
       "local.frontend-python.1": "python3 tools/verified_subset.py check",
       "local.frontend-python.2": "python3 tools/check_dynamic_policy.py",
-      "local.gpu-core.0": "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.0": "cargo clippy -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-      "local.gpu-runtime.1": "cargo test -p molt-gpu-runtime --all-features --no-fail-fast",
+      "local.gpu-core.0": "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings",
+      "local.gpu-runtime.0": "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+      "local.gpu-runtime.1": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.heap-kind-lifetime-authority.0": "python3 tools/gen_heap_kinds.py --check",
       "local.heap-kind-lifetime-authority.1": "python3 -m pytest -q tests/test_gen_heap_kinds.py",
       "local.intrinsic-registry.0": "python3 tools/gen_intrinsics.py --check",
@@ -2516,19 +2530,19 @@
       "local.op-kind-registry.1": "python3 tools/audit_op_kinds.py --check",
       "local.python-effect-capability-authority.0": "python3 tools/gen_python_effects.py --check",
       "local.python-effect-capability-authority.1": "python3 -m pytest -q tests/test_gen_python_effects.py",
-      "local.python-effect-capability-authority.2": "cargo test -p molt-ir --lib python_effects_generated",
-      "local.runtime-lib.0": "cargo test --profile release-fast -p molt-runtime --lib",
-      "local.runtime-lib.1": "cargo clippy -p molt-backend --features native-backend -- -D warnings",
+      "local.python-effect-capability-authority.2": "cargo test --locked -p molt-ir --lib python_effects_generated",
+      "local.runtime-lib.0": "cargo test --locked --profile release-fast -p molt-runtime --lib",
+      "local.runtime-lib.1": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python3 tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.1": "python3 -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-      "local.runtime-vfs.0": "cargo clippy -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-      "local.runtime-vfs.1": "cargo test -p molt-runtime-vfs --all-features --no-fail-fast",
+      "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+      "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.2": "python3 -m pytest tests/test_browser_vfs.py -q",
       "local.rust-ffi-blocks.0": "python3 tools/venv_exec.py python tools/check_rust_ffi_blocks.py",
       "local.rust-ffi-blocks.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
       "local.rust-toolchain.0": "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.stringprep-leaf.0": "cargo check --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
+      "local.stringprep-leaf.0": "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python3 tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.1": "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
       "local.suite-honesty.0": "python3 tools/check_differential_suite_layout.py",
@@ -2539,14 +2553,14 @@
       "local.tinygrad-op-contract.1": "python3 tools/gen_gpu_op_contract.py --check",
       "local.tinygrad-op-contract.2": "python3 -m pytest -q tests/test_gen_gpu_op_contract.py",
       "local.tinygrad-upat-static-exec-registry.0": "uv run python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py",
-      "local.tir-midend.0": "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings",
-      "local.tir-midend.1": "cargo test -p molt-passes --all-features --no-fail-fast",
-      "local.tir-midend.2": "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
-      "local.tir-midend.3": "cargo test -p molt-tir --all-features --no-fail-fast",
+      "local.tir-midend.0": "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings",
+      "local.tir-midend.1": "cargo test --locked -p molt-passes --all-features --no-fail-fast",
+      "local.tir-midend.2": "cargo clippy --locked -p molt-tir --all-targets --all-features -- -D warnings",
+      "local.tir-midend.3": "cargo test --locked -p molt-tir --all-features --no-fail-fast",
       "local.wasm-abi-registry.0": "python3 tools/gen_wasm_abi.py --check",
       "local.wasm-abi-registry.1": "python3 -m pytest -q tests/test_gen_wasm_abi.py",
-      "local.wasm-host.0": "cargo clippy -p molt-wasm-host -- -D warnings",
-      "local.wasm-host.1": "cargo build --profile release-fast -p molt-wasm-host"
+      "local.wasm-host.0": "cargo clippy --locked -p molt-wasm-host -- -D warnings",
+      "local.wasm-host.1": "cargo build --locked --profile release-fast -p molt-wasm-host"
     },
     "rules": [
       {
@@ -2556,8 +2570,8 @@
         ],
         "description": "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary.",
         "gates": [
-          "cargo clippy -p molt-backend --features native-backend -- -D warnings",
-          "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
+          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
+          "cargo test --locked --profile release-fast -p molt-backend --features native-backend --lib"
         ],
         "globs": [
           "runtime/molt-backend/**/*.rs",
@@ -2572,7 +2586,7 @@
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
         "gates": [
-          "cargo test --profile release-fast -p molt-backend-native --features llvm --lib"
+          "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
         ],
         "globs": [
           "runtime/molt-backend-native/Cargo.toml",
@@ -2590,10 +2604,10 @@
         ],
         "description": "TIR midend Rust: all-target clippy + feature-complete tests.",
         "gates": [
-          "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings",
-          "cargo test -p molt-passes --all-features --no-fail-fast",
-          "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
-          "cargo test -p molt-tir --all-features --no-fail-fast"
+          "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-passes --all-features --no-fail-fast",
+          "cargo clippy --locked -p molt-tir --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-tir --all-features --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-ir/**/*.rs",
@@ -2616,8 +2630,8 @@
         ],
         "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
         "gates": [
-          "cargo clippy -p molt-wasm-host -- -D warnings",
-          "cargo build --profile release-fast -p molt-wasm-host"
+          "cargo clippy --locked -p molt-wasm-host -- -D warnings",
+          "cargo build --locked --profile release-fast -p molt-wasm-host"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
@@ -2633,7 +2647,7 @@
         ],
         "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
         "gates": [
-          "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings"
+          "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings"
         ],
         "globs": [
           "runtime/molt-gpu/**/*.rs",
@@ -2649,8 +2663,8 @@
         ],
         "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
         "gates": [
-          "cargo clippy -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-          "cargo test -p molt-gpu-runtime --all-features --no-fail-fast"
+          "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-gpu-runtime/**/*.rs",
@@ -2667,8 +2681,8 @@
         ],
         "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
         "gates": [
-          "cargo clippy -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-          "cargo test -p molt-runtime-vfs --all-features --no-fail-fast",
+          "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
           "python3 -m pytest tests/test_browser_vfs.py -q"
         ],
         "globs": [
@@ -2687,8 +2701,8 @@
         ],
         "description": "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary.",
         "gates": [
-          "cargo test --profile release-fast -p molt-runtime --lib",
-          "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+          "cargo test --locked --profile release-fast -p molt-runtime --lib",
+          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
         ],
         "globs": [
           "runtime/molt-runtime/**/*.rs",
@@ -2764,7 +2778,7 @@
         "gates": [
           "python3 tools/gen_python_effects.py --check",
           "python3 -m pytest -q tests/test_gen_python_effects.py",
-          "cargo test -p molt-ir --lib python_effects_generated"
+          "cargo test --locked -p molt-ir --lib python_effects_generated"
         ],
         "globs": [
           "runtime/python_effects.toml",
@@ -2942,7 +2956,7 @@
         ],
         "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
         "gates": [
-          "cargo check --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib"
+          "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib"
         ],
         "globs": [
           "runtime/molt-runtime-stringprep/**/*.rs",
