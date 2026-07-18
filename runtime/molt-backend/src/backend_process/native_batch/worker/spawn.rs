@@ -4,7 +4,7 @@ use std::{io, path::Path};
 use super::compile::compile_native_batch_object_job_file;
 
 #[cfg(not(test))]
-pub(crate) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
+pub(super) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
     let exe = std::env::current_exe().map_err(|err| {
         io::Error::other(format!(
             "failed to resolve current backend executable for batch worker: {err}"
@@ -33,6 +33,6 @@ pub(crate) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io
 }
 
 #[cfg(test)]
-pub(crate) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
+pub(super) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
     compile_native_batch_object_job_file(job_path, object_path)
 }

@@ -1,4 +1,4 @@
-pub(crate) fn sanitize_debug_artifact_component(value: &str) -> String {
+pub(super) fn sanitize_debug_artifact_component(value: &str) -> String {
     let sanitized: String = value
         .chars()
         .map(|ch| {

@@ -12,7 +12,8 @@ pub(crate) use constants::{
 };
 #[cfg(any(unix, test))]
 pub(crate) use daemon_env::{BACKEND_DAEMON_PROTOCOL_VERSION, DAEMON_REQUEST_ENV_KEYS};
+#[cfg(unix)]
+pub(crate) use memory::detect_physical_memory_bytes;
 pub(crate) use memory::{
     default_backend_max_rss_gb, default_backend_max_rss_gb_from_physical_mem_bytes,
-    detect_physical_memory_bytes,
 };

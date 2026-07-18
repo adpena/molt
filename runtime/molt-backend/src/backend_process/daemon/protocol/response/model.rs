@@ -12,7 +12,7 @@ pub(crate) struct DaemonJobResponse {
     pub(crate) warnings: Vec<String>,
 }
 
-pub(crate) fn is_false(value: &bool) -> bool {
+pub(super) fn is_false(value: &bool) -> bool {
     !*value
 }
 

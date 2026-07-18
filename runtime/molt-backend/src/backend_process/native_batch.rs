@@ -15,9 +15,8 @@ pub(crate) use batching::{
 pub(crate) use link::{merge_relocatable_objects, relocatable_linker_binary};
 pub(crate) use temp::{
     finish_native_batch_temp_dir, preserve_native_batch_worker_failure_artifacts,
-    remove_native_batch_temp_dir, sanitize_debug_artifact_component,
+    remove_native_batch_temp_dir,
 };
 pub(crate) use worker::{
-    compile_native_batch_object_job, compile_native_batch_object_job_file, run_native_batch_worker,
-    run_native_batch_worker_with_failure_artifacts,
+    compile_native_batch_object_job_file, run_native_batch_worker_with_failure_artifacts,
 };

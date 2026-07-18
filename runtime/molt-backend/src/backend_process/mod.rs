@@ -11,9 +11,11 @@ mod native_batch;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;
 
+#[cfg(feature = "wasm-backend")]
+pub(crate) use atomic_publish::AtomicFilePublication;
 pub(crate) use atomic_publish::{
-    AtomicFilePublication, commit_existing_file_atomically, write_atomically,
-    write_bytes_atomically, write_text_atomically,
+    commit_existing_file_atomically, write_atomically, write_bytes_atomically,
+    write_text_atomically,
 };
 pub(crate) use cli_args::*;
 pub(crate) use config::*;

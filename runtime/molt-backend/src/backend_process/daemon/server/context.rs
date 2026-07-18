@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use super::super::{DaemonCache, DaemonHealthResponse, DaemonStats, daemon_health};
+use super::super::cache::{DaemonCache, DaemonStats, daemon_health};
+use super::super::protocol::DaemonHealthResponse;
 
 pub(crate) struct DaemonConnectionContext<'a> {
     pub(crate) cache: &'a mut DaemonCache,

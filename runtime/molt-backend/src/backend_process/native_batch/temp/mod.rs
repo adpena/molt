@@ -4,4 +4,3 @@ mod sanitize;
 
 pub(crate) use artifacts::preserve_native_batch_worker_failure_artifacts;
 pub(crate) use cleanup::{finish_native_batch_temp_dir, remove_native_batch_temp_dir};
-pub(crate) use sanitize::sanitize_debug_artifact_component;

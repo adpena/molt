@@ -1,6 +1,6 @@
 use std::io;
 
-pub(crate) fn stdlib_partition_reference_kind(kind: &str) -> bool {
+fn stdlib_partition_reference_kind(kind: &str) -> bool {
     matches!(
         kind,
         "call"

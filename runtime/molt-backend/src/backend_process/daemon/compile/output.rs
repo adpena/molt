@@ -1,9 +1,11 @@
 use std::path::Path;
 
+#[cfg(feature = "wasm-backend")]
 use super::super::super::io_limits::write_output;
-use super::super::{
-    DaemonCache, DaemonJobRequest, insert_daemon_cache_entries, maybe_cache_output_file,
-};
+#[cfg(feature = "wasm-backend")]
+use super::super::cache::insert_daemon_cache_entries;
+use super::super::cache::{DaemonCache, maybe_cache_output_file};
+use super::super::protocol::DaemonJobRequest;
 use super::target::DaemonCompiledOutput;
 
 pub(super) fn write_daemon_compiled_output(
