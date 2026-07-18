@@ -28,6 +28,8 @@ members = [
     "molt-runtime-platform",
     "molt-runtime-resource",
     "molt-runtime-protobuf",
+    "molt-gpu",
+    "molt-gpu-runtime",
     "molt-runtime",
     "molt-backend",
     "molt-backend-native",

@@ -362,7 +362,7 @@ pub use molt_gpu::primitives_ffi::{
     molt_gpu_prim_zeros_dtype,
 };
 #[cfg(feature = "molt_gpu_primitives")]
-pub use molt_gpu::runtime::{
+pub use molt_gpu_runtime::{
     molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
     molt_gpu_interop__load_safetensors, molt_gpu_interop_decode_bf16_bytes_to_f32,
     molt_gpu_interop_decode_f16_bytes_to_f32, molt_gpu_linear_contiguous,

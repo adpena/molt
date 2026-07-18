@@ -79,7 +79,12 @@ role = "embedded storage primitive (runtime + worker leaf)"
 [[crate]]
 name = "molt-gpu"
 layer = 0
-role = "gpu/tensor primitive consumed by the runtime"
+role = "gpu/tensor compute and rendering primitive; independent of Python object runtime"
+
+[[crate]]
+name = "molt-wasm-facts"
+layer = 0
+role = "WASM link-fact vocabulary and callable-table attestation shared by backend and host"
 
 [[crate]]
 name = "molt-harness"
@@ -171,6 +176,11 @@ role = "Luau backend"
 name = "molt-backend-rust"
 layer = 3
 role = "Rust-source backend"
+
+[[crate]]
+name = "molt-gpu-runtime"
+layer = 3
+role = "GPU Python-object runtime integration over molt-gpu and runtime-core"
 
 [[crate]]
 name = "molt-runtime-asyncio"
