@@ -565,6 +565,22 @@ def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
     assert "failed verification (non-blocking)" not in formal_workflow
 
 
+def test_lean_workflows_share_exact_provisioning_authority() -> None:
+    setup_action = _read(".github/actions/setup-lean/action.yml")
+    formal_workflow = _read(".github/workflows/formal.yml")
+    nightly_workflow = _read(".github/workflows/nightly.yml")
+
+    assert "toolchain=\"$(tr -d '\\r\\n' < formal/lean/lean-toolchain)\"" in (
+        setup_action
+    )
+    assert '"$HOME/.elan/bin/elan" toolchain install "$toolchain"' in setup_action
+    assert "key: lean-toolchain-${{ runner.os }}-${{ hashFiles(" in setup_action
+    assert formal_workflow.count("uses: ./.github/actions/setup-lean") == 1
+    assert nightly_workflow.count("uses: ./.github/actions/setup-lean") == 1
+    assert "elan-init.sh" not in formal_workflow
+    assert "elan-init.sh" not in nightly_workflow
+
+
 def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     formal_workflow = _read(".github/workflows/formal.yml")
     nightly_workflow = _read(".github/workflows/nightly.yml")

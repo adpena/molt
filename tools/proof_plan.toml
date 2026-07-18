@@ -9,10 +9,12 @@
 schema = "molt.proof-plan.v3"
 
 authority_inputs = [
+  ".github/actions/setup-lean/action.yml",
   ".github/actions/setup-llvm/action.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/formal.yml",
   ".github/workflows/molt-wasm-ci.yml",
+  ".github/workflows/nightly.yml",
   ".github/workflows/proof-queue-portability.yml",
   ".github/workflows/security_hardening.yml",
   ".gitignore",
@@ -202,7 +204,12 @@ probe_cwd = "formal/lean"
 version_args = ["--version"]
 version_pattern = 'version 4\.28\.0\b'
 setup_value = "4.28.0"
-setup_evidence = ["formal/lean/lean-toolchain::leanprover/lean4:v4.28.0"]
+setup_evidence = [
+  "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
+  ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
+  ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
+  ".github/workflows/nightly.yml::uses: ./.github/actions/setup-lean",
+]
 
 [[toolchain_policy]]
 name = "quint"
