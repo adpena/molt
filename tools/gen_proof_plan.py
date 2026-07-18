@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 
 from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
+from generator_io import generated_file_matches, write_generated_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -220,15 +221,14 @@ def _markdown_projection(plan: ProofPlan) -> str:
 
 def _check_or_write(path: Path, content: str, *, check: bool) -> bool:
     if check:
-        if not path.exists() or path.read_text(encoding="utf-8") != content:
+        if not generated_file_matches(path, content):
             print(
                 f"proof-plan projection stale: {path.relative_to(ROOT)}",
                 file=sys.stderr,
             )
             return False
         return True
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_generated_text(path, content)
     return True
 
 

@@ -11,6 +11,7 @@
     ".github/workflows/security_hardening.yml",
     ".gitignore",
     ".python-version",
+    "config/ci_resource_policy.toml",
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
@@ -21,6 +22,7 @@
     "tools/proof_plan.py",
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
+    "tools/generator_io.py",
     "tools/proof_queue_pkg/evidence.py",
     "tools/proof_queue_pkg/custody.py",
     "tools/proof_queue_pkg/diagnostics.py",
@@ -36,7 +38,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "1fa01f8ec1f4dfcf0842857a521d9c9539714a47477e22f5af0b0e717b73dce1",
+  "authority_sha256": "e2500a6af62fb772688c2e35c37bbf52b31bf5305b936c4f1ac806d38a1c28f2",
   "ci_families": [
     {
       "dependencies": [],
@@ -1186,10 +1188,13 @@
         "tests/test_gen_python_effects.py",
         "tests/test_gen_wasm_abi.py",
         "tests/test_gen_intrinsics.py",
+        "tests/test_generator_manifest.py",
         "tests/test_molt_dev.py",
+        "tests/test_resource_pressure.py",
         "tests/test_structural_audit.py",
         "tests/test_call_fact_coverage.py",
         "tests/test_llvm_runtime_abi_audit.py",
+        "tests/tools/test_ci_resource_env.py",
         "tests/tools/test_gen_cpython_coverage.py",
         "tests/tools/test_gen_cpython_type_slots.py",
         "tests/tools/test_perf_authority.py",
@@ -1892,6 +1897,8 @@
         "molt-tir",
         "-p",
         "molt-gpu",
+        "-p",
+        "molt-gpu-runtime",
         "--all-targets",
         "--all-features",
         "--",
@@ -2476,7 +2483,7 @@
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py",
+      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/tools/test_ci_resource_env.py",
       "local.codec-tables.0": "python3 tools/gen_codecs.py --check",
       "local.codec-tables.1": "uv run python -m pytest -q tests/test_gen_codecs.py",
       "local.dev-tooling.0": "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
@@ -2492,6 +2499,9 @@
       "local.frontend-python.0": "python3 tools/venv_exec.py python -m ty check src",
       "local.frontend-python.1": "python3 tools/verified_subset.py check",
       "local.frontend-python.2": "python3 tools/check_dynamic_policy.py",
+      "local.gpu-core.0": "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
+      "local.gpu-runtime.0": "cargo clippy -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+      "local.gpu-runtime.1": "cargo test -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.heap-kind-lifetime-authority.0": "python3 tools/gen_heap_kinds.py --check",
       "local.heap-kind-lifetime-authority.1": "python3 -m pytest -q tests/test_gen_heap_kinds.py",
       "local.intrinsic-registry.0": "python3 tools/gen_intrinsics.py --check",
@@ -2505,7 +2515,6 @@
       "local.python-effect-capability-authority.0": "python3 tools/gen_python_effects.py --check",
       "local.python-effect-capability-authority.1": "python3 -m pytest -q tests/test_gen_python_effects.py",
       "local.python-effect-capability-authority.2": "cargo test -p molt-ir --lib python_effects_generated",
-      "local.runtime-gpu.0": "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
       "local.runtime-lib.0": "cargo test --profile release-fast -p molt-runtime --lib",
       "local.runtime-lib.1": "cargo clippy -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python3 tools/gen_runtime_profile_schema.py --check",
@@ -2618,9 +2627,9 @@
       },
       {
         "command_ids": [
-          "local.runtime-gpu.0"
+          "local.gpu-core.0"
         ],
-        "description": "GPU acceleration Rust: all-target/all-feature clippy for FFI and renderer surfaces.",
+        "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
         "gates": [
           "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings"
         ],
@@ -2629,7 +2638,24 @@
           "runtime/molt-gpu/**/*.toml",
           "runtime/molt-gpu/Cargo.toml"
         ],
-        "name": "runtime-gpu"
+        "name": "gpu-core"
+      },
+      {
+        "command_ids": [
+          "local.gpu-runtime.0",
+          "local.gpu-runtime.1"
+        ],
+        "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
+        "gates": [
+          "cargo clippy -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+          "cargo test -p molt-gpu-runtime --all-features --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-gpu-runtime/**/*.rs",
+          "runtime/molt-gpu-runtime/**/*.toml",
+          "runtime/molt-gpu-runtime/Cargo.toml"
+        ],
+        "name": "gpu-runtime"
       },
       {
         "command_ids": [
@@ -3161,17 +3187,25 @@
         "description": "CI workflows or pyproject: the CI-topology contract test.",
         "gates": [
           "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py"
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/tools/test_ci_resource_env.py"
         ],
         "globs": [
+          ".github/actions/**",
           ".github/workflows/**",
           ".github/proof-plan.generated.json",
+          "config/ci_resource_policy.toml",
           "docs/agent/PROOF_PLAN.generated.md",
           "pyproject.toml",
           "tools/proof_plan.py",
           "tools/proof_plan.toml",
           "tools/gen_proof_plan.py",
-          "tests/test_proof_plan.py"
+          "tools/generator_io.py",
+          "tools/ci_resource_env.py",
+          "tools/resource_pressure.py",
+          "tests/test_generator_manifest.py",
+          "tests/test_proof_plan.py",
+          "tests/test_resource_pressure.py",
+          "tests/tools/test_ci_resource_env.py"
         ],
         "name": "ci-wiring"
       },

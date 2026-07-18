@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "runtime" / "python_effects.toml"
 OUT_PYTHON = ROOT / "src" / "molt" / "compiler_analysis" / "python_effects_generated.py"
@@ -464,16 +466,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     stale = False
     for path, source in render_all(load_schema()).items():
-        expected = source.encode("utf-8")
         if args.check:
-            if not path.exists() or path.read_bytes() != expected:
+            if not generated_file_matches(path, source):
                 print(
                     f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
                 )
                 stale = True
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(expected)
+            write_generated_text(path, source)
     return int(stale)
 
 

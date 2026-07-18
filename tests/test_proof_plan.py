@@ -757,6 +757,47 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     assert receipt["execution"]["fail_fast_triggered"] is False
 
 
+def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A provisioned exact Lean identity must cross the receipt scheduling gate."""
+    command = next(
+        command for command in PLAN.commands if command.id == "formal.lean.build"
+    )
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    observed_toolchains: list[tuple[str, ...]] = []
+
+    def fake_fingerprints(
+        _plan: proof_plan.ProofPlan, names: tuple[str, ...]
+    ) -> dict[str, dict[str, str]]:
+        observed_toolchains.append(names)
+        return {
+            name: {
+                "identity_sha256": "0" * 64,
+                "version": "Lean (version 4.28.0)"
+                if name == "lean"
+                else f"{name} synthetic",
+            }
+            for name in names
+        }
+
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", fake_fingerprints)
+    monkeypatch.setattr(
+        proof_plan,
+        "_run_command",
+        lambda current, _metrics, _cancel: _successful_synthetic_record(current),
+    )
+    receipt_path = tmp_path / "formal-lean-receipt.json"
+
+    assert proof_plan.execute_commands(PLAN, (command,), receipt_path) == 0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert observed_toolchains == [tuple(command.data["toolchains"])]
+    assert receipt["status"] == "success"
+    assert receipt["executed_partitions"] == ["formal.lean.build"]
+    assert receipt["execution"]["scheduled_commands"] == 1
+    assert receipt["commands"][0]["status"] == "success"
+
+
 def _synthetic_executor_command(
     command_id: str,
     *,

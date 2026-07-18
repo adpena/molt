@@ -23,6 +23,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "runtime" / "heap_kinds.toml"
 OUT_CODEGEN = ROOT / "runtime" / "molt-codegen-abi" / "src" / "heap_kinds_generated.rs"
@@ -653,16 +655,14 @@ def main(argv: list[str] | None = None) -> int:
     rendered = render_all(load_table())
     stale = False
     for path, source in rendered.items():
-        expected = source.encode("utf-8")
         if args.check:
-            if not path.exists() or path.read_bytes() != expected:
+            if not generated_file_matches(path, source):
                 print(
                     f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
                 )
                 stale = True
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(expected)
+            write_generated_text(path, source)
     return 1 if stale else 0
 
 

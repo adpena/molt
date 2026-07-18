@@ -30,6 +30,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from generator_io import generated_file_matches, write_generated_text  # noqa: E402
 
 from molt.cli.target_python import (  # noqa: E402
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
@@ -392,10 +393,7 @@ def main() -> int:
     if args.check:
         ok = True
         for path, text in rendered.items():
-            if not path.exists():
-                print(f"MISSING generated file: {path}", file=sys.stderr)
-                ok = False
-            elif path.read_text(encoding="utf-8") != text:
+            if not generated_file_matches(path, text):
                 print(
                     f"STALE generated file: {path}\n"
                     "  run `python3 tools/gen_stdlib_module_union.py` to regenerate",
@@ -408,8 +406,7 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for path, text in rendered.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        write_generated_text(path, text)
     _remove_stale_generated_siblings(args.output, set(rendered))
     union_modules = tuple(
         sorted({name for names in by_version_modules.values() for name in names})

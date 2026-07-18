@@ -8,6 +8,8 @@ import tomllib
 from collections import Counter
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"
 STABLE_ABI = ROOT / "config" / "cpython_stable_abi_3_12.toml"
@@ -326,7 +328,7 @@ def main() -> int:
     stale = [
         path
         for path, content in outputs.items()
-        if not path.exists() or path.read_text(encoding="utf-8") != content
+        if not generated_file_matches(path, content)
     ]
     if args.check:
         if stale:
@@ -338,8 +340,7 @@ def main() -> int:
         print("CPython coverage outputs are synchronized")
         return 0
     for path, content in outputs.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8", newline="\n")
+        write_generated_text(path, content)
     return 0
 
 

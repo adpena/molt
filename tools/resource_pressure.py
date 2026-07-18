@@ -5,13 +5,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 
-try:
-    from tools import memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+if __package__:
+    from . import memory_guard
+else:  # pragma: no cover - direct script import from tools/
     import memory_guard  # type: ignore
 
 
-SCHEMA_VERSION = "molt.resource_pressure.v1"
+SCHEMA_VERSION = "molt.resource_pressure.v2"
 DEFAULT_MAX_CARGO_BUILD_JOBS = 4
 DEFAULT_CARGO_BUILD_GB_PER_JOB = 12.0
 DEFAULT_MAX_COMPILE_SLOTS = 2
@@ -33,6 +33,12 @@ class ResourcePressurePlan:
     cargo_build_jobs: int
     cargo_build_gb_per_job: float
     max_cargo_build_jobs: int
+    cargo_build_memory_source: str
+    cargo_build_measured_peak_rss_bytes: int | None
+    cargo_build_headroom_ratio: float | None
+    cargo_build_measurement_run_id: int | None
+    cargo_build_measurement_commit: str | None
+    cargo_build_measurement_command: str | None
     compile_max_slots: int
     compile_gb_per_slot: float
     compile_max_active_procs: int
@@ -60,6 +66,12 @@ class ResourcePressurePlan:
                 "build_jobs": self.cargo_build_jobs,
                 "gb_per_job": self.cargo_build_gb_per_job,
                 "max_jobs": self.max_cargo_build_jobs,
+                "memory_source": self.cargo_build_memory_source,
+                "measured_peak_rss_bytes": self.cargo_build_measured_peak_rss_bytes,
+                "headroom_ratio": self.cargo_build_headroom_ratio,
+                "measurement_run_id": self.cargo_build_measurement_run_id,
+                "measurement_commit": self.cargo_build_measurement_commit,
+                "measurement_command": self.cargo_build_measurement_command,
             },
             "compile": {
                 "max_slots": self.compile_max_slots,
@@ -155,6 +167,12 @@ def plan_resource_pressure(
     budget: memory_guard.AdaptiveMemoryBudget | None = None,
     max_cargo_build_jobs: int = DEFAULT_MAX_CARGO_BUILD_JOBS,
     cargo_build_gb_per_job: float = DEFAULT_CARGO_BUILD_GB_PER_JOB,
+    cargo_build_memory_source: str = "declared",
+    cargo_build_measured_peak_rss_bytes: int | None = None,
+    cargo_build_headroom_ratio: float | None = None,
+    cargo_build_measurement_run_id: int | None = None,
+    cargo_build_measurement_commit: str | None = None,
+    cargo_build_measurement_command: str | None = None,
     max_compile_slots: int = DEFAULT_MAX_COMPILE_SLOTS,
     compile_gb_per_slot: float = DEFAULT_COMPILE_GB_PER_SLOT,
     compile_active_procs_factor: int = DEFAULT_COMPILE_ACTIVE_PROCS_FACTOR,
@@ -228,10 +246,14 @@ def plan_resource_pressure(
             f"reserve={memory_budget.reserve_gb:.2f}GB"
         )
     pressure = _pressure_level(memory_budget)
+    cargo_memory_label = cargo_build_memory_source
+    if cargo_build_measurement_run_id is not None:
+        cargo_memory_label += f":run-{cargo_build_measurement_run_id}"
     reason = (
         f"cpu={cpus} pressure={pressure} {memory_part} "
         f"cargo_jobs={cargo_jobs}/{max_cargo} "
         f"cargo_per_job={cargo_per_job:.2f}GB "
+        f"cargo_memory={cargo_memory_label} "
         f"compile_slots={compile_slots}/{compile_slots_cap} "
         f"diff_jobs={diff_jobs} diff_per_job={per_job_gb:.2f}GB"
     )
@@ -248,6 +270,12 @@ def plan_resource_pressure(
         cargo_build_jobs=cargo_jobs,
         cargo_build_gb_per_job=cargo_per_job,
         max_cargo_build_jobs=max_cargo,
+        cargo_build_memory_source=cargo_build_memory_source,
+        cargo_build_measured_peak_rss_bytes=cargo_build_measured_peak_rss_bytes,
+        cargo_build_headroom_ratio=cargo_build_headroom_ratio,
+        cargo_build_measurement_run_id=cargo_build_measurement_run_id,
+        cargo_build_measurement_commit=cargo_build_measurement_commit,
+        cargo_build_measurement_command=cargo_build_measurement_command,
         compile_max_slots=compile_slots,
         compile_gb_per_slot=compile_per_slot,
         compile_max_active_procs=compile_active_procs,

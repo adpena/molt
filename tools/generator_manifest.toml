@@ -68,7 +68,7 @@ outputs = [
   ".github/proof-plan.generated.json",
   "docs/agent/PROOF_PLAN.generated.md",
 ]
-source = "tools/proof_plan.toml"
+source = "tools/proof_plan.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_proof_plan.py --check"
 idempotent = true
@@ -82,7 +82,7 @@ outputs = [
   "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
   "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
 ]
-source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots scanned recursively) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports"
+source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots scanned recursively) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_coverage.py --check"
 idempotent = true
@@ -94,7 +94,7 @@ tool = "tools/gen_cpython_type_slots.py"
 outputs = [
   "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h",
 ]
-source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml"
+source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_type_slots.py --check"
 idempotent = true
@@ -111,7 +111,7 @@ outputs = [
   "runtime/heap_kinds.generated.json",
   "src/molt/heap_kinds_generated.py",
 ]
-source = "runtime/heap_kinds.toml"
+source = "runtime/heap_kinds.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_heap_kinds.py --check"
 toolchains = ["rustfmt"]
@@ -126,7 +126,7 @@ outputs = [
   "src/molt/compiler_analysis/python_effects_generated.py",
   "runtime/molt-ir/src/python_effects_generated.rs",
 ]
-source = "runtime/python_effects.toml"
+source = "runtime/python_effects.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_effects.py --check"
 toolchains = ["rustfmt"]
@@ -141,7 +141,7 @@ outputs = [
   "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",
   "src/molt/_runtime_profile_schema_generated.py",
 ]
-source = "runtime/runtime_profile_schema.toml"
+source = "runtime/runtime_profile_schema.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_runtime_profile_schema.py --check"
 toolchains = ["rustfmt"]
@@ -156,7 +156,7 @@ outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "src/molt/frontend/lowering/op_kinds_generated.py",
 ]
-source = "runtime/molt-ir/src/tir/op_kinds.toml"
+source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_op_kinds.py --check"
 toolchains = ["rustfmt"]
@@ -170,7 +170,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_frontend_diagnostics.py"
 outputs = ["src/molt/frontend/frontend_diagnostics_generated.py"]
-source = "src/molt/frontend/frontend_diagnostics.toml + src/molt/frontend/**/*.py"
+source = "src/molt/frontend/frontend_diagnostics.toml + src/molt/frontend/**/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_frontend_diagnostics.py --check"
 idempotent = true
@@ -205,7 +205,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi"
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
 toolchains = ["rustfmt"]
@@ -217,7 +217,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_browser_asset_graph.py"
 outputs = ["wasm/browser_asset_graph.generated.json"]
-source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json}"
+source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json} + tools/generator_io.py"
 upstream_generators = [
   "tools/gen_target_feature_manifest.py",
   "tools/gen_wasm_abi.py",
@@ -236,7 +236,7 @@ outputs = [
   "wasm/target_feature_manifest.json",
   "wasm/target_feature_constants.generated.js",
 ]
-source = "src/molt/target_feature_manifest.toml"
+source = "src/molt/target_feature_manifest.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_target_feature_manifest.py --check"
 idempotent = true
@@ -256,7 +256,7 @@ outputs = [
 # runtime/molt-runtime*/src/intrinsics_generated*/ ; those carry the standard
 # @generated header and are covered by the header-marker orphan scan + this
 # generator's own --check freshness, so they need not all be enumerated here.
-source = "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_intrinsics.py --check"
 toolchains = ["rustfmt"]
@@ -271,7 +271,7 @@ outputs = [
   "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
   "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
 ]
-source = "runtime/molt-stdlib-text/src/codec_registry.rs"
+source = "runtime/molt-stdlib-text/src/codec_registry.rs + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
 toolchains = ["rustfmt"]
@@ -283,7 +283,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_gpu_op_contract.py"
 outputs = ["runtime/molt-gpu/op_contract.toml"]
-source = "runtime/molt-gpu/src/ops.rs + pinned tinygrad 0.13.0 AST"
+source = "runtime/molt-gpu/src/ops.rs + pinned tinygrad 0.13.0 AST + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_gpu_op_contract.py --check"
 # Reconciles against a PINNED off-the-shelf tinygrad checkout under
@@ -301,7 +301,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_stringprep_tables.py"
 outputs = ["runtime/molt-runtime-stringprep/src/tables.rs"]
-source = "stringprep (CPython oracle module)"
+source = "stringprep (CPython oracle module) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_stringprep_tables.py --check"
 toolchains = ["rustfmt"]
@@ -316,7 +316,7 @@ outputs = [
   "src/molt/frontend/_protocol.py",
   "src/molt/frontend/_protocol_attrs.py",
 ]
-source = "src/molt/frontend (SimpleTIRGenerator class surface, live introspection)"
+source = "src/molt/frontend (SimpleTIRGenerator class surface, live introspection) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_protocol.py --check"
 idempotent = true
@@ -331,7 +331,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_luau_support_matrix.py"
 outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
-source = "runtime/molt-backend-luau/src/luau"
+source = "runtime/molt-backend-luau/src/luau + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_luau_support_matrix.py --check"
 idempotent = true
@@ -346,7 +346,7 @@ tool = "tools/gen_compat_platform_availability.py"
 outputs = [
   "docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md",
 ]
-source = "docs/python_documentation (CPython library reference text)"
+source = "docs/python_documentation (CPython library reference text) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_compat_platform_availability.py --check"
 # The input corpus (docs/python_documentation/) is a large, gitignored external
@@ -368,7 +368,7 @@ outputs = [
   "tests/differential/stdlib/TESTS.txt",
   "tests/differential/pyperformance/TESTS.txt",
 ]
-source = "tests/differential/COVERAGE_INDEX.yaml"
+source = "tests/differential/COVERAGE_INDEX.yaml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_diff_lanes.py --check"
 idempotent = true
@@ -383,7 +383,7 @@ tool = "tools/check_runtime_bridge_test_stubs.py"
 outputs = [
   "runtime/molt-runtime-core/src/bridge_test_stubs.rs",
 ]
-source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations"
+source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"
 idempotent = true
@@ -399,7 +399,7 @@ outputs = [
   "tools/stdlib_module_union_3_13.py",
   "tools/stdlib_module_union_3_14.py",
 ]
-source = "sys.stdlib_module_names (CPython 3.12/3.13/3.14, live)"
+source = "sys.stdlib_module_names (CPython 3.12/3.13/3.14, live) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_stdlib_module_union.py --check"
 # Requires THREE live CPython interpreters (3.12/3.13/3.14) on PATH; a vanilla
@@ -419,7 +419,7 @@ tool = "tools/gen_cpython_abi_layout.py"
 outputs = [
   "runtime/molt-cpython-abi/include/_molt_abi_layout.generated.h",
 ]
-source = "runtime/molt-cpython-abi/src/abi_types.rs"
+source = "runtime/molt-cpython-abi/src/abi_types.rs + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_abi_layout.py --check"
 idempotent = true

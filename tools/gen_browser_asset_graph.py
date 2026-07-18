@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from generator_io import generated_file_matches, write_generated_text
+
 from molt.browser_asset_closure import (
     canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
@@ -356,10 +358,7 @@ def generate(
 
 
 def generated_output_is_current(output: Path, generated: bytes) -> bool:
-    if not output.is_file():
-        return False
-    actual = output.read_bytes()
-    return actual.replace(b"\r\n", b"\n").replace(b"\r", b"\n") == generated
+    return generated_file_matches(output, generated)
 
 
 def main() -> int:
@@ -376,7 +375,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    OUTPUT.write_bytes(generated)
+    write_generated_text(OUTPUT, generated.decode("utf-8"))
     return 0
 
 

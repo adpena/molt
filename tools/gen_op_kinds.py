@@ -55,6 +55,10 @@ from tools.op_kinds import render_python as _render_python  # noqa: E402
 from tools.op_kinds import render_rust as _render_rust  # noqa: E402
 from tools.op_kinds import schema as _schema  # noqa: E402
 from tools.op_kinds import validate as _validate  # noqa: E402
+from tools.generator_io import (  # noqa: E402
+    generated_file_matches,
+    write_generated_text,
+)
 from tools.op_kinds.paths import (  # noqa: E402
     OUT_PY,
     OUT_RS,
@@ -99,9 +103,7 @@ def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
         return False
-    current = path.read_bytes()
-    expected = rendered.encode("utf-8")
-    if current != expected:
+    if not generated_file_matches(path, rendered):
         print(
             f"STALE generated file: {path}\n"
             f"  run `python3 tools/gen_op_kinds.py` to regenerate from "
@@ -132,8 +134,8 @@ def main(argv: list[str]) -> int:
             print("op-kind generated files: in sync")
         return 0 if ok else 1
 
-    OUT_RS.write_text(rs, encoding="utf-8", newline="\n")
-    OUT_PY.write_text(py, encoding="utf-8", newline="\n")
+    write_generated_text(OUT_RS, rs)
+    write_generated_text(OUT_PY, py)
     print(f"wrote {OUT_RS.relative_to(ROOT)}")
     print(f"wrote {OUT_PY.relative_to(ROOT)}")
     return 0

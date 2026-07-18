@@ -69,6 +69,8 @@ import importlib.util as _ilu
 import sys
 from pathlib import Path
 
+from generator_io import generated_file_matches, write_generated_text
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Load the pin authority so the contract header records the *checked* pinned
@@ -967,9 +969,7 @@ def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
         return False
-    current = path.read_bytes()
-    expected = rendered.encode("utf-8")
-    if current != expected:
+    if not generated_file_matches(path, rendered):
         print(
             f"STALE generated file: {path}\n"
             f"  run `python3 tools/gen_gpu_op_contract.py` to regenerate from the "
@@ -1005,7 +1005,7 @@ def main(argv: list[str]) -> int:
             )
         return 0 if ok else 1
 
-    OUT_TOML.write_text(toml_text, encoding="utf-8", newline="\n")
+    write_generated_text(OUT_TOML, toml_text)
     print(f"wrote {OUT_TOML.relative_to(ROOT)}")
     return 0
 

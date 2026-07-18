@@ -316,7 +316,7 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     assert module._memory_guard_max_jobs(config) == 12
     assert module._default_jobs() == 12
     payload = module._config_payload(config)
-    assert payload["resource_pressure"]["schema"] == "molt.resource_pressure.v1"
+    assert payload["resource_pressure"]["schema"] == "molt.resource_pressure.v2"
     assert payload["resource_pressure"]["diff"]["max_jobs"] == 12
 
 
