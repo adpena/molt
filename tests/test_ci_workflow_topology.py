@@ -460,11 +460,44 @@ def test_ci_clippy_failures_are_not_swallowed() -> None:
     assert "continue-on-error" not in ci_text
 
 
-def test_ci_build_and_lint_truth_is_owned_by_executable_plan() -> None:
+def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-    proof_plan_text = _read("tools/proof_plan.toml")
-    assert 'id = "rust.build.workspace"' in proof_plan_text
-    assert 'id = "rust.clippy.workspace-default"' in proof_plan_text
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    commands = {command["id"]: command for command in plan["command"]}
+    backend_manifest = tomllib.loads(_read("runtime/molt-backend/Cargo.toml"))
+
+    # Workspace tests compile every package's normal library/bin target before
+    # executing test targets, while all-target Clippy covers libs, bins,
+    # examples, tests, and benches.  A preceding workspace build/runtime check
+    # therefore adds no target or feature coverage and can starve both truths.
+    for redundant_id in (
+        "rust.check.runtime-default",
+        "rust.build.workspace",
+        "rust.test.backend-native-feature",
+        "rust.clippy.backend-native",
+    ):
+        assert redundant_id not in commands
+    assert "native-backend" in backend_manifest["features"]["default"]
+    assert commands["rust.test.default-truth"]["dependencies"] == []
+    assert commands["rust.clippy.workspace-default"]["dependencies"] == [
+        "rust.test.default-truth"
+    ]
+    assert commands["rust.clippy.feature-surfaces"]["dependencies"] == [
+        "rust.clippy.workspace-default"
+    ]
+    assert commands["rust.test.default-truth"]["argv"] == [
+        "python3",
+        "tools/run_cargo_test_truth.py",
+    ]
+    assert commands["rust.clippy.workspace-default"]["argv"] == [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ]
     assert "logs/ci-cargo-build.log" not in ci_text
 
 

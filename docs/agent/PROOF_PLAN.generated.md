@@ -38,7 +38,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | 7 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | 9 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 3240 s | 360 s | `compiler-build-resource` | 6 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 1560 s | 2040 s | `compiler-build-resource` | 6 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |
@@ -120,14 +120,10 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | 900 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | 900 s | `compiler-build-resource` | 0 |
-| `rust.check.runtime-default` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 0 |
 | `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | 240 s | `compiler-build-resource` | 0 |
 | `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | 240 s | `compiler-build-resource` | 0 |
-| `rust.build.workspace` | `rust` | `linux-x86_64-rust-native-dev` | 900 s | `compiler-build-resource` | 1 |
-| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 600 s | `compiler-build-resource` | 1 |
-| `rust.test.backend-native-feature` | `rust` | `linux-x86_64-rust-native-dev` | 300 s | `compiler-build-resource` | 1 |
+| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 600 s | `compiler-build-resource` | 0 |
 | `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
-| `rust.clippy.backend-native` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
 | `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 0 |
 | `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 1 |
