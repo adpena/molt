@@ -105,6 +105,8 @@ def test_intrinsic_target_availability_is_toml_owned() -> None:
         / "runtime/molt-runtime/src/intrinsics/generated_resolvers/sqlite_resolver.rs"
     ).read_text()
     assert '#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]' in generated
+
+
 def test_runtime_feature_gates_are_generated_from_categories() -> None:
     module = _load_gen_intrinsics_module()
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
@@ -438,7 +440,7 @@ def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
 
     assert calls == [
         {
-            "cmd": ["rustfmt", str(target)],
+            "cmd": ["rustfmt", "--config", "skip_children=true", str(target)],
             "prefix": "MOLT_GENERATOR",
             "cwd": ROOT,
             "capture_output": True,
@@ -492,6 +494,30 @@ def test_write_rust_if_changed_skips_rustfmt_for_exact_match(
     assert module._write_rust_if_changed(target, text) is False
     assert calls == []
     assert target.read_text(encoding="utf-8") == text
+
+
+def test_write_rust_if_changed_keeps_formatting_scratch_outside_output_tree(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_gen_intrinsics_module()
+    output_root = tmp_path / "tracked-output"
+    output_root.mkdir()
+    target = output_root / "generated.rs"
+    formatted = "fn generated() {}\n"
+    target.write_text(formatted, encoding="utf-8")
+    observed: list[Path] = []
+
+    def fake_rustfmt(path: Path) -> None:
+        observed.append(path)
+        path.write_text(formatted, encoding="utf-8")
+
+    monkeypatch.setattr(module, "_rustfmt", fake_rustfmt)
+
+    assert module._write_rust_if_changed(target, "fn generated(){}\n") is False
+    assert len(observed) == 1
+    assert observed[0].parent != output_root
+    assert list(output_root.iterdir()) == [target]
+    assert not observed[0].exists()
 
 
 def test_resolver_cleanup_preserves_concurrent_temp_files(

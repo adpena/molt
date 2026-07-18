@@ -779,7 +779,7 @@ def _classify_symbol(
 
 def _rustfmt(path: Path) -> None:
     result = _load_harness_memory_guard().guarded_completed_process(
-        ["rustfmt", str(path)],
+        ["rustfmt", "--config", "skip_children=true", str(path)],
         prefix="MOLT_GENERATOR",
         cwd=ROOT,
         capture_output=True,
@@ -809,19 +809,15 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text(encoding="utf-8") == text:
         return False
-    tmp: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            newline="\n",
-            suffix=".rs",
-            prefix=f"{path.stem}_",
-            dir=path.parent,
-            delete=False,
-        ) as tmp_file:
-            tmp = Path(tmp_file.name)
-            tmp_file.write(text)
+    # Repository-policy generator checks run concurrently while the proof DAG
+    # continuously attests that the source tree is clean.  Formatting scratch
+    # inside ``path.parent`` makes an otherwise read-only ``--check`` invocation
+    # transiently dirty and can falsely fail an unrelated sibling command.
+    # Keep all formatting scratch outside the checkout; only the final
+    # non-check publication may replace the generated authority below.
+    with tempfile.TemporaryDirectory(prefix="molt-intrinsics-rustfmt-") as raw_tmp:
+        tmp = Path(raw_tmp) / path.name
+        tmp.write_text(text, encoding="utf-8", newline="\n")
         _rustfmt(tmp)
         formatted = tmp.read_text(encoding="utf-8")
         if path.exists() and path.read_text(encoding="utf-8") == formatted:
@@ -835,9 +831,6 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
             return True
         tmp.replace(path)
         return True
-    finally:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
 
 
 def _record_check_diff(path: Path, current: str, expected: str) -> None:
