@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(unix)]
 #[test]
 fn read_daemon_request_bytes_stops_at_protocol_newline() {
     let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
@@ -8,7 +7,6 @@ fn read_daemon_request_bytes_stops_at_protocol_newline() {
     assert_eq!(bytes, b"{\"version\":1}\n");
 }
 
-#[cfg(unix)]
 #[test]
 fn read_daemon_request_bytes_rejects_oversized_request() {
     let mut cursor = Cursor::new(b"{\"version\":1}\n".to_vec());
@@ -171,13 +169,12 @@ fn daemon_request_parse_reads_split_runtime_table_min() {
     assert_eq!(job.wasm_split_runtime_app_table_base, Some(8192));
 }
 
-#[cfg(unix)]
 #[test]
 fn daemon_response_payload_omits_false_optional_fields() {
     let payload = daemon_response_payload(&DaemonResponse {
         ok: true,
         pong: false,
-        jobs: vec![super::DaemonJobResponse {
+        jobs: vec![DaemonJobResponse {
             id: "job0".to_string(),
             ok: true,
             cached: false,

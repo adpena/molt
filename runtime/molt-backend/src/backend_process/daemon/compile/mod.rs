@@ -7,16 +7,14 @@ mod response;
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod target;
 
-use super::{
-    DaemonCache, DaemonJobRequest, DaemonJobResponse, daemon_memory_cache_allowed_for_job,
-    try_write_cached_daemon_job_output,
+use super::cache::{
+    DaemonCache, daemon_memory_cache_allowed_for_job, try_write_cached_daemon_job_output,
 };
+use super::protocol::{DaemonJobRequest, DaemonJobResponse};
 
-pub(crate) use ir::backend_ir_document_from_json_path;
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 use target::compile_daemon_job_output;
 
-#[cfg(any(unix, test))]
 pub(crate) fn compile_single_job(
     mut job: DaemonJobRequest,
     _cache: &mut DaemonCache,

@@ -1,8 +1,9 @@
 use std::io;
 
+use super::super::read_daemon_request_bytes;
 use super::context::DaemonConnectionContext;
 use super::dispatch::handle_daemon_request_bytes;
-use super::wire::{read_daemon_request_bytes, write_daemon_response};
+use super::wire::write_daemon_response;
 
 pub(crate) fn handle_daemon_connection(
     stream: &mut std::os::unix::net::UnixStream,

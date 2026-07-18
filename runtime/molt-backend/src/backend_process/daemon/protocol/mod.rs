@@ -1,9 +1,9 @@
-#[cfg(any(unix, test))]
+mod framing;
 mod request;
-#[cfg(any(unix, test))]
 mod response;
 
-#[cfg(any(unix, test))]
+pub(crate) use framing::{daemon_response_payload, read_daemon_request_bytes};
 pub(crate) use request::{DaemonJobRequest, DaemonRequest};
-#[cfg(any(unix, test))]
-pub(crate) use response::{DaemonHealthResponse, DaemonJobResponse, DaemonResponse, is_false};
+#[cfg(unix)]
+pub(crate) use response::DaemonHealthResponse;
+pub(crate) use response::{DaemonJobResponse, DaemonResponse};

@@ -5,7 +5,7 @@ use molt_backend::SimpleBackend;
 use super::super::super::io_limits::{read_json_artifact, write_output_path};
 use super::super::batching::{NativeBatchModuleMetadata, NativeBatchObjectJob};
 
-pub(crate) fn compile_native_batch_object_job(
+fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,
     output_path: &Path,
 ) -> io::Result<()> {

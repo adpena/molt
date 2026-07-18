@@ -5,11 +5,11 @@ pub(crate) fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("count")
 }
 
-pub(crate) fn stdlib_cache_key_sidecar_path(stdlib_path: &Path) -> PathBuf {
+pub(super) fn stdlib_cache_key_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("key")
 }
 
-pub(crate) fn stdlib_cache_manifest_sidecar_path(stdlib_path: &Path) -> PathBuf {
+pub(super) fn stdlib_cache_manifest_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("manifest.json")
 }
 
@@ -17,11 +17,11 @@ pub(crate) fn stdlib_cache_partition_manifest_sidecar_path(stdlib_path: &Path) -
     stdlib_path.with_extension("partition.json")
 }
 
-pub(crate) fn stdlib_cache_object_digest_sidecar_path(stdlib_path: &Path) -> PathBuf {
+pub(super) fn stdlib_cache_object_digest_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("sha256")
 }
 
-pub(crate) fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
+pub(super) fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_file_name(format!(
         "{}.publish.lock",
         stdlib_path

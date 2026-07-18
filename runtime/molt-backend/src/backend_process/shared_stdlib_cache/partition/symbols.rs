@@ -1,10 +1,10 @@
 use molt_backend::SimpleIR;
 
-pub(crate) fn emitted_module_symbol(name: &str) -> Option<&str> {
+fn emitted_module_symbol(name: &str) -> Option<&str> {
     name.strip_prefix("molt_init_")
 }
 
-pub(crate) fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
+fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
     if let Some(rest) = name.strip_prefix("molt_init_") {
         return rest == module_symbol;
     }
