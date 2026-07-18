@@ -1452,6 +1452,11 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
     rows = data.get("simpleir_control_kind", [])
     if not isinstance(rows, list):
         raise OpKindTableError("simpleir_control_kind must be an array of tables")
+    aliases = {
+        alias: row["canonical"]
+        for row in data.get("kind", [])
+        for alias in row.get("aliases", [])
+    }
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -1463,6 +1468,11 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             )
         if kind in seen:
             raise OpKindTableError(f"duplicate simpleir_control_kind: {kind}")
+        if kind in aliases:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind!r} is an alias of {aliases[kind]!r}; "
+                "control facts must be declared once on the canonical kind"
+            )
         seen.add(kind)
         for field in _SIMPLEIR_CONTROL_FACT_FIELDS:
             if not isinstance(row.get(field), bool):
