@@ -50,9 +50,12 @@ def _tool_sibling_directories(command: Sequence[str]) -> tuple[Path, ...]:
 
 def _resolve_available_fast_linker(
     driver_command: Sequence[str] = (),
+    *,
+    host_platform: str | None = None,
 ) -> str | None:
+    host_platform = sys.platform if host_platform is None else host_platform
     sibling_directories = _tool_sibling_directories(driver_command)
-    if sys.platform.startswith("linux") and llvm_named_tool_candidates(
+    if host_platform.startswith("linux") and llvm_named_tool_candidates(
         "mold", sibling_directories=sibling_directories
     ):
         return "mold"
@@ -63,7 +66,11 @@ def _resolve_available_fast_linker(
     return None
 
 
-def _resolve_dev_linker(driver_command: Sequence[str] = ()) -> str | None:
+def _resolve_dev_linker(
+    driver_command: Sequence[str] = (),
+    *,
+    host_platform: str | None = None,
+) -> str | None:
     raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "none", "disable"}:
         return None
@@ -71,7 +78,10 @@ def _resolve_dev_linker(driver_command: Sequence[str] = ()) -> str | None:
         return raw
     if raw != "auto":
         return None
-    return _resolve_available_fast_linker(driver_command)
+    return _resolve_available_fast_linker(
+        driver_command,
+        host_platform=host_platform,
+    )
 
 
 def _resolve_native_linker_hint(
@@ -79,25 +89,33 @@ def _resolve_native_linker_hint(
     profile: str,
     target_triple: str | None,
     driver_command: Sequence[str] = (),
+    host_platform: str | None = None,
 ) -> str | None:
+    host_platform = sys.platform if host_platform is None else host_platform
     if profile == "dev":
         raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
-        is_host_linux = target_triple is None and sys.platform.startswith("linux")
-        is_host_windows = target_triple is None and sys.platform == "win32"
+        is_host_linux = target_triple is None and host_platform.startswith("linux")
+        is_host_windows = target_triple is None and host_platform == "win32"
         if raw == "auto" and not (is_host_linux or is_host_windows):
             return None
-        selected = _resolve_dev_linker(driver_command)
+        selected = _resolve_dev_linker(
+            driver_command,
+            host_platform=host_platform,
+        )
         target_is_linux = (target_triple is not None and "linux" in target_triple) or (
-            target_triple is None and sys.platform.startswith("linux")
+            target_triple is None and host_platform.startswith("linux")
         )
         if selected == "mold" and not target_is_linux:
             raise RuntimeError("mold is supported only for Linux ELF link targets.")
         return selected
     is_host_fast_linker = target_triple is None and (
-        sys.platform.startswith("linux") or sys.platform == "win32"
+        host_platform.startswith("linux") or host_platform == "win32"
     )
     if is_host_fast_linker:
-        return _resolve_available_fast_linker(driver_command)
+        return _resolve_available_fast_linker(
+            driver_command,
+            host_platform=host_platform,
+        )
     return None
 
 
@@ -122,7 +140,11 @@ def _build_native_link_driver_command(
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: str,
+    host_platform: str | None = None,
+    host_arch: str | None = None,
 ) -> tuple[list[str], str | None, str | None]:
+    host_platform = sys.platform if host_platform is None else host_platform
+    host_arch = platform.machine() if host_arch is None else host_arch
     explicit_cc = os.environ.get("CC", "").strip()
     if explicit_cc:
         link_cmd = list(resolve_explicit_tool_command(explicit_cc, label="CC"))
@@ -141,7 +163,7 @@ def _build_native_link_driver_command(
             link_cmd = list(
                 resolve_explicit_tool_command(cross_cc, label="MOLT_CROSS_CC")
             )
-        elif (zig := llvm_named_tool_candidates("zig")):
+        elif zig := llvm_named_tool_candidates("zig"):
             link_cmd = [str(zig[0]), "cc"]
             target_arg = _zig_target_query(target_triple)
             normalized_target = target_arg
@@ -154,7 +176,7 @@ def _build_native_link_driver_command(
         sysroot_flag = "--sysroot"
         if (
             target_triple and ("apple" in target_triple or "darwin" in target_triple)
-        ) or (not target_triple and sys.platform == "darwin"):
+        ) or (not target_triple and host_platform == "darwin"):
             sysroot_flag = "-isysroot"
         link_cmd.extend([sysroot_flag, str(sysroot_path)])
     cflags = os.environ.get("CFLAGS", "")
@@ -164,15 +186,16 @@ def _build_native_link_driver_command(
         profile=profile,
         target_triple=target_triple,
         driver_command=link_cmd,
+        host_platform=host_platform,
     )
     if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
         link_cmd.append(f"-fuse-ld={linker_hint}")
-    if sys.platform == "darwin" and not target_triple:
+    if host_platform == "darwin" and not target_triple:
         link_cmd = _strip_arch_flags(link_cmd)
         arch = (
             os.environ.get("MOLT_ARCH")
             or (None if output_obj is None else _detect_macos_arch(output_obj))
-            or platform.machine()
+            or host_arch
         )
         link_cmd.extend(["-arch", arch])
         deployment_target = _detect_macos_deployment_target(arch)
@@ -199,7 +222,7 @@ def _windows_coff_library_command(
         is_lld_link = tool.stem.lower() == "lld-link"
         return [
             str(tool),
-            * (("/lib",) if is_lld_link else ()),
+            *(("/lib",) if is_lld_link else ()),
             f"/OUT:{output_path}",
             *[str(path) for path in input_objects],
         ]
@@ -223,20 +246,26 @@ def _build_native_link_plan(
     stdlib_obj_path: Path | None = None,
     export_molt_runtime_symbols: bool = False,
     bolt_requested: bool = False,
+    host_platform: str | None = None,
+    host_arch: str | None = None,
 ) -> NativeLinkPlan:
+    host_platform = sys.platform if host_platform is None else host_platform
+    host_arch = platform.machine() if host_arch is None else host_arch
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
         output_obj=output_obj,
         target_triple=target_triple,
         sysroot_path=sysroot_path,
         profile=profile,
+        host_platform=host_platform,
+        host_arch=host_arch,
     )
     link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         link_inputs.append(str(stdlib_obj_path))
     target = resolve_native_target_spec(
         target_triple,
-        host_platform=sys.platform,
-        host_arch=platform.machine(),
+        host_platform=host_platform,
+        host_arch=host_arch,
     )
     selected_linker_name = native_linker_name_from_driver_command(
         link_cmd,
