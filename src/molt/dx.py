@@ -823,6 +823,31 @@ def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -
     return root
 
 
+def _host_scratch_roots() -> tuple[Path, ...]:
+    """Return scratch roots issued by this host process, not child env input.
+
+    ``RunContext`` accepts an explicit child environment, but that mapping is
+    configuration rather than custody proof: it must neither erase the hosted
+    runner's real temp root nor fabricate a D: scratch exemption.  The Python
+    temp authority is always host-local.  ``RUNNER_TEMP`` is additionally
+    trusted only when the current process is itself running under GitHub
+    Actions; a caller-supplied mapping cannot self-attest that fact.
+    """
+
+    roots = [Path(tempfile.gettempdir()).expanduser().resolve()]
+    if (
+        os.environ.get("GITHUB_ACTIONS", "").strip() == "true"
+        and os.environ.get("CI", "").strip() == "true"
+    ):
+        raw = os.environ.get("RUNNER_TEMP", "").strip()
+        candidate = Path(raw).expanduser() if raw else None
+        if candidate is not None and candidate.is_absolute():
+            resolved = candidate.resolve()
+            if resolved not in roots:
+                roots.append(resolved)
+    return tuple(roots)
+
+
 def checkout_custody(
     repo_root: Path,
     env: Mapping[str, str] | None = None,
@@ -838,14 +863,7 @@ def checkout_custody(
     )
     if hosted is not None:
         return hosted
-    scratch_roots: list[Path] = [Path(tempfile.gettempdir()).expanduser().resolve()]
-    for name in ("RUNNER_TEMP", GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV):
-        raw = env_view.get(name, "").strip()
-        candidate = Path(raw).expanduser() if raw else None
-        if candidate is not None and candidate.is_absolute():
-            resolved = candidate.resolve()
-            if resolved not in scratch_roots:
-                scratch_roots.append(resolved)
+    scratch_roots = _host_scratch_roots()
     if any(host_path_is_within(source_root, root) for root in scratch_roots):
         # Test/build projects created beneath the OS-issued temp root are
         # explicit scratch, not durable checkout authority. This distinction is

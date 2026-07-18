@@ -810,6 +810,9 @@ def test_default_windows_artifact_roots_has_no_volume_fallback(
     primary = tmp_path / "primary"
     repo_root = primary / "molt-src"
     repo_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
 
     roots = dx._default_windows_external_artifact_roots(repo_root)
 
@@ -841,6 +844,9 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     primary = tmp_path / "Molt"
     repo_root = primary / "molt-src"
     repo_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     env = RunContext(
@@ -1010,11 +1016,34 @@ def test_workflow_issued_scratch_root_does_not_depend_on_tempfile_cache(
     repo_root = issued_root / "tmp" / "pytest" / "repo"
     repo_root.mkdir(parents=True)
     monkeypatch.setattr(dx.tempfile, "gettempdir", lambda: str(tmp_path / "ambient"))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
 
-    custody = dx.checkout_custody(repo_root, env)
+    custody = dx.checkout_custody(repo_root, {})
 
     assert custody.kind == "explicit-scratch"
     assert custody.custody_root == repo_root.resolve()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires concrete Windows drive roles")
+def test_child_environment_cannot_fabricate_d_drive_scratch_custody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+
+    with pytest.raises(dx.DxConfigError, match=r"forbidden D:"):
+        dx.checkout_custody(
+            Path(r"D:\untrusted\repo"),
+            {
+                "GITHUB_ACTIONS": "true",
+                "CI": "true",
+                "RUNNER_TEMP": r"D:\untrusted",
+            },
+            require_exists=False,
+        )
 
 
 @pytest.mark.parametrize(
