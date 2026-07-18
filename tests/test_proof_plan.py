@@ -5,6 +5,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 import sys
+import threading
+import time
 
 import pytest
 
@@ -31,6 +33,14 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.local_rules) >= 30
     assert not (proof_plan.ROOT / "tools" / "molt_dev_gates.toml").exists()
     assert not (proof_plan.ROOT / "tools" / "ci_changed_paths.py").exists()
+
+
+def test_lean_cache_is_ignored_untracked_build_state() -> None:
+    tracked = proof_plan._run_git(["ls-files", "formal/lean/.lake"])
+    assert tracked.strip() == ""
+    assert "formal/lean/.lake/" in (proof_plan.ROOT / ".gitignore").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
@@ -151,6 +161,25 @@ def test_toolchain_setup_projection_drift_is_rejected() -> None:
     )
     errors = replace(PLAN, toolchain_policies=policies).validate()
     assert any("uv: setup evidence token missing" in error for error in errors)
+
+
+def test_manifest_rejects_missing_repository_command_inputs() -> None:
+    command = next(
+        command for command in PLAN.commands if command.id == "python.unit.harness"
+    )
+    broken = replace(
+        command,
+        data={**command.data, "argv": [*command.argv, "tests/does_not_exist.py"]},
+    )
+    commands = tuple(
+        broken if candidate.id == command.id else candidate
+        for candidate in PLAN.commands
+    )
+    errors = replace(PLAN, commands=commands).validate()
+    assert any(
+        "repository input does not exist: 'tests/does_not_exist.py'" in error
+        for error in errors
+    )
 
 
 def test_lockfiles_select_security_and_build_classes() -> None:
@@ -459,6 +488,42 @@ def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> Non
     )
     with pytest.raises(ValueError, match="toolchain contract violation"):
         proof_plan.toolchain_fingerprints(PLAN, ("python", "uv"))
+
+
+def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
+    monkeypatch,
+) -> None:
+    active_rustup = 0
+    overlap_detected = False
+    lock = threading.Lock()
+    calls: list[str] = []
+
+    def fake_fingerprint(policy: proof_plan.ToolchainPolicy) -> dict[str, str]:
+        nonlocal active_rustup, overlap_detected
+        if policy.data.get("fingerprint_domain") == "rustup":
+            with lock:
+                overlap_detected |= active_rustup != 0
+                active_rustup += 1
+            time.sleep(0.02)
+            with lock:
+                active_rustup -= 1
+        calls.append(policy.name)
+        return {
+            "path": f"/toolchain/{policy.name}",
+            "launcher_path": f"/toolchain/{policy.name}",
+            "launcher_sha256": "0" * 64,
+            "content_path": f"/toolchain/{policy.name}",
+            "version": f"{policy.name} 1.96.1",
+            "version_pattern": str(policy.data["version_pattern"]),
+            "executable_sha256": "0" * 64,
+            "identity_sha256": "0" * 64,
+        }
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
+    fingerprints = proof_plan.toolchain_fingerprints(PLAN, ("rustc", "cargo"))
+    assert set(fingerprints) == {"rustc", "cargo"}
+    assert calls == ["rustc", "cargo"]
+    assert overlap_detected is False
 
 
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:

@@ -13,6 +13,7 @@ authority_inputs = [
   ".github/workflows/ci.yml",
   ".github/workflows/formal.yml",
   ".github/workflows/molt-wasm-ci.yml",
+  ".github/workflows/proof-queue-portability.yml",
   ".github/workflows/security_hardening.yml",
   ".gitignore",
   ".python-version",
@@ -89,6 +90,7 @@ setup_evidence = [
 [[toolchain_policy]]
 name = "rustc"
 executable = "rustc"
+fingerprint_domain = "rustup"
 version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
 version_pattern = '^rustc 1\.96\.1\b'
@@ -97,17 +99,22 @@ setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
   ".github/workflows/ci.yml::dtolnay/rust-toolchain@1.96.1",
   ".github/workflows/molt-wasm-ci.yml::dtolnay/rust-toolchain@1.96.1",
+  ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1",
   ".github/workflows/security_hardening.yml::dtolnay/rust-toolchain@1.96.1",
 ]
 
 [[toolchain_policy]]
 name = "cargo"
 executable = "cargo"
+fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "cargo"]
 version_pattern = '^cargo 1\.96\.1\b'
 setup_value = "1.96.1"
-setup_evidence = ["rust-toolchain.toml::channel = \"1.96.1\""]
+setup_evidence = [
+  "rust-toolchain.toml::channel = \"1.96.1\"",
+  ".github/workflows/proof-queue-portability.yml::dtolnay/rust-toolchain@1.96.1",
+]
 
 [[toolchain_policy]]
 name = "clang"
@@ -1221,7 +1228,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["linker.test.generated-object-admission"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/cli/test_native_link_plan.py", "tests/cli/test_native_link_command_authority.py", "tests/cli/test_native_link_fail_closed.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/cli/test_native_link_plan.py", "tests/cli/test_cli_native_link_command_authority.py", "tests/cli/test_native_link_fail_closed.py"]
 toolchains = ["python", "uv", "clang", "llvm-config", "lld"]
 
 [[command]]
@@ -1269,7 +1276,7 @@ resource_class = "network-audit"
 timeout_seconds = 600
 cache_domain = "cargo-security"
 dependencies = ["security.rust.deny"]
-argv = ["cargo", "audit"]
+argv = ["cargo", "audit", "--db", "tmp/security/cargo-audit-advisory-db"]
 toolchains = ["rustc", "cargo", "cargo-audit"]
 
 [[command]]

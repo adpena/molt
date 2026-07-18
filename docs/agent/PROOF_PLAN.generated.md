@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 10 |
-| Hashed executable authority inputs | 1 | 31 |
+| Hashed executable authority inputs | 1 | 32 |
 | Local path rules | 35 | 35 |
 | Unique local commands | 73 | 74 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -39,8 +39,8 @@ Receipts record resolved path and version text, bind their identity hash to both
 | `python` | `^Python 3\.12\.` | `3.12` | 1 |
 | `uv` | `^uv 0\.11\.24\b` | `0.11.24` | 3 |
 | `node` | `^v24\.16\.0$` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `1.96.1` | 4 |
-| `cargo` | `^cargo 1\.96\.1\b` | `1.96.1` | 1 |
+| `rustc` | `^rustc 1\.96\.1\b` | `1.96.1` | 5 |
+| `cargo` | `^cargo 1\.96\.1\b` | `1.96.1` | 2 |
 | `clang` | `clang version 22\.1\.8\b` | `22.1.8` | 1 |
 | `llvm-config` | `^22\.1\.8$` | `22.1.8` | 1 |
 | `mlir-opt` | `version 22\.1\.8\b` | `22.1.8` | 1 |
