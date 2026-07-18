@@ -1,6 +1,7 @@
 pub mod blocks;
 pub mod call_targets;
 pub mod cfg;
+pub mod cfg_liveness;
 pub mod dominators;
 pub mod effect_proof;
 pub mod function;
@@ -9,6 +10,7 @@ pub mod op_kinds_generated;
 pub mod ops;
 pub mod printer;
 pub mod serialize;
+pub mod simple_def_use;
 pub mod ssa;
 pub mod target_info;
 pub mod types;
