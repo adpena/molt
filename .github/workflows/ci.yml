@@ -125,6 +125,9 @@ jobs:
       - name: Check generator manifest + closed-domain exhaustiveness (fact plane)
         run: uv run python3 tools/check_generator_manifest.py --check
 
+      - name: Check proof-plan authority and generated CI projections
+        run: uv run python3 tools/gen_proof_plan.py --check
+
       - name: Check LLVM runtime ABI drift (preserved runtime calls)
         run: uv run python3 tools/llvm_runtime_abi_audit.py --check
 
@@ -156,6 +159,9 @@ jobs:
       python_tooling: ${{ steps.paths.outputs.python_tooling }}
       rust: ${{ steps.paths.outputs.rust }}
       llvm: ${{ steps.paths.outputs.llvm }}
+      python_security: ${{ steps.paths.outputs.python_security }}
+      rust_security: ${{ steps.paths.outputs.rust_security }}
+      matrix: ${{ steps.paths.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -163,7 +169,18 @@ jobs:
 
       - name: Classify changed paths
         id: paths
-        run: python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"
+        run: python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"
+
+  security-hardening:
+    name: Security Hardening
+    needs: classify-changes
+    if: >-
+      needs.classify-changes.outputs.python_security == 'true' ||
+      needs.classify-changes.outputs.rust_security == 'true'
+    uses: ./.github/workflows/security_hardening.yml
+    with:
+      python_security: ${{ needs.classify-changes.outputs.python_security == 'true' }}
+      rust_security: ${{ needs.classify-changes.outputs.rust_security == 'true' }}
 
   python-tooling-smoke:
     name: Python Tooling Smoke

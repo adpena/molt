@@ -26,7 +26,7 @@ nodes, never a crash):
                               CLAIMS lane rows (lane nodes) + decisions
   * findings registry      -- ``tools.findings_registry.query_findings`` findings
                               with producer/consumer edges (the A4 layer)
-  * ``tools/molt_dev_gates.toml`` -- gate + gate_flip names (gate nodes)
+  * ``tools/proof_plan.toml`` -- proof families + gate_flip names (gate nodes)
 
 Recall API (importable) + a CLI::
 
@@ -938,13 +938,13 @@ def _resolve_or_make_agent(graph: MemoryGraph, name: str) -> str:
 
 
 def _parse_gates(graph: MemoryGraph, repo_root: Path) -> None:
-    """molt_dev_gates.toml: [[rule]] + [[gate_flip]] names -> gate nodes."""
+    """proof_plan.toml: [[rule]] + [[gate_flip]] names -> gate nodes."""
     try:
         import tomllib  # 3.11+
     except Exception:
         graph.warnings.append("tomllib-unavailable:gate-nodes-skipped")
         return
-    path = repo_root / "tools" / "molt_dev_gates.toml"
+    path = repo_root / "tools" / "proof_plan.toml"
     if not path.is_file():
         return
     try:
@@ -959,7 +959,7 @@ def _parse_gates(graph: MemoryGraph, repo_root: Path) -> None:
                 name,
                 "gate",
                 title=str(rule.get("description", ""))[:120],
-                source="tools/molt_dev_gates.toml",
+                source="tools/proof_plan.toml",
                 keywords=_tokenize(str(rule.get("description", ""))),
             )
     for flip in data.get("gate_flip", []) or []:
@@ -969,7 +969,7 @@ def _parse_gates(graph: MemoryGraph, repo_root: Path) -> None:
                 name,
                 "gate",
                 title=str(flip.get("rationale", ""))[:120],
-                source="tools/molt_dev_gates.toml",
+                source="tools/proof_plan.toml",
                 keywords=_tokenize(str(flip.get("rationale", ""))),
             )
 

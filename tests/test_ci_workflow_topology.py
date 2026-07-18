@@ -125,13 +125,16 @@ def test_ci_push_path_is_cheap_only() -> None:
 def test_ci_heavy_jobs_are_path_classified() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
-    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
+    assert 'python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"' in (
         ci_text
     )
     assert "python_tooling: ${{ steps.paths.outputs.python_tooling }}" in ci_text
     assert "rust: ${{ steps.paths.outputs.rust }}" in ci_text
     assert "llvm: ${{ steps.paths.outputs.llvm }}" in ci_text
-    assert ci_text.count("needs: classify-changes") == 3
+    assert "python_security: ${{ steps.paths.outputs.python_security }}" in ci_text
+    assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in ci_text
+    assert "matrix: ${{ steps.paths.outputs.matrix }}" in ci_text
+    assert ci_text.count("needs: classify-changes") == 4
     assert ci_text.count("fetch-depth: 0") == 1
 
 
@@ -193,7 +196,7 @@ def test_kani_workflow_is_scheduled_manual_and_standalone() -> None:
     assert "push:" not in kani_text
     assert "pull_request:" not in kani_text
     assert "classify-changes:" not in kani_text
-    assert "ci_changed_paths.py" not in kani_text
+    assert "proof_plan.py" not in kani_text
 
 
 def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
@@ -645,24 +648,17 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "run: cargo build -p molt-worker --release" not in release_text
 
 
-def test_security_hardening_workflow_is_path_classified() -> None:
+def test_security_hardening_is_reusable_and_ci_uses_one_planner() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
     security_text = _read(".github/workflows/security_hardening.yml")
 
-    assert "classify-changes:" in security_text
-    assert "name: Changed Path Classifier" in security_text
-    assert (
-        "python_security: ${{ steps.paths.outputs.python_security }}" in security_text
-    )
-    assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in security_text
-    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
-        security_text
-    )
-    assert "if: needs.classify-changes.outputs.python_security == 'true'" in (
-        security_text
-    )
-    assert "if: needs.classify-changes.outputs.rust_security == 'true'" in (
-        security_text
-    )
+    assert "workflow_call:" in security_text
+    assert "classify-changes:" not in security_text
+    assert "tools/proof_plan.py" not in security_text
+    assert "inputs.python_security" in security_text
+    assert "inputs.rust_security" in security_text
+    assert "uses: ./.github/workflows/security_hardening.yml" in ci_text
+    assert ci_text.count("tools/proof_plan.py") == 1
 
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:

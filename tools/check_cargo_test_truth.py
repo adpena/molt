@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CI = ROOT / ".github" / "workflows" / "ci.yml"
-DEV_GATES = ROOT / "tools" / "molt_dev_gates.toml"
+DEV_GATES = ROOT / "tools" / "proof_plan.toml"
 RUNNER = ROOT / "tools" / "run_cargo_test_truth.py"
 _CARGO_TEST = re.compile(r"cargo\s+test\b[^\n\"']*")
 _CANONICAL = "cargo test --workspace --tests --no-fail-fast"

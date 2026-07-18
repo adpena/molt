@@ -60,6 +60,20 @@ generated_scan_roots = ["runtime", "src", "tools"]
 # ===========================================================================
 
 [[generator]]
+tool = "tools/gen_proof_plan.py"
+outputs = [
+  ".github/proof-plan.generated.json",
+  "docs/agent/PROOF_PLAN.generated.md",
+  ".github/workflows/formal.yml",
+]
+source = "tools/proof_plan.toml"
+check_mode = true
+check_command = "tools/gen_proof_plan.py --check"
+idempotent = true
+sync_test = "tests/test_proof_plan.py"
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
   "runtime/molt-cpython-abi/cpython_abi_coverage.generated.json",
