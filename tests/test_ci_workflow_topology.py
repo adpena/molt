@@ -48,8 +48,10 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "targets: wasm32-wasip1" in docs_gate
 
     assert "concurrency:" in ci_text
-    assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
-    assert "cancel-in-progress: true" in ci_text
+    assert "merge_group:" in ci_text
+    assert "github.event_name == 'pull_request'" in ci_text
+    assert "format('pr-{0}', github.event.pull_request.number)" in ci_text
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in (ci_text)
     assert "docs-gates:" in ci_text
     assert "classify-changes:" in ci_text
     assert "name: Changed Path Classifier" in ci_text
@@ -76,7 +78,8 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "benchmark:" not in ci_text
     assert "parity:" not in ci_text
     assert "runs-on: ubuntu-latest" in ci_text
-    assert "runs-on: macos-14" not in ci_text
+    assert "runs-on: ${{ matrix.runner }}" in ci_text
+    assert "matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}" in ci_text
     assert "Swatinem/rust-cache@v2" in ci_text
     # Three rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
     # rust-build-unit-smoke, and the LLVM backend job.
@@ -126,7 +129,12 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
     assert "llvm: ${{ steps.paths.outputs.llvm }}" in ci_text
     assert "python_security: ${{ steps.paths.outputs.python_security }}" in ci_text
     assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in ci_text
+    assert (
+        "platform_portability: ${{ steps.paths.outputs.platform_portability }}"
+        in ci_text
+    )
     assert "matrix: ${{ steps.paths.outputs.matrix }}" in ci_text
+    assert "topology: ${{ steps.paths.outputs.topology }}" in ci_text
     assert "selected: ${{ steps.paths.outputs.selected }}" in ci_text
     assert ci_text.count("needs: classify-changes") >= 4
     assert "proof-plan-verdict:" in ci_text
@@ -366,45 +374,67 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert "tmp/security/cargo-audit-advisory-db" in _read("tools/proof_plan.toml")
 
 
-def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
-    workflow_text = _read(".github/workflows/proof-queue-portability.yml")
+def test_platform_portability_is_one_generated_cross_os_authority() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
 
-    assert "name: Proof Queue Portability" in workflow_text
-    assert "os: [ubuntu-latest, macos-14, windows-2022]" in workflow_text
-    assert "fail-fast: false" in workflow_text
-    assert "Configure verified ephemeral custody" in workflow_text
-    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in workflow_text
-    assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in workflow_text
-    assert "$env:RUNNER_TEMP" in workflow_text
-    assert "${{ runner.temp }}" not in workflow_text
-    assert 'python-version-file: ".python-version"' in workflow_text
-    assert "uses: dtolnay/rust-toolchain@1.96.1" in workflow_text
-    assert "uv sync --frozen --group dev" in workflow_text
-    assert "timeout-minutes: 10" in workflow_text
-    assert (
-        "uv run --active --project . --no-sync python -m pytest -q "
-        "tests/test_dx_run_context.py "
-        "tests/test_molt_queue_cli.py "
-        "tests/tools/test_proof_queue.py "
-        "tests/tools/test_scientific_stack_versions.py "
-        "tests/cli/test_source_extension_producer.py"
-    ) in workflow_text
-    for path in (
-        ".github/workflows/proof-queue-portability.yml",
-        ".python-version",
-        "rust-toolchain.toml",
-        "src/molt/dx.py",
-        "src/molt/cli/queue_cli.py",
-        "tools/process_spawn.py",
-        "tools/proof_queue.py",
-        "tools/proof_queue_pkg/**",
-        "tools/proof_plan.py",
-        "tools/proof_plan.toml",
-        "tests/test_molt_queue_cli.py",
-        "tests/test_dx_run_context.py",
-        "tests/tools/test_proof_queue.py",
-    ):
-        assert path in workflow_text
+    assert not (WORKFLOW_ROOT / "proof-queue-portability.yml").exists()
+    family = next(
+        family
+        for family in plan["ci_family"]
+        if family["name"] == "platform_portability"
+    )
+    assert family["executor"] == "github-matrix"
+    assert family["workflow"] == ".github/workflows/ci.yml"
+    assert family["job"] == "platform-portability"
+    assert "fail-fast: false" in ci_text
+    assert "runs-on: ${{ matrix.runner }}" in ci_text
+    assert "Configure verified ephemeral custody" in ci_text
+    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in ci_text
+    assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in ci_text
+    assert "$env:RUNNER_TEMP" in ci_text
+    assert "${{ runner.temp }}" not in ci_text
+    assert "--run-family platform_portability --receipt" in ci_text
+    assert '--matrix-cell "${{ matrix.cell }}"' in ci_text
+    assert "uv run --active --project . --no-sync python -m pytest" not in ci_text
+
+    cells = {
+        cell["id"]: cell
+        for cell in plan["matrix_cell"]
+        if cell["backend"] == "proof-queue"
+    }
+    assert {(cell["os"], cell["runner"]) for cell in cells.values()} == {
+        ("linux", "ubuntu-latest"),
+        ("macos", "macos-14"),
+        ("windows", "windows-2022"),
+    }
+    commands = [
+        command
+        for command in plan["command"]
+        if command["family"] == "platform_portability"
+    ]
+    assert {command["cell"] for command in commands} == set(cells)
+    assert len({tuple(command["argv"]) for command in commands}) == 1
+
+
+def test_checkouts_drop_persisted_credentials_and_permissions_are_bounded() -> None:
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if "uses: actions/checkout@" not in line:
+                continue
+            block = "\n".join(lines[index : index + 6])
+            assert "persist-credentials: false" in block, workflow
+
+        if workflow.name in {"pr_trust_gate.yml", "pr_trust_labeler.yml"}:
+            continue
+        assert "\npermissions:\n  contents: read\n" in text, workflow
+
+    release = _read(".github/workflows/release.yml")
+    assert release.count("contents: write") == 2
+    assert release.count("id-token: write") == 2
+    assert release.count("attestations: write") == 2
 
 
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
@@ -833,7 +863,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
     assert "MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm" in wasm_text
     assert "concurrency:" in wasm_text
-    assert "cancel-in-progress: true" in wasm_text
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in (
+        wasm_text
+    )
     assert "MOLT_CI_PYTHON" not in wasm_text
     assert (
         "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"

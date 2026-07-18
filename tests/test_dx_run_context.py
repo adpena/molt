@@ -42,7 +42,7 @@ def _github_actions_custody_env(
     repo_root: Path, runner_temp: Path, *, sha: str = "a" * 40
 ) -> dict[str, str]:
     repository = "adpena/molt"
-    workflow = repo_root / ".github" / "workflows" / "proof-queue-portability.yml"
+    workflow = repo_root / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True, exist_ok=True)
     workflow.write_text("name: test\n", encoding="utf-8")
     runner_temp.mkdir(parents=True, exist_ok=True)
@@ -71,8 +71,7 @@ def _github_actions_custody_env(
         "GITHUB_API_URL": "https://api.github.com",
         "GITHUB_WORKSPACE": str(repo_root.resolve()),
         "GITHUB_WORKFLOW_REF": (
-            f"{repository}/.github/workflows/"
-            "proof-queue-portability.yml@refs/heads/main"
+            f"{repository}/.github/workflows/ci.yml@refs/heads/main"
         ),
         "GITHUB_WORKFLOW_SHA": sha,
         "GITHUB_EVENT_PATH": str(event_path),
@@ -81,7 +80,7 @@ def _github_actions_custody_env(
         "GITHUB_SHA": sha,
         "GITHUB_RUN_ID": "12345",
         "GITHUB_RUN_ATTEMPT": "2",
-        "GITHUB_JOB": "queue-portability",
+        "GITHUB_JOB": "platform-portability",
         "RUNNER_TEMP": str(runner_temp.resolve()),
         "RUNNER_TOOL_CACHE": str(runner_tool_cache.resolve()),
         "RUNNER_OS": "Windows"
