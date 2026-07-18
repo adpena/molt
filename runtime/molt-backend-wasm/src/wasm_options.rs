@@ -1,4 +1,5 @@
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
+const STANDALONE_DATA_BASE_DEFAULT: u64 = 1024 * 1024;
 
 /// WASM profile for import planning.
 /// `Full` registers the whole generated host-import registry for process-host
@@ -40,15 +41,7 @@ impl Default for WasmCompileOptions {
                 let raw = std::env::var("MOLT_WASM_DATA_BASE")
                     .ok()
                     .and_then(|val| val.parse::<u64>().ok())
-                    // Default: 64 MiB. The split-runtime layout shares
-                    // linear memory between the Rust runtime WASM module
-                    // (whose data segments start at ~1 MiB and whose
-                    // dlmalloc heap grows upward from there) and the
-                    // output module. A 1 MiB default would collide with
-                    // the runtime's data region and cause string-pointer
-                    // corruption on large module graphs. 64 MiB leaves
-                    // ample headroom for the runtime heap.
-                    .unwrap_or(64 * 1024 * 1024);
+                    .unwrap_or(STANDALONE_DATA_BASE_DEFAULT);
                 let aligned = (raw + 7) & !7;
                 aligned.min(u64::from(u32::MAX)) as u32
             },

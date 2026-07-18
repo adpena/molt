@@ -140,11 +140,30 @@ def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-de
         runtime_table_min=output_layout.finalized_app_base,
         fixed_prefix_len=output_layout.fixed_prefix_len,
     )
+    real_split_app_global_base = wasm_link._split_app_global_base
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
             wasm_link,
             "read_wasm_split_runtime_callable_layout",
             lambda _path: runtime_layout,
+        )
+        patch.setattr(
+            wasm_link,
+            "_split_app_global_base",
+            lambda output_data: (
+                real_split_app_global_base(output_data)
+                if wasm_link._active_data_segment_intervals(output_data)
+                else 64 * 1024 * 1024
+            ),
+        )
+        patch.setattr(
+            wasm_link,
+            "_validate_split_app_data_layout",
+            lambda output_data, _linked_data, *, planned_base: (
+                wasm_link._active_data_segment_intervals(output_data)
+                or ((planned_base - 1, planned_base),),
+                ((planned_base, planned_base + 1),),
+            ),
         )
         return _REAL_RUN_WASM_LD(*args, **kwargs)
 
@@ -1224,6 +1243,115 @@ def _build_runtime_import_data_module(
     sections.append((11, bytes(data_payload)))
 
     return wasm_link._build_sections(sections)
+
+
+def _write_varsint32(value: int) -> bytes:
+    out = bytearray()
+    current = value
+    while True:
+        byte = current & 0x7F
+        current >>= 7
+        sign_bit = byte & 0x40
+        done = (current == 0 and not sign_bit) or (current == -1 and sign_bit)
+        out.append(byte if done else byte | 0x80)
+        if done:
+            return bytes(out)
+
+
+def _build_data_segment_module(
+    segments: list[tuple[int, int | None, bytes]],
+) -> bytes:
+    payload = bytearray(wasm_link._write_varuint(len(segments)))
+    for flags, data_offset, content in segments:
+        payload.extend(wasm_link._write_varuint(flags))
+        if flags == 1:
+            assert data_offset is None
+        else:
+            assert data_offset is not None
+            if flags == 2:
+                payload.extend(wasm_link._write_varuint(0))
+            payload.append(0x41)
+            payload.extend(_write_varsint32(data_offset))
+            payload.append(0x0B)
+        payload.extend(wasm_link._write_varuint(len(content)))
+        payload.extend(content)
+    return wasm_link._build_sections([(11, bytes(payload))])
+
+
+def test_split_app_global_base_uses_aligned_maximum_active_data_end() -> None:
+    output = _build_data_segment_module(
+        [
+            (0, 0x3000, b"third"),
+            (1, None, b"passive-does-not-own-an-address"),
+            (2, 0x1000, b"first"),
+            (0, 0x2000, b"second"),
+        ]
+    )
+
+    assert wasm_link._active_data_segment_intervals(output) == (
+        (0x1000, 0x1005),
+        (0x2000, 0x2006),
+        (0x3000, 0x3005),
+    )
+    assert wasm_link._split_app_global_base(output) == 0x3010
+
+
+def test_split_app_global_base_preserves_exact_alignment() -> None:
+    output = _build_data_segment_module([(0, 0x1000, b"x" * 16)])
+
+    assert wasm_link._split_app_global_base(output) == 0x1010
+
+
+def test_split_app_global_base_requires_active_data_authority() -> None:
+    with pytest.raises(ValueError, match="no active data placement authority"):
+        wasm_link._split_app_global_base(_build_data_segment_module([]))
+
+
+def test_active_data_segment_intervals_reject_overlap() -> None:
+    output = _build_data_segment_module(
+        [(0, 0x1000, b"x" * 32), (2, 0x1010, b"y" * 32)]
+    )
+
+    with pytest.raises(ValueError, match="Active data segments overlap"):
+        wasm_link._active_data_segment_intervals(output)
+
+
+def test_active_data_segment_intervals_reject_wasm32_overflow() -> None:
+    output = _build_data_segment_module([(0, -8, b"x" * 16)])
+
+    with pytest.raises(ValueError, match="exceeds the wasm32 address space"):
+        wasm_link._active_data_segment_intervals(output)
+
+
+def test_validate_split_app_data_layout_attests_disjoint_extents() -> None:
+    output = _build_data_segment_module(
+        [(0, 0x1000, b"output-a"), (2, 0x2000, b"output-b")]
+    )
+    planned_base = wasm_link._split_app_global_base(output)
+    linked = _build_data_segment_module(
+        [(0, planned_base + 0x100, b"native-b"), (0, planned_base, b"native-a")]
+    )
+
+    assert wasm_link._validate_split_app_data_layout(
+        output, linked, planned_base=planned_base
+    ) == (
+        ((0x1000, 0x1008), (0x2000, 0x2008)),
+        (
+            (planned_base, planned_base + 8),
+            (planned_base + 0x100, planned_base + 0x108),
+        ),
+    )
+
+
+def test_validate_split_app_data_layout_rejects_original_overlap() -> None:
+    output = _build_data_segment_module([(0, 0x1000, b"output")])
+    planned_base = wasm_link._split_app_global_base(output)
+    linked = _build_data_segment_module([(0, planned_base - 1, b"native")])
+
+    with pytest.raises(ValueError, match="overlaps output-owned active data"):
+        wasm_link._validate_split_app_data_layout(
+            output, linked, planned_base=planned_base
+        )
 
 
 def _build_defined_memory_module(min_pages: int) -> bytes:
@@ -3066,7 +3194,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     assert "--import-memory" in split_app_cmd
     assert "--no-stack-first" in split_app_cmd
     assert "--stack-first" not in split_app_cmd
-    assert f"--global-base={app_data_offset}" in split_app_cmd
+    assert f"--global-base={app_data_offset + 16}" in split_app_cmd
     assert f"--table-base={app_table_base}" in split_app_cmd
     assert not any("molt_runtime_stub" in part for part in monolithic_cmd)
     assert not any("molt_runtime_stub" in part for part in split_app_cmd)
