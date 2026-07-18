@@ -3,6 +3,8 @@
 
 #[cfg(all(molt_has_net_io, not(unix)))]
 use super::ancillary::AncillaryItem;
+#[cfg(molt_has_net_io)]
+use super::raw::NativeSocketDescriptor;
 use super::*;
 #[cfg(molt_has_net_io)]
 use socket2::Socket;
@@ -57,23 +59,16 @@ pub(super) struct MoltSocket {
     pub(super) refs: AtomicUsize,
 }
 
-#[cfg(molt_has_net_io)]
-#[cfg(all(unix, molt_has_net_io))]
-pub(super) type SocketFd = RawFd;
-#[cfg(molt_has_net_io)]
-#[cfg(all(windows, molt_has_net_io))]
-pub(super) type SocketFd = RawSocket;
-
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) struct SocketRuntimeState {
     #[cfg(molt_has_net_io)]
-    fd_map: Mutex<HashMap<SocketFd, PtrSlot>>,
+    descriptor_map: Mutex<HashMap<NativeSocketDescriptor, PtrSlot>>,
     #[cfg(target_arch = "wasm32")]
     wasm_meta: Mutex<HashMap<i64, WasmSocketMeta>>,
     #[cfg(all(molt_has_net_io, not(unix)))]
-    peer_map: Mutex<HashMap<SocketFd, SocketFd>>,
+    peer_map: Mutex<HashMap<NativeSocketDescriptor, NativeSocketDescriptor>>,
     #[cfg(all(molt_has_net_io, not(unix)))]
-    ancillary_queue_map: Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>,
+    ancillary_queue_map: Mutex<HashMap<NativeSocketDescriptor, VecDeque<PendingAncillaryChunk>>>,
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -88,7 +83,7 @@ impl SocketRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
             #[cfg(molt_has_net_io)]
-            fd_map: Mutex::new(HashMap::new()),
+            descriptor_map: Mutex::new(HashMap::new()),
             #[cfg(target_arch = "wasm32")]
             wasm_meta: Mutex::new(HashMap::new()),
             #[cfg(all(molt_has_net_io, not(unix)))]
@@ -100,7 +95,7 @@ impl SocketRuntimeState {
 
     pub(crate) fn clear(&self) {
         #[cfg(molt_has_net_io)]
-        self.fd_map.lock().unwrap().clear();
+        self.descriptor_map.lock().unwrap().clear();
         #[cfg(target_arch = "wasm32")]
         self.wasm_meta.lock().unwrap().clear();
         #[cfg(all(molt_has_net_io, not(unix)))]
@@ -111,18 +106,31 @@ impl SocketRuntimeState {
     }
 
     #[cfg(molt_has_net_io)]
-    fn register_fd(&self, fd: SocketFd, socket_ptr: *mut u8) {
-        self.fd_map.lock().unwrap().insert(fd, PtrSlot(socket_ptr));
+    fn register_descriptor(&self, descriptor: NativeSocketDescriptor, socket_ptr: *mut u8) {
+        self.descriptor_map
+            .lock()
+            .unwrap()
+            .insert(descriptor, PtrSlot(socket_ptr));
     }
 
     #[cfg(molt_has_net_io)]
-    fn unregister_fd(&self, fd: SocketFd) {
-        self.fd_map.lock().unwrap().remove(&fd);
+    fn unregister_descriptor(&self, descriptor: NativeSocketDescriptor, socket_ptr: *mut u8) {
+        let mut descriptors = self.descriptor_map.lock().unwrap();
+        if descriptors
+            .get(&descriptor)
+            .is_some_and(|slot| slot.0 == socket_ptr)
+        {
+            descriptors.remove(&descriptor);
+        }
     }
 
     #[cfg(molt_has_net_io)]
-    fn ptr_from_fd(&self, fd: SocketFd) -> Option<*mut u8> {
-        self.fd_map.lock().unwrap().get(&fd).map(|slot| slot.0)
+    fn ptr_from_descriptor(&self, descriptor: NativeSocketDescriptor) -> Option<*mut u8> {
+        self.descriptor_map
+            .lock()
+            .unwrap()
+            .get(&descriptor)
+            .map(|slot| slot.0)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -153,19 +161,19 @@ impl SocketRuntimeState {
     }
 
     #[cfg(all(test, molt_has_net_io))]
-    fn fd_map_len(&self) -> usize {
-        self.fd_map.lock().unwrap().len()
+    fn descriptor_map_len(&self) -> usize {
+        self.descriptor_map.lock().unwrap().len()
     }
 
     #[cfg(all(molt_has_net_io, not(unix)))]
-    fn register_peer_pair(&self, left: SocketFd, right: SocketFd) {
+    fn register_peer_pair(&self, left: NativeSocketDescriptor, right: NativeSocketDescriptor) {
         let mut map = self.peer_map.lock().unwrap();
         map.insert(left, right);
         map.insert(right, left);
     }
 
     #[cfg(all(molt_has_net_io, not(unix)))]
-    fn unregister_peer_state(&self, fd: SocketFd) {
+    fn unregister_peer_state(&self, fd: NativeSocketDescriptor) {
         {
             let mut map = self.peer_map.lock().unwrap();
             let peer = map.remove(&fd);
@@ -177,17 +185,17 @@ impl SocketRuntimeState {
     }
 
     #[cfg(all(molt_has_net_io, not(unix)))]
-    fn peer_available(&self, fd: SocketFd) -> bool {
+    fn peer_available(&self, fd: NativeSocketDescriptor) -> bool {
         self.peer_map.lock().unwrap().contains_key(&fd)
     }
 
     #[cfg(all(molt_has_net_io, not(unix)))]
-    fn peer_for_fd(&self, fd: SocketFd) -> Option<SocketFd> {
+    fn peer_for_fd(&self, fd: NativeSocketDescriptor) -> Option<NativeSocketDescriptor> {
         self.peer_map.lock().unwrap().get(&fd).copied()
     }
 
     #[cfg(all(molt_has_net_io, not(unix)))]
-    fn push_ancillary(&self, fd: SocketFd, chunk: PendingAncillaryChunk) {
+    fn push_ancillary(&self, fd: NativeSocketDescriptor, chunk: PendingAncillaryChunk) {
         self.ancillary_queue_map
             .lock()
             .unwrap()
@@ -199,7 +207,7 @@ impl SocketRuntimeState {
     #[cfg(all(molt_has_net_io, not(unix)))]
     fn take_stream_ancillary(
         &self,
-        fd: SocketFd,
+        fd: NativeSocketDescriptor,
         data_len: usize,
         peek: bool,
     ) -> Vec<AncillaryItem> {
@@ -270,67 +278,51 @@ pub(super) fn trace_socket_send() -> bool {
 #[cfg(molt_has_net_io)]
 pub(super) fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     with_socket_mut(socket_ptr, |inner| {
-        #[cfg(unix)]
-        {
-            inner
-                .raw_fd()
-                .map(|fd| fd as i64)
-                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))
-        }
-        #[cfg(windows)]
-        {
-            inner
-                .raw_socket()
-                .map(|fd| fd as i64)
-                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))
-        }
+        inner
+            .native_descriptor()
+            .map(|descriptor| descriptor as i64)
+            .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))
     })
     .ok()
 }
 
 #[cfg(molt_has_net_io)]
-fn socket_register_fd(socket_ptr: *mut u8) {
+fn socket_register_descriptor(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
     }
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
     let guard = socket.inner.lock().unwrap();
-    #[cfg(unix)]
-    let fd = guard.raw_fd();
-    #[cfg(windows)]
-    let fd = guard.raw_socket();
+    let descriptor = guard.native_descriptor();
     drop(guard);
-    if let Some(fd) = fd {
+    if let Some(descriptor) = descriptor {
         socket_runtime_state_for_gil()
-            .expect("socket fd registration requires an active RuntimeState")
-            .register_fd(fd, socket_ptr);
+            .expect("socket descriptor registration requires an active RuntimeState")
+            .register_descriptor(descriptor, socket_ptr);
     }
 }
 
 #[cfg(molt_has_net_io)]
-fn socket_unregister_fd(socket_ptr: *mut u8) {
+fn socket_unregister_descriptor(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
     }
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
     let guard = socket.inner.lock().unwrap();
-    #[cfg(unix)]
-    let fd = guard.raw_fd();
-    #[cfg(windows)]
-    let fd = guard.raw_socket();
+    let descriptor = guard.native_descriptor();
     drop(guard);
-    if let Some(fd) = fd {
+    if let Some(descriptor) = descriptor {
         if let Some(state) = socket_runtime_state_for_gil() {
-            state.unregister_fd(fd);
+            state.unregister_descriptor(descriptor, socket_ptr);
         }
         #[cfg(not(unix))]
-        socket_unregister_peer_state(fd);
+        socket_unregister_peer_state(descriptor);
     }
 }
 
 #[cfg(molt_has_net_io)]
-fn socket_ptr_from_fd(fd: SocketFd) -> Option<*mut u8> {
-    socket_runtime_state_for_gil().and_then(|state| state.ptr_from_fd(fd))
+fn socket_ptr_from_descriptor(descriptor: NativeSocketDescriptor) -> Option<*mut u8> {
+    socket_runtime_state_for_gil().and_then(|state| state.ptr_from_descriptor(descriptor))
 }
 
 #[cfg(molt_has_net_io)]
@@ -347,11 +339,17 @@ pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
         }
         #[cfg(unix)]
         {
-            return socket_ptr_from_fd(fd as RawFd).unwrap_or(std::ptr::null_mut());
+            let descriptor = NativeSocketDescriptor::try_from(fd).ok();
+            return descriptor
+                .and_then(socket_ptr_from_descriptor)
+                .unwrap_or(std::ptr::null_mut());
         }
         #[cfg(all(windows, molt_has_net_io))]
         {
-            return socket_ptr_from_fd(fd as RawSocket).unwrap_or(std::ptr::null_mut());
+            let descriptor = NativeSocketDescriptor::try_from(fd).ok();
+            return descriptor
+                .and_then(socket_ptr_from_descriptor)
+                .unwrap_or(std::ptr::null_mut());
         }
     }
     let ptr = ptr_from_bits(socket_bits);
@@ -404,12 +402,23 @@ pub(super) fn socket_alloc(
         timeout,
     ));
     let socket_ptr = Box::into_raw(socket) as *mut u8;
-    socket_register_fd(socket_ptr);
+    socket_register_descriptor(socket_ptr);
     socket_ptr
 }
 
 #[cfg(molt_has_net_io)]
 impl MoltSocketInner {
+    fn native_descriptor(&self) -> Option<NativeSocketDescriptor> {
+        #[cfg(unix)]
+        {
+            self.raw_fd()
+        }
+        #[cfg(windows)]
+        {
+            self.raw_socket()
+        }
+    }
+
     pub(crate) fn source_mut(&mut self) -> Option<&mut dyn mio::event::Source> {
         match &mut self.kind {
             MoltSocketKind::Closed => None,
@@ -478,7 +487,7 @@ where
         ));
     }
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
-    if socket.closed.load(AtomicOrdering::Relaxed) {
+    if socket.closed.load(AtomicOrdering::Acquire) {
         return Err(std::io::Error::new(
             ErrorKind::NotConnected,
             "socket is closed",
@@ -598,29 +607,18 @@ pub(super) fn socket_set_connect_pending(handle: i64, pending: bool) -> Result<(
 }
 
 #[cfg(molt_has_net_io)]
-#[allow(dead_code)]
-pub(super) fn socket_mark_closed(socket_ptr: *mut u8) {
-    if socket_ptr.is_null() {
-        return;
-    }
-    let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
-    socket.closed.store(true, AtomicOrdering::Relaxed);
-}
-
-#[cfg(molt_has_net_io)]
 pub(super) fn socket_close_ptr(_py: &PyToken<'_>, socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
     }
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
-    if socket.closed.load(AtomicOrdering::Relaxed) {
+    if socket.closed.swap(true, AtomicOrdering::AcqRel) {
         return;
     }
-    socket_unregister_fd(socket_ptr);
+    socket_unregister_descriptor(socket_ptr);
     runtime_state(_py)
         .io_poller()
         .deregister_socket(_py, socket_ptr);
-    socket.closed.store(true, AtomicOrdering::Relaxed);
     let mut guard = socket.inner.lock().unwrap();
     guard.kind = MoltSocketKind::Closed;
 }
@@ -631,11 +629,13 @@ pub(super) fn socket_detach_raw(_py: &PyToken<'_>, socket_ptr: *mut u8) -> i64 {
         return -1;
     }
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
-    socket_unregister_fd(socket_ptr);
+    if socket.closed.swap(true, AtomicOrdering::AcqRel) {
+        return -1;
+    }
+    socket_unregister_descriptor(socket_ptr);
     runtime_state(_py)
         .io_poller()
         .deregister_socket(_py, socket_ptr);
-    socket.closed.store(true, AtomicOrdering::Relaxed);
     let mut guard = socket.inner.lock().unwrap();
     let kind = std::mem::replace(&mut guard.kind, MoltSocketKind::Closed);
     #[cfg(all(unix, molt_has_net_io))]
@@ -689,21 +689,24 @@ pub(crate) fn socket_ref_dec(_py: &PyToken<'_>, socket_ptr: *mut u8) {
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
-pub(crate) fn socket_register_peer_pair(left: SocketFd, right: SocketFd) {
+pub(crate) fn socket_register_peer_pair(
+    left: NativeSocketDescriptor,
+    right: NativeSocketDescriptor,
+) {
     socket_runtime_state_for_gil()
         .expect("socket peer registration requires an active RuntimeState")
         .register_peer_pair(left, right);
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
-pub(super) fn socket_unregister_peer_state(fd: SocketFd) {
+pub(super) fn socket_unregister_peer_state(fd: NativeSocketDescriptor) {
     if let Some(state) = socket_runtime_state_for_gil() {
         state.unregister_peer_state(fd);
     }
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
-pub(super) fn socket_peer_available(fd: SocketFd) -> bool {
+pub(super) fn socket_peer_available(fd: NativeSocketDescriptor) -> bool {
     socket_runtime_state_for_gil()
         .map(|state| state.peer_available(fd))
         .unwrap_or(false)
@@ -711,7 +714,7 @@ pub(super) fn socket_peer_available(fd: SocketFd) -> bool {
 
 #[cfg(all(molt_has_net_io, not(unix)))]
 pub(super) fn socket_enqueue_stream_ancillary(
-    fd: SocketFd,
+    fd: NativeSocketDescriptor,
     data_len: usize,
     items: &[AncillaryItem],
 ) -> Result<(), std::io::Error> {
@@ -735,7 +738,7 @@ pub(super) fn socket_enqueue_stream_ancillary(
 
 #[cfg(all(molt_has_net_io, not(unix)))]
 pub(super) fn socket_take_stream_ancillary(
-    fd: SocketFd,
+    fd: NativeSocketDescriptor,
     data_len: usize,
     peek: bool,
 ) -> Vec<AncillaryItem> {
@@ -749,7 +752,9 @@ pub(super) fn socket_take_stream_ancillary(
 
 #[cfg(all(test, molt_has_net_io))]
 mod socket_runtime_state_tests {
-    fn test_fd(value: i32) -> SocketFd {
+    use super::{NativeSocketDescriptor, SocketRuntimeState};
+
+    fn test_descriptor(value: i32) -> NativeSocketDescriptor {
         #[cfg(unix)]
         {
             value
@@ -761,18 +766,18 @@ mod socket_runtime_state_tests {
     }
 
     #[test]
-    fn fd_map_is_runtime_scoped_and_clearable() {
+    fn descriptor_map_is_runtime_scoped_and_clearable() {
         let state = SocketRuntimeState::new();
         let socket_ptr = 0x1000usize as *mut u8;
-        let fd = test_fd(41);
+        let descriptor = test_descriptor(41);
 
-        state.register_fd(fd, socket_ptr);
-        assert_eq!(state.ptr_from_fd(fd), Some(socket_ptr));
-        assert_eq!(state.fd_map_len(), 1);
+        state.register_descriptor(descriptor, socket_ptr);
+        assert_eq!(state.ptr_from_descriptor(descriptor), Some(socket_ptr));
+        assert_eq!(state.descriptor_map_len(), 1);
 
         state.clear();
-        assert_eq!(state.ptr_from_fd(fd), None);
-        assert_eq!(state.fd_map_len(), 0);
+        assert_eq!(state.ptr_from_descriptor(descriptor), None);
+        assert_eq!(state.descriptor_map_len(), 0);
     }
 
     #[test]
@@ -780,15 +785,33 @@ mod socket_runtime_state_tests {
         let state = SocketRuntimeState::new();
         let first_ptr = 0x1000usize as *mut u8;
         let second_ptr = 0x2000usize as *mut u8;
-        let first_fd = test_fd(41);
-        let second_fd = test_fd(42);
+        let first_descriptor = test_descriptor(41);
+        let second_descriptor = test_descriptor(42);
 
-        state.register_fd(first_fd, first_ptr);
-        state.register_fd(second_fd, second_ptr);
-        state.unregister_fd(first_fd);
+        state.register_descriptor(first_descriptor, first_ptr);
+        state.register_descriptor(second_descriptor, second_ptr);
+        state.unregister_descriptor(first_descriptor, first_ptr);
 
-        assert_eq!(state.ptr_from_fd(first_fd), None);
-        assert_eq!(state.ptr_from_fd(second_fd), Some(second_ptr));
-        assert_eq!(state.fd_map_len(), 1);
+        assert_eq!(state.ptr_from_descriptor(first_descriptor), None);
+        assert_eq!(
+            state.ptr_from_descriptor(second_descriptor),
+            Some(second_ptr)
+        );
+        assert_eq!(state.descriptor_map_len(), 1);
+    }
+
+    #[test]
+    fn stale_owner_cannot_unregister_reused_descriptor() {
+        let state = SocketRuntimeState::new();
+        let descriptor = test_descriptor(41);
+        let stale_ptr = 0x1000usize as *mut u8;
+        let current_ptr = 0x2000usize as *mut u8;
+
+        state.register_descriptor(descriptor, stale_ptr);
+        state.register_descriptor(descriptor, current_ptr);
+        state.unregister_descriptor(descriptor, stale_ptr);
+
+        assert_eq!(state.ptr_from_descriptor(descriptor), Some(current_ptr));
+        assert_eq!(state.descriptor_map_len(), 1);
     }
 }
