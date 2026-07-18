@@ -211,13 +211,13 @@ def _run_external_tool(
     result = cast(
         subprocess.CompletedProcess[str],
         harness_memory_guard.guarded_completed_process(
-        list(cmd),
-        prefix="MOLT_WASM_LINK",
-        cwd=cwd,
-        env=env,
-        capture_output=capture_output,
-        text=text,
-        timeout=timeout,
+            list(cmd),
+            prefix="MOLT_WASM_LINK",
+            cwd=cwd,
+            env=env,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
         ),
     )
     if (
@@ -415,7 +415,9 @@ def _preflight_relocatable_runtime(
     return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
-def _dump_symbols(path: Path, wasm_tools: str | None) -> list[tuple[int, int, str, str]]:
+def _dump_symbols(
+    path: Path, wasm_tools: str | None
+) -> list[tuple[int, int, str, str]]:
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -1632,7 +1634,9 @@ def _restore_public_output_exports(
     preserved_symbol_names: Sequence[str] = (),
 ) -> bytes:
     restored = data
-    updated = _ensure_function_exports_by_symbol_names(restored, dict(public_export_map))
+    updated = _ensure_function_exports_by_symbol_names(
+        restored, dict(public_export_map)
+    )
     if updated is not None:
         restored = updated
     rename_map = {
@@ -2827,14 +2831,14 @@ def _decode_wasm_facts_response(
         payload = json.loads(process.stdout)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{operation} returned invalid JSON: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 3:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 4:
         raise ValueError(f"{operation} returned an unsupported response schema")
     if process.returncode != 0 or payload.get("ok") is not True:
         error = payload.get("error")
         detail = error if isinstance(error, str) and error else process.stderr.strip()
         raise ValueError(f"{operation} failed: {detail or 'unknown scanner error'}")
     facts = payload.get("facts")
-    if not isinstance(facts, dict) or facts.get("schema_version") != 3:
+    if not isinstance(facts, dict) or facts.get("schema_version") != 4:
         raise ValueError(f"{operation} returned an unsupported facts schema")
     return facts
 
@@ -2842,18 +2846,38 @@ def _decode_wasm_facts_response(
 def _make_rust_wasm_facts_provider(
     scanner: Path,
     scratch_root: Path,
+    metrics: dict[str, float] | None = None,
 ) -> Callable[[bytes], dict[str, object]]:
     if not scanner.is_file():
         raise ValueError(f"WASM facts scanner is not a file: {scanner}")
     cache: dict[str, dict[str, object]] = {}
+    if metrics is not None:
+        metrics.update(
+            {
+                "wasm_facts_hash_ms": 0.0,
+                "wasm_facts_scan_ms": 0.0,
+                "wasm_facts_scan_calls": 0.0,
+                "wasm_facts_cache_hits": 0.0,
+                "wasm_facts_input_bytes": 0.0,
+                "wasm_facts_response_chars": 0.0,
+            }
+        )
 
     def provide(data: bytes) -> dict[str, object]:
+        hash_start = time.perf_counter()
         digest = hashlib.sha256(data).hexdigest()
+        if metrics is not None:
+            metrics["wasm_facts_hash_ms"] += max(
+                0.0, (time.perf_counter() - hash_start) * 1000.0
+            )
         cached = cache.get(digest)
         if cached is not None:
+            if metrics is not None:
+                metrics["wasm_facts_cache_hits"] += 1.0
             return cached
         artifact = scratch_root / f"wasm-facts-{digest}.wasm"
         artifact.write_bytes(data)
+        scan_start = time.perf_counter()
         try:
             process = subprocess.run(
                 [str(scanner), "--scan-wasm-link-facts", str(artifact)],
@@ -2863,6 +2887,13 @@ def _make_rust_wasm_facts_provider(
                 capture_output=True,
                 check=False,
             )
+            if metrics is not None:
+                metrics["wasm_facts_scan_ms"] += max(
+                    0.0, (time.perf_counter() - scan_start) * 1000.0
+                )
+                metrics["wasm_facts_scan_calls"] += 1.0
+                metrics["wasm_facts_input_bytes"] += float(len(data))
+                metrics["wasm_facts_response_chars"] += float(len(process.stdout))
             facts = _decode_wasm_facts_response(
                 process,
                 operation=f"Rust WASM facts scan for {artifact.name}",
@@ -2992,6 +3023,7 @@ def _run_wasm_ld_with_custodied_inputs(
     wasm_facts_scanner: Path,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
+    facts_metrics: dict[str, float] = {}
     operation_counts: dict[str, int] = {
         "wasm_whole_artifact_full_binary_parses": 0,
         "wasm_whole_artifact_section_walks": 0,
@@ -3060,6 +3092,7 @@ def _run_wasm_ld_with_custodied_inputs(
         facts_provider = _make_rust_wasm_facts_provider(
             wasm_facts_scanner,
             Path(temp_dir.name),
+            facts_metrics,
         )
         output_facts = facts_provider(output_data)
         output_callable_layout = _callable_layout_from_wasm_facts(output_facts)
@@ -3970,6 +4003,9 @@ def _run_wasm_ld_with_custodied_inputs(
             )
         phase_timings_ms.setdefault("wasm_strip", 0.0)
         phase_timings_ms.setdefault("fail_closed_validation", 0.0)
+        phase_timings_ms.update(
+            {name: round(value, 6) for name, value in facts_metrics.items()}
+        )
         phase_timings_ms.update(operation_counts)
         phase_timings_ms["wasm_link_total"] = round(
             max(0.0, (time.perf_counter() - total_start) * 1000.0), 6

@@ -7,11 +7,18 @@ pub struct WasmLinkFacts {
     pub defined_function_count: u32,
     pub code_body_count: u32,
     pub operator_count: u64,
+    pub reachable_function_indices: Vec<u32>,
+    pub referenced_function_indices: Vec<u32>,
+    pub main_module_init_direct_calls: Vec<u32>,
+    #[serde(skip_serializing)]
     pub function_references: Vec<WasmFunctionReferences>,
     pub function_types: Vec<Option<WasmFunctionType>>,
     pub function_type_indices: Vec<u32>,
+    #[serde(skip_serializing)]
     pub root_function_indices: Vec<u32>,
+    #[serde(skip_serializing)]
     pub element_function_indices: Vec<u32>,
+    #[serde(skip_serializing)]
     pub declared_function_indices: Vec<u32>,
     pub active_element_segments: Vec<WasmActiveElementSegment>,
     pub active_function_elements: Vec<WasmActiveFunctionElement>,
@@ -22,13 +29,18 @@ pub struct WasmLinkFacts {
     pub reachable_table_mutations: Vec<WasmTableMutation>,
     pub forbidden_callable_alias_exports: Vec<String>,
     pub dynamic_table_dispatch: bool,
+    #[serde(skip_serializing)]
     pub dynamic_dispatch_functions: Vec<u32>,
     pub reachable_dynamic_dispatch: bool,
+    #[serde(skip_serializing)]
     pub function_reference_dispatch_functions: Vec<u32>,
     pub reachable_function_reference_dispatch: bool,
+    #[serde(skip_serializing)]
     pub indirect_call_tables: Vec<u32>,
     pub reachable_indirect_call_tables: Vec<u32>,
+    #[serde(skip_serializing)]
     pub indirect_calls: Vec<WasmIndirectCall>,
+    #[serde(skip_serializing)]
     pub table_reads: Vec<WasmTableRead>,
     pub reachable_table_reads: Vec<WasmTableRead>,
     pub exported_table_indices: Vec<u32>,

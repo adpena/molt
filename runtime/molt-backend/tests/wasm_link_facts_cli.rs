@@ -67,17 +67,19 @@ fn cli_emits_versioned_success_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse success JSON");
-    assert_eq!(payload["schema_version"], 3);
+    assert_eq!(payload["schema_version"], 4);
     assert_eq!(payload["ok"], true);
-    assert_eq!(payload["facts"]["schema_version"], 3);
+    assert_eq!(payload["facts"]["schema_version"], 4);
     assert_eq!(payload["facts"]["code_body_count"], 2);
-    assert_eq!(payload["facts"]["function_references"][0][0], 0);
     assert_eq!(
-        payload["facts"]["function_references"][0]
-            .as_array()
-            .map(Vec::len),
-        Some(3)
+        payload["facts"]["reachable_function_indices"],
+        serde_json::json!([])
     );
+    assert_eq!(
+        payload["facts"]["referenced_function_indices"],
+        serde_json::json!([1])
+    );
+    assert!(payload["facts"].get("function_references").is_none());
 }
 
 #[test]
@@ -92,7 +94,7 @@ fn cli_emits_versioned_error_json_and_nonzero_exit() {
 
     assert_eq!(output.status.code(), Some(2));
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse error JSON");
-    assert_eq!(payload["schema_version"], 3);
+    assert_eq!(payload["schema_version"], 4);
     assert_eq!(payload["ok"], false);
     assert!(
         payload["error"]
