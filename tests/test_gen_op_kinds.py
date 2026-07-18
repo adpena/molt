@@ -29,6 +29,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tools.op_kinds.paths import (
     OUT_RS,
     TABLE,
@@ -44,6 +46,44 @@ OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 
 def _rs_production_source(src: str) -> str:
     return "\n".join(line for line in src.splitlines() if "#[cfg(test)]" not in line)
+
+
+def test_rust_module_cluster_follows_declared_production_graph(tmp_path: Path) -> None:
+    """Module-cluster reads are complete, bounded, and fail closed."""
+    root = tmp_path / "sample" / "mod.rs"
+    root.parent.mkdir()
+    root.write_text(
+        "mod declared;\n#[cfg(test)]\nmod tests;\n",
+        encoding="utf-8",
+    )
+    (root.parent / "declared.rs").write_text(
+        "pub fn declared_authority() {}\n",
+        encoding="utf-8",
+    )
+    (root.parent / "tests.rs").write_text(
+        "compile_error!(\"test authority leaked\");\n",
+        encoding="utf-8",
+    )
+    (root.parent / "stale.rs").write_text(
+        "compile_error!(\"undeclared sibling leaked\");\n",
+        encoding="utf-8",
+    )
+
+    cluster = _read_rs_module_cluster(root)
+
+    assert "declared_authority" in cluster
+    assert "test authority leaked" not in cluster
+    assert "undeclared sibling leaked" not in cluster
+
+
+def test_rust_module_cluster_rejects_missing_declared_module(tmp_path: Path) -> None:
+    """A partial source graph can never produce a green authority audit."""
+    root = tmp_path / "sample" / "mod.rs"
+    root.parent.mkdir()
+    root.write_text("mod missing;\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="declared Rust module 'missing'"):
+        _read_rs_module_cluster(root)
 
 
 def _rust_pub_decl(src: str, kind: str, name: str) -> bool:
