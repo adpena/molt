@@ -117,6 +117,7 @@ pub(in crate::native_backend::function_compiler) mod subscript_get;
 pub(in crate::native_backend::function_compiler) mod subscript_store;
 pub(in crate::native_backend::function_compiler) mod text_predicates;
 pub(in crate::native_backend::function_compiler) mod text_transform;
+pub(in crate::native_backend::function_compiler) mod truthiness;
 pub(in crate::native_backend::function_compiler) mod type_checks;
 pub(in crate::native_backend::function_compiler) mod type_conversions;
 pub(in crate::native_backend::function_compiler) mod unary_logic;

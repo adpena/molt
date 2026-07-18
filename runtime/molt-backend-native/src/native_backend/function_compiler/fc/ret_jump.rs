@@ -44,6 +44,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     param_name_set: &BTreeSet<&str>,
+    first_defined_at: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
     last_use: &BTreeMap<String, usize>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -625,80 +626,23 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     representation_plan,
                 )
                 .expect("Cond not found");
-                // Speculative inline truthiness: check NaN-box tag
-                // to avoid molt_is_truthy function call for bool/int.
-                // NaN-boxed False is 0x7ffa000000000000 (nonzero),
-                // so a raw icmp_imm(!=0) always evaluates true — we need
-                // the runtime to decode the type tag.
-                let brif_truthy_merge = builder.create_block();
-                builder.append_block_param(brif_truthy_merge, types::I8);
-
-                // Conditional list-bool carrier: when the source list
-                // is list_bool, branch directly on the raw 0/1 payload;
-                // otherwise continue into the normal NaN-box path.
-                emit_conditional_list_bool_truthiness(
-                    &mut *builder,
-                    &mut *sealed_blocks,
-                    &list_index_fast_paths.list_is_bool_cache,
-                    list_index_fast_paths
-                        .conditional_list_bool_shadows
-                        .get(cond_name),
-                    brif_truthy_merge,
-                    &[],
-                );
-
-                let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-                let masked = builder.ins().band(*cond, mask);
-
-                let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
-                let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
-                let brif_bool_block = builder.create_block();
-                let brif_not_bool_block = builder.create_block();
-                builder
-                    .ins()
-                    .brif(is_bool, brif_bool_block, &[], brif_not_bool_block, &[]);
-
-                switch_to_block_materialized(&mut *builder, brif_bool_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, brif_bool_block);
-                let bit0 = builder.ins().band_imm(*cond, 1);
-                let bool_truthy = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
-                jump_block(&mut *builder, brif_truthy_merge, &[bool_truthy]);
-
-                switch_to_block_materialized(&mut *builder, brif_not_bool_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, brif_not_bool_block);
-                let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-                let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
-                let brif_int_block = builder.create_block();
-                let brif_call_block = builder.create_block();
-                builder.set_cold_block(brif_call_block);
-                builder
-                    .ins()
-                    .brif(is_int, brif_int_block, &[], brif_call_block, &[]);
-
-                switch_to_block_materialized(&mut *builder, brif_int_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, brif_int_block);
-                let raw_val = unbox_int(&mut *builder, *cond, nbc);
-                let int_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
-                jump_block(&mut *builder, brif_truthy_merge, &[int_truthy]);
-
-                switch_to_block_materialized(&mut *builder, brif_call_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, brif_call_block);
-                let truthy_fn = SimpleBackend::import_func_id_split(
+                super::truthiness::emit_boxed_truthiness(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_is_truthy",
-                    &[types::I64],
-                    &[types::I64],
-                );
-                let truthy_ref = module.declare_func_in_func(truthy_fn, builder.func);
-                let truthy_call = builder.ins().call(truthy_ref, &[*cond]);
-                let truthy_val = builder.inst_results(truthy_call)[0];
-                let call_truthy = builder.ins().icmp_imm(IntCC::NotEqual, truthy_val, 0);
-                jump_block(&mut *builder, brif_truthy_merge, &[call_truthy]);
-
-                switch_to_block_materialized(&mut *builder, brif_truthy_merge);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, brif_truthy_merge);
-                builder.block_params(brif_truthy_merge)[0]
+                    &mut *builder,
+                    &mut *sealed_blocks,
+                    vars,
+                    first_defined_at,
+                    last_use,
+                    op_idx,
+                    op.out.as_deref(),
+                    list_index_fast_paths,
+                    cond_name,
+                    *cond,
+                    block_tracked_obj,
+                    block_tracked_ptr,
+                    nbc,
+                )
             };
 
             reachable_blocks.insert(target_block);

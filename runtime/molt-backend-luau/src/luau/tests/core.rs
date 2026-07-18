@@ -29,6 +29,38 @@ fn test_empty_ir() {
 }
 
 #[test]
+fn deferred_annotation_functions_are_emitted_with_their_real_body() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "module__C____annotate__".to_string(),
+            params: vec!["format".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("annotation-result".to_string()),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile(&ir);
+
+    assert!(source.contains("module__C____annotate__"));
+    assert!(source.contains("annotation-result"));
+}
+
+#[test]
 fn unpack_sequence_uses_exact_arity_runtime_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

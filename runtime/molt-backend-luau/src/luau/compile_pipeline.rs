@@ -10,11 +10,7 @@ impl LuauBackend {
         self.unsupported_ops.clear();
         // Phase 1: Emit all function bodies to a temporary buffer so we can
         // scan which runtime helpers are actually referenced.
-        let emit_funcs: Vec<&FunctionIR> = ir
-            .functions
-            .iter()
-            .filter(|f| !f.name.contains("__annotate__"))
-            .collect();
+        let emit_funcs: Vec<&FunctionIR> = ir.functions.iter().collect();
 
         let mut func_output = String::with_capacity(8192);
         std::mem::swap(&mut self.output, &mut func_output);

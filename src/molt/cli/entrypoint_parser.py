@@ -1185,7 +1185,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "script_args",
-        nargs=argparse.REMAINDER,
+        nargs="*",
         help="Arguments passed to the script (use -- to separate).",
     )
 

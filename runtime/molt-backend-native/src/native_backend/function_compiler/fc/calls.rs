@@ -83,6 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             vars,
             representation_plan,
             param_name_set,
+            first_defined_at,
             last_use,
             alias_roots,
             module_known_functions,
@@ -270,6 +271,7 @@ fn handle_call_direct_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     param_name_set: &BTreeSet<&str>,
+    first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
     module_known_functions: &BTreeSet<String>,
@@ -535,8 +537,17 @@ fn handle_call_direct_op(
         // Branch on recursion guard result.
         let call_block = builder.create_block();
         let error_block = builder.create_block();
-        let merge_block = builder.create_block();
-        builder.append_block_param(merge_block, types::I64);
+
+        // The successful arm is the sole continuing predecessor. Snapshot the
+        // unrelated variables that remain live after this call so switching
+        // blocks cannot make FunctionBuilder synthesize zero definitions. The
+        // call output itself does not exist yet and must never be transported.
+        let live_call_values: Vec<(Variable, Value)> =
+            live_rebind_vars_for_op(vars, last_use, first_defined_at, op_idx)
+                .into_iter()
+                .filter(|(name, _)| op.out.as_deref() != Some(name.as_str()))
+                .map(|(_, var)| (var, builder.use_var(var)))
+                .collect();
 
         let zero = builder.ins().iconst(types::I64, 0);
         let is_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, zero);
@@ -595,6 +606,9 @@ fn handle_call_direct_op(
 
         // Call block: direct call to the target function.
         switch_to_block_materialized(&mut *builder, call_block);
+        for (var, value) in live_call_values {
+            builder.def_var(var, value);
+        }
         let direct_call = builder.ins().call(local_callee, &args);
         let direct_results = builder.inst_results(direct_call);
         let call_res = if direct_results.is_empty() {
@@ -614,10 +628,12 @@ fn handle_call_direct_op(
             &[],
         );
         builder.ins().call(exit_ref, &[]);
-        jump_block(&mut *builder, merge_block, &[call_res]);
-
-        switch_to_block_materialized(&mut *builder, merge_block);
-        builder.block_params(merge_block)[0]
+        // The error arm returns from the function, so the successful call arm
+        // is the sole continuing path. Keep lowering in that block and return
+        // its result directly: a one-predecessor merge/phi is redundant, costs
+        // a branch, and discards the FunctionBuilder variable state needed by
+        // unrelated live SSA temporaries after the call.
+        call_res
     } else {
         // --- Outlined guarded call via molt_guarded_call ---
         // Fallback for imported functions, closures, arity mismatches,

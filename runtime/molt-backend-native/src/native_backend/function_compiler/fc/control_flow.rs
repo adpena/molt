@@ -169,123 +169,23 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     representation_plan,
                 )
                 .expect("Cond not found");
-                // Speculative inline truthiness: check NaN-box tag
-                // to avoid molt_is_truthy function call for bool/int.
-                //
-                // TAG_BOOL (0x7ffa...): bit 0 is the boolean value.
-                // TAG_INT  (0x7ff9...): unbox and check payload != 0.
-                // Other tags: fall through to molt_is_truthy call.
-                let truthy_origin_block = builder.current_block();
-                let truthy_live_through = collect_live_through_values(
+                super::truthiness::emit_boxed_truthiness(
+                    &mut *module,
+                    &mut *import_ids,
                     &mut *builder,
+                    sealed_blocks,
                     vars,
                     first_defined_at,
                     last_use,
                     op_idx,
                     op.out.as_deref(),
-                );
-                let truthy_merge = builder.create_block();
-                builder.append_block_param(truthy_merge, types::I8);
-                append_live_through_params(&mut *builder, truthy_merge, &truthy_live_through);
-
-                // Conditional list-bool carrier: when the source list
-                // is list_bool, branch directly on the raw 0/1 payload;
-                // otherwise continue into the normal NaN-box path.
-                emit_conditional_list_bool_truthiness(
-                    &mut *builder,
-                    sealed_blocks,
-                    &list_index_fast_paths.list_is_bool_cache,
-                    list_index_fast_paths
-                        .conditional_list_bool_shadows
-                        .get(&args[0]),
-                    truthy_merge,
-                    &truthy_live_through,
-                );
-
-                let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-                let masked = builder.ins().band(*cond, mask);
-
-                // Check TAG_BOOL first (most likely for sieve-like patterns).
-                let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
-                let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
-                let bool_block = builder.create_block();
-                let not_bool_block = builder.create_block();
-                builder
-                    .ins()
-                    .brif(is_bool, bool_block, &[], not_bool_block, &[]);
-
-                // Bool path: extract bit 0.
-                switch_to_block_materialized(&mut *builder, bool_block);
-                seal_block_once(&mut *builder, sealed_blocks, bool_block);
-                let bit0 = builder.ins().band_imm(*cond, 1);
-                let bool_truthy = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
-                let merge_args = merge_args_with_live_through(bool_truthy, &truthy_live_through);
-                jump_block(&mut *builder, truthy_merge, &merge_args);
-
-                // Not-bool: check TAG_INT.
-                switch_to_block_materialized(&mut *builder, not_bool_block);
-                seal_block_once(&mut *builder, sealed_blocks, not_bool_block);
-                let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-                let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
-                let int_block = builder.create_block();
-                let call_block = builder.create_block();
-                builder.set_cold_block(call_block);
-                builder.ins().brif(is_int, int_block, &[], call_block, &[]);
-
-                // Int path: unbox and check != 0.
-                switch_to_block_materialized(&mut *builder, int_block);
-                seal_block_once(&mut *builder, sealed_blocks, int_block);
-                let raw_val = unbox_int(&mut *builder, *cond, nbc);
-                let int_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
-                let merge_args = merge_args_with_live_through(int_truthy, &truthy_live_through);
-                jump_block(&mut *builder, truthy_merge, &merge_args);
-
-                // Slow path: call molt_is_truthy.
-                switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, sealed_blocks, call_block);
-                let truthy_fn_name = "molt_is_truthy";
-                let callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    truthy_fn_name,
-                    &[types::I64],
-                    &[types::I64],
-                );
-                let local_callee = module.declare_func_in_func(callee, builder.func);
-                let call = builder.ins().call(local_callee, &[*cond]);
-                let truthy = builder.inst_results(call)[0];
-                let call_truthy = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
-                let merge_args = merge_args_with_live_through(call_truthy, &truthy_live_through);
-                jump_block(&mut *builder, truthy_merge, &merge_args);
-
-                switch_to_block_materialized(&mut *builder, truthy_merge);
-                seal_block_once(&mut *builder, sealed_blocks, truthy_merge);
-                let truthy_params = builder.block_params(truthy_merge).to_vec();
-                rebind_live_through_values(
-                    &mut *builder,
-                    vars,
-                    &truthy_live_through,
-                    &truthy_params[1..],
-                );
-                if let Some(origin_block) = truthy_origin_block
-                    && origin_block != truthy_merge
-                {
-                    let obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-                    if !obj_live.is_empty() {
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(truthy_merge).or_default(),
-                            obj_live,
-                        );
-                    }
-                    let ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-                    if !ptr_live.is_empty() {
-                        extend_unique_tracked(
-                            block_tracked_ptr.entry(truthy_merge).or_default(),
-                            ptr_live,
-                        );
-                    }
-                }
-                truthy_params[0]
+                    list_index_fast_paths,
+                    &args[0],
+                    *cond,
+                    block_tracked_obj,
+                    block_tracked_ptr,
+                    nbc,
+                )
             };
             // `if` terminates the current block (brif) into then/else blocks. Any live
             // tracked values must be carried into both successors; otherwise they leak

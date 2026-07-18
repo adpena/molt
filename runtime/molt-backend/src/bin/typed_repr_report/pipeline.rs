@@ -1,5 +1,5 @@
 use molt_backend::SimpleIR;
-use molt_tir::ir_rewrites::{rewrite_annotate_stubs, rewrite_phi_to_store_load};
+use molt_tir::ir_rewrites::rewrite_phi_to_store_load;
 use serde_json::{Value, json};
 
 use super::input::read_input;
@@ -11,8 +11,6 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
     let input = read_input()?;
     let mut ir: SimpleIR =
         serde_json::from_str(&input).map_err(|err| format!("invalid SimpleIR JSON: {err}"))?;
-    rewrite_annotate_stubs(&mut ir);
-
     let mut function_reports = Vec::with_capacity(ir.functions.len());
     let mut verified = true;
     for func in &mut ir.functions {
