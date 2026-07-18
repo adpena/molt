@@ -1606,6 +1606,7 @@ def _reachability_feature_refusal(
     stdlib_profile: str | None,
     target: str,
     target_triple: str | None = None,
+    extra_roots: Collection[str] = (),
 ) -> str | None:
     """Refuse when the reached SimpleIR needs a feature the profile excludes.
 
@@ -1643,6 +1644,7 @@ def _reachability_feature_refusal(
         profile_name=stdlib_profile or DEFAULT_STDLIB_PROFILE,
         profile_features=profile_features,
         target_triple=target_triple,
+        extra_roots=extra_roots,
     )
 
 
@@ -1915,6 +1917,17 @@ def _prepare_backend_ir(
     )
     if module_registry is not None:
         ir["module_registry"] = module_registry.backend_ir_payload()
+    # ModuleRegistry init bodies are reached through relocation slots in
+    # MODULE_INIT_TABLE, not through SimpleIR call edges.  They must therefore
+    # enter the same reachability authority as explicit roots before runtime
+    # feature selection.  Omitting them let the layout probe compile a narrow
+    # runtime, then backend emission exposed the table-reachable imports and
+    # forced a second Cargo compile with a larger feature plan (and a stale
+    # callable-table base).  The registry is the canonical relocation-root
+    # authority; do not revive module-presence or source-text feature scans.
+    runtime_feature_roots = (
+        module_registry.init_symbols() if module_registry is not None else ()
+    )
     # Reachability-driven runtime-feature requirement / refusal (Option b,
     # docs/design/foundation/feature_reachability_tree_shaking.md). ``ir`` is the
     # finalized merged backend IR (exactly the function list the native/WASM
@@ -1928,6 +1941,7 @@ def _prepare_backend_ir(
         stdlib_profile=stdlib_profile,
         target=target,
         target_triple=target_triple,
+        extra_roots=runtime_feature_roots,
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")
@@ -1941,7 +1955,8 @@ def _prepare_backend_ir(
     functions_for_features = ir.get("functions")
     required_link_features = (
         _required_features.required_link_features(
-            cast(Sequence[Mapping[str, object]], functions_for_features)
+            cast(Sequence[Mapping[str, object]], functions_for_features),
+            extra_roots=runtime_feature_roots,
         )
         if isinstance(functions_for_features, list)
         else frozenset()

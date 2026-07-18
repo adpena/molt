@@ -218,7 +218,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     assert "--export-if-defined=molt_abc_abstractmethod_check" in linked[0][1]
 
 
-def test_cross_export_prepopulation_reports_one_cargo_compile(
+def test_relocation_root_feature_closure_reports_one_cargo_compile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -229,6 +229,15 @@ def test_cross_export_prepopulation_reports_one_cargo_compile(
         **_COMMON,
         "cargo_profile": "release-fast",
         "stdlib_profile": "full",
+        "required_link_features": frozenset(
+            {
+                "stdlib_ast",
+                "stdlib_crypto",
+                "stdlib_http",
+                "stdlib_math",
+                "stdlib_regex",
+            }
+        ),
     }
 
     def _pair(label: str, required_exports: set[str]):
@@ -251,7 +260,15 @@ def test_cross_export_prepopulation_reports_one_cargo_compile(
 
     early_shared, early_reloc = _pair("early", {"add"})
     final_shared, final_reloc = _pair(
-        "final", {"add", "abc_abstractmethod_check"}
+        "final",
+        {
+            "add",
+            "ast_parse",
+            "hash_builtin",
+            "ctypes_sizeof",
+            "math_sqrt",
+            "re_compile",
+        },
     )
     assert early_shared.fingerprint == final_shared.fingerprint
     assert early_reloc.fingerprint != final_reloc.fingerprint

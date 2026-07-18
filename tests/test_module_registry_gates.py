@@ -280,7 +280,7 @@ def test_module_registry_blob_symbol_is_one_name_everywhere() -> None:
 # ─── G3: init bodies reachable only through MODULE_INIT_TABLE ───────────────
 
 
-def _prepare_native_ir(tmp_path: Path):
+def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
     cli = pytest.importorskip("molt.cli")
     from molt.cli import backend_ir as BACKEND_IR
 
@@ -303,7 +303,11 @@ def _prepare_native_ir(tmp_path: Path):
             {
                 "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
                 "params": [],
-                "ops": [{"kind": "ret_void"}],
+                "ops": (
+                    [*(gc_ops or ()), {"kind": "ret_void"}]
+                    if module_name == "gc"
+                    else [{"kind": "ret_void"}]
+                ),
             }
             for module_name in module_order
         ],
@@ -418,6 +422,20 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     main_row = registry.row_of("__main__")
     assert demo_row is not None and main_row is not None
     assert main_row.init_symbol == demo_row.init_symbol
+
+
+def test_table_only_init_root_closes_required_runtime_features(tmp_path: Path) -> None:
+    _, prepared = _prepare_native_ir(
+        tmp_path,
+        gc_ops=[
+            {
+                "kind": "builtin_func",
+                "s_value": "molt_re_compile",
+                "out": "v0",
+            }
+        ],
+    )
+    assert prepared.required_link_features == frozenset({"stdlib_regex"})
 
 
 def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
