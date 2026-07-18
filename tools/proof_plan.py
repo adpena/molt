@@ -38,6 +38,7 @@ REQUIRED_FAMILY_FIELDS = (
     "zero_work_policy",
     "dependencies",
     "resource_class",
+    "metadata_mode",
     "targets",
     "backends",
     "profiles",
@@ -109,6 +110,10 @@ class ProofPlan:
                     errors.append(f"{family.name}: missing {field}")
             if family.data.get("zero_work_policy") not in {"fail", "advisory"}:
                 errors.append(f"{family.name}: invalid zero_work_policy")
+            if family.data.get("metadata_mode") != "descriptive":
+                errors.append(
+                    f"{family.name}: execution metadata must explicitly be descriptive"
+                )
             if (
                 family.data.get("required")
                 and family.data.get("zero_work_policy") != "fail"
@@ -122,12 +127,40 @@ class ProofPlan:
                 if f"  {job}:" not in workflow.read_text(encoding="utf-8"):
                     errors.append(f"{family.name}: workflow job {job!r} is missing")
         known = set(names)
+        dependency_graph: dict[str, tuple[str, ...]] = {}
         for family in self.families:
-            unknown = set(family.data.get("dependencies", [])) - known
+            dependencies = family.data.get("dependencies", [])
+            if not isinstance(dependencies, list) or not all(
+                isinstance(dependency, str) for dependency in dependencies
+            ):
+                errors.append(f"{family.name}: dependencies must be a list of names")
+                continue
+            dependency_graph[family.name] = tuple(dependencies)
+            unknown = set(dependencies) - known
             if unknown:
                 errors.append(
                     f"{family.name}: unknown dependencies {sorted(unknown)!r}"
                 )
+        visiting: list[str] = []
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visited:
+                return
+            if name in visiting:
+                start = visiting.index(name)
+                cycle = (*visiting[start:], name)
+                errors.append(f"dependency cycle: {' -> '.join(cycle)}")
+                return
+            visiting.append(name)
+            for dependency in dependency_graph.get(name, ()):
+                if dependency in dependency_graph:
+                    visit(dependency)
+            visiting.pop()
+            visited.add(name)
+
+        for name in names:
+            visit(name)
         local_names: set[str] = set()
         for rule in self.local_rules:
             name = rule.get("name")
@@ -160,8 +193,7 @@ class ProofPlan:
             for path in normalized
             if any(_matches(path, pattern) for pattern in self.authority_inputs)
         )
-        reasons: dict[str, tuple[str, ...]] = {}
-        selected: list[ProofFamily] = []
+        direct_reasons: dict[str, tuple[str, ...]] = {}
         for family in self.families:
             matched = tuple(
                 path
@@ -170,9 +202,39 @@ class ProofPlan:
             )
             family_reasons = tuple(dict.fromkeys((*authority_matches, *matched)))
             if family_reasons:
-                selected.append(family)
-                reasons[family.name] = family_reasons
-        return Selection(normalized, tuple(selected), reasons)
+                direct_reasons[family.name] = family_reasons
+
+        selected_names = set(direct_reasons)
+        dependency_reasons: dict[str, list[str]] = {}
+        pending = [
+            family.name for family in self.families if family.name in selected_names
+        ]
+        family_by_name = {family.name: family for family in self.families}
+        for name in pending:
+            for dependency in family_by_name[name].data["dependencies"]:
+                reason = f"dependency:{name}"
+                if dependency not in selected_names:
+                    dependency_reasons.setdefault(dependency, []).append(reason)
+                    selected_names.add(dependency)
+                    pending.append(dependency)
+                elif dependency not in direct_reasons:
+                    dependency_reasons.setdefault(dependency, [])
+                    if reason not in dependency_reasons[dependency]:
+                        dependency_reasons[dependency].append(reason)
+
+        selected = tuple(
+            family for family in self.families if family.name in selected_names
+        )
+        reasons = {
+            family.name: tuple(
+                (
+                    *direct_reasons.get(family.name, ()),
+                    *dependency_reasons.get(family.name, ()),
+                )
+            )
+            for family in selected
+        }
+        return Selection(normalized, selected, reasons)
 
 
 def _normalize_path(path: str) -> str:
@@ -198,9 +260,30 @@ def _diff_paths(base: str, head: str, *, three_dot: bool = False) -> list[str]:
         raise RuntimeError("event does not provide two non-null commit identities")
     separator = "..." if three_dot else ".."
     output = _run_git(
-        ["diff", "--name-only", "--diff-filter=ACMRTUXB", f"{base}{separator}{head}"]
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--diff-filter=ACDMRTUXB",
+            f"{base}{separator}{head}",
+        ]
     )
-    return [line for line in output.splitlines() if line.strip()]
+    tokens = output.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        if not status:
+            continue
+        path_count = 2 if status[0] in {"R", "C"} else 1
+        if index + path_count > len(tokens):
+            raise RuntimeError(f"malformed git diff record for status {status!r}")
+        for path in tokens[index : index + path_count]:
+            if path and path not in paths:
+                paths.append(path)
+        index += path_count
+    return paths
 
 
 def _pull_request_paths(base_ref: str) -> list[str]:
@@ -277,6 +360,7 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
                     "memory_class",
                     "cache_domain",
                     "resource_class",
+                    "metadata_mode",
                     "targets",
                     "backends",
                     "profiles",
@@ -295,6 +379,52 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
         selection.changed_paths, separators=(",", ":")
     )
     return outputs
+
+
+def verify_required_results(
+    plan: ProofPlan,
+    selected_names: list[str] | tuple[str, ...],
+    results: dict[str, tuple[str, int]],
+) -> list[str]:
+    """Return fail-closed result errors for selected required proof families.
+
+    The execution count is the number of completed proof partitions reported by
+    the executor.  A selected required family cannot be absent, skipped, or
+    successful with zero completed partitions.
+    """
+    known = {family.name for family in plan.families}
+    unknown_selected = set(selected_names) - known
+    errors = [
+        f"unknown selected proof family {name!r}" for name in sorted(unknown_selected)
+    ]
+    selected = set(selected_names) & known
+    for family in plan.families:
+        if family.name not in selected or not family.data["required"]:
+            continue
+        result = results.get(family.name)
+        if result is None:
+            errors.append(f"{family.name}: required result is missing")
+            continue
+        status, executed = result
+        if status != "success":
+            errors.append(f"{family.name}: required executor status is {status!r}")
+        if family.data["zero_work_policy"] == "fail" and executed <= 0:
+            errors.append(f"{family.name}: zero proof partitions executed")
+    return errors
+
+
+def _parse_result(value: str) -> tuple[str, tuple[str, int]]:
+    try:
+        name, payload = value.split("=", 1)
+        status, raw_count = payload.rsplit(":", 1)
+        count = int(raw_count)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"invalid --result {value!r}; expected FAMILY=STATUS:COUNT"
+        ) from exc
+    if not name or not status or count < 0:
+        raise ValueError(f"invalid --result {value!r}")
+    return name, (status, count)
 
 
 def replay_recent_commits(plan: ProofPlan, count: int) -> dict[str, Any]:
@@ -345,6 +475,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--replay-commits", type=int)
+    parser.add_argument(
+        "--verify-selected",
+        help="JSON array of selected family names whose required results must pass.",
+    )
+    parser.add_argument(
+        "--result",
+        action="append",
+        default=[],
+        help="Executor result as FAMILY=STATUS:EXECUTED_COUNT.",
+    )
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--base-ref", default=os.environ.get("GITHUB_BASE_REF", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
@@ -370,6 +510,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"proof-plan replay: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(replay, indent=2, sort_keys=True))
+        return 0
+    if args.verify_selected is not None:
+        try:
+            selected = json.loads(args.verify_selected)
+            if not isinstance(selected, list) or not all(
+                isinstance(name, str) for name in selected
+            ):
+                raise ValueError("--verify-selected must be a JSON string array")
+            parsed_results = dict(_parse_result(value) for value in args.result)
+            errors = verify_required_results(plan, selected, parsed_results)
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"proof-plan verdict: {exc}", file=sys.stderr)
+            return 2
+        if errors:
+            for error in errors:
+                print(f"proof-plan verdict: {error}", file=sys.stderr)
+            return 1
+        print(
+            f"proof-plan verdict: OK selected={len(selected)} "
+            f"required={sum(1 for family in plan.families if family.name in selected and family.data['required'])}"
+        )
         return 0
     selection = (
         plan.select(args.path)

@@ -1,6 +1,6 @@
 {
   "authority": "tools/proof_plan.toml",
-  "authority_sha256": "fa8cb28b08df70d80c9f080d4311e5b237caf1128b351215d794e7e613cf26c9",
+  "authority_sha256": "f4503b38401c69227c67ba32f23f93a847e544453a5fb1bd78a59f8c12d88e47",
   "ci_families": [
     {
       "architectures": [
@@ -26,6 +26,7 @@
       ],
       "job": "python-tooling-smoke",
       "memory_class": "medium",
+      "metadata_mode": "descriptive",
       "name": "python_tooling",
       "operating_systems": [
         "ubuntu"
@@ -74,6 +75,7 @@
       ],
       "job": "rust-build-unit-smoke",
       "memory_class": "compile-heavy",
+      "metadata_mode": "descriptive",
       "name": "rust",
       "operating_systems": [
         "ubuntu"
@@ -142,6 +144,7 @@
       ],
       "job": "llvm-backend",
       "memory_class": "compile-heavy",
+      "metadata_mode": "descriptive",
       "name": "llvm",
       "operating_systems": [
         "ubuntu"
@@ -187,6 +190,7 @@
       ],
       "job": "python-security",
       "memory_class": "light",
+      "metadata_mode": "descriptive",
       "name": "python_security",
       "operating_systems": [
         "ubuntu"
@@ -232,6 +236,7 @@
       ],
       "job": "rust-security",
       "memory_class": "medium",
+      "metadata_mode": "descriptive",
       "name": "rust_security",
       "operating_systems": [
         "ubuntu"
@@ -279,6 +284,7 @@
       ],
       "job": "formal-methods",
       "memory_class": "medium",
+      "metadata_mode": "descriptive",
       "name": "formal",
       "operating_systems": [
         "ubuntu"
@@ -289,7 +295,7 @@
       "python_versions": [
         "3.12"
       ],
-      "required": true,
+      "required": false,
       "resource_class": "formal-tools",
       "targets": [
         "tir",
@@ -302,7 +308,7 @@
       ],
       "timeout_minutes": 45,
       "workflow": ".github/workflows/formal.yml",
-      "zero_work_policy": "fail"
+      "zero_work_policy": "advisory"
     }
   ],
   "local": {

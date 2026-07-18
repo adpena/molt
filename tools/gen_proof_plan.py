@@ -59,6 +59,12 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "",
         "## CI families",
         "",
+        "Execution metadata (`timeout_minutes`, memory/cache/resource classes, "
+        "targets, backends, profiles, Python, OS, and architecture) is explicitly "
+        "descriptive in schema v1. It is emitted for planning and telemetry but "
+        "is not an admission authority until the generated dynamic matrix consumes "
+        "it; workflow executor mechanics remain authoritative for those values.",
+        "",
         "| Family | Tiers | Required | Executor | Timeout | Resource | Inputs |",
         "|---|---|---:|---|---:|---|---:|",
     ]

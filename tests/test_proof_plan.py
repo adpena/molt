@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from tools import proof_plan
@@ -66,6 +67,34 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         assert _classes(path)["llvm"] is True, path
 
 
+def test_selected_family_closes_transitive_dependencies_with_reason() -> None:
+    selection = PLAN.select(["config/llvm_toolchain_releases.toml"])
+    assert [family.name for family in selection.selected] == ["rust", "llvm"]
+    assert selection.reasons["llvm"] == ("config/llvm_toolchain_releases.toml",)
+    assert selection.reasons["rust"] == ("dependency:llvm",)
+
+
+def test_dependency_cycles_are_rejected() -> None:
+    families = tuple(
+        replace(
+            family,
+            data={
+                **family.data,
+                "dependencies": (
+                    ["llvm"]
+                    if family.name == "rust"
+                    else ["rust"]
+                    if family.name == "llvm"
+                    else family.data["dependencies"]
+                ),
+            },
+        )
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert "dependency cycle: rust -> llvm -> rust" in errors
+
+
 def test_lockfiles_select_security_and_build_classes() -> None:
     cargo = _classes("Cargo.lock")
     uv = _classes("uv.lock")
@@ -112,6 +141,39 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
     assert {family.name for family in selection.selected} == {"python_tooling"}
 
 
+def test_diff_includes_deletions_and_both_sides_of_renames(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_git(args: list[str]) -> str:
+        calls.append(args)
+        return (
+            "D\0runtime/molt-runtime/src/legacy.rs\0"
+            "R100\0runtime/molt-backend/src/old.rs\0docs/old.rs\0"
+        )
+
+    monkeypatch.setattr(
+        proof_plan,
+        "_run_git",
+        fake_git,
+    )
+    paths = proof_plan._diff_paths("a" * 40, "b" * 40)
+    assert calls == [
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--diff-filter=ACDMRTUXB",
+            f"{'a' * 40}..{'b' * 40}",
+        ]
+    ]
+    assert paths == [
+        "runtime/molt-runtime/src/legacy.rs",
+        "runtime/molt-backend/src/old.rs",
+        "docs/old.rs",
+    ]
+    assert _classes(*paths)["rust"] is True
+
+
 def test_forced_or_null_push_fails_closed(tmp_path: Path) -> None:
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"forced": True}), encoding="utf-8")
@@ -135,6 +197,37 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert by_name["rust"]["selected_by"] == ["Cargo.lock"]
     assert by_name["rust"]["resource_class"] == "compiler-build-resource"
     assert by_name["rust_security"]["cache_domain"] == "rust-security"
+
+
+def test_required_result_verdict_fails_missing_skipped_and_zero_work() -> None:
+    selected = ["rust", "llvm"]
+    assert proof_plan.verify_required_results(PLAN, selected, {}) == [
+        "rust: required result is missing",
+        "llvm: required result is missing",
+    ]
+    assert proof_plan.verify_required_results(
+        PLAN,
+        selected,
+        {"rust": ("skipped", 0), "llvm": ("success", 0)},
+    ) == [
+        "rust: required executor status is 'skipped'",
+        "rust: zero proof partitions executed",
+        "llvm: zero proof partitions executed",
+    ]
+    assert (
+        proof_plan.verify_required_results(
+            PLAN,
+            selected,
+            {"rust": ("success", 1), "llvm": ("success", 1)},
+        )
+        == []
+    )
+
+
+def test_formal_is_honestly_advisory_until_cross_workflow_aggregation() -> None:
+    formal = next(family for family in PLAN.families if family.name == "formal")
+    assert formal.data["required"] is False
+    assert formal.data["zero_work_policy"] == "advisory"
 
 
 def test_replay_quantifies_avoided_launches(monkeypatch) -> None:
