@@ -116,11 +116,10 @@ impl SocketRuntimeState {
     #[cfg(molt_has_net_io)]
     fn unregister_descriptor(&self, descriptor: NativeSocketDescriptor, socket_ptr: *mut u8) {
         let mut descriptors = self.descriptor_map.lock().unwrap();
-        if descriptors
-            .get(&descriptor)
-            .is_some_and(|slot| slot.0 == socket_ptr)
+        if let std::collections::hash_map::Entry::Occupied(entry) = descriptors.entry(descriptor)
+            && entry.get().0 == socket_ptr
         {
-            descriptors.remove(&descriptor);
+            entry.remove();
         }
     }
 
