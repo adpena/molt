@@ -84,6 +84,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from tools.fs_delete import delete_path
+
 _GB = 1024**3
 
 # --- thresholds (env-overridable; deterministic defaults) -------------------
@@ -1128,7 +1130,7 @@ def ensure_free(
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
-            ok, err = _delete_dir(cand.path)
+            ok, err = delete_path(cand.path)
             if not ok:
                 result.errors.append(f"{cand.path}: {err}")
                 continue
@@ -1237,7 +1239,7 @@ def gc(
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
-            ok, err = _delete_dir(cand.path)
+            ok, err = delete_path(cand.path)
             if not ok:
                 result.errors.append(f"{cand.path}: {err}")
                 continue
@@ -1309,7 +1311,7 @@ def reclaim_completed_lane(
         return result
     assert_safe_to_delete(target, resolved_root, cfg.lane_globs)
     if apply:
-        ok, error = _delete_dir(target)
+        ok, error = delete_path(target)
         if not ok:
             result.errors.append(f"{target}: {error}")
             return result
@@ -1362,15 +1364,6 @@ def _protected_paths(
         if raw:
             protected.append(Path(raw).expanduser().resolve(strict=False))
     return protected
-
-
-def _delete_dir(path: Path) -> tuple[bool, str]:
-    try:
-        shutil.rmtree(path, ignore_errors=False)
-        return True, ""
-    except OSError as exc:
-        # Partial delete already frees space; report but do not raise.
-        return False, str(exc)
 
 
 def _write_log(root: Path, result: ReclaimResult) -> Path | None:
