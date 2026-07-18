@@ -487,8 +487,10 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         profile_name: str,
         profile_features: frozenset[str],
         target_triple: str | None,
+        extra_roots: object,
     ) -> None:
         del profile_name, profile_features
+        assert extra_roots == ()
         observed.append(("refusal", target_triple))
 
     monkeypatch.setattr(
