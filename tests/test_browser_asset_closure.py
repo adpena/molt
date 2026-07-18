@@ -15,6 +15,7 @@ from molt.browser_asset_closure import (
     NODE_RUNNER_ENTRY_ASSETS,
     browser_asset_manifest_key,
     browser_asset_manifest_keys,
+    canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
     wasm_loader_asset_scope_paths,
@@ -99,7 +100,9 @@ def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None
     assert telemetry["source_count"] == 32
 
 
-def test_generated_output_check_accepts_git_platform_line_endings(tmp_path: Path) -> None:
+def test_generated_output_check_accepts_git_platform_line_endings(
+    tmp_path: Path,
+) -> None:
     output = tmp_path / "graph.json"
     generated = b'{\n  "schema_version": 2\n}\n'
     output.write_bytes(generated.replace(b"\n", b"\r\n"))
@@ -107,6 +110,19 @@ def test_generated_output_check_accepts_git_platform_line_endings(tmp_path: Path
 
     output.write_bytes(output.read_bytes().replace(b"2", b"3"))
     assert not generated_output_is_current(output, generated)
+
+
+def test_canonical_text_bytes_make_generator_dependency_hashes_host_invariant(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "scanner.mjs"
+    dependency.write_bytes(b"export const scan = true;\n")
+    lf = canonical_text_bytes(dependency)
+
+    dependency.write_bytes(b"export const scan = true;\r\n")
+    crlf = canonical_text_bytes(dependency)
+
+    assert crlf == lf == b"export const scan = true;\n"
 
 
 def test_scanner_waits_for_chunked_nonblocking_stdin() -> None:
@@ -285,6 +301,7 @@ authority = "test"
     assert canonical_wasm_loader_asset_bytes(source) == (
         b"export const value = 1;\nexport default value;\n"
     )
+
 
 def test_browser_asset_manifest_keys_and_proof_scopes_share_authority() -> None:
     assert browser_asset_manifest_key("target_feature_constants.generated.js") == (
