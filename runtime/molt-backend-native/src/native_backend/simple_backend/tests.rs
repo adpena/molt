@@ -1,3 +1,4 @@
+use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
     NativeBackendModuleContext, NativeRcAuthority, SimpleBackend, TrampolineKey,
@@ -180,11 +181,13 @@ fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
 }
 
 mod arith_codegen_snapshot;
+mod backend_selection;
 mod cleanup;
 mod codegen_regressions;
 mod compile_pipeline;
 mod deferred_codegen;
 mod fail_closed_codegen;
+#[cfg(feature = "llvm")]
 mod llvm_backend;
 mod module_metadata;
 mod tir_analysis;

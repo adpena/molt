@@ -32,6 +32,7 @@ mod cleanup;
 pub(crate) use cleanup::*;
 mod control_frames;
 pub(crate) use control_frames::*;
+mod backend_selection;
 mod config;
 mod deferred_codegen;
 #[cfg(test)]

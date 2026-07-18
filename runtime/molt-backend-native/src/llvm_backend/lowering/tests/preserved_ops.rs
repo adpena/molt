@@ -585,6 +585,40 @@ fn lower_preserved_gen_send_calls_runtime() {
 }
 
 #[test]
+fn lower_preserved_sys_executable_uses_classified_runtime_abi() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    backend
+        .runtime_callable_symbols
+        .insert("molt_sys_executable".to_string());
+    let mut func = TirFunction::new("sys_executable_preserved".into(), vec![], TirType::DynBox);
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![],
+        results: vec![result],
+        attrs: {
+            let mut attrs = AttrDict::new();
+            attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("sys_executable".into()),
+            );
+            attrs
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    assert!(ir.contains("call i64 @molt_sys_executable()"), "{ir}");
+}
+
+#[test]
 fn lower_preserved_context_exit_calls_runtime() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
