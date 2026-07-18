@@ -1,17 +1,5 @@
 pub(crate) use super::heap_kinds_generated::*;
 
-/// Lazy `glob.iglob(...)` iterator. Holds a boxed `GlobIterState` work-stack
-/// machine that streams matching paths one per `__next__` at bounded RSS
-/// (CPython-faithful `glob` algorithm, but incremental instead of eager).
-
-/// First-class Molt wrapper around a genuine C-extension `PyObject*` that has
-/// crossed *into* compiled Python (a numpy static type, an extension instance,
-/// a descriptor, …). Payload is the raw C pointer (`usize`); attribute access,
-/// mutation, and calls route back through the object's own CPython type slots
-/// (`tp_getattro`/`tp_setattro`/`tp_call`) via the `molt-cpython-abi` bridge.
-/// See `object::foreign`.
-/// Native storage authority owned by one weak-container wrapper.
-
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
 pub(crate) const TYPE_TAG_FLOAT: i64 = 2;
@@ -73,17 +61,6 @@ pub(crate) fn size_class_for(size: usize) -> u16 {
     }
     0 // oversized
 }
-
-/// Specialized list of raw i64 values — no NaN-boxing, no refcounting.
-/// Created when list elements are all known ints at compile time.
-
-/// Specialized list of raw u8 bool values — 0 = False, 1 = True.
-/// 8x more cache-friendly than storing NaN-boxed bools in Vec<u64>.
-/// Created by `[True] * N` and `[False] * N` patterns.
-
-/// Heap-allocated float (used for NaN values to preserve identity semantics).
-/// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation
-/// so that each `float('nan')` call produces a unique pointer address.
 
 #[cfg(test)]
 mod tests {

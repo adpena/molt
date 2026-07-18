@@ -747,9 +747,7 @@ pub(super) unsafe fn after_module_metadata_set(
         }
         let metadata = EXECUTION_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
-            let Some(ctx) = stack.last_mut() else {
-                return None;
-            };
+            let ctx = stack.last_mut()?;
             if ctx.runtime_id != runtime_id
                 || ctx.module_bits != module_bits
                 || !ctx.spec_metadata_pending

@@ -795,12 +795,11 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 header.fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
                 super::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
                 drop(mutation_guard);
-                if clear_abi {
-                    if let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                if clear_abi
+                    && let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                         .clear_list_view(MoltObject::from_ptr(ptr).bits())
-                    {
-                        sink.detach_resource(DetachedResource::ListProjection(projection));
-                    }
+                {
+                    sink.detach_resource(DetachedResource::ListProjection(projection));
                 }
                 for &bits in detached.iter() {
                     sink.detach_if_heap(bits);
@@ -843,12 +842,11 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             }
             HeapLifecycleHandler::Exception => {
                 let detached = crate::builtins::exceptions::exception_detach_owned_edges(ptr);
-                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-                    if let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+                    && let Some(projection) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                         .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits())
-                    {
-                        sink.detach_resource(DetachedResource::ExceptionProjection(projection));
-                    }
+                {
+                    sink.detach_resource(DetachedResource::ExceptionProjection(projection));
                 }
                 crate::builtins::exceptions::exception_move_detached_edges(detached, sink);
             }

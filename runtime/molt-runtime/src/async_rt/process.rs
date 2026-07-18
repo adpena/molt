@@ -1391,7 +1391,7 @@ mod process_wait_state_tests {
     #[test]
     fn native_blocking_wait_observes_cancellation_predicate() {
         let state = process_state();
-        let waiter = PtrSlot(1usize as *mut u8);
+        let waiter = PtrSlot(std::ptr::dangling_mut::<u8>());
         assert!(matches!(
             state.install_wait_future(waiter),
             ProcessWaitFutureInstall::Installed

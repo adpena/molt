@@ -707,7 +707,7 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let out = (|| -> Result<(), u64> {
+        let out = {
             let resolution = source_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
             importlib_loader_exec_module_apply(
                 _py,
@@ -723,7 +723,7 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
                     body: ImportlibLoaderExecBody::CompiledSource,
                 },
             )
-        })();
+        };
         importlib_loader_exec_context_release(_py, &ctx);
         match out {
             Ok(()) => MoltObject::none().bits(),
@@ -800,7 +800,7 @@ pub extern "C" fn molt_importlib_extension_loader_exec_module(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let out = (|| -> Result<(), u64> {
+        let out = {
             let resolution =
                 extension_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
             importlib_loader_exec_module_apply(
@@ -817,7 +817,7 @@ pub extern "C" fn molt_importlib_extension_loader_exec_module(
                     body: ImportlibLoaderExecBody::Extension,
                 },
             )
-        })();
+        };
         importlib_loader_exec_context_release(_py, &ctx);
         match out {
             Ok(()) => MoltObject::none().bits(),

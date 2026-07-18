@@ -2839,9 +2839,7 @@ impl ObjectBridge {
     pub fn clear_list_view(&self, bits: AbiHandle) -> Option<RetiredClearedListProjection> {
         let (items, shadow) = {
             let mut handle = self.handle_shard(bits).lock();
-            let Some(entry) = handle.to_py.get_mut(&bits) else {
-                return None;
-            };
+            let entry = handle.to_py.get_mut(&bits)?;
             let ManagedView::List { allocation } = &mut entry.view else {
                 return None;
             };
@@ -3034,9 +3032,7 @@ impl ObjectBridge {
     ) -> Option<RetiredExceptionProjection> {
         let old = {
             let mut handle = self.handle_shard(bits).lock();
-            let Some(entry) = handle.to_py.get_mut(&bits) else {
-                return None;
-            };
+            let entry = handle.to_py.get_mut(&bits)?;
             let ManagedView::Exception(object) = &mut entry.view else {
                 return None;
             };

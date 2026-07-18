@@ -37,7 +37,7 @@ pub(crate) fn function_ptr(bits: u64) -> Option<*const ()> {
 
 #[inline(always)]
 pub(crate) fn expose_function_address(ptr: *const ()) -> u64 {
-    let address = unsafe { core::mem::transmute::<*const (), usize>(ptr) };
+    let address = ptr as usize;
     u64::try_from(address).expect("supported function-address carriers fit in u64")
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn checked_slice_len<T>(ptr: *const T, len_bits: u64) -> Option<usize
 
     let alignment = core::mem::align_of::<T>();
     let ptr_addr = ptr.addr();
-    if ptr_addr == 0 || ptr_addr % alignment != 0 {
+    if ptr_addr == 0 || !ptr_addr.is_multiple_of(alignment) {
         return None;
     }
 
