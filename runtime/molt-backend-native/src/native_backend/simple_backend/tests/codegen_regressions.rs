@@ -151,6 +151,40 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
 }
 
 #[test]
+fn direct_call_minicfg_preserves_unrelated_live_parameter() {
+    let mut params = vec!["carried".to_string()];
+    params.extend((0..8).map(|idx| format!("arg{idx}")));
+    let func = FunctionIR {
+        name: "direct_call_live_through".to_string(),
+        params: params.clone(),
+        ops: vec![
+            OpIR {
+                kind: "call".to_string(),
+                s_value: Some("molt_gpu_linear_contiguous".to_string()),
+                args: Some(params[1..].to_vec()),
+                out: Some("ignored_result".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                var: Some("carried".to_string()),
+                ..OpIR::default()
+            },
+        ],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+    };
+
+    let clif = compile_function_to_clif_text(vec![func], "direct_call_live_through");
+
+    assert!(
+        clif.contains("jump block1(v1)"),
+        "direct-call recursion mini-CFG must preserve the dominating carried parameter:\n{clif}"
+    );
+}
+
+#[test]
 fn native_boxed_or_retains_selected_operand_result() {
     let func = FunctionIR {
         name: "boxed_or_selected_owner".to_string(),
@@ -386,6 +420,99 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
         "nested exception raise CFG synthesized zero-valued predecessors:\n{}\n\nCLIF:\n{}",
         suspicious.join("\n"),
         clif
+    );
+}
+
+#[test]
+fn semantic_branch_edges_explicitly_transport_live_parameter() {
+    let clif = compile_function_to_clif_text(
+        vec![FunctionIR {
+            name: "semantic_edge_transport".to_string(),
+            params: vec!["carried".to_string(), "cond".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["cond".to_string()]),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("carried".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("carried".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["dyn".to_string(), "bool".to_string()]),
+            source_file: None,
+            is_extern: false,
+        }],
+        "semantic_edge_transport",
+    );
+
+    let semantic_branch = clif
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("brif "))
+        .unwrap_or_else(|| panic!("semantic br_if must reach CLIF:\n{clif}"));
+    assert!(
+        semantic_branch.matches('(').count() >= 2,
+        "both semantic successors must receive explicit live-value arguments:\n{semantic_branch}\n\n{clif}"
+    );
+}
+
+#[test]
+fn exception_edges_explicitly_transport_live_parameter() {
+    let clif = compile_function_to_clif_text(
+        vec![FunctionIR {
+            name: "exception_edge_transport".to_string(),
+            params: vec!["carried".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("carried".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("carried".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["dyn".to_string()]),
+            source_file: None,
+            is_extern: false,
+        }],
+        "exception_edge_transport",
+    );
+
+    let exception_branch = clif
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("brif "))
+        .unwrap_or_else(|| panic!("check_exception must reach CLIF:\n{clif}"));
+    assert!(
+        exception_branch.matches('(').count() >= 2,
+        "handler and fallthrough must both receive explicit live-value arguments:\n{exception_branch}\n\n{clif}"
     );
 }
 

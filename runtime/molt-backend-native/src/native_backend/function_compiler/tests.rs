@@ -5,12 +5,12 @@ use super::fc::list_index_fast_path::{
 };
 use super::fc::loops::metadata_only_structured_loop_ops;
 use super::{
-    FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name,
-    box_raw_bool_value, box_raw_i64_value_overflow_safe, cleanup_roots_for_names,
+    BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan,
+    alias_root_name, box_raw_bool_value, box_raw_i64_value_overflow_safe, cleanup_roots_for_names,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
-    import_func_ref, is_cold_module_chunk_function, jump_block, live_rebind_vars_for_op,
-    mark_cleanup_root_once, materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
-    switch_to_block_materialized, switch_to_block_with_rebind,
+    import_func_ref, is_cold_module_chunk_function, jump_block, mark_cleanup_root_once,
+    materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
+    switch_to_block_materialized,
 };
 use crate::repr::{ContainerStorageKind, ScalarKind};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
@@ -20,7 +20,7 @@ use cranelift_codegen::{
     settings,
     verifier::verify_function,
 };
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn preanalyze_for_test(
