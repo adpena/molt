@@ -129,6 +129,22 @@ Gate command strings mirror the canonical invocations in
 `pyproject.toml [tool.molt.dx.commands]`. Edit the manifest to add a
 change-class; the driver's own tests assert the committed manifest stays valid.
 
+CI proof families execute through the same manifest-owned DAG. Commands become
+eligible only after their declared parents succeed; eligible commands are
+admitted in canonical manifest order under both the global worker ceiling and
+the per-resource limits in `[[resource_policy]]`. The compiler-build resource
+remains serialized because its Cargo/link state is mutable, while independent
+repository, formal, runtime, and audit proofs use bounded parallel capacity.
+The first failed, timed-out, or source-mutating command stops admission and
+cancels live siblings through `guarded_exec` custody. Receipts are always written
+in manifest order and include the observed peak fanout, resource peaks, wall
+time, cancellations, and the existing per-command peak-RSS/toolchain evidence.
+For every `github-job` family, the manifest validator simulates the deterministic
+DAG at declared command timeouts and requires its resource-aware projected
+makespan to fit inside the workflow job timeout. This preserves fail-fast outer
+budgets without pretending mutually concurrent partitions consume sequential
+wall time.
+
 ## Agent-bootstrap conventions
 
 These are the per-session conventions every agent follows; the driver assumes

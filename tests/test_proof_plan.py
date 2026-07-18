@@ -7,10 +7,12 @@ from pathlib import Path
 import sys
 import threading
 import time
+from typing import Any
 
 import pytest
 
-from tools import gen_proof_plan, proof_plan
+from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
+from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 
 
@@ -28,6 +30,16 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.commands) >= 70
     assert len(PLAN.matrix_cells) >= 14
     assert len(PLAN.toolchain_policies) >= 15
+    assert PLAN.executor_max_workers == 4
+    assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
+        "compiler-build-resource": 1,
+        "formal-tools": 2,
+        "network-audit": 2,
+        "python-static": 1,
+        "python-tests": 2,
+        "repository-policy": 4,
+        "wasm-runtime": 2,
+    }
     assert all("metadata_mode" not in family.data for family in PLAN.families)
     assert all(family.data["required"] for family in PLAN.families)
     assert len(PLAN.local_rules) >= 30
@@ -52,6 +64,19 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     assert projection["toolchain_policies"] == [
         policy.data for policy in PLAN.toolchain_policies
     ]
+    assert projection["executor"]["max_workers"] == 4
+    assert projection["executor"]["resource_policies"] == [
+        {"name": policy.name, "max_parallel": policy.max_parallel}
+        for policy in PLAN.resource_policies
+    ]
+    timeout_envelopes = projection["executor"]["github_job_timeout_envelopes"]
+    assert timeout_envelopes["repository_policy"] == {
+        "budget_seconds": 3600,
+        "projected_makespan_seconds": 3300,
+        "critical_path_seconds": 1500,
+        "resource_capacity_floor_seconds": {"repository-policy": 2625},
+        "headroom_seconds": 300,
+    }
     local = projection["local"]
     assert local["commands"]["local.always.0"] == PLAN.always[0]
     first = PLAN.local_rules[0]
@@ -142,6 +167,50 @@ def test_dependency_cycles_are_rejected() -> None:
     )
     errors = replace(PLAN, families=families).validate()
     assert "dependency cycle: rust -> llvm -> rust" in errors
+
+
+def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
+    for family in PLAN.families:
+        if family.data["executor"] != "github-job":
+            continue
+        envelope = PLAN.timeout_envelope(family.name)
+        budget = int(family.data["timeout_minutes"]) * 60
+        assert envelope.projected_makespan_seconds <= budget
+        assert envelope.critical_path_seconds <= envelope.projected_makespan_seconds
+        assert max(envelope.resource_capacity_floor_seconds.values()) <= (
+            envelope.projected_makespan_seconds
+        )
+
+    repository_declared = sum(
+        int(command.data["timeout_seconds"])
+        for command in PLAN.commands
+        if command.family == "repository_policy"
+    )
+    repository_budget = next(
+        int(family.data["timeout_minutes"]) * 60
+        for family in PLAN.families
+        if family.name == "repository_policy"
+    )
+    assert repository_declared > repository_budget
+    assert (
+        PLAN.timeout_envelope("repository_policy").projected_makespan_seconds
+        < repository_budget
+    )
+
+    families = tuple(
+        replace(
+            family,
+            data={**family.data, "timeout_minutes": 1},
+        )
+        if family.name == "repository_policy"
+        else family
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert any(
+        "repository_policy: projected resource-aware timeout envelope" in error
+        for error in errors
+    )
 
 
 def test_toolchain_setup_projection_drift_is_rejected() -> None:
@@ -365,7 +434,7 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert "linux-x86_64-rust-wasi-dev" in by_name["rust"]["matrix_cells"]
 
 
-def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, object]:
+def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
     versions = {
         "python": "Python 3.12.13",
         "uv": "uv 0.11.24",
@@ -670,6 +739,290 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     assert record["timeout_env"] == ["MOLT_INNER_TIMEOUT"]
     assert record["environment_overrides"] == {"MOLT_EXECUTOR_MARKER": "canonical"}
     assert receipt["toolchains"]
+    assert receipt["execution"]["schema"] == "molt.proof-plan-dag-executor.v1"
+    assert receipt["execution"]["peak_active_commands"] == 1
+    assert receipt["execution"]["fail_fast_triggered"] is False
+
+
+def _synthetic_executor_command(
+    command_id: str,
+    *,
+    dependencies: list[str] | None = None,
+    resource_class: str = "resource-a",
+) -> proof_plan.ProofCommand:
+    return proof_plan.ProofCommand(
+        command_id,
+        {
+            "id": command_id,
+            "family": "synthetic",
+            "cell": "synthetic-cell",
+            "tiers": ["test"],
+            "resource_class": resource_class,
+            "timeout_seconds": 10,
+            "cache_domain": "none",
+            "dependencies": dependencies or [],
+            "argv": [sys.executable, "-c", "pass"],
+            "toolchains": ["python"],
+        },
+    )
+
+
+def _synthetic_executor_plan(
+    commands: tuple[proof_plan.ProofCommand, ...],
+    *,
+    limits: dict[str, int],
+    max_workers: int = 2,
+) -> proof_plan.ProofPlan:
+    return replace(
+        PLAN,
+        commands=commands,
+        executor_max_workers=max_workers,
+        resource_policies=tuple(
+            proof_plan.ResourcePolicy(name, limit) for name, limit in limits.items()
+        ),
+    )
+
+
+def test_timeout_envelope_models_dependencies_and_resource_capacity() -> None:
+    commands = (
+        _synthetic_executor_command("synthetic.a"),
+        _synthetic_executor_command("synthetic.b", resource_class="resource-b"),
+        _synthetic_executor_command("synthetic.a-sibling"),
+        _synthetic_executor_command("synthetic.after-a", dependencies=["synthetic.a"]),
+    )
+    plan = _synthetic_executor_plan(
+        commands,
+        limits={"resource-a": 1, "resource-b": 1},
+    )
+    envelope = plan.timeout_envelope("synthetic")
+    assert envelope.projected_makespan_seconds == 30
+    assert envelope.critical_path_seconds == 20
+    assert envelope.resource_capacity_floor_seconds == {
+        "resource-a": 30,
+        "resource-b": 10,
+    }
+
+
+def _successful_synthetic_record(
+    command: proof_plan.ProofCommand,
+) -> dict[str, object]:
+    return {
+        **proof_plan._base_command_record(command),
+        "started_at": "2026-07-18T00:00:00+00:00",
+        "duration_seconds": 0.01,
+        "peak_rss_bytes": 1,
+        "cache_disposition": "not-applicable",
+        "status": "success",
+        "returncode": 0,
+        "guard_metrics_schema": "molt.guarded-command-metrics.v1",
+    }
+
+
+def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    commands = (
+        _synthetic_executor_command("synthetic.a"),
+        _synthetic_executor_command("synthetic.b", resource_class="resource-b"),
+        _synthetic_executor_command("synthetic.a-sibling"),
+        _synthetic_executor_command("synthetic.after-a", dependencies=["synthetic.a"]),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    active_by_resource = {"resource-a": 0, "resource-b": 0}
+    peak_by_resource = {"resource-a": 0, "resource-b": 0}
+    start_order: list[str] = []
+    events: list[str] = []
+    lock = threading.Lock()
+
+    def fake_run(
+        command: proof_plan.ProofCommand,
+        _metrics: Path,
+        _cancel: threading.Event,
+    ) -> dict[str, object]:
+        resource = str(command.data["resource_class"])
+        with lock:
+            start_order.append(command.id)
+            events.append(f"start:{command.id}")
+            active_by_resource[resource] += 1
+            peak_by_resource[resource] = max(
+                peak_by_resource[resource], active_by_resource[resource]
+            )
+        time.sleep(0.03 if command.id == "synthetic.a" else 0.01)
+        with lock:
+            active_by_resource[resource] -= 1
+            events.append(f"finish:{command.id}")
+        return _successful_synthetic_record(command)
+
+    monkeypatch.setattr(proof_plan, "_run_command", fake_run)
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == 0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [record["id"] for record in receipt["commands"]] == [
+        command.id for command in commands
+    ]
+    assert receipt["executed_partitions"] == [command.id for command in commands]
+    assert receipt["execution"]["peak_active_commands"] == 2
+    assert receipt["execution"]["peak_active_by_resource"] == {
+        "resource-a": 1,
+        "resource-b": 1,
+    }
+    assert peak_by_resource == {"resource-a": 1, "resource-b": 1}
+    assert start_order[:2] == ["synthetic.a", "synthetic.b"]
+    assert events.index("start:synthetic.after-a") > events.index("finish:synthetic.a")
+
+
+def test_executor_failure_cancels_live_siblings_and_skips_unscheduled_dependents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    commands = (
+        _synthetic_executor_command("synthetic.fail"),
+        _synthetic_executor_command("synthetic.live", resource_class="resource-b"),
+        _synthetic_executor_command(
+            "synthetic.blocked", dependencies=["synthetic.fail"]
+        ),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+
+    def fake_run(
+        command: proof_plan.ProofCommand,
+        _metrics: Path,
+        cancel: threading.Event,
+    ) -> dict[str, object]:
+        if command.id == "synthetic.fail":
+            time.sleep(0.02)
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 7,
+            }
+        assert cancel.wait(timeout=1.0)
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "cancelled_by_fail_fast": True,
+        }
+
+    monkeypatch.setattr(proof_plan, "_run_command", fake_run)
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == 7
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [record["id"] for record in receipt["commands"]] == [
+        command.id for command in commands
+    ]
+    assert [record["status"] for record in receipt["commands"]] == [
+        "failure",
+        "cancelled",
+        "skipped",
+    ]
+    assert receipt["execution"]["fail_fast_triggered"] is True
+    assert receipt["execution"]["cancelled_commands"] == 1
+    assert receipt["execution"]["skipped_commands"] == 1
+
+
+def test_executor_does_not_convert_control_plane_interrupts_into_records(
+    tmp_path: Path, monkeypatch
+) -> None:
+    command = _synthetic_executor_command("synthetic.interrupt")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+
+    def interrupt(
+        _command: proof_plan.ProofCommand,
+        _metrics: Path,
+        _cancel: threading.Event,
+    ) -> dict[str, object]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(proof_plan, "_run_command", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json")
+
+
+def test_executor_fail_fast_uses_guard_custody_to_reap_live_process_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child_pid_path = tmp_path / "guarded-child.pid"
+    fail = _synthetic_executor_command("synthetic.fail")
+    live = _synthetic_executor_command("synthetic.live", resource_class="resource-b")
+    fail = replace(
+        fail,
+        data={
+            **fail.data,
+            "argv": [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(0.75); raise SystemExit(9)",
+            ],
+        },
+    )
+    child_code = "import time; time.sleep(60)"
+    live_code = (
+        "import pathlib, subprocess, sys, time; "
+        f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+        "time.sleep(60)"
+    )
+    live = replace(live, data={**live.data, "argv": [sys.executable, "-c", live_code]})
+    commands = (fail, live)
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+
+    started = time.monotonic()
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == 9
+    assert time.monotonic() - started < 20.0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [record["status"] for record in receipt["commands"]] == [
+        "failure",
+        "cancelled",
+    ]
+    assert child_pid_path.is_file()
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while proof_queue_custody._pid_alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not proof_queue_custody._pid_alive(child_pid)
+
+
+def test_executor_process_custody_is_classified_by_subprocess_guard() -> None:
+    allowlist = tuple(
+        entry
+        for entry in check_subprocess_guard_coverage.ALLOWLIST
+        if entry.path == "tools/proof_plan.py"
+    )
+    audit = check_subprocess_guard_coverage.audit_paths(
+        [proof_plan.ROOT / "tools" / "proof_plan.py"],
+        root=proof_plan.ROOT,
+        allowlist=allowlist,
+        text_paths=(),
+    )
+    assert audit.ok
+    assert audit.unexpected == ()
+    assert audit.stale_allowlist == ()
+    assert audit.expanded_allowlist == ()
 
 
 def test_executor_refuses_uncommitted_source_attestation(
@@ -697,7 +1050,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda command, _metrics: {
+        lambda command, _metrics, _cancel: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -720,7 +1073,7 @@ def test_heavy_queue_projects_the_same_receipt_schema(
     monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "dirty")
     summary = tmp_path / "summary.json"
     summary.write_text(json.dumps({"peak_total": {"rss_kb": 64}}), encoding="utf-8")
-    receipt = proof_queue_evidence._queue_proof_receipt(
+    receipt: Any = proof_queue_evidence._queue_proof_receipt(
         {
             "logical_id": "heavy-native",
             "status": "passed",

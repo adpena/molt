@@ -809,8 +809,12 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
 def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
     proof_text = _read("tools/proof_plan.py")
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    wasm_family = next(
+        family for family in plan["ci_family"] if family["name"] == "wasm"
+    )
 
-    assert "timeout-minutes: 90" in wasm_text
+    assert f"timeout-minutes: {wasm_family['timeout_minutes']}" in wasm_text
     assert "--timeout" not in wasm_text
     assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
