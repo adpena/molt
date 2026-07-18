@@ -34,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "cf3596f0ce6cd2385df76d52004cf53b69aac7d248999853783859c67c13d85f",
+  "authority_sha256": "c51417e21bf8898490666bb28f71014c836b38bf0704d85a270bf50f361831ae",
   "ci_families": [
     {
       "dependencies": [],
@@ -531,7 +531,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -556,7 +557,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -581,7 +583,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -606,7 +609,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -683,7 +687,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -733,7 +738,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -758,7 +764,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -783,7 +790,8 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -1208,7 +1216,8 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustfmt"
       ]
     },
     {
@@ -3604,6 +3613,25 @@
         "--version"
       ],
       "version_pattern": "^cargo 1\\.96\\.1\\b"
+    },
+    {
+      "content_path_command": [
+        "rustup",
+        "which",
+        "rustfmt"
+      ],
+      "executable": "rustfmt",
+      "fingerprint_domain": "rustup",
+      "name": "rustfmt",
+      "setup_evidence": [
+        "rust-toolchain.toml::components = [\"rustfmt\", \"clippy\"]",
+        ".github/workflows/ci.yml::components: rustfmt"
+      ],
+      "setup_value": "1.9.0",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^rustfmt 1\\.9\\.0-stable\\b"
     },
     {
       "executable": "clang",

@@ -461,6 +461,31 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     )
 
 
+def test_runtime_export_sources_follow_cargo_dependency_authority() -> None:
+    gen = _load_gen_wasm_abi()
+    manifest = importlib.import_module("wasm_abi_gen.manifest")
+
+    roots = set(manifest._runtime_crate_dependency_roots())
+    assert ROOT / "runtime/molt-runtime" in roots
+    assert ROOT / "runtime/molt-gpu" in roots
+    assert ROOT / "runtime/molt-runtime-core" in roots
+    assert ROOT / "runtime/molt-cpython-abi" not in roots
+    assert ROOT / "runtime/molt-backend-wasm" not in roots
+
+    sources = set(manifest._runtime_rust_files())
+    assert ROOT / "runtime/molt-gpu/src/runtime/bridge.rs" in sources
+    assert not any(
+        path.is_relative_to(ROOT / "runtime/molt-cpython-abi") for path in sources
+    )
+
+    data = gen.load_manifest()
+    host_exports = set(data["runtime_export_policy"]["host_exports"])
+    assert {
+        "molt_gpu_matmul_contiguous",
+        "molt_gpu_tensor__zeros",
+    } <= host_exports
+
+
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
