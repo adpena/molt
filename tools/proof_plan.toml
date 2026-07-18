@@ -9,6 +9,7 @@
 schema = "molt.proof-plan.v3"
 
 authority_inputs = [
+  ".gitattributes",
   ".github/actions/setup-lean/action.yml",
   ".github/actions/setup-llvm/action.yml",
   ".github/workflows/ci.yml",
@@ -27,6 +28,7 @@ authority_inputs = [
   "src/molt/llvm_toolchain.py",
   "tools/artifact_publish.py",
   "tools/check_generator_manifest.py",
+  "tools/ff_land.py",
   "tools/proof_plan.py",
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
