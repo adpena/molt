@@ -1246,7 +1246,7 @@ def _r6_target_version_parity_spec(
         "resource_family": "python",
         "contention_key": f"python:r6-target-version-{target_tag}",
         "scopes": [
-            "tools/target_python_runtime.py",
+            "src/molt/python_interpreter.py",
             "tests/molt_diff.py",
             "src/molt/cli/target_python.py",
             "src/molt/stdlib/sys.py",
@@ -1259,7 +1259,7 @@ def _r6_target_version_parity_spec(
             "Named R6 parity lane runs sys metadata plus stdlib version-gated "
             "stat, queue shutdown, and PEP 594 removed-module fixtures with "
             "serial fail-fast differential custody; missing target interpreters "
-            "fail closed through tools/target_python_runtime.py.",
+            "fail closed through src/molt/python_interpreter.py.",
             "Selected R6 fixtures: " + ", ".join(selected_fixtures),
         ],
         "timeout": timeout if timeout is not None else 900.0,

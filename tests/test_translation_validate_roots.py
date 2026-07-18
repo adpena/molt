@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import translation_validate
-from tools import target_python_runtime
+from molt import python_interpreter
 
 
 def _expected_translation_target_root(root: Path) -> Path:
@@ -92,7 +92,7 @@ def test_python_command_candidates_are_versioned_not_process_python(
 ) -> None:
     target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
 
-    candidates = target_python_runtime.target_python_command_candidates(
+    candidates = python_interpreter.target_python_command_candidates(
         target,
         override=None,
     )
@@ -107,16 +107,21 @@ def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
     target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
 
     monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
-    monkeypatch.setattr(target_python_runtime.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(python_interpreter.shutil, "which", lambda name: "uv.exe")
 
     def fake_run_command(cmd, **kwargs):
         if cmd[:3] == ["uv.exe", "python", "find"]:
             return "C:/py313/python.exe\n", "", 0
         if cmd[:2] == ["C:/py313/python.exe", "-c"]:
-            return "3.13", "", 0
+            return (
+                '{"executable":"C:/py313/python.exe",'
+                '"implementation":"CPython","version":"3.13.7"}\n',
+                "",
+                0,
+            )
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(target_python_runtime, "_run_command", fake_run_command)
+    monkeypatch.setattr(python_interpreter, "_run_command", fake_run_command)
 
     assert translation_validate._target_python_command(target) == [
         "C:/py313/python.exe"

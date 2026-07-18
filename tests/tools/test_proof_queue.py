@@ -9256,7 +9256,7 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     assert "tests/differential/stdlib/sys_metadata_intrinsics.py" in command
     assert "tests/differential/stdlib/queue_shutdown_version_gate.py" in command
     assert "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in command
-    assert "tools/target_python_runtime.py" in spec["scopes"]
+    assert "src/molt/python_interpreter.py" in spec["scopes"]
     assert "src/molt/stdlib/sys.py" in spec["scopes"]
     assert "src/molt/stdlib/_sys_impl.py" not in spec["scopes"]
     assert "src/molt/stdlib/queue.py" in spec["scopes"]
