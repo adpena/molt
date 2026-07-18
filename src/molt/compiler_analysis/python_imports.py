@@ -558,6 +558,16 @@ def _normalized_import_context(context: ModuleImportContext) -> ModuleImportCont
     return replace(context, spec_name=context.module_name)
 
 
+def _call_receives_module_globals(node: ast.Call) -> bool:
+    return any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Name)
+        and child.func.id == "globals"
+        for argument in (*node.args, *(keyword.value for keyword in node.keywords))
+        for child in ast.walk(argument)
+    )
+
+
 def _module_import_flow_required(tree: ast.AST) -> bool:
     """Cheap fail-closed aperture before the metadata dataflow engine."""
 
@@ -583,6 +593,8 @@ def _module_import_flow_required(tree: ast.AST) -> bool:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "exec":
                 return True
+            if _call_receives_module_globals(node):
+                return True
             writes_named_metadata = any(
                 isinstance(argument, ast.Constant)
                 and argument.value in _IMPORT_METADATA_NAMES
@@ -600,6 +612,8 @@ def _module_import_flow_required(tree: ast.AST) -> bool:
 def _analyze_module_import_flow_uncached(
     tree: ast.AST,
     context: ModuleImportContext,
+    *,
+    metadata_preserving_globals_calls: Collection[ImportNodeKey] = (),
 ) -> ModuleImportFlow:
     """Build one conservative O(AST + states*metadata-writes) event/dataflow pass."""
 
@@ -824,12 +838,10 @@ def _analyze_module_import_flow_uncached(
             or expression.func.id in metadata_mutator_functions
         ):
             return unknown_states(current)
-        if isinstance(expression, ast.Call) and any(
-            isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Name)
-            and child.func.id == "globals"
-            for argument in (*expression.args, *(kw.value for kw in expression.keywords))
-            for child in ast.walk(argument)
+        if (
+            isinstance(expression, ast.Call)
+            and _import_node_key(expression) not in metadata_preserving_globals_calls
+            and _call_receives_module_globals(expression)
         ):
             return unknown_states(current)
         if isinstance(expression, ast.Call):
