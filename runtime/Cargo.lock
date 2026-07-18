@@ -2539,6 +2539,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-gpu-runtime"
+version = "0.1.0"
+dependencies = [
+ "metal",
+ "molt-gpu",
+ "molt-runtime-core",
+ "pollster",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "molt-ir"
 version = "0.1.0"
 dependencies = [
@@ -2602,12 +2614,12 @@ dependencies = [
  "libloading 0.8.9",
  "libm",
  "memchr",
- "metal",
  "mimalloc",
  "mio",
  "molt-codegen-abi",
  "molt-db",
  "molt-gpu",
+ "molt-gpu-runtime",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
@@ -2641,11 +2653,9 @@ dependencies = [
  "num-integer",
  "num-traits",
  "num_cpus",
- "objc",
  "once_cell",
  "os_pipe",
  "parking_lot",
- "pollster",
  "rmpv",
  "rustls",
  "rustls-pemfile",
@@ -2663,7 +2673,6 @@ dependencies = [
  "unicode-ident",
  "unicode_names2 3.1.0",
  "webpki-roots 1.0.8",
- "wgpu",
  "windows-sys 0.61.2",
  "wtf8",
  "xz2",

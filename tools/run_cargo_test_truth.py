@@ -10,7 +10,14 @@ from pathlib import Path
 import check_suite_honesty
 
 ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_COMMAND = ("cargo", "test", "--workspace", "--tests", "--no-fail-fast")
+CANONICAL_COMMAND = (
+    "cargo",
+    "test",
+    "--locked",
+    "--workspace",
+    "--tests",
+    "--no-fail-fast",
+)
 
 
 def host_context() -> dict[str, str]:
@@ -27,9 +34,17 @@ def parse_test_results(output: str, context: dict[str, str]) -> list[dict]:
         identity, status = line[5:].rsplit(" ... ", 1)
         identity = identity.removesuffix(" - should panic")
         if status == "ok":
-            rows[identity] = {"identity": identity, "status": "pass", "context": context}
+            rows[identity] = {
+                "identity": identity,
+                "status": "pass",
+                "context": context,
+            }
         elif status == "FAILED":
-            rows[identity] = {"identity": identity, "status": "fail", "context": context}
+            rows[identity] = {
+                "identity": identity,
+                "status": "fail",
+                "context": context,
+            }
     return list(rows.values())
 
 

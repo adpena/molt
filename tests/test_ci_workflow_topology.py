@@ -493,6 +493,7 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
     assert commands["rust.clippy.workspace-default"]["argv"] == [
         "cargo",
         "clippy",
+        "--locked",
         "--workspace",
         "--all-targets",
         "--",
