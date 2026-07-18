@@ -173,21 +173,21 @@ fn frontier_08_pylong_aslong_silent_overflow() {
     assert!(!py.is_null());
     let got = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     let err = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
-    assert_eq!(got, -1, "overflow must return the C-API -1 sentinel");
-
-    // CPython 3.12 contract on a 32-bit `long` platform: return -1 AND set
-    // OverflowError. Molt returns a silently-truncated value and sets nothing.
-    eprintln!(
-        "FRONTIER #8 REPRODUCED: PyLong_AsLong(2**31+5) -> {got} (err_set={}), \
-         CPython -> -1 with OverflowError set",
-        !err.is_null()
-    );
-    assert!(
-        !err.is_null(),
-        "PyLong_AsLong overflow must set an exception (CPython raises OverflowError); \
-         got silent value {got} with no error — silent wrong answer on numpy's \
-         shape/stride/index path"
-    );
+    if size_of::<std::os::raw::c_long>() < size_of::<std::os::raw::c_longlong>() {
+        assert_eq!(got, -1, "overflow must return the C-API -1 sentinel");
+        assert!(
+            !err.is_null(),
+            "PyLong_AsLong overflow must set an exception (CPython raises OverflowError); \
+             got silent value {got} with no error — silent wrong answer on numpy's \
+             shape/stride/index path"
+        );
+    } else {
+        assert_eq!(got, BIG as std::os::raw::c_long);
+        assert!(
+            err.is_null(),
+            "LP64 PyLong_AsLong must preserve an in-range value without setting an exception"
+        );
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
