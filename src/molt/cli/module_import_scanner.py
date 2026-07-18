@@ -560,7 +560,9 @@ def _collect_imports(
     base_import_context = ModuleImportContext(
         module_name,
         is_package,
+        spec_name=module_name,
         target_python=target_python.feature_version,
+        execution_kind="script" if module_name is None else "imported",
     )
     import_flow = None
     binding_index = analyze_python_bindings(

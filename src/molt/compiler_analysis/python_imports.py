@@ -331,7 +331,7 @@ def _globals_subscript_name(target: ast.AST) -> str | None:
     return target.slice.value
 
 
-def _metadata_target_name(target: ast.AST) -> str | None:
+def import_metadata_target_name(target: ast.AST) -> str | None:
     if isinstance(target, ast.Name):
         return target.id
     if (
@@ -477,7 +477,7 @@ def update_module_import_state(
     target: ast.AST,
     value: ast.AST,
 ) -> ModuleImportState:
-    target_name = _metadata_target_name(target)
+    target_name = import_metadata_target_name(target)
     if target_name is None:
         return state
     if target_name == "__package__":
@@ -500,7 +500,7 @@ def invalidate_module_import_state(
     *,
     deleted: bool = False,
 ) -> ModuleImportState:
-    target_name = _metadata_target_name(target)
+    target_name = import_metadata_target_name(target)
     if target_name is None:
         return state
     unknown = ABSENT_VALUE if deleted else UNKNOWN_VALUE
@@ -566,47 +566,6 @@ def _call_receives_module_globals(node: ast.Call) -> bool:
         for argument in (*node.args, *(keyword.value for keyword in node.keywords))
         for child in ast.walk(argument)
     )
-
-
-def _module_import_flow_required(tree: ast.AST) -> bool:
-    """Cheap fail-closed aperture before the metadata dataflow engine."""
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            _metadata_target_name(target) in _IMPORT_METADATA_NAMES
-            for target in node.targets
-        ):
-            return True
-        if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and (
-            _metadata_target_name(node.target) in _IMPORT_METADATA_NAMES
-        ):
-            return True
-        if isinstance(node, ast.Delete) and any(
-            _metadata_target_name(target) in _IMPORT_METADATA_NAMES
-            for target in node.targets
-        ):
-            return True
-        if isinstance(
-            node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Match)
-        ):
-            return True
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id == "exec":
-                return True
-            if _call_receives_module_globals(node):
-                return True
-            writes_named_metadata = any(
-                isinstance(argument, ast.Constant)
-                and argument.value in _IMPORT_METADATA_NAMES
-                for argument in node.args
-            ) and (
-                isinstance(node.func, ast.Name) and node.func.id == "setattr"
-                or isinstance(node.func, ast.Attribute)
-                and node.func.attr == "__setitem__"
-            )
-            if writes_named_metadata:
-                return True
-    return False
 
 
 def _analyze_module_import_flow_uncached(
@@ -750,7 +709,7 @@ def _analyze_module_import_flow_uncached(
                 metadata_mutator_functions.add(name)
 
     def target_writes_metadata(target: ast.AST) -> bool:
-        if _metadata_target_name(target) in _IMPORT_METADATA_NAMES:
+        if import_metadata_target_name(target) in _IMPORT_METADATA_NAMES:
             return True
         if isinstance(target, (ast.Tuple, ast.List)):
             return any(target_writes_metadata(element) for element in target.elts)
@@ -772,7 +731,7 @@ def _analyze_module_import_flow_uncached(
                     else (child.target,)
                 )
                 if any(
-                    _metadata_target_name(target) in _IMPORT_METADATA_NAMES
+                    import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
                     and (
                         not isinstance(target, ast.Name)
                         or target.id in relevant_globals
@@ -781,7 +740,7 @@ def _analyze_module_import_flow_uncached(
                 ):
                     return True
             elif isinstance(child, ast.Delete) and any(
-                _metadata_target_name(target) in _IMPORT_METADATA_NAMES
+                import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
                 and (
                     not isinstance(target, ast.Name)
                     or target.id in relevant_globals
