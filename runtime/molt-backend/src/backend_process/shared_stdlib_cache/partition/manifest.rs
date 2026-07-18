@@ -1,8 +1,8 @@
 use std::io;
 
-pub(crate) const STDLIB_PARTITION_MANIFEST_SCHEMA: &str = "stdlib-partition-v1";
+const STDLIB_PARTITION_MANIFEST_SCHEMA: &str = "stdlib-partition-v1";
 
-pub(crate) fn update_fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+fn update_fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
     const FNV_PRIME: u64 = 0x100000001b3;
     for byte in bytes {
         hash ^= u64::from(*byte);

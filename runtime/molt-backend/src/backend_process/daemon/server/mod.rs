@@ -21,14 +21,11 @@ use std::time::Instant;
 #[cfg(unix)]
 use super::super::io_limits::{daemon_max_jobs, daemon_request_limit_bytes};
 #[cfg(unix)]
-use super::{DaemonCache, DaemonStats, daemon_cache_limit_bytes};
+use super::cache::{DaemonCache, DaemonStats, daemon_cache_limit_bytes};
 #[cfg(unix)]
 use connection::handle_daemon_connection;
 #[cfg(unix)]
 use context::DaemonConnectionContext;
-
-#[cfg(unix)]
-pub(crate) use wire::{daemon_response_payload, read_daemon_request_bytes};
 
 #[cfg(unix)]
 pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
