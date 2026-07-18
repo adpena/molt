@@ -4,6 +4,11 @@ Source: research workflow `w95r38wfh` — 8 primary-source dimensions (Perceus, 
 
 STATUS: design, adversarially reviewed. All 4 lenses returned **FLAWED on specifics** while confirming the two-tier correctness arc is sound and code-accurate. The required corrections are captured below and MUST be applied. This file is the implementation contract for task #23.
 
+The implemented CPython 3.12 collector and public-API authority is summarized
+in [`generational_gc_authority.md`](generational_gc_authority.md). This design
+history remains the rationale and adversarial record, not a second description
+of live runtime state.
+
 
 ## Recommended architecture
 

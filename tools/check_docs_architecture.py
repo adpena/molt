@@ -271,11 +271,13 @@ def _check_foundation_portfolio_numbering(errors: list[str]) -> None:
     foundation_root = ROOT / "docs/design/foundation"
     if not foundation_root.exists():
         return
+    owners_by_number: dict[str, list[Path]] = {}
     for path in sorted(foundation_root.glob("[5-9][0-9]_*.md")):
         match = FOUNDATION_PORTFOLIO_RE.match(path.name)
         if not match:
             continue
         number = match.group(1)
+        owners_by_number.setdefault(number, []).append(path)
         rel_path = path.relative_to(ROOT).as_posix()
         text = _read_text(path)
         heading = _first_markdown_heading(text)
@@ -297,6 +299,16 @@ def _check_foundation_portfolio_numbering(errors: list[str]) -> None:
                 errors.append(
                     f"{rel_path}: doc metadata must match filename prefix {number}"
                 )
+    for number, owners in sorted(owners_by_number.items()):
+        if len(owners) < 2:
+            continue
+        rel_paths = ", ".join(
+            path.relative_to(ROOT).as_posix() for path in owners
+        )
+        errors.append(
+            f"foundation portfolio number {number} has multiple authorities: "
+            f"{rel_paths}"
+        )
 
 
 def check_repo() -> list[str]:

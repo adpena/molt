@@ -5,7 +5,7 @@ backend/target/profile/arch/OS/version and approach-or-beat Codon/PyPy, and cali
 + measure everything (time AND memory AND footprint) dynamically per-host.
 Authored 2026-06-24. Governed by DESIGN_DOCTRINE.md + the Performance Constitution
 (CLAUDE.md). Feeds doc 64 (scoreboards), doc 65 (compression ladder), doc 66 (parity
-oracle); stdlib sourcing/collaboration via doc 70 (Monty). -->
+oracle); stdlib sourcing/collaboration is recorded in the Monty assessment. -->
 
 # 69 — Benchmark Corpus Union + Dynamic Calibration
 
@@ -187,8 +187,9 @@ budgets. Every cell carries: `benchmark → canonical id → source suite → ba
 - **S5** real-world application workloads + their test suites.
 - **S6** regrtest corpus: CPython `Lib/test` via `libregrtest`, version-gated — parity-at-scale + stress (memory, long-running).
 
-**Stdlib sourcing + collaboration:** the Monty (Pydantic) Rust-interpreter stdlib/Rust
-reuse + bidirectional contribution is its own arc — see **doc 70** (research in progress).
+**Stdlib sourcing + collaboration:** the Monty (Pydantic) Rust-interpreter
+reuse decision is recorded in
+[`monty_stdlib_collaboration_assessment.md`](monty_stdlib_collaboration_assessment.md).
 
 Sequencing: C1–C3 (calibration substrate) → C4 (memory/dimensions) → C5 (full matrix +
 version gating) → S1 (pyperformance, CPython reference, already pinned) → S6 (regrtest —

@@ -1,6 +1,6 @@
 //! The module import bedrock: `ModuleRegistry` + `ModuleTable` +
 //! `molt_module_ensure` (design authority:
-//! `docs/design/foundation/69_import_bedrock_frozen_module_layer.md`, PR1).
+//! `docs/design/foundation/import_bedrock_frozen_module_layer.md`, PR1).
 //!
 //! Within a build a module's identity is its dense `ModuleId` (u32), assigned
 //! in sorted-canonical-name order by the compile-time generator

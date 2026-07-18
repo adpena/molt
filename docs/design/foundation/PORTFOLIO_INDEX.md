@@ -13,6 +13,16 @@ DAG** (which arc unblocks which) and the **execution order**, so the parallel sw
 map. All arcs are checkable against [DESIGN_DOCTRINE.md](DESIGN_DOCTRINE.md): retire a
 god-file killer; satisfy both the Pythonista and Rustacean lenses; fix a representation.
 
+## Numbering authority
+
+An exact two-digit filename prefix in the 50–99 range is a unique portfolio
+identifier, not a topical label that supplementary documents may reuse. The
+first level-one heading and any blueprint metadata must carry that identifier.
+Implementation authorities, research decisions, and execution maps use
+descriptive unnumbered filenames unless they are the one canonical portfolio
+node. `tools/check_docs_architecture.py` enforces the namespace and rejects a
+second owner before routing can drift.
+
 ## The nodes
 - **Doctrine:** [DESIGN_DOCTRINE](DESIGN_DOCTRINE.md) — governs all.
 - **Decomposition (the god-file spine):** [21a](21a_function_compiler_function_split_PLAN.md) function-split · [21b](21b_crate_graph_blueprint.md) crate-graph (molt-ir←molt-passes←molt-lower, per-backend crates, codegen-abi) · [21f](21f_crate_graph_smove_execution_specs.md) per-S-move crate execution specs · [21c](21c_frontend_mixin_decomposition_PLAN.md) frontend mixins · [21d](21d_cli_package_decomposition_PLAN.md) cli/ package · [21e](21e_runtime_satellite_dedup_PLAN.md) runtime satellite dedup.

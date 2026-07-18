@@ -3,7 +3,7 @@
 **Status:** PR2 preparation map. Runtime implementation is blocked until the
 R1 native call lane lands and the import/bootstrap/module-state files are
 released by the orchestration board.
-**Authority:** `69_import_bedrock_frozen_module_layer.md`, especially PR2,
+**Authority:** `import_bedrock_frozen_module_layer.md`, especially PR2,
 invariants I3/I4/I8, gates G2/G8, and the `sys.modules` dict-view design in
 section 4.4.
 **Scope:** make `ModuleTable` the only module store and make `sys.modules` a
