@@ -1,9 +1,9 @@
-use super::def_use::{simple_ir_defined_names, simple_ir_var_field_is_read};
 use super::purity::{
     SimpleIrScalarPurityFacts, simple_ir_op_is_provably_nonthrowing_with_facts,
     simple_ir_op_needs_scalar_plan_for_nonthrowing,
 };
 use crate::representation_plan::ScalarRepresentationPlan;
+use crate::tir::simple_def_use::{simple_ir_result_names, simple_ir_var_field_is_read};
 use crate::{OpIR, SimpleIR};
 use std::collections::HashSet;
 
@@ -125,8 +125,8 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
             let before = func.ops.len();
             let needs_scalar_plan = func.ops.iter().any(|op| {
                 simple_ir_op_needs_scalar_plan_for_nonthrowing(op)
-                    && !simple_ir_defined_names(op).is_empty()
-                    && simple_ir_defined_names(op)
+                    && !simple_ir_result_names(op).is_empty()
+                    && simple_ir_result_names(op)
                         .iter()
                         .all(|name| !consumed.contains(*name))
             });
@@ -147,7 +147,7 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                     return true;
                 }
 
-                let defined = simple_ir_defined_names(op);
+                let defined = simple_ir_result_names(op);
                 if !defined.is_empty() {
                     return defined.iter().any(|name| consumed.contains(*name));
                 }

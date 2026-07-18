@@ -9,7 +9,6 @@ mod constant_fold;
 mod dead_functions;
 mod dead_imports;
 mod dead_ops;
-mod def_use;
 mod escape;
 mod exception_check_elision;
 mod exception_edges;
