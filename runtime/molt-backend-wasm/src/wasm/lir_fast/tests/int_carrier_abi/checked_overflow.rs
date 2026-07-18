@@ -1,5 +1,30 @@
 use super::super::*;
 
+fn make_boxed_checked_binary_func(name: &str, opcode: OpCode) -> TirFunction {
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    let overflow_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    func.value_types.insert(overflow_id, TirType::Bool);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id, overflow_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+    func
+}
+
 #[test]
 fn checked_overflow_triples_use_opcode_specific_runtime_helpers_without_generic_bail() {
     let cases = [
@@ -34,6 +59,23 @@ fn checked_overflow_triples_use_opcode_specific_runtime_helpers_without_generic_
                 );
             }
         }
+    }
+}
+
+#[test]
+fn boxed_checked_arithmetic_uses_one_explicit_fallback_family() {
+    for (name, opcode) in [
+        ("boxed_checked_add", OpCode::CheckedAdd),
+        ("boxed_checked_mul", OpCode::CheckedMul),
+    ] {
+        let func = make_boxed_checked_binary_func(name, opcode);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert_eq!(
+            output.bail_to_generic_reason,
+            Some(WasmLirFallbackReason::BoxedCheckedArithmetic),
+            "{name} must use the checked-arithmetic fallback authority"
+        );
     }
 }
 
