@@ -1,11 +1,12 @@
 use super::*;
 
 #[test]
-fn live_exception_rebind_vars_skip_future_definitions() {
+fn live_rebind_vars_require_known_liveness_and_reaching_definitions() {
     let mut vars = BTreeMap::new();
     vars.insert("early".to_string(), Variable::from_u32(0));
     vars.insert("late".to_string(), Variable::from_u32(1));
     vars.insert("dead".to_string(), Variable::from_u32(2));
+    vars.insert("unknown".to_string(), Variable::from_u32(3));
 
     let mut transport_last_use = BTreeMap::new();
     transport_last_use.insert("early".to_string(), 10usize);
@@ -16,12 +17,14 @@ fn live_exception_rebind_vars_skip_future_definitions() {
     first_defined_at.insert("early".to_string(), 0usize);
     first_defined_at.insert("late".to_string(), 5usize);
     first_defined_at.insert("dead".to_string(), 0usize);
+    first_defined_at.insert("unknown".to_string(), 0usize);
 
-    let live = live_exception_rebind_vars_for_op(&vars, &transport_last_use, &first_defined_at, 3);
+    let live = live_rebind_vars_for_op(&vars, &transport_last_use, &first_defined_at, 3);
 
     assert!(live.contains_key("early"));
     assert!(!live.contains_key("late"));
     assert!(!live.contains_key("dead"));
+    assert!(!live.contains_key("unknown"));
 }
 
 #[test]

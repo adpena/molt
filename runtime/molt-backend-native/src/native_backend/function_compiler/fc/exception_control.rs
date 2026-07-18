@@ -42,6 +42,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     tracked_obj_vars_set: &mut std::collections::HashSet<String>,
     tracked_vars_set: &mut std::collections::HashSet<String>,
     last_use: &BTreeMap<String, usize>,
+    first_defined_at: &BTreeMap<String, usize>,
+    slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     alias_roots: &BTreeMap<String, String>,
     already_decrefed: &mut BTreeSet<String>,
     entry_vars: &mut BTreeMap<String, Value>,
@@ -285,6 +287,22 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 }
             }
             let fallthrough = builder.create_block();
+            // Snapshot every non-slot live value in the dominating block before
+            // the split, then restore FunctionBuilder's variable map in the
+            // sole-predecessor fallthrough. Without the rebind, a later use_var
+            // asks Cranelift to synthesize a definition for the sealed block and
+            // silently receives the variable's zero initializer. Dominating SSA
+            // values need no block parameter, branch argument, load, or store.
+            let live_fallthrough_vars =
+                live_rebind_vars_for_op(vars, last_use, first_defined_at, op_idx);
+            let mut fallthrough_transport = Vec::with_capacity(live_fallthrough_vars.len());
+            for (name, var) in live_fallthrough_vars {
+                if scrubbed_names.contains(&name) || slot_backed_join_slots.contains_key(&name) {
+                    continue;
+                }
+                let value = builder.use_var(var);
+                fallthrough_transport.push((name, var, value));
+            }
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
             let (pending_observer, pending_flag_slot) = if op.kind == "async_work_poll" {
@@ -314,6 +332,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
             switch_to_block_with_rebind(&mut *builder, fallthrough, &mut *is_block_filled, true);
+            for (_, var, value) in fallthrough_transport {
+                builder.def_var(var, value);
+            }
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

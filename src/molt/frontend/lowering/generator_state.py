@@ -293,6 +293,7 @@ class GeneratorStateMixin(_MixinBase):
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         native_support_function_roots: set[str] | None = None,
+        target_python: tuple[int, int] = (3, 12),
         target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
@@ -407,11 +408,15 @@ class GeneratorStateMixin(_MixinBase):
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._typing_import_aliases: set[str] = set()
         self._reset_async_scope_state()
-        # Always eagerly emit __annotations__ dicts.  Our runtime does not
-        # implement the deferred __annotate__ protocol (PEP 749), so we must
-        # materialise annotations at definition time regardless of the host
-        # Python version.
-        self.eager_annotations = True
+        if target_python not in {(3, 12), (3, 13), (3, 14)}:
+            raise ValueError(
+                "target_python must be one of the supported feature versions: "
+                "(3, 12), (3, 13), or (3, 14)"
+            )
+        self.target_python: tuple[int, int] = target_python
+        # Python 3.14 owns deferred evaluation through __annotate__; 3.12/3.13
+        # retain eager evaluation unless future annotations applies.
+        self.eager_annotations = target_python < (3, 14)
         self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
         self.annotation_type_params: dict[str, MoltValue] = {}

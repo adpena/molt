@@ -64,7 +64,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
@@ -155,6 +154,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     state_count: int
     stdlib_allowlist: Any
     stdlib_hint_trust: Any
+    target_python: tuple[int, int]
     target_sys_platform: str | None
     try_end_labels: list[int]
     try_handler_scopes: list[TryScope]
@@ -188,6 +188,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         native_support_function_roots: set[str] | None = None,
+        target_python: tuple[int, int] = (3, 12),
         target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
@@ -2069,6 +2070,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _prune_unreachable_cfg_regions(
         self, ops: list[MoltOp], *, cfg: CFGGraph, executable_blocks: set[int]
     ) -> tuple[list[MoltOp], int, int]: ...
+
+    def _publish_annotation_exec_map(self, name: str, exec_map: MoltValue) -> None: ...
 
     def _publish_class_value(self, name: str, class_val: MoltValue) -> None: ...
 

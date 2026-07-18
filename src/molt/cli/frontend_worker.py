@@ -235,6 +235,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
         native_support_function_roots=native_support_function_roots,
+        target_python=target_python.feature_version,
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
@@ -361,6 +362,7 @@ def _module_frontend_generator(
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
+    target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
     scoped_known_classes: dict[str, Any],
@@ -386,6 +388,7 @@ def _module_frontend_generator(
         native_support_function_roots=set(
             scoped_inputs.native_support_function_roots_set
         ),
+        target_python=target_python.feature_version,
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
@@ -545,6 +548,7 @@ def _lower_module_serial_with_context(
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
         optimization_profile=lowering_context.optimization_profile,
+        target_python=lowering_context.target_python,
         target_sys_platform=lowering_context.target_sys_platform,
         scoped_inputs=scoped_inputs,
         scoped_known_classes=scoped_known_classes,

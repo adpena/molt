@@ -114,6 +114,7 @@ def _lower_entry_module_as_main(
             for name, export in lowering_context.native_callable_exports.items()
         },
         native_python_exports=set(lowering_context.native_python_exports),
+        target_python=lowering_context.target_python.feature_version,
         target_sys_platform=lowering_context.target_sys_platform,
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
