@@ -1962,6 +1962,120 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
     assert all(call.get("root_owned") is True for call in terminations)
 
 
+def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6060
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            self.returncode = 0
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("a telemetry timeout must not terminate the child")
+
+        def kill(self) -> None:
+            raise AssertionError("a telemetry timeout must not kill the child")
+
+    process = FakePopen()
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+
+    def timed_out_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        raise memory_guard.WindowsProcessSnapshotTimeout("snapshot deadline")
+
+    result = memory_guard.run_guarded(
+        ["fake-python"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=timed_out_sampler,
+    )
+
+    assert result.returncode == 0
+    assert result.violation is None
+    assert result.sampling_telemetry is not None
+    # Baseline, live enforcement, and post-exit orphan custody all degrade
+    # through the same authority without rewriting the healthy child result.
+    assert result.sampling_telemetry.attempts == 3
+    assert result.sampling_telemetry.successes == 0
+    assert result.sampling_telemetry.transient_failures == 3
+    assert not result.sampling_telemetry.enforcement_complete
+    assert "RSS enforcement was unobserved" in result.stderr
+
+
+def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6161
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(["fake-python"], timeout)
+            return self.returncode
+
+    process = FakePopen()
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    sample_calls = 0
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sample_calls
+        sample_calls += 1
+        if sample_calls == 1:
+            raise memory_guard.WindowsProcessSnapshotTimeout("snapshot deadline")
+        return {
+            root_pid: memory_guard.ProcessSample(
+                root_pid,
+                1,
+                1_001,
+                "fake-python",
+                started_at_ns=root_pid,
+            )
+        }
+
+    def terminate(root: int, **kwargs: object) -> memory_guard.GuardTerminationReport:
+        process.returncode = -15
+        return _guard_termination_report(
+            reason=str(kwargs["reason"]),
+            root_pid=root,
+            watched_pids=(root,),
+        )
+
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", terminate)
+
+    result = memory_guard.run_guarded(
+        ["fake-python"],
+        max_rss_kb=1_000,
+        poll_interval=0.01,
+        sampler=sampler,
+        cleanup_orphans=False,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert result.violation is not None
+    assert result.violation.pid == root_pid
+    assert result.sampling_telemetry is not None
+    assert result.sampling_telemetry.transient_failures == 1
+    assert result.sampling_telemetry.successes == 1
+
+
 def test_run_guarded_binds_root_identity_before_first_sampler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3713,6 +3827,55 @@ def test_summary_json_keeps_rss_incident_primary_when_guard_signal_is_secondary(
     }
     assert payload["incident"]["reason"] == "rss_limit_exceeded"
     assert payload["incident"]["guard_signal"] == payload["guard_signal"]
+
+
+def test_summary_json_reports_incomplete_sampling_without_fabricating_incident(
+    tmp_path: Path,
+) -> None:
+    summary_path = tmp_path / "sampling-gap.json"
+    telemetry = memory_guard.GuardSamplingTelemetry(
+        attempts=7,
+        successes=6,
+        transient_failures=1,
+        first_transient_failure_at="2026-07-18T15:24:00Z",
+        last_transient_failure_at="2026-07-18T15:24:00Z",
+        last_transient_error="snapshot deadline",
+    )
+
+    memory_guard._write_summary_json(
+        str(summary_path),
+        command=[sys.executable, "-c", "pass"],
+        cwd=None,
+        environ={},
+        max_rss_kb=1_000_000,
+        max_total_rss_kb=None,
+        max_global_rss_kb=None,
+        child_rlimit_kb=None,
+        timeout_s=5,
+        poll_interval_s=0.01,
+        result=memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=1.0,
+            sampling_telemetry=telemetry,
+        ),
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["incident"] is None
+    assert payload["sampling_telemetry"] == {
+        "attempts": 7,
+        "successes": 6,
+        "transient_failures": 1,
+        "enforcement_complete": False,
+        "first_transient_failure_at": "2026-07-18T15:24:00Z",
+        "last_transient_failure_at": "2026-07-18T15:24:00Z",
+        "last_transient_error": "snapshot deadline",
+    }
 
 
 def test_summary_json_keeps_timeout_primary_when_guard_signal_is_secondary(

@@ -144,6 +144,7 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
 )
 from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     ProcessSnapshotError as ProcessSnapshotError,
+    WindowsProcessSnapshotTimeout as WindowsProcessSnapshotTimeout,
     WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES as WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES,
     _filetime_to_unix_seconds as _filetime_to_unix_seconds,
     _windows_process_needs_full_command_line as _windows_process_needs_full_command_line,
@@ -164,6 +165,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
     GuardResult as GuardResult,
+    GuardSamplingTelemetry as GuardSamplingTelemetry,
     GuardTerminationAction as GuardTerminationAction,
     GuardTerminationReport as GuardTerminationReport,
     GuardedChildProcess as GuardedChildProcess,
@@ -770,6 +772,22 @@ def _append_guard_message(
     return bytes(output or b"") + message.encode("utf-8", errors="replace")
 
 
+def _sampling_telemetry_payload(
+    telemetry: GuardSamplingTelemetry | None,
+) -> dict[str, object] | None:
+    if telemetry is None:
+        return None
+    return {
+        "attempts": telemetry.attempts,
+        "successes": telemetry.successes,
+        "transient_failures": telemetry.transient_failures,
+        "enforcement_complete": telemetry.enforcement_complete,
+        "first_transient_failure_at": telemetry.first_transient_failure_at,
+        "last_transient_failure_at": telemetry.last_transient_failure_at,
+        "last_transient_error": telemetry.last_transient_error,
+    }
+
+
 def run_guarded(
     command: Sequence[str],
     *,
@@ -1069,6 +1087,57 @@ def run_guarded(
             if progress_label is not None and keepalive_interval is not None
             else None
         )
+        sampling_attempts = 0
+        sampling_successes = 0
+        transient_sampling_failures = 0
+        first_transient_sampling_failure_at: str | None = None
+        last_transient_sampling_failure_at: str | None = None
+        last_transient_sampling_error: str | None = None
+
+        def sampling_telemetry() -> GuardSamplingTelemetry:
+            return GuardSamplingTelemetry(
+                attempts=sampling_attempts,
+                successes=sampling_successes,
+                transient_failures=transient_sampling_failures,
+                first_transient_failure_at=first_transient_sampling_failure_at,
+                last_transient_failure_at=last_transient_sampling_failure_at,
+                last_transient_error=last_transient_sampling_error,
+            )
+
+        def record_transient_sampling_failure(
+            exc: WindowsProcessSnapshotTimeout,
+            *,
+            attempt_already_counted: bool = True,
+        ) -> None:
+            nonlocal sampling_attempts
+            nonlocal transient_sampling_failures
+            nonlocal first_transient_sampling_failure_at
+            nonlocal last_transient_sampling_failure_at
+            nonlocal last_transient_sampling_error
+            observed_at = _utc_timestamp()
+            if not attempt_already_counted:
+                sampling_attempts += 1
+            transient_sampling_failures += 1
+            if first_transient_sampling_failure_at is None:
+                first_transient_sampling_failure_at = observed_at
+            last_transient_sampling_failure_at = observed_at
+            last_transient_sampling_error = str(exc)
+            telemetry = sampling_telemetry()
+            print(
+                "memory_guard: Windows process snapshot timed out; preserving "
+                "the healthy guarded child and marking this RSS enforcement "
+                f"observation unavailable: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _update_active_guard_marker(
+                guard_marker,
+                guard_token,
+                status="child_running_telemetry_degraded",
+                child_process=guarded_child_process_payload(child_process),
+                elapsed_s=time.monotonic() - start,
+                sampling_telemetry=_sampling_telemetry_payload(telemetry),
+            )
 
         def terminate_direct_child_handle(*, reason: str) -> None:
             if proc.poll() is not None:
@@ -1207,14 +1276,25 @@ def run_guarded(
         last_sample_cost_s = 0.0
 
         def sample_tracked_tree(
-            *, timeout_deadline: bool = False
-        ) -> tuple[Mapping[int, ProcessSample], set[int]]:
+            *,
+            timeout_deadline: bool = False,
+            allow_transient_timeout: bool = False,
+        ) -> tuple[Mapping[int, ProcessSample], set[int]] | None:
             nonlocal guard_interrupted, last_sample_cost_s
             nonlocal remembered_samples, remembered_watched
+            nonlocal sampling_attempts, sampling_successes
             active_sampler = _timeout_sampler(sampler) if timeout_deadline else sampler
             sample_started = time.monotonic()
+            sampling_attempts += 1
             try:
                 samples = active_sampler()
+            except WindowsProcessSnapshotTimeout as exc:
+                last_sample_cost_s = time.monotonic() - sample_started
+                if allow_transient_timeout:
+                    record_transient_sampling_failure(exc)
+                    return None
+                terminate_after_sampling_failure(reason="sampler_timeout")
+                raise
             except KeyboardInterrupt:
                 guard_interrupted = True
                 terminate_after_sampling_failure(reason="guard_interrupted")
@@ -1225,15 +1305,19 @@ def run_guarded(
                 terminate_after_sampling_failure(reason="sampler_failure")
                 raise
             last_sample_cost_s = time.monotonic() - sample_started
+            sampling_successes += 1
             watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
             return samples, watched
 
+        baseline_authoritative = not cleanup_orphans
         if cleanup_orphans:
-            baseline_samples, _baseline_watched = sample_tracked_tree()
-            if not guard_interrupted:
+            baseline_snapshot = sample_tracked_tree(allow_transient_timeout=True)
+            if baseline_snapshot is not None and not guard_interrupted:
+                baseline_samples, _baseline_watched = baseline_snapshot
                 baseline_pgids = _live_process_group_ids(baseline_samples)
+                baseline_authoritative = True
 
         while not guard_interrupted:
             if os.name == "posix" and hasattr(os, "wait4"):
@@ -1245,7 +1329,9 @@ def run_guarded(
                 break
             now = time.monotonic()
             if guard_signal is not None:
-                samples, watched = sample_tracked_tree()
+                signal_snapshot = sample_tracked_tree()
+                assert signal_snapshot is not None
+                samples, watched = signal_snapshot
                 if guard_interrupted:
                     break
                 _update_active_guard_marker(
@@ -1273,7 +1359,9 @@ def run_guarded(
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
-                samples, watched = sample_tracked_tree(timeout_deadline=True)
+                timeout_snapshot = sample_tracked_tree(timeout_deadline=True)
+                assert timeout_snapshot is not None
+                samples, watched = timeout_snapshot
                 if guard_interrupted:
                     break
                 _update_active_guard_marker(
@@ -1313,7 +1401,34 @@ def run_guarded(
                 )
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
-            samples, watched = sample_tracked_tree()
+            snapshot = sample_tracked_tree(allow_transient_timeout=True)
+            if snapshot is None:
+                exited_usage = _poll_wait4_child(proc)
+                if exited_usage is not None:
+                    child_exit_usage = exited_usage
+                    break
+                if os.name != "posix" and proc.poll() is not None:
+                    break
+                elapsed = time.monotonic() - start
+                wait_timeout = paced_poll_interval(
+                    poll_interval,
+                    last_sample_cost_s,
+                )
+                if timeout is not None:
+                    wait_timeout = max(
+                        0.0,
+                        min(wait_timeout, timeout - elapsed),
+                    )
+                if os.name == "posix" and hasattr(os, "wait4"):
+                    time.sleep(wait_timeout)
+                else:
+                    try:
+                        proc.wait(timeout=wait_timeout)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                continue
+            samples, watched = snapshot
             if guard_interrupted:
                 break
             saw_cargo_build_state = (
@@ -1455,7 +1570,9 @@ def run_guarded(
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
-                    samples, watched = sample_tracked_tree()
+                    post_loop_snapshot = sample_tracked_tree()
+                    assert post_loop_snapshot is not None
+                    samples, watched = post_loop_snapshot
                     terminate_owned_tree(
                         reason="post_loop_unreaped_child",
                         samples=samples,
@@ -1476,38 +1593,44 @@ def run_guarded(
                             )
                         )
             if cleanup_orphans and not guard_interrupted:
-                tracked_orphans = cleanup_tracked_orphans(
-                    proc.pid,
-                    tracker=tracker,
-                    sampler=sampler,
-                    grace=0.25,
-                )
-                repo_orphans = cleanup_repo_scoped_orphans_since_baseline(
-                    baseline_pgids=baseline_pgids,
-                    tracker=tracker,
-                    sampler=sampler,
-                    grace=0.25,
-                )
-                termination_reports.extend(
-                    _validated_termination_reports(
-                        tracked_orphans.termination_reports,
-                        caller="cleanup_tracked_orphans",
+                try:
+                    tracked_orphans = cleanup_tracked_orphans(
+                        proc.pid,
+                        tracker=tracker,
+                        sampler=sampler,
+                        grace=0.25,
                     )
-                )
-                termination_reports.extend(
-                    _validated_termination_reports(
-                        repo_orphans.termination_reports,
-                        caller="cleanup_repo_scoped_orphans_since_baseline",
+                    termination_reports.extend(
+                        _validated_termination_reports(
+                            tracked_orphans.termination_reports,
+                            caller="cleanup_tracked_orphans",
+                        )
                     )
-                )
-                orphaned_process_groups = tuple(
-                    sorted(
-                        {
-                            *tracked_orphans.process_groups,
-                            *repo_orphans.process_groups,
-                        }
+                    orphaned_groups = set(tracked_orphans.process_groups)
+                    if baseline_authoritative:
+                        repo_orphans = cleanup_repo_scoped_orphans_since_baseline(
+                            baseline_pgids=baseline_pgids,
+                            tracker=tracker,
+                            sampler=sampler,
+                            grace=0.25,
+                        )
+                        termination_reports.extend(
+                            _validated_termination_reports(
+                                repo_orphans.termination_reports,
+                                caller="cleanup_repo_scoped_orphans_since_baseline",
+                            )
+                        )
+                        orphaned_groups.update(repo_orphans.process_groups)
+                    orphaned_process_groups = tuple(sorted(orphaned_groups))
+                except WindowsProcessSnapshotTimeout as exc:
+                    # The child has already exited.  A telemetry timeout cannot
+                    # authorize PID/group cleanup, and it must not rewrite the
+                    # healthy child's return code.  Record the custody gap and
+                    # leave the Job Object/orphan reaper as the safety net.
+                    record_transient_sampling_failure(
+                        exc,
+                        attempt_already_counted=False,
                     )
-                )
             if stdin_thread is not None:
                 stdin_thread.join(timeout=1.0)
             if stdout_capture is not None:
@@ -1567,6 +1690,18 @@ def run_guarded(
                 "forever so CI can surface the failure instead of hanging.\n",
                 text=text,
             )
+        final_sampling_telemetry = sampling_telemetry()
+        if final_sampling_telemetry.transient_failures:
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: telemetry degraded: "
+                f"{final_sampling_telemetry.transient_failures} of "
+                f"{final_sampling_telemetry.attempts} process snapshots timed "
+                "out; the child result is preserved, but RSS enforcement was "
+                "unobserved during those intervals. See sampling_telemetry in "
+                "the summary JSON.\n",
+                text=text,
+            )
         final_returncode = GUARD_RETURN_CODE if returncode is None else returncode
         cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
         cargo_interruption_reason = _cargo_interruption_reason(
@@ -1613,6 +1748,7 @@ def run_guarded(
             guard_signal=guard_signal,
             child_process=child_process,
             termination_reports=tuple(termination_reports),
+            sampling_telemetry=final_sampling_telemetry,
         )
         _update_active_guard_marker(
             guard_marker,
@@ -1629,6 +1765,9 @@ def run_guarded(
             termination_reports=termination_reports_payload(result.termination_reports),
             cargo_incremental_quarantine=_cargo_incremental_quarantine_payload(
                 result.cargo_incremental_quarantine
+            ),
+            sampling_telemetry=_sampling_telemetry_payload(
+                result.sampling_telemetry
             ),
             limit_at_violation=(
                 None
@@ -2209,6 +2348,9 @@ def _write_summary_json(
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),
         "termination_reports": termination_reports_payload(result.termination_reports),
+        "sampling_telemetry": _sampling_telemetry_payload(
+            result.sampling_telemetry
+        ),
         "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(
             result.cargo_incremental_quarantine
         ),
@@ -2365,6 +2507,7 @@ def _write_running_summary_json(
         "orphaned_process_groups": [],
         "child_process": child_payload,
         "termination_reports": [],
+        "sampling_telemetry": None,
         "cargo_incremental_quarantine": None,
         "limit_at_violation": None,
         "exit_signal": None,
