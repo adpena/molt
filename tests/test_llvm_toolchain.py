@@ -486,7 +486,8 @@ def test_debian_packages_cover_manifest_owned_sdk_components() -> None:
 
 
 def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
-    installer = llvm_toolchain.load_llvm_releases(ROOT).debian_installer
+    manifest = llvm_toolchain.load_llvm_releases(ROOT)
+    installer = manifest.debian_installer
 
     assert installer.url == "https://apt.llvm.org/llvm.sh"
     assert installer.sha256 == (
@@ -502,6 +503,97 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     projected = github_output.read_text(encoding="utf-8")
     assert f"apt_installer_url={installer.url}\n" in projected
     assert f"apt_installer_sha256={installer.sha256}\n" in projected
+    wasi = manifest.wasi_sysroot
+    assert wasi.version == "33.0+m"
+    assert wasi.llvm_version == "22.1.0"
+    assert wasi.size == 124253494
+    assert wasi.sha256 == (
+        "063bc1b56582b9923e08ac9b89e58789618d851763f01530b3ff20b9e5df0ca3"
+    )
+    assert f"wasi_sysroot_url={wasi.url}\n" in projected
+    assert f"wasi_sysroot_size={wasi.size}\n" in projected
+    assert f"wasi_sysroot_sha256={wasi.sha256}\n" in projected
+    assert f"wasi_sysroot_archive_root={wasi.archive_root}\n" in projected
+
+
+def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    _write(wasm_ld, "linker")
+    sysroot = tmp_path / "wasi-sysroot-33.0+m"
+    _write(
+        sysroot / "VERSION",
+        "33.0+m\nwasi-libc: 161b3195fc25\nllvm-version: 22.1.0\n",
+    )
+    _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
+    _write(sysroot / "lib/wasm32-wasip1/libc.a", "archive")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
+            prefix=prefix,
+            llvm_config=prefix / "bin/llvm-config",
+            version="22.1.8",
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact",
+        lambda *_args, **_kwargs: llvm_toolchain.LlvmToolVersionFact(
+            role="wasm-ld",
+            path="bin/wasm-ld",
+            version="22.1.8",
+            size=6,
+            sha256="0" * 64,
+        ),
+    )
+
+    verified = llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+    projected = llvm_toolchain.project_wasm_ci_environment(
+        verified, environ={"PATH": "host-bin"}
+    )
+
+    assert verified.sysroot_version == "33.0+m"
+    assert verified.sysroot_llvm_version == "22.1.0"
+    assert verified.wasm_ld == wasm_ld
+    assert projected["MOLT_WASI_SYSROOT"] == str(sysroot.resolve())
+    assert projected["WASI_SYSROOT"] == str(sysroot.resolve())
+    assert projected["MOLT_WASM_LD"] == str(wasm_ld)
+    assert projected["PATH"].split(os.pathsep)[0] == str(prefix / "bin")
+
+
+def test_wasm_ci_profile_rejects_incomplete_or_mismatched_sysroot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = tmp_path / "llvm"
+    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    _write(wasm_ld, "linker")
+    sysroot = tmp_path / "wasi-sysroot"
+    _write(sysroot / "VERSION", "32.0+m\nllvm-version: 21.1.0\n")
+    _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
+            prefix=prefix,
+            llvm_config=prefix / "bin/llvm-config",
+            version="22.1.8",
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact",
+        lambda *_args, **_kwargs: llvm_toolchain.LlvmToolVersionFact(
+            "wasm-ld", "bin/wasm-ld", "22.1.8", 6, "0" * 64
+        ),
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="LLVM identity"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
 
 
 def test_cli_projects_verified_sdk_identity_to_github_environment(

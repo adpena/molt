@@ -30,6 +30,7 @@
     "tools/proof_queue_pkg/diagnostics.py",
     "tools/proof_queue_pkg/state.py",
     "tools/check_subprocess_guard_coverage.py",
+    "tools/cargo_test_binary_runner.py",
     "tools/generator_manifest.toml",
     "tools/guarded_exec.py",
     "tools/harness_memory_guard.py",
@@ -42,7 +43,7 @@
     "tests/test_generator_manifest.py",
     "tests/tools/test_cargo_test_truth.py"
   ],
-  "authority_sha256": "414b6cb52f3258721232375e0a9ff319bb6067f177c983dc138051e4172fa7ea",
+  "authority_sha256": "fb48d93068c476ea22fd499ce1d5cc69fb3fe14025f373a4ac8611c9e87f8805",
   "ci_families": [
     {
       "dependencies": [],
@@ -191,7 +192,11 @@
         "Cargo.toml",
         "rust-toolchain.toml",
         ".cargo/**",
-        "runtime/**"
+        "runtime/**",
+        "tools/run_cargo_test_truth.py",
+        "tools/cargo_test_binary_runner.py",
+        "tools/check_cargo_test_truth.py",
+        "tests/tools/test_cargo_test_truth.py"
       ],
       "job": "rust-build-unit-smoke",
       "name": "rust",
@@ -2009,7 +2014,8 @@
       "toolchains": [
         "python",
         "rustc",
-        "cargo"
+        "cargo",
+        "wasm-ld"
       ]
     },
     {

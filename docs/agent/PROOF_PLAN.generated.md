@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 40 |
+| Hashed executable authority inputs | 1 | 41 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -38,7 +38,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | 7 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | 9 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | 6 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | 10 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |

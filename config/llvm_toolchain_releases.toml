@@ -1,10 +1,19 @@
-schema_version = 1
+schema_version = 2
 default_release = "22.1.8"
 canonical_build_type = "Release"
 
 [debian_installer]
 url = "https://apt.llvm.org/llvm.sh"
 sha256 = "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+
+[wasi_sysroot]
+version = "33.0+m"
+llvm_version = "22.1.0"
+url = "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sysroot-33.0%2Bm.tar.gz"
+size = 124253494
+sha256 = "063bc1b56582b9923e08ac9b89e58789618d851763f01530b3ff20b9e5df0ca3"
+provenance_url = "https://api.github.com/repos/WebAssembly/wasi-sdk/releases/tags/wasi-sdk-33"
+archive_root = "wasi-sysroot-33.0+m"
 
 [releases."22.1.8"]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz"

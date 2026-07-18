@@ -31,6 +31,18 @@
 ## Linux (Ubuntu/Debian)
 - `sudo apt-get install -y cmake ninja-build pkg-config llvm clang lld mlir`
 
+Hosted CI does not maintain a parallel package script. The local
+`.github/actions/setup-llvm` action has two projections of the same
+`molt.llvm_toolchain` authority: `profile=full` verifies the complete
+LLVM/MLIR/LLD/Polly SDK, while `profile=wasm,wasi=true` installs only the
+manifest release's WebAssembly linker and the pinned WASI sysroot needed by
+Rust workspace truth. `config/llvm_toolchain_releases.toml` owns the wasi-sdk
+release, LLVM compatibility line, URL, byte size, SHA-256, provenance URL, and
+archive root. The action checks the archive size and digest before extraction,
+then verifies headers, libc, VERSION, and exact `wasm-ld` identity before
+projecting `MOLT_WASM_LD`, `MOLT_WASI_SYSROOT`, and `WASI_SYSROOT` to every
+consumer in the job.
+
 Rust via rustup:
 - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
@@ -83,6 +95,9 @@ runtime libraries it needs, with platform/architecture gating at package build
 time. Binary-only end users must not need Cargo, CMake, Ninja, TableGen, or an
 LLVM SDK. A source checkout builds the standalone backend once on first MLIR
 use through the same manifest-pinned toolchain authority.
+The WASI sysroot and `wasm-ld` follow the same boundary: developers and source
+builders need them when producing WASM artifacts; end users running shipped
+native or WASM binaries do not.
 
 ## MLIR diagnostics
 
@@ -107,6 +122,20 @@ WASM targets:
 - `cargo install wasm-pack --locked`
 - Ensure a WASI sysroot is available for `wasm32-wasip1` builds. Set `WASI_SYSROOT` or
   `WASI_SDK_PATH` if auto-detection is unavailable on your system.
+
+## Cargo workspace truth custody
+
+The canonical Rust truth runner separates network custody from execution. It
+prefetches both committed workspace lock domains (`Cargo.lock` and
+`runtime/Cargo.lock`) before starting the complete locked workspace test; this
+is required because trybuild deliberately launches an offline child using the
+nested runtime lock. Cargo still owns the single `--workspace --tests
+--no-fail-fast` traversal. A host target-runner hook gives each
+`resource_enforcement` test a fresh process so process-global address-space
+limits cannot poison sibling tests or convert an exact failure into an
+unattributed SIGABRT. The outer Rust proof receipt uploads the runner's nested
+receipt containing prefetch return codes, exact observed red identities, and
+the suite-honesty verdict.
 
 ## Platform Pitfalls
 - **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.

@@ -107,11 +107,24 @@ class LlvmDebianInstaller:
 
 
 @dataclass(frozen=True)
+class WasiSysrootRelease:
+    version: str
+    llvm_version: str
+    url: str
+    size: int
+    sha256: str
+    provenance_url: str
+    archive_root: str
+    record_sha256: str
+
+
+@dataclass(frozen=True)
 class LlvmReleaseManifest:
     schema_version: int
     default_release: str
     canonical_build_type: str
     debian_installer: LlvmDebianInstaller
+    wasi_sysroot: WasiSysrootRelease
     releases: tuple[LlvmRelease, ...]
     digest: str
 
@@ -130,6 +143,17 @@ class LlvmPrefixVerification:
     link_closure: tuple[str, ...]
     link_probe: tuple[str, ...]
     release: LlvmRelease | None
+
+
+@dataclass(frozen=True)
+class WasmCiToolchainVerification:
+    llvm_prefix: Path
+    wasm_ld: Path
+    wasm_ld_fact: "LlvmToolVersionFact"
+    sysroot: Path
+    sysroot_version: str
+    sysroot_llvm_version: str
+    sysroot_assets: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -201,18 +225,20 @@ def _load_llvm_releases_cached(
         raise LlvmToolchainConfigError(
             f"invalid LLVM release manifest {path}: {exc}"
         ) from exc
-    if payload.get("schema_version") != 1:
+    if payload.get("schema_version") != 2:
         raise LlvmToolchainConfigError(
             f"unsupported LLVM release manifest schema at {path}"
         )
     default = payload.get("default_release")
     canonical_build_type = payload.get("canonical_build_type")
     debian_installer = payload.get("debian_installer")
+    wasi_sysroot = payload.get("wasi_sysroot")
     rows = payload.get("releases")
     if (
         not isinstance(default, str)
         or canonical_build_type not in {"Release", "RelWithDebInfo", "Debug"}
         or not isinstance(debian_installer, dict)
+        or not isinstance(wasi_sysroot, dict)
         or not isinstance(rows, dict)
     ):
         raise LlvmToolchainConfigError(f"incomplete LLVM release manifest: {path}")
@@ -227,6 +253,42 @@ def _load_llvm_releases_cached(
         raise LlvmToolchainConfigError(
             f"invalid Debian LLVM installer identity in {path}"
         )
+    wasi_required = (
+        "version",
+        "llvm_version",
+        "url",
+        "size",
+        "sha256",
+        "provenance_url",
+        "archive_root",
+    )
+    if any(name not in wasi_sysroot for name in wasi_required):
+        raise LlvmToolchainConfigError(
+            f"incomplete WASI sysroot release identity in {path}"
+        )
+    wasi_record = {name: wasi_sysroot[name] for name in wasi_required}
+    if (
+        not isinstance(wasi_record["version"], str)
+        or re.fullmatch(r"\d+\.\d+\+m", wasi_record["version"]) is None
+        or not isinstance(wasi_record["llvm_version"], str)
+        or re.fullmatch(r"\d+\.\d+\.\d+", wasi_record["llvm_version"]) is None
+        or not isinstance(wasi_record["url"], str)
+        or not wasi_record["url"].startswith("https://")
+        or not isinstance(wasi_record["size"], int)
+        or wasi_record["size"] <= 0
+        or not isinstance(wasi_record["sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", wasi_record["sha256"]) is None
+        or not isinstance(wasi_record["provenance_url"], str)
+        or not wasi_record["provenance_url"].startswith("https://")
+        or not isinstance(wasi_record["archive_root"], str)
+        or wasi_record["archive_root"] != f"wasi-sysroot-{wasi_record['version']}"
+    ):
+        raise LlvmToolchainConfigError(
+            f"invalid WASI sysroot release identity in {path}"
+        )
+    wasi_record_sha256 = hashlib.sha256(
+        json.dumps(wasi_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     releases: list[LlvmRelease] = []
     for version, row in rows.items():
         if not isinstance(version, str) or not isinstance(row, dict):
@@ -290,12 +352,22 @@ def _load_llvm_releases_cached(
             f"default LLVM release {default!r} is not declared in {path}"
         )
     return LlvmReleaseManifest(
-        schema_version=1,
+        schema_version=2,
         default_release=default,
         canonical_build_type=str(canonical_build_type),
         debian_installer=LlvmDebianInstaller(
             url=installer_url,
             sha256=installer_sha256,
+        ),
+        wasi_sysroot=WasiSysrootRelease(
+            version=wasi_record["version"],
+            llvm_version=wasi_record["llvm_version"],
+            url=wasi_record["url"],
+            size=wasi_record["size"],
+            sha256=wasi_record["sha256"],
+            provenance_url=wasi_record["provenance_url"],
+            archive_root=wasi_record["archive_root"],
+            record_sha256=wasi_record_sha256,
         ),
         releases=tuple(sorted(releases, key=lambda release: release.version)),
         digest=hashlib.sha256(raw).hexdigest(),
@@ -1865,6 +1937,118 @@ def verify_available_llvm_toolchain(
     )
 
 
+def verify_wasm_ci_toolchain(
+    root: Path,
+    wasi_sysroot: Path,
+    *,
+    environ: dict[str, str] | None = None,
+) -> WasmCiToolchainVerification:
+    """Verify the minimal manifest-owned linker/sysroot pair used by Rust truth.
+
+    The complete LLVM/MLIR SDK verifier remains the authority for native and
+    MLIR jobs. Rust's default workspace truth needs only the same release's
+    WebAssembly linker plus the pinned WASI C runtime, so this profile proves
+    that exact pair without installing the full development SDK.
+    """
+
+    discovery = discover_llvm_toolchain(root, environ=environ)
+    if discovery is None:
+        raise LlvmToolchainConfigError(
+            "manifest-owned LLVM discovery could not resolve wasm-ld"
+        )
+    pin = required_llvm_backend_pin(root)
+    assert pin is not None
+    suffix = ".exe" if os.name == "nt" else ""
+    wasm_ld = _required_tool(discovery.prefix, f"wasm-ld{suffix}")
+    wasm_ld_fact = _tool_version_fact(
+        discovery.prefix,
+        "wasm-ld",
+        wasm_ld,
+        expected_version=pin.default_release,
+        exact_version=True,
+    )
+
+    reject_poison_toolchain_path(wasi_sysroot, authority="WASI sysroot")
+    from molt.cli.wasm_toolchain import (
+        normalize_wasi_sysroot,
+        wasi_sysroot_llvm_version,
+    )
+
+    resolved_sysroot = normalize_wasi_sysroot(wasi_sysroot)
+    if resolved_sysroot is None:
+        raise LlvmToolchainConfigError(
+            f"WASI sysroot has no supported wasip1 headers: {wasi_sysroot}"
+        )
+    release = load_llvm_releases(root).wasi_sysroot
+    version_file = resolved_sysroot / "VERSION"
+    actual_llvm_version = wasi_sysroot_llvm_version(resolved_sysroot)
+    if actual_llvm_version != release.llvm_version:
+        raise LlvmToolchainConfigError(
+            "WASI sysroot LLVM identity does not match the manifest authority: "
+            f"expected {release.llvm_version}, found {actual_llvm_version!r} at "
+            f"{version_file}"
+        )
+    try:
+        version_text = version_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LlvmToolchainConfigError(
+            f"WASI sysroot VERSION is unavailable: {version_file}: {exc}"
+        ) from exc
+    version_lines = version_text.splitlines()
+    actual_version = version_lines[0].strip() if version_lines else ""
+    if actual_version != release.version:
+        raise LlvmToolchainConfigError(
+            "WASI sysroot release does not match the manifest authority: "
+            f"expected {release.version}, found {actual_version!r} at {version_file}"
+        )
+    required_assets = (
+        version_file,
+        resolved_sysroot / "include" / "wasm32-wasip1" / "errno.h",
+        resolved_sysroot / "lib" / "wasm32-wasip1" / "libc.a",
+    )
+    missing = tuple(path for path in required_assets if not path.is_file())
+    if missing:
+        raise LlvmToolchainConfigError(
+            "WASI sysroot is incomplete; missing "
+            + ", ".join(str(path) for path in missing)
+        )
+    return WasmCiToolchainVerification(
+        llvm_prefix=discovery.prefix,
+        wasm_ld=wasm_ld,
+        wasm_ld_fact=wasm_ld_fact,
+        sysroot=resolved_sysroot,
+        sysroot_version=actual_version,
+        sysroot_llvm_version=actual_llvm_version,
+        sysroot_assets=tuple(
+            str(path.relative_to(resolved_sysroot)).replace("\\", "/")
+            for path in required_assets
+        ),
+    )
+
+
+def project_wasm_ci_environment(
+    verification: WasmCiToolchainVerification,
+    *,
+    environ: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Project the verified linker/sysroot identity to every shared resolver."""
+
+    result = dict(os.environ if environ is None else environ)
+    sysroot = str(verification.sysroot)
+    result["MOLT_WASI_SYSROOT"] = sysroot
+    result["WASI_SYSROOT"] = sysroot
+    result["MOLT_WASM_LD"] = str(verification.wasm_ld)
+    bin_text = str(verification.llvm_prefix / "bin")
+    path_parts = [part for part in result.get("PATH", "").split(os.pathsep) if part]
+    normalized_bin = os.path.normcase(os.path.normpath(bin_text))
+    if all(
+        os.path.normcase(os.path.normpath(part)) != normalized_bin
+        for part in path_parts
+    ):
+        result["PATH"] = os.pathsep.join([bin_text, *path_parts])
+    return result
+
+
 def mlir_toolchain_environment(
     root: Path,
     *,
@@ -1971,6 +2155,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Discover and verify the complete LLVM/MLIR/LLD/Polly developer SDK.",
     )
+    parser.add_argument(
+        "--verify-wasm",
+        action="store_true",
+        help="Verify the manifest-owned wasm-ld and pinned WASI sysroot profile.",
+    )
+    parser.add_argument(
+        "--wasi-sysroot",
+        type=Path,
+        default=None,
+        help="Extracted WASI sysroot to verify for --verify-wasm.",
+    )
     args = parser.parse_args(argv)
 
     pin = required_llvm_backend_pin(args.root)
@@ -1996,9 +2191,38 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(
                 f"apt_installer_sha256={release_manifest.debian_installer.sha256}\n"
             )
+            wasi = release_manifest.wasi_sysroot
+            fh.write(f"wasi_sysroot_version={wasi.version}\n")
+            fh.write(f"wasi_sysroot_llvm_version={wasi.llvm_version}\n")
+            fh.write(f"wasi_sysroot_url={wasi.url}\n")
+            fh.write(f"wasi_sysroot_size={wasi.size}\n")
+            fh.write(f"wasi_sysroot_sha256={wasi.sha256}\n")
+            fh.write(f"wasi_sysroot_archive_root={wasi.archive_root}\n")
+
+    wasm_verification: WasmCiToolchainVerification | None = None
+    if args.verify_wasm:
+        if args.wasi_sysroot is None:
+            parser.error("--verify-wasm requires --wasi-sysroot")
+        try:
+            wasm_verification = verify_wasm_ci_toolchain(
+                args.root,
+                args.wasi_sysroot,
+            )
+        except LlvmToolchainConfigError as exc:
+            print(f"WASM toolchain verification failed: {exc}", file=sys.stderr)
+            return 2
+        if args.github_env is not None:
+            projected = project_wasm_ci_environment(
+                wasm_verification,
+                environ=dict(os.environ),
+            )
+            keys = ("MOLT_WASI_SYSROOT", "WASI_SYSROOT", "MOLT_WASM_LD", "PATH")
+            with args.github_env.open("a", encoding="utf-8") as fh:
+                for key in keys:
+                    fh.write(f"{key}={projected[key]}\n")
 
     verification: LlvmPrefixVerification | None = None
-    if args.verify or args.github_env is not None:
+    if args.verify or (args.github_env is not None and not args.verify_wasm):
         try:
             verification = verify_available_llvm_toolchain(args.root)
         except LlvmToolchainConfigError as exc:
@@ -2027,7 +2251,24 @@ def main(argv: list[str] | None = None) -> int:
                 for key in keys:
                     fh.write(f"{key}={projected[key]}\n")
 
-    if verification is not None and args.format == "json":
+    if wasm_verification is not None and args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "llvm_prefix": str(wasm_verification.llvm_prefix),
+                    "wasm_ld": str(wasm_verification.wasm_ld),
+                    "wasm_ld_fact": asdict(wasm_verification.wasm_ld_fact),
+                    "wasi_sysroot": str(wasm_verification.sysroot),
+                    "wasi_sysroot_version": wasm_verification.sysroot_version,
+                    "wasi_sysroot_llvm_version": (
+                        wasm_verification.sysroot_llvm_version
+                    ),
+                    "wasi_sysroot_assets": list(wasm_verification.sysroot_assets),
+                },
+                sort_keys=True,
+            )
+        )
+    elif verification is not None and args.format == "json":
         print(
             json.dumps(
                 {
