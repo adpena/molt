@@ -5,6 +5,13 @@ stable_abi_source = "CPython v3.12.0 Misc/stable_abi.toml"
 cpython = "3.12"
 platform = "windows"
 
+[version_assumption_audit]
+# Repo-relative source families whose CPython-version literals must stay routed
+# through TargetPythonVersion or be reported as explicit operational/scattered
+# assumptions. This is the source authority for the generated audit, rather
+# than a hidden root list in the producer.
+source_roots = ["src", "runtime", "config", "tools"]
+
 [[verified]]
 cpython = "3.12"
 platform = "windows"
