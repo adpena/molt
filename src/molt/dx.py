@@ -516,7 +516,7 @@ def _default_external_artifact_roots(
     repo_root: Path, env: Mapping[str, str]
 ) -> tuple[Path, ...]:
     custody = checkout_custody(repo_root, env, require_exists=False)
-    if custody.ephemeral:
+    if custody.source_only:
         return (custody.custody_root,)
     roots: list[Path] = []
     if os.name == "nt":
@@ -838,8 +838,15 @@ def checkout_custody(
     )
     if hosted is not None:
         return hosted
-    temp_root = Path(tempfile.gettempdir()).expanduser().resolve()
-    if host_path_is_within(source_root, temp_root):
+    scratch_roots: list[Path] = [Path(tempfile.gettempdir()).expanduser().resolve()]
+    for name in ("RUNNER_TEMP", GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV):
+        raw = env_view.get(name, "").strip()
+        candidate = Path(raw).expanduser() if raw else None
+        if candidate is not None and candidate.is_absolute():
+            resolved = candidate.resolve()
+            if resolved not in scratch_roots:
+                scratch_roots.append(resolved)
+    if any(host_path_is_within(source_root, root) for root in scratch_roots):
         # Test/build projects created beneath the OS-issued temp root are
         # explicit scratch, not durable checkout authority. This distinction is
         # essential on hosted Windows, where pytest fixtures live under D:\a.
@@ -1418,7 +1425,7 @@ class RunContext:
                     )
 
         if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
-            if custody.ephemeral:
+            if custody.source_only:
                 ext_root = custody.custody_root
             else:
                 ext_root = (
