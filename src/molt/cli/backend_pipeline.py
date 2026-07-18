@@ -271,6 +271,7 @@ def _run_backend_pipeline(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             target_triple=output_layout.target_triple,
+            native_artifact_plan=native_artifact_plan,
         )
     )
     if pipeline_stage_ms is not None:
@@ -345,6 +346,7 @@ def _run_backend_pipeline(
                 resolved_modules=resolved_modules,
                 ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
+                ensure_runtime_wasm_both=prepared_backend_runtime_context.ensure_runtime_wasm_both,
                 artifacts_root=artifacts_root,
                 ir=ir,
                 _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,

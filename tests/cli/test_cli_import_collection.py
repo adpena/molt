@@ -18840,7 +18840,7 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     assert captured == [frozenset({"json", "socket"})]
 
 
-def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime(
+def test_prepare_backend_runtime_context_closes_native_exports_for_every_wasm_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -18872,7 +18872,9 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         stdlib_object_path=None,
         cache_candidates=[],
     )
-    captured: list[tuple[bool, frozenset[str], frozenset[str]]] = []
+    captured: list[
+        tuple[str, frozenset[str], frozenset[str], frozenset[str]]
+    ] = []
 
     monkeypatch.setattr(
         cli_backend_compile,
@@ -18880,12 +18882,34 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         lambda runtime_state, *, reloc, **kwargs: (
             captured.append(
                 (
-                    reloc,
+                    "reloc" if reloc else "shared",
                     frozenset(cast(set[str], kwargs["resolved_modules"])),
                     frozenset(cast(set[str], kwargs["required_link_features"])),
+                    frozenset(cast(set[str], kwargs["required_exports"])),
                 )
             )
             or True
+        ),
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_ensure_runtime_wasm_both",
+        lambda runtime_state, **kwargs: (
+            captured.append(
+                (
+                    "both",
+                    frozenset(cast(set[str], kwargs["resolved_modules"])),
+                    frozenset(cast(set[str], kwargs["required_link_features"])),
+                    frozenset(cast(set[str], kwargs["required_exports"])),
+                )
+            )
+            or True
+        ),
+    )
+    native_plan = cast(
+        cli._ExternalPackageNativeArtifactPlan,
+        types.SimpleNamespace(
+            runtime_export_symbols=lambda: frozenset({"PyTuple_New"})
         ),
     )
 
@@ -18899,22 +18923,32 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         stdlib_profile="micro",
         resolved_modules={"asyncio", "ssl"},
         required_link_features=frozenset({"molt_gpu_primitives"}),
+        native_artifact_plan=native_plan,
     )
 
     assert failure is None
     assert runtime_context is not None
-    assert runtime_context.ensure_runtime_wasm_shared() is True
+    assert runtime_context.ensure_runtime_wasm_shared({"molt_add"}) is True
     assert runtime_context.ensure_runtime_wasm_reloc() is True
+    assert runtime_context.ensure_runtime_wasm_both({"molt_sub"}) is True
     assert captured == [
         (
-            False,
+            "shared",
             frozenset({"asyncio", "ssl"}),
             frozenset({"molt_gpu_primitives"}),
+            frozenset({"molt_add", "PyTuple_New"}),
         ),
         (
-            True,
+            "reloc",
             frozenset({"asyncio", "ssl"}),
             frozenset({"molt_gpu_primitives"}),
+            frozenset({"PyTuple_New"}),
+        ),
+        (
+            "both",
+            frozenset({"asyncio", "ssl"}),
+            frozenset({"molt_gpu_primitives"}),
+            frozenset({"molt_sub", "PyTuple_New"}),
         ),
     ]
 
@@ -19036,13 +19070,13 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
     assert captured == [frozenset({"builtins", "sys"})]
 
 
-def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
+def test_prepare_backend_dispatch_ensures_both_and_uses_shared_runtime_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_wasm = tmp_path / "molt_runtime.wasm"
     runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    runtime_wasm.write_bytes(b"stale-shared")
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_text("")
 
@@ -19061,24 +19095,24 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.setattr(
         cli_backend_compile,
         "_read_wasm_data_end",
-        lambda path: 4096 if path == runtime_reloc_wasm else None,
+        lambda path: 4096 if path == runtime_wasm else None,
     )
     monkeypatch.setattr(
         cli_backend_compile,
         "_read_wasm_memory_min_bytes",
-        lambda path: 8192 if path == runtime_reloc_wasm else None,
+        lambda path: 8192 if path == runtime_wasm else None,
     )
     monkeypatch.setattr(
         cli_backend_compile,
         "_read_wasm_table_min",
-        lambda path: 1234 if path == runtime_reloc_wasm else None,
+        lambda path: 1234 if path == runtime_wasm else None,
     )
     monkeypatch.setattr(
         cli_backend_compile,
         "read_wasm_split_runtime_callable_layout",
         lambda path: types.SimpleNamespace(
             runtime_callable_base=1,
-            finalized_app_base=2345,
+            runtime_table_min=2345,
         ),
     )
 
@@ -19089,6 +19123,12 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     def ensure_reloc(required=None):
         calls.append(("reloc", frozenset(required) if required else None))
         runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
+        return True
+
+    def ensure_both(required=None):
+        calls.append(("both", frozenset(required) if required else None))
+        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
+        runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
         return True
 
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
@@ -19114,6 +19154,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
         backend_daemon_config_digest=None,
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
+        ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
         warnings=[],
@@ -19121,7 +19162,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
 
     assert err is None
     assert prepared is not None
-    assert calls == [("reloc", None)]
+    assert calls == [("both", None)]
     assert prepared.backend_env is not None
     assert prepared.backend_env["MOLT_WASM_DATA_BASE"] == str(64 * 1024 * 1024 + 8192)
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
@@ -19169,6 +19210,10 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         calls.append(("reloc", frozenset(required) if required else None))
         return True
 
+    def ensure_both(required=None):
+        calls.append(("both", frozenset(required) if required else None))
+        return True
+
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -19192,6 +19237,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         backend_daemon_config_digest=None,
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
+        ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
         warnings=[],
@@ -19204,13 +19250,14 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "3867"
 
 
-def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_shared_runtime_missing(
+def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_wasm = tmp_path / "molt_runtime.wasm"
     runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
-    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    runtime_wasm.write_bytes(b"stale-shared")
+    runtime_reloc_wasm.write_bytes(b"stale-reloc")
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_text("")
 
@@ -19240,7 +19287,7 @@ def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_s
         "read_wasm_split_runtime_callable_layout",
         lambda path: types.SimpleNamespace(
             runtime_callable_base=1,
-            finalized_app_base=4321,
+            runtime_table_min=4321,
         ),
     )
 
@@ -19251,6 +19298,12 @@ def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_s
 
     def ensure_reloc(required=None):
         calls.append(("reloc", frozenset(required) if required else None))
+        return True
+
+    def ensure_both(required=None):
+        calls.append(("both", frozenset(required) if required else None))
+        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
+        runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
         return True
 
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
@@ -19276,6 +19329,7 @@ def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_s
         backend_daemon_config_digest=None,
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
+        ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
         warnings=[],
@@ -19283,9 +19337,9 @@ def test_prepare_backend_dispatch_uses_executable_runtime_callable_layout_when_s
 
     assert err is None
     assert prepared is not None
-    # Relocatable runtime custody still supplies memory placement, while the
-    # executable shared runtime is the only callable ownership authority.
-    assert calls == [("reloc", None), ("shared", None)]
+    # File existence is never freshness authority: the combined ensure must
+    # replace the stale artifact before any executable layout is read.
+    assert calls == [("both", None)]
     assert prepared.backend_env is not None
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1"
     assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "4321"
@@ -19762,7 +19816,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     rustflags = _expand_rustflags_response_files(captured_env["RUSTFLAGS"])
     assert "--import-memory" not in rustflags
     assert "--import-table" not in rustflags
-    assert "--export-if-defined=molt_gpu_matmul_contiguous" in rustflags
+    assert "--export-if-defined=molt_gpu_matmul_contiguous" not in rustflags
     assert (
         "--export-if-defined=molt_gpu_matmul_contiguous"
         in captured_link["export_link_args"]
@@ -20435,6 +20489,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         runtime_reloc_wasm=runtime_reloc_wasm,
         ensure_runtime_wasm_shared=lambda required=None: True,
         ensure_runtime_wasm_reloc=lambda required=None: True,
+        ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -21441,7 +21496,7 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     runtime_source.write_text("// runtime source\n", encoding="utf-8")
     _set_stale_mtime(runtime_source)
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
-    cargo_runtime.write_bytes(b"\0asm\x01\0\0\0runtime")
+    cargo_runtime.write_bytes(b"\0asm\x01\0\0\0")
     fingerprint = {
         "hash": "ok",
         "rustc": "rustc",
@@ -22089,6 +22144,7 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         backend_daemon_config_digest=None,
         ensure_runtime_wasm_shared=lambda required=None: True,
         ensure_runtime_wasm_reloc=lambda required=None: True,
+        ensure_runtime_wasm_both=lambda required=None: True,
         resolved_modules=frozenset(),
         ir={"functions": []},
         warnings=[],
