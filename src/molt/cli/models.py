@@ -578,12 +578,33 @@ class _EntryFrontendLoweringContext:
 
 
 @dataclass
+class _NativeRuntimeBuildFailure:
+    stage: str
+    summary: str
+    evidence_path: Path | None = None
+    returncode: int | None = None
+    timed_out: bool = False
+
+    def json_payload(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "summary": self.summary,
+            "evidence_path": (
+                None if self.evidence_path is None else str(self.evidence_path)
+            ),
+            "returncode": self.returncode,
+            "timed_out": self.timed_out,
+        }
+
+
+@dataclass
 class _RuntimeArtifactState:
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
     extra_runtime_features: tuple[str, ...] = ()
     native_link_source_fingerprint: dict[str, object] | None = None
+    native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_ready: bool = False
     runtime_reloc_wasm_ready: bool = False
     runtime_wasm_ready_export_sets: set[frozenset[str] | None] = field(

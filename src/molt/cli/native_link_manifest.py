@@ -9,6 +9,7 @@ import shlex
 from typing import Any, Mapping, cast
 
 from molt.cli.atomic_io import _atomic_write_json
+from molt.cli.diagnostic_text import strip_terminal_decoration
 from molt.cli.file_hashing import _sha256_file
 
 
@@ -83,7 +84,9 @@ def _linked_path_value(raw: str) -> str:
     return path
 
 
-def _artifact_stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
+def _artifact_stat_identity(
+    stat_result: os.stat_result,
+) -> tuple[int, int, int, int, int]:
     return (
         stat_result.st_size,
         stat_result.st_mtime_ns,
@@ -260,6 +263,11 @@ def manifest_from_cargo_json(
             }
         )
     for raw in cargo_stderr.splitlines():
+        # Cargo/rustc diagnostics may still be decorated by a wrapper or an
+        # externally supplied log even though Molt's own command requests
+        # ``--color=never``. Terminal presentation is not semantic protocol
+        # data, so normalize it at the one manifest-ingestion authority.
+        raw = strip_terminal_decoration(raw)
         prefix = f"note: {_NATIVE_STATIC_LIBS_PREFIX}"
         if raw.startswith(prefix):
             native_static_lib_records.append(raw[len(prefix) :].strip())

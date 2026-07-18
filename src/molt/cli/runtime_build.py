@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from molt.cli.artifact_state import (
 )
 from molt.cli.atomic_io import (
     _atomic_copy_file,
+    _atomic_write_json,
     _atomic_write_bytes,
     _atomic_write_text,
 )
@@ -55,6 +57,7 @@ from molt.cli.command_runtime import (
     _run_subprocess_captured_to_tempfiles,
 )
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.diagnostic_text import strip_terminal_decoration
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
@@ -115,7 +118,11 @@ from molt.cli.wasm_link_args import (
     write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
 )
 from molt.cli import wasm_toolchain
-from molt.cli.models import BuildProfile, _RuntimeArtifactState
+from molt.cli.models import (
+    BuildProfile,
+    _NativeRuntimeBuildFailure,
+    _RuntimeArtifactState,
+)
 from molt.wasm_artifact import (
     inspect_wasm_binary as _inspect_wasm_binary,
     rename_wasm_export_names,
@@ -149,6 +156,107 @@ _RUNTIME_LIB_VERIFIED: set[
     ]
 ] = set()
 _NATIVE_RUNTIME_READY_EXECUTOR: ThreadPoolExecutor | None = None
+_NATIVE_RUNTIME_EVIDENCE_TEXT_LIMIT = 256 * 1024
+_NATIVE_RUNTIME_SUMMARY_LIMIT = 2_000
+
+
+def _bounded_native_runtime_evidence_text(text: str) -> str:
+    if len(text) <= _NATIVE_RUNTIME_EVIDENCE_TEXT_LIMIT:
+        return text
+    half = _NATIVE_RUNTIME_EVIDENCE_TEXT_LIMIT // 2
+    omitted = len(text) - (half * 2)
+    return (
+        text[:half]
+        + f"\n... <{omitted} chars omitted from durable evidence> ...\n"
+        + text[-half:]
+    )
+
+
+def _native_runtime_first_error(
+    *,
+    cargo_stdout: str,
+    cargo_stderr: str,
+    fallback: str,
+) -> str:
+    """Extract one bounded actionable diagnostic from Cargo's machine output."""
+    for raw in cargo_stdout.splitlines():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("reason") != "compiler-message":
+            continue
+        diagnostic = payload.get("message")
+        if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
+            continue
+        rendered = diagnostic.get("rendered")
+        message = diagnostic.get("message")
+        selected = (
+            rendered if isinstance(rendered, str) and rendered.strip() else message
+        )
+        if isinstance(selected, str) and selected.strip():
+            return strip_terminal_decoration(selected.strip())[
+                :_NATIVE_RUNTIME_SUMMARY_LIMIT
+            ]
+
+    clean_stderr = strip_terminal_decoration(cargo_stderr)
+    lines = clean_stderr.splitlines()
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*(?:error(?:\[[A-Z0-9]+\])?|fatal error):", line):
+            return "\n".join(lines[index : index + 10]).strip()[
+                :_NATIVE_RUNTIME_SUMMARY_LIMIT
+            ]
+    return fallback[:_NATIVE_RUNTIME_SUMMARY_LIMIT]
+
+
+def _record_native_runtime_failure(
+    runtime_state: _RuntimeArtifactState | None,
+    *,
+    project_root: Path,
+    stage: str,
+    summary: str,
+    command: Sequence[str] | None = None,
+    cargo_stdout: str = "",
+    cargo_stderr: str = "",
+    returncode: int | None = None,
+    timed_out: bool = False,
+) -> bool:
+    """Publish one bounded durable failure record and attach it to build state."""
+    evidence_path: Path | None = None
+    try:
+        evidence_path = (
+            _build_state_root(project_root)
+            / "build_failures"
+            / f"native-runtime-{stage}-{os.getpid()}-{uuid.uuid4().hex}.json"
+        )
+        _atomic_write_json(
+            evidence_path,
+            {
+                "schema_version": 1,
+                "kind": "molt_native_runtime_build_failure",
+                "stage": stage,
+                "summary": summary[:_NATIVE_RUNTIME_SUMMARY_LIMIT],
+                "command": list(command or ()),
+                "cwd": str(project_root),
+                "returncode": returncode,
+                "timed_out": timed_out,
+                "cargo_stdout": _bounded_native_runtime_evidence_text(cargo_stdout),
+                "cargo_stderr": _bounded_native_runtime_evidence_text(cargo_stderr),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    except OSError:
+        evidence_path = None
+    if runtime_state is not None:
+        runtime_state.native_runtime_build_failure = _NativeRuntimeBuildFailure(
+            stage=stage,
+            summary=summary[:_NATIVE_RUNTIME_SUMMARY_LIMIT],
+            evidence_path=evidence_path,
+            returncode=returncode,
+            timed_out=timed_out,
+        )
+    return False
 
 
 def _record_runtime_build_stage_ms(
@@ -373,6 +481,12 @@ def _native_runtime_cargo_command(
     cmd = [
         "cargo",
         "rustc",
+        # This command is a machine protocol: ``native_link_manifest`` parses
+        # rustc's native-static-libs note.  CI sets CARGO_TERM_COLOR=always,
+        # which otherwise decorates the note with ANSI escapes and makes the
+        # exact-prefix parser report a false missing-note failure after a
+        # successful multi-minute build.
+        "--color=never",
         "-p",
         "molt-runtime",
         "--profile",
@@ -476,6 +590,7 @@ def _refresh_native_link_manifest(
     cargo_timeout: float | None,
     json_output: bool,
     source_fingerprint: Mapping[str, object],
+    runtime_state: _RuntimeArtifactState | None = None,
 ) -> bool:
     """Refresh missing provenance through the exact no-op-capable Cargo command."""
     try:
@@ -489,13 +604,37 @@ def _refresh_native_link_manifest(
                 label="Runtime native-link manifest refresh",
             )
     except subprocess.TimeoutExpired:
-        return False
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="native-link-manifest-refresh",
+            summary=(
+                f"Cargo timed out after {cargo_timeout:.1f}s while refreshing the "
+                "native-link manifest"
+                if cargo_timeout is not None
+                else "Cargo timed out while refreshing the native-link manifest"
+            ),
+            command=cmd,
+            timed_out=True,
+        )
     if result.returncode != 0:
+        summary = _native_runtime_first_error(
+            cargo_stdout=result.stdout,
+            cargo_stderr=result.stderr,
+            fallback=f"Cargo exited with code {result.returncode}",
+        )
         if not json_output:
-            detail = result.stderr.strip() or result.stdout.strip()
-            if detail:
-                print(detail, file=sys.stderr)
-        return False
+            print(summary, file=sys.stderr)
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="native-link-manifest-refresh",
+            summary=summary,
+            command=cmd,
+            cargo_stdout=result.stdout,
+            cargo_stderr=result.stderr,
+            returncode=result.returncode,
+        )
     cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
     if not _runtime_archive_bytes_match(runtime_lib, cargo_runtime_lib):
         if not json_output:
@@ -504,7 +643,19 @@ def _refresh_native_link_manifest(
                 "does not match the selected runtime artifact.",
                 file=sys.stderr,
             )
-        return False
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="native-link-manifest-refresh",
+            summary=(
+                "Cargo refreshed the native-link manifest but changed the selected "
+                "runtime archive bytes"
+            ),
+            command=cmd,
+            cargo_stdout=result.stdout,
+            cargo_stderr=result.stderr,
+            returncode=result.returncode,
+        )
     try:
         write_native_link_dependency_manifest(
             result.stdout,
@@ -521,7 +672,16 @@ def _refresh_native_link_manifest(
                 f"Failed to publish runtime native-link manifest: {exc}",
                 file=sys.stderr,
             )
-        return False
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="native-link-manifest-publication",
+            summary=f"Failed to publish runtime native-link manifest: {exc}",
+            command=cmd,
+            cargo_stdout=result.stdout,
+            cargo_stderr=result.stderr,
+            returncode=result.returncode,
+        )
     return True
 
 
@@ -540,6 +700,7 @@ def _ensure_runtime_lib(
 ) -> bool:
     if runtime_state is not None:
         runtime_state.native_link_source_fingerprint = None
+        runtime_state.native_runtime_build_failure = None
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = tuple(
         _dedupe_preserve_order(
@@ -604,7 +765,15 @@ def _ensure_runtime_lib(
                 "runtime native-link manifest.",
                 file=sys.stderr,
             )
-        return False
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="source-fingerprint",
+            summary=(
+                "Failed to compute an exact source/toolchain identity for the "
+                "runtime native-link manifest"
+            ),
+        )
 
     def accept_source_attestation() -> bool:
         if runtime_state is not None:
@@ -635,6 +804,7 @@ def _ensure_runtime_lib(
                 cargo_timeout=cargo_timeout,
                 json_output=json_output,
                 source_fingerprint=source_fingerprint,
+                runtime_state=runtime_state,
             )
             return accept_source_attestation() if refreshed else False
     session_key = _runtime_lib_verified_session_key(
@@ -706,6 +876,7 @@ def _ensure_runtime_lib(
                 cargo_timeout=cargo_timeout,
                 json_output=json_output,
                 source_fingerprint=source_fingerprint,
+                runtime_state=runtime_state,
             ):
                 return False
             if session_key is not None:
@@ -782,6 +953,7 @@ def _ensure_runtime_lib(
                 cargo_timeout=cargo_timeout,
                 json_output=json_output,
                 source_fingerprint=source_fingerprint,
+                runtime_state=runtime_state,
             ):
                 return False
             if session_key is not None:
@@ -818,19 +990,39 @@ def _ensure_runtime_lib(
                     cargo_build_start,
                 )
         except subprocess.TimeoutExpired:
+            timeout_note = (
+                f"Runtime build timed out after {cargo_timeout:.1f}s."
+                if cargo_timeout is not None
+                else "Runtime build timed out."
+            )
             if not json_output:
-                timeout_note = (
-                    f"Runtime build timed out after {cargo_timeout:.1f}s."
-                    if cargo_timeout is not None
-                    else "Runtime build timed out."
-                )
                 print(timeout_note, file=sys.stderr)
-            return False
+            return _record_native_runtime_failure(
+                runtime_state,
+                project_root=project_root,
+                stage="cargo",
+                summary=timeout_note,
+                command=cmd,
+                timed_out=True,
+            )
         if build.returncode != 0:
-            err = build.stderr.strip() or build.stdout.strip()
-            if err:
-                print(err, file=sys.stderr)
-            return False
+            summary = _native_runtime_first_error(
+                cargo_stdout=build.stdout,
+                cargo_stderr=build.stderr,
+                fallback=f"Cargo exited with code {build.returncode}",
+            )
+            if not json_output:
+                print(summary, file=sys.stderr)
+            return _record_native_runtime_failure(
+                runtime_state,
+                project_root=project_root,
+                stage="cargo",
+                summary=summary,
+                command=cmd,
+                cargo_stdout=build.stdout,
+                cargo_stderr=build.stderr,
+                returncode=build.returncode,
+            )
         cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
         if cargo_runtime_lib != runtime_lib:
             if not cargo_runtime_lib.exists():
@@ -839,7 +1031,19 @@ def _ensure_runtime_lib(
                         f"Runtime build succeeded but archive is missing: {cargo_runtime_lib}",
                         file=sys.stderr,
                     )
-                return False
+                return _record_native_runtime_failure(
+                    runtime_state,
+                    project_root=project_root,
+                    stage="cargo-artifact",
+                    summary=(
+                        "Cargo reported a successful runtime build but the staticlib "
+                        f"artifact is missing: {cargo_runtime_lib}"
+                    ),
+                    command=cmd,
+                    cargo_stdout=build.stdout,
+                    cargo_stderr=build.stderr,
+                    returncode=build.returncode,
+                )
             try:
                 _atomic_copy_file(cargo_runtime_lib, runtime_lib)
             except OSError as exc:
@@ -848,7 +1052,18 @@ def _ensure_runtime_lib(
                         f"Failed to materialize runtime archive alias {runtime_lib}: {exc}",
                         file=sys.stderr,
                     )
-                return False
+                return _record_native_runtime_failure(
+                    runtime_state,
+                    project_root=project_root,
+                    stage="artifact-publication",
+                    summary=(
+                        f"Failed to materialize runtime archive alias {runtime_lib}: {exc}"
+                    ),
+                    command=cmd,
+                    cargo_stdout=build.stdout,
+                    cargo_stderr=build.stderr,
+                    returncode=build.returncode,
+                )
         try:
             write_native_link_dependency_manifest(
                 build.stdout,
@@ -865,7 +1080,16 @@ def _ensure_runtime_lib(
                     f"Failed to publish runtime native-link manifest: {exc}",
                     file=sys.stderr,
                 )
-            return False
+            return _record_native_runtime_failure(
+                runtime_state,
+                project_root=project_root,
+                stage="native-link-manifest-publication",
+                summary=f"Failed to publish runtime native-link manifest: {exc}",
+                command=cmd,
+                cargo_stdout=build.stdout,
+                cargo_stderr=build.stderr,
+                returncode=build.returncode,
+            )
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)

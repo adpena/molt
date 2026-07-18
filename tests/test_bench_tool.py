@@ -1102,6 +1102,77 @@ def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
     assert "backend daemon returned empty response" in (failure.message or "")
 
 
+def test_prepare_molt_binary_preserves_native_runtime_failure_without_retry(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    evidence_path = tmp_path / "native-runtime-cargo.json"
+    requests: list[dict[str, object]] = []
+    prunes: list[dict[str, str] | None] = []
+
+    class _CargoFailureBatchServer:
+        def request_build(
+            self, params: dict[str, object], *, timeout_s: float
+        ) -> dict[str, object]:
+            del timeout_s
+            requests.append(params)
+            payload = {
+                "schema_version": "1.0",
+                "command": "build",
+                "status": "error",
+                "data": {
+                    "returncode": 2,
+                    "runtime_build_failure": {
+                        "stage": "cargo",
+                        "summary": "error[E0425]: synthetic compiler failure",
+                        "evidence_path": str(evidence_path),
+                        "returncode": 101,
+                        "timed_out": False,
+                    },
+                },
+                "warnings": [],
+                "errors": [
+                    "native runtime staticlib build failed stage=cargo; "
+                    "first_error='error[E0425]: synthetic compiler failure'"
+                ],
+            }
+            return {
+                "ok": False,
+                "returncode": 2,
+                "stdout": json.dumps(payload),
+                "stderr": "",
+            }
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_prune_backend_daemons",
+        lambda env=None: (prunes.append(env), 0)[1],
+    )
+    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+
+    failure = bench_tool.prepare_molt_binary(
+        str(script),
+        env={},
+        batch_server=_CargoFailureBatchServer(),
+    )
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert len(requests) == 1
+    assert len(prunes) == 1
+    assert failure.detail == "native_runtime_staticlib_build_failed"
+    assert failure.status == "build_failed"
+    assert failure.log_refs == (
+        {"kind": "native_runtime_build_failure", "path": str(evidence_path)},
+    )
+    serialized = bench_tool.molt_failure_payload(failure)
+    assert serialized["log_refs"] == [
+        {"kind": "native_runtime_build_failure", "path": str(evidence_path)}
+    ]
+    assert "synthetic compiler failure" in str(serialized["message"])
+
+
 def test_bench_results_records_raw_native_sample_arrays(
     monkeypatch, tmp_path: Path
 ) -> None:
