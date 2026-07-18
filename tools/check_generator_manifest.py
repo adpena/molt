@@ -808,11 +808,9 @@ def check_idempotence(root: Path, manifest: Manifest) -> list[Violation]:
 
     Opt-in (--check-idempotence), NOT part of the default CI `--check`: the real
     CI freshness gate is the per-generator stable `--check` command in the proof
-    plan, which runs in
-    the Linux/LF CI environment. On a Windows checkout with autocrlf, a generator
-    that byte-compares against an LF render can report a spurious staleness here
-    (working-copy CRLF vs rendered LF); that is a host line-ending artifact, not a
-    generator bug — re-confirm on Linux/CI before treating it as real drift."""
+    plan. Repository text is checked out as LF on every host through
+    `.gitattributes`, so a byte mismatch here is real drift rather than a platform
+    line-ending artifact."""
     violations: list[Violation] = []
     for g in manifest.generators:
         if g.get("discovery_only", False) or not g.get("ci_checkable", True):
