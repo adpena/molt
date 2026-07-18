@@ -5,7 +5,7 @@
 
 // Re-export the object model.
 pub use molt_obj_model::MoltObject;
-pub use molt_obj_model::{register_ptr, resolve_ptr};
+pub use molt_obj_model::{opaque_handle_bits, register_ptr, resolve_opaque_ptr, resolve_ptr};
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)
@@ -35,17 +35,6 @@ pub fn bits_from_ptr(ptr: *mut u8) -> u64 {
     register_ptr(ptr)
 }
 
-/// Register an opaque runtime-owned handle and return its immediate-int bits.
-#[inline]
-pub fn opaque_handle_bits(ptr: *mut u8) -> u64 {
-    let addr = bits_from_ptr(ptr);
-    debug_assert!(
-        addr <= ((1_u64 << 46) - 1),
-        "opaque runtime handle address exceeds Molt immediate int range"
-    );
-    MoltObject::from_int(addr as i64).bits()
-}
-
 /// Resolve an opaque runtime-owned handle from its immediate-int bits.
 #[inline]
 pub fn opaque_handle_ptr_from_bits(bits: u64) -> Option<*mut u8> {
@@ -53,7 +42,7 @@ pub fn opaque_handle_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     if addr < 0 {
         return None;
     }
-    resolve_ptr(addr as u64)
+    resolve_opaque_ptr(addr as u64)
 }
 
 // ---------------------------------------------------------------------------

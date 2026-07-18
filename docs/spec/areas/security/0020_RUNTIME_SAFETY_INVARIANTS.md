@@ -19,8 +19,10 @@ entrypoints used to validate them.
   for field access and must be registered when exposed as bits.
 - Rust-owned opaque handles must not use pointer-tagged object bits. Non-Molt
   Rust allocations are exposed with `opaque_handle_bits`, which registers the
-  pointer and returns an immediate-int registry id; only the owning intrinsic
-  may resolve/release that id.
+  pointer in a sharded generational slab behind a bounded synthetic
+  immediate-int ID; host virtual addresses are never truncated into the
+  carrier, and a released stale generation cannot resolve after slot reuse.
+  Only the owning intrinsic may resolve/release that ID.
 
 ## 2. Header/Layout Invariants
 - `MoltHeader` is prepended to every heap object.

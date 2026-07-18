@@ -5244,9 +5244,9 @@ mod tests {
             let state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
             let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
             let id = unsafe { molt_cpython_abi::api::object::PyThreadState_GetID(tstate) };
-            unsafe { molt_cpython_abi::api::object::PyGILState_Release(state) };
             tx.send((tstate as usize, id)).unwrap();
             worker_release.wait();
+            unsafe { molt_cpython_abi::api::object::PyGILState_Release(state) };
         });
 
         let (foreign, id) = rx.recv().unwrap();

@@ -41,7 +41,10 @@ before splitting `molt-runtime` into focused modules.
 - Notes: sharded pointer registry (read/write locks) for NaN-boxed pointers;
   handle resolve is centralized in `provenance/handles.rs`. Rust-owned opaque
   handles are minted only with `opaque_handle_bits`, which stores the raw Rust
-  pointer in the registry and returns an immediate-int handle id. Pointer-tagged
+  pointer in a dedicated sharded generational slab and returns a bounded
+  synthetic immediate-int handle ID independent of the host address. Resolve
+  is indexed O(1), while pointer-based release uses the shard-local reverse
+  index; generations reject stale IDs after slot reuse. Pointer-tagged
   `MoltObject` bits are reserved for real Molt heap objects so refcount and
   finalizer paths never cast opaque host allocations as Molt headers.
 

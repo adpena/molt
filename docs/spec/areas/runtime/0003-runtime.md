@@ -13,9 +13,10 @@ Molt uses 64-bit NaN-boxing for all objects. This allows small primitives to be 
 
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
 Rust-owned opaque handles are not heap objects: they are registered in the
-pointer registry and exposed to Python as immediate-int handle bits via
-`opaque_handle_bits`. Runtime intrinsics that own those handles resolve and
-release the registry id explicitly; refcount, finalizer, and object-header APIs
+dedicated sharded generational slab and exposed to Python as bounded, synthetic
+immediate-int IDs via `opaque_handle_bits`. IDs never depend on host
+virtual-address width. Runtime intrinsics that own those handles resolve and
+release the registry ID explicitly; refcount, finalizer, and object-header APIs
 must never observe opaque Rust allocations as pointer-tagged `MoltObject`
 payloads.
 

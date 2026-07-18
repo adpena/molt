@@ -3663,10 +3663,6 @@ impl ThreadStateRecord {
 impl Drop for ThreadStateRecord {
     fn drop(&mut self) {
         assert!(!self.attached, "dropping an attached PyThreadState");
-        assert!(
-            self.state_dict.is_null() && self.current_error.is_none() && self.context.is_empty(),
-            "PyThreadState TLS drop reached ref-owning state; explicit live-custody teardown is required"
-        );
         let ptr = (&raw mut self.state) as usize;
         let removed = THREAD_STATE_REGISTRY.lock().unwrap().remove(&ptr);
         assert_eq!(
@@ -3676,6 +3672,21 @@ impl Drop for ThreadStateRecord {
                 id: self.id,
             })
         );
+
+        // Native thread exit is a real PyThreadState destruction boundary.
+        // Rust invokes TLS destructors on Unix while Windows historically hid
+        // this leak, so the record itself must release every owned edge rather
+        // than require an out-of-band shutdown hook that a foreign thread can
+        // never call. Remove registry publication first, then drain ownership:
+        // no destructor may observe a half-dead thread state as live.
+        let state_dict = std::mem::replace(&mut self.state_dict, ptr::null_mut());
+        let current_error = self.current_error.take();
+        let context = std::mem::take(&mut self.context);
+        unsafe { crate::api::refcount::Py_XDECREF(state_dict) };
+        drop(current_error);
+        for value in context.into_values() {
+            unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
+        }
     }
 }
 
@@ -3689,12 +3700,24 @@ thread_local! {
 pub(crate) fn thread_state_dict_or_insert_with(
     create: impl FnOnce() -> *mut PyObject,
 ) -> *mut PyObject {
+    let existing = MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        (!record.state_dict.is_null()).then_some(record.state_dict)
+    });
+    if let Some(existing) = existing {
+        return existing;
+    }
+
+    // Allocation can report a Python error, which re-enters the thread-state
+    // error slot. Never invoke foreign/runtime code while holding the RefCell
+    // borrow that protects the publication slot.
+    let created = create();
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         let record = slot.get_or_insert_with(ThreadStateRecord::new);
-        if record.state_dict.is_null() {
-            record.state_dict = create();
-        }
+        debug_assert!(record.state_dict.is_null());
+        record.state_dict = created;
         record.state_dict
     })
 }

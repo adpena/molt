@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use molt_codegen_abi::{
     MoltFlags, MoltRefCount, RefCountRelease, RefCountRevivalWindow, RetainError,
 };
-use molt_obj_model::{MoltObject, release_ptr, resolve_ptr};
+use molt_obj_model::{MoltObject, release_ptr, resolve_opaque_ptr, resolve_ptr};
 use num_bigint::BigInt;
 
 /// Global type version counter. Incremented whenever ANY class is modified
@@ -2659,7 +2659,7 @@ pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
     }
     if let Some(addr) = obj.as_int()
         && addr >= 0
-        && let Some(ptr) = resolve_ptr(addr as u64)
+        && let Some(ptr) = resolve_opaque_ptr(addr as u64)
     {
         return ptr;
     }
