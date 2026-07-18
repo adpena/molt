@@ -133,9 +133,24 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
         "tools/proof_plan.py",
         "_run_command",
-        "run",
-        "waits only on canonical guarded_exec; timeout, custody, process-tree "
-        "sampling, and cleanup remain exclusively owned by that guard",
+        "Popen",
+        "owns only the canonical guarded_exec wrapper so the DAG scheduler can "
+        "observe fail-fast cancellation; child timeout, sampling, and process-tree "
+        "cleanup remain exclusively owned by guarded_exec",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_terminate_guarded_executor",
+        "process.terminate",
+        "fail-fast sends graceful termination only to the exact guarded_exec owner; "
+        "its signal handler or Windows kill-on-close job reaps the guarded subtree",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_terminate_guarded_executor",
+        "process.kill",
+        "fail-fast escalation targets only an unreaped guarded_exec owner after a "
+        "bounded grace period; guarded subtree custody remains with its memory guard",
     ),
     AllowedRawSubprocessUse(
         "tools/batch_compile_client.py",
@@ -821,12 +836,15 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.stack.append(node.name)
         self.generic_visit(node)
         self.stack.pop()
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_FunctionDef(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         method = self._raw_call_method(node.func)

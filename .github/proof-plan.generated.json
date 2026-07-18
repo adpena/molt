@@ -34,7 +34,7 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py"
   ],
-  "authority_sha256": "b2adf4d9a1bc4ba1865de28171cef52205198a7e4489cd9682ccf441fe2c2230",
+  "authority_sha256": "cf3596f0ce6cd2385df76d52004cf53b69aac7d248999853783859c67c13d85f",
   "ci_families": [
     {
       "dependencies": [],
@@ -1001,7 +1001,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -1076,7 +1076,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -1101,7 +1101,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -1151,7 +1151,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -1205,7 +1205,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv"
@@ -1237,7 +1237,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 900,
       "toolchains": [
         "rustc",
         "cargo",
@@ -1270,7 +1270,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -1310,7 +1310,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1500,
+      "timeout_seconds": 900,
       "toolchains": [
         "python",
         "uv",
@@ -1358,7 +1358,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -1436,7 +1436,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -1510,7 +1510,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -1554,7 +1554,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -1599,7 +1599,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv",
@@ -1664,7 +1664,7 @@
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv",
@@ -1783,7 +1783,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1809,7 +1809,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1835,7 +1835,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1859,7 +1859,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 900,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1883,7 +1883,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1800,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "rustc",
@@ -1914,7 +1914,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1943,7 +1943,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1800,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -1975,7 +1975,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1800,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -2012,7 +2012,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 1800,
+      "timeout_seconds": 240,
       "toolchains": [
         "rustc",
         "cargo"
@@ -2039,7 +2039,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2073,7 +2073,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2107,7 +2107,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 120,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2143,7 +2143,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 120,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2173,7 +2173,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2208,7 +2208,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "toolchains": [
         "python",
         "uv",
@@ -2242,7 +2242,7 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -2294,7 +2294,7 @@
         "main",
         "weekly"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 450,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2321,7 +2321,7 @@
         "main",
         "weekly"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 450,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2421,6 +2421,124 @@
       ]
     }
   ],
+  "executor": {
+    "github_job_timeout_envelopes": {
+      "llvm": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 2400,
+        "headroom_seconds": 660,
+        "projected_makespan_seconds": 2940,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 2940,
+          "python-tests": 60
+        }
+      },
+      "native_integration": {
+        "budget_seconds": 1500,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 600,
+        "projected_makespan_seconds": 900,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 900
+        }
+      },
+      "python_security": {
+        "budget_seconds": 1200,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 900,
+        "resource_capacity_floor_seconds": {
+          "network-audit": 450
+        }
+      },
+      "python_static": {
+        "budget_seconds": 900,
+        "critical_path_seconds": 300,
+        "headroom_seconds": 600,
+        "projected_makespan_seconds": 300,
+        "resource_capacity_floor_seconds": {
+          "python-static": 300
+        }
+      },
+      "python_unit": {
+        "budget_seconds": 1200,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 900,
+        "resource_capacity_floor_seconds": {
+          "python-tests": 450
+        }
+      },
+      "repository_policy": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 1500,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 3300,
+        "resource_capacity_floor_seconds": {
+          "repository-policy": 2625
+        }
+      },
+      "rust": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 1740,
+        "headroom_seconds": 360,
+        "projected_makespan_seconds": 3240,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 3240
+        }
+      },
+      "rust_security": {
+        "budget_seconds": 1200,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 900,
+        "resource_capacity_floor_seconds": {
+          "network-audit": 450
+        }
+      },
+      "wasm": {
+        "budget_seconds": 5400,
+        "critical_path_seconds": 2400,
+        "headroom_seconds": 1200,
+        "projected_makespan_seconds": 4200,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 4200,
+          "wasm-runtime": 450
+        }
+      }
+    },
+    "max_workers": 4,
+    "resource_policies": [
+      {
+        "max_parallel": 1,
+        "name": "compiler-build-resource"
+      },
+      {
+        "max_parallel": 2,
+        "name": "formal-tools"
+      },
+      {
+        "max_parallel": 2,
+        "name": "network-audit"
+      },
+      {
+        "max_parallel": 1,
+        "name": "python-static"
+      },
+      {
+        "max_parallel": 2,
+        "name": "python-tests"
+      },
+      {
+        "max_parallel": 4,
+        "name": "repository-policy"
+      },
+      {
+        "max_parallel": 2,
+        "name": "wasm-runtime"
+      }
+    ]
+  },
   "local": {
     "always": [
       "python3 tools/venv_exec.py python -m ruff check .",

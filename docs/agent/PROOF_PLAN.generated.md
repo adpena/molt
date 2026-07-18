@@ -17,18 +17,32 @@
 
 Every selected family expands to stable command IDs. Each command binds an exact OS/architecture/Python/backend/target/profile cell, timeout, resource class, cache domain, and DAG parents. CI admission requires receipts whose canonical LF-normalized authority-closure digest, source commit, command, cell, execution partition, duration, peak RSS, cache disposition, and version-constrained toolchain identities validate.
 
-| Family | Tiers | Required | Executor | Timeout | Resource | Inputs |
-|---|---|---:|---|---:|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | `repository-policy` | 1 |
-| `wasm` | pr, main | yes | `github-job` | 90 min | `compiler-build-resource` | 17 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | `python-static` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | `python-tests` | 7 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | `compiler-build-resource` | 9 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | `compiler-build-resource` | 6 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | `compiler-build-resource` | 21 |
-| `python_security` | pr, main, weekly | yes | `github-job` | 20 min | `network-audit` | 4 |
-| `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | `network-audit` | 5 |
-| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | `formal-tools` | 8 |
+The canonical executor admits dependency-ready commands in manifest order, bounds global fanout at 4, and enforces these per-resource limits:
+
+| Resource | Max parallel commands |
+|---|---:|
+| `compiler-build-resource` | 1 |
+| `formal-tools` | 2 |
+| `network-audit` | 2 |
+| `python-static` | 1 |
+| `python-tests` | 2 |
+| `repository-policy` | 4 |
+| `wasm-runtime` | 2 |
+
+GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity.
+
+| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Inputs |
+|---|---|---:|---|---:|---:|---:|---|---:|
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3300 s | 300 s | `repository-policy` | 1 |
+| `wasm` | pr, main | yes | `github-job` | 90 min | 4200 s | 1200 s | `compiler-build-resource` | 17 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | 8 |
+| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | 7 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | 9 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 3240 s | 360 s | `compiler-build-resource` | 6 |
+| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | 21 |
+| `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
+| `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |
+| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | 8 |
 
 ## Toolchain contracts
 
@@ -82,48 +96,48 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `repository.target-features.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 2 |
 | `repository.cpython-abi-layout.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 16 |
+| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 16 |
 | `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
-| `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
+| `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.runtime-bridge-stubs` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 1200 s | `repository-policy` | 6 |
-| `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 0 |
-| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1500 s | `compiler-build-resource` | 1 |
-| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 6 |
+| `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 0 |
+| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
+| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
+| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
-| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
-| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
+| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
+| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | 600 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | 900 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | 900 s | `compiler-build-resource` | 0 |
-| `rust.check.runtime-default` | `rust` | `linux-x86_64-rust-native-dev` | 600 s | `compiler-build-resource` | 0 |
-| `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | 600 s | `compiler-build-resource` | 0 |
-| `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | 600 s | `compiler-build-resource` | 0 |
-| `rust.build.workspace` | `rust` | `linux-x86_64-rust-native-dev` | 1200 s | `compiler-build-resource` | 1 |
-| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
-| `rust.test.backend-native-feature` | `rust` | `linux-x86_64-rust-native-dev` | 1200 s | `compiler-build-resource` | 1 |
-| `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
-| `rust.clippy.backend-native` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
-| `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 1 |
-| `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 0 |
-| `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 1 |
-| `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 900 s | `compiler-build-resource` | 1 |
-| `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1200 s | `compiler-build-resource` | 1 |
-| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | 1200 s | `compiler-build-resource` | 1 |
-| `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 600 s | `python-tests` | 1 |
-| `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 900 s | `compiler-build-resource` | 1 |
+| `rust.check.runtime-default` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | 240 s | `compiler-build-resource` | 0 |
+| `rust.build.workspace` | `rust` | `linux-x86_64-rust-native-dev` | 900 s | `compiler-build-resource` | 1 |
+| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 600 s | `compiler-build-resource` | 1 |
+| `rust.test.backend-native-feature` | `rust` | `linux-x86_64-rust-native-dev` | 300 s | `compiler-build-resource` | 1 |
+| `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
+| `rust.clippy.backend-native` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
+| `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
+| `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 0 |
+| `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 1 |
+| `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 120 s | `compiler-build-resource` | 1 |
+| `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 120 s | `compiler-build-resource` | 1 |
+| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | 300 s | `compiler-build-resource` | 1 |
+| `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 120 s | `python-tests` | 1 |
+| `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1800 s | `compiler-build-resource` | 1 |
 | `security.python.audit` | `python_security` | `linux-x86_64-py312-python-audit` | 900 s | `network-audit` | 0 |
-| `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | 600 s | `network-audit` | 0 |
-| `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | 600 s | `network-audit` | 1 |
+| `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | 450 s | `network-audit` | 0 |
+| `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | 450 s | `network-audit` | 1 |
 | `formal.lean.build` | `formal` | `linux-x86_64-formal-verification` | 900 s | `formal-tools` | 0 |
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | 1200 s | `formal-tools` | 0 |
