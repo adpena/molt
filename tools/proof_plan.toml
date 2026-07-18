@@ -1546,7 +1546,7 @@ globs = [
 gates = [
   "python3 tools/gen_python_effects.py --check",
   "python3 -m pytest -q tests/test_gen_python_effects.py",
-  "cargo test -p molt-ir python_effects_generated",
+  "cargo test -p molt-ir --lib python_effects_generated",
 ]
 
 [[rule]]
