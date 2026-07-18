@@ -45,6 +45,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tools.fs_delete import delete_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
 
@@ -365,17 +367,6 @@ def _measure(plan: SweepPlan, *, budget_s: float) -> None:
                 c.size = 0
 
 
-def _delete(path: Path) -> tuple[bool, str]:
-    try:
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path, ignore_errors=False)
-        else:
-            path.unlink(missing_ok=True)
-        return True, ""
-    except OSError as exc:
-        return False, str(exc)
-
-
 def _write_log(root: Path, record: dict) -> Path | None:
     log_dir = root / "logs" / "janitor"
     try:
@@ -449,7 +440,7 @@ def _run_once(args: argparse.Namespace) -> int:
     errors: list[str] = []
     if args.apply and plan.candidates:
         for c in plan.candidates:
-            ok, err = _delete(c.path)
+            ok, err = delete_path(c.path)
             if ok:
                 deleted += 1
                 reclaimed += max(0, c.size)
