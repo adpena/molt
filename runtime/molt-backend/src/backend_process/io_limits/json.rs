@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use crate::backend_process::write_atomically;
+use crate::backend_process::atomic_publish::write_atomically;
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn write_json_artifact<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {

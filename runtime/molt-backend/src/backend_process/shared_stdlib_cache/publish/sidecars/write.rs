@@ -1,6 +1,6 @@
 use std::{io, path::Path};
 
-use crate::backend_process::write_text_atomically;
+use crate::backend_process::atomic_publish::write_text_atomically;
 
 use super::super::files::sha256_file_hex;
 use super::super::paths::{

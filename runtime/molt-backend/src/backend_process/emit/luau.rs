@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::luau_pipeline::run_luau_tir_module_pipeline;
-use crate::backend_process::write_text_atomically;
+use crate::backend_process::atomic_publish::write_text_atomically;
 
 pub(super) fn emit_luau_target(
     ir: &mut SimpleIR,

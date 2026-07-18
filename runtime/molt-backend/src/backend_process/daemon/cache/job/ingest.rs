@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::super::entries::insert_daemon_cache_entries;
 use super::super::state::DaemonCache;
-use super::entries::insert_daemon_cache_entries;
 
 pub(crate) fn maybe_cache_output_file(
     cache: &mut DaemonCache,

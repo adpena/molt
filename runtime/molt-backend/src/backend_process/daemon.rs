@@ -6,7 +6,7 @@ mod compile;
 mod protocol;
 mod server;
 
-#[cfg(any(unix, test))]
+#[cfg(test)]
 pub(crate) use cache::{DaemonCache, default_daemon_cache_bytes_from_physical_mem_bytes};
 #[cfg(any(unix, test))]
 pub(crate) use compile::compile_single_job;

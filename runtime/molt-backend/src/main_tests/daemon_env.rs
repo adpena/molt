@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg(feature = "native-backend")]
 fn daemon_request_with_env_preserves_user_entry_object() {
     let _env_guard = ENV_TEST_MUTEX
         .lock()

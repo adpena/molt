@@ -44,7 +44,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            is_wasm: false,
+            is_wasm: true,
             target_triple: None,
             wasm_link: false,
             wasm_data_base: None,
@@ -77,12 +77,12 @@ fn daemon_probe_cache_only_hits_without_ir() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let output = std::env::temp_dir().join(format!("molt-backend-probe-hit-{nonce}.o"));
+    let output = std::env::temp_dir().join(format!("molt-backend-probe-hit-{nonce}.wasm"));
 
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            is_wasm: false,
+            is_wasm: true,
             target_triple: None,
             wasm_link: false,
             wasm_data_base: None,
@@ -108,6 +108,7 @@ fn daemon_probe_cache_only_hits_without_ir() {
 }
 
 #[test]
+#[cfg(feature = "native-backend")]
 fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
     let _env_guard = TestEnvGuard::capture(SHARED_STDLIB_CACHE_ENV_KEYS);
 

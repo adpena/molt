@@ -3,6 +3,7 @@ use std::env;
 #[cfg(unix)]
 use std::time::Instant;
 
+#[cfg(any(unix, test))]
 use super::super::super::config::MIB;
 #[cfg(unix)]
 use super::super::super::config::{BACKEND_DAEMON_PROTOCOL_VERSION, detect_physical_memory_bytes};
@@ -20,6 +21,7 @@ pub(crate) struct DaemonStats {
     pub(crate) cache_misses: u64,
 }
 
+#[cfg(any(unix, test))]
 pub(crate) fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usize {
     let default = bytes
         .and_then(|raw| usize::try_from(raw / 64).ok())

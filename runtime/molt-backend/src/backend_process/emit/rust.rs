@@ -3,7 +3,7 @@ use molt_backend::rust::RustBackend;
 use std::io;
 use std::path::Path;
 
-use crate::backend_process::write_text_atomically;
+use crate::backend_process::atomic_publish::write_text_atomically;
 
 pub(crate) fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
     let mut ir = ir.clone();

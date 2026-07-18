@@ -13,6 +13,7 @@ use molt_tir::tir::values::ValueId;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::ValType;
 
+#[cfg(any(test, feature = "test-util"))]
 pub(super) use repr::lir_repr_to_val;
 
 pub(super) struct LirLowerCtx<'a> {
