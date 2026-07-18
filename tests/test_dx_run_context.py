@@ -813,6 +813,11 @@ def test_default_windows_artifact_roots_has_no_volume_fallback(
     monkeypatch.setattr(
         dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
     )
+    monkeypatch.setattr(
+        dx,
+        "canonical_molt_root",
+        lambda _root, *, require_exists=True: primary.resolve(),
+    )
 
     roots = dx._default_windows_external_artifact_roots(repo_root)
 
@@ -847,6 +852,11 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     monkeypatch.setattr(
         dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
     )
+    monkeypatch.setattr(
+        dx,
+        "canonical_molt_root",
+        lambda _root, *, require_exists=True: primary.resolve(),
+    )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     env = RunContext(
@@ -854,7 +864,11 @@ def test_run_context_attests_selected_windows_c_artifact_root(
         session_prefix="test",
         prefer_external_artifacts=True,
     ).dx_env(
-        {"PATH": "/usr/bin", "MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+        {
+            "PATH": "/usr/bin",
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(primary),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
         create_dirs=False,
     )
     payload = dx.dx_env_payload(env, DX_ENV_KEYS)["env"]
