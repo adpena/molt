@@ -58,6 +58,7 @@ the source of truth.
 
 - Integrated foundation program: [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - RC ownership and drop insertion: [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
+- Implemented generational cycle-collector authority: [design/foundation/generational_gc_authority.md](design/foundation/generational_gc_authority.md)
 - Perceus-style borrow inference: [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
 - Native target, linker-capability, function-identity, strip, and BOLT policy: [design/foundation/native_link_plan.md](design/foundation/native_link_plan.md)
 - ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
@@ -69,7 +70,7 @@ the source of truth.
 - Frontend hot-pass profiling contract and first Rust candidate:
   [design/foundation/44b_frontend_hot_pass_profile.md](design/foundation/44b_frontend_hot_pass_profile.md)
 - Import bedrock PR2 one-store cutover map:
-  [design/foundation/69a_import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/69a_import_bedrock_pr2_sys_modules_view_cutover.md)
+  [design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
 
 ## Workspace Guides
 

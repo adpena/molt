@@ -36,6 +36,7 @@ of truth when a claim drifts.
 
 - [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
+- [design/foundation/generational_gc_authority.md](design/foundation/generational_gc_authority.md)
 - [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
 - [design/parallel_build_architecture.md](design/parallel_build_architecture.md)
 - [architecture/compilation-model.md](architecture/compilation-model.md)

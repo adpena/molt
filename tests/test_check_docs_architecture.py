@@ -335,6 +335,45 @@ def test_checker_requires_foundation_portfolio_numbering_to_match_filename(
     assert any("doc metadata" in error for error in errors)
 
 
+def test_checker_rejects_duplicate_foundation_portfolio_number_authority(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/design/foundation/64_perf_scoreboards.md",
+        "# 64 — Performance scoreboards\n",
+    )
+    _write_file(
+        tmp_path / "docs/design/foundation/64_runtime_scoreboards.md",
+        "# 64 — Runtime scoreboards\n",
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert any(
+        error.startswith(
+            "foundation portfolio number 64 has multiple authorities:"
+        )
+        for error in errors
+    )
+
+
+def test_checker_allows_unnumbered_supplementary_foundation_authority(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/design/foundation/generational_gc_authority.md",
+        "# Generational cyclic-GC authority\n",
+    )
+    module.ROOT = tmp_path
+
+    assert module.check_repo() == []
+
+
 def test_checker_passes_for_valid_repo(
     tmp_path: Path,
 ) -> None:

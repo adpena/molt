@@ -1,8 +1,8 @@
-<!-- Foundation decision doc 70. Assessment of Monty (Pydantic) for stdlib/Rust code
+<!-- Foundation decision record. Assessment of Monty (Pydantic) for stdlib/Rust code
 reuse + collaboration. Verdict from a 2026-06-24 research sweep. Governed by
 DESIGN_DOCTRINE.md + the zero-silent-divergence parity rule (CLAUDE.md). -->
 
-# 70 — Monty (Pydantic): stdlib/Rust reuse + collaboration assessment
+# Monty (Pydantic): stdlib/Rust reuse + collaboration assessment
 
 > **Verdict: do NOT vendor Monty stdlib code. The asymmetry runs in molt's favor —
 > molt's parity-tested Rust stdlib is the asset; Monty is the potential beneficiary.**

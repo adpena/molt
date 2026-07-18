@@ -37,15 +37,20 @@ reserves `target/sessions/<id>` for explicit isolation lanes; the runtime cache
 below remains the cross-session artifact authority.
 
 **Obligation:**
-1. `molt_runtime.wasm` is built ONCE and reused across sessions, cached
-   content-addressed on `(runtime_source_hash, target, abi, profile)` in the
-   SHARED cache (MOLT_CACHE / C:\Molt\.molt_cache), NOT the per-session target
-   dir. A fresh session finds and reuses the warm runtime instead of recompiling.
-   The app.wasm (per-program) stays session-scoped.
-2. Cargo parallelism is bounded to available memory (cap `--jobs` /
+1. `molt_runtime.wasm` is built ONCE and reused across sessions. Its identity is
+   content-addressed on runtime source, target triple and feature manifest, ABI,
+   profile, Rust toolchain, and WASI/sysroot identities in the shared managed
+   cache, never a per-session target directory. A fresh session hydrates or
+   reuses the exact artifact instead of recompiling; only the per-program
+   `app.wasm` remains session-scoped.
+2. Release publication carries the artifact hash, import/export closure,
+   feature manifest, profile, toolchain identity, and proof provenance. User
+   builds resolve and validate the managed or shipped artifact before any
+   rebuild; corruption and identity mismatch fail closed with the exact field.
+3. Cargo parallelism is bounded to available memory (cap `--jobs` /
    `codegen-units` by a memory budget), so a wasm build fits an 8GB ceiling
    instead of thrashing. Default to a memory-derived job count, not `num_cpus`.
-3. Timeout-quarantine must never destroy the shared runtime cache; the shared
+4. Timeout-quarantine must never destroy the shared runtime cache; the shared
    artifact survives a per-session build kill.
 
 **Gate (self-protect):** a test that (a) two different `MOLT_SESSION_ID`s resolve
@@ -85,6 +90,9 @@ package's extension build requires, from the package's own build metadata
   address fails closed; it is never mutated beneath a concurrent build.
 - Detect the build backend + generators (Cython version + flags incl.
   shared-utility vs standalone; f2py; meson/ninja; setuptools).
+- Apply one memory-budget authority across Cargo, C/C++, Cython, Meson, Ninja,
+  and linker fanout. If the requested profile cannot fit the declared budget,
+  fail before thrashing and record the selected job plan plus peak RSS.
 - Provision the cross toolchain (WASI sysroot, wasm compiler/zig, target libs)
   into the operator-managed toolchain root; validate versions; fail closed with
   a precise, actionable diagnostic if a required tool cannot be provisioned.

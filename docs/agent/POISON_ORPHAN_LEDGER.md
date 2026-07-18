@@ -189,7 +189,7 @@ The HALF_WIRED items where a live reader is unreachable or a live caller is mis-
 - **#5 `module_table` view-mutation** — promote `module_table_view_replace/_tombstone`
   from the PR1 test seam to production `del sys.modules[...]` / re-import, so
   `STATE_REPLACED`/`STATE_TOMBSTONE` are set in prod and re-import re-executes. This
-  is the tracked **PR2 cutover** (`69a_import_bedrock_pr2_...md`), blocked on the R1
+  is the tracked **PR2 cutover** (`import_bedrock_pr2_sys_modules_view_cutover.md`), blocked on the R1
   native call lane — unblock or land the R1 dependency first.
 - **#7 `capi_trace` stale slot** — reset `LAST_SILENT_FAILURE` at each module-exec
   entry (`modules.rs:389/455`) so the annotation reflects the *current* exec, not a
@@ -259,7 +259,7 @@ but it restores the dead_code signal the other lanes rely on.
 
 | Finding | Already tracked as | Net-new? |
 | --- | --- | --- |
-| #5 `module_table` view-mutation | **PR2 cutover** (`69a_import_bedrock_pr2_sys_modules_view_cutover.md`), blocked on R1 native call lane | tracked |
+| #5 `module_table` view-mutation | **PR2 cutover** (`import_bedrock_pr2_sys_modules_view_cutover.md`), blocked on R1 native call lane | tracked |
 | #6 `Python.h` D1 | **task#10** (registry D1 burn-down) + `fail_closed_registry.toml` | tracked |
 | #12 `structmember.h` D2 | `fail_closed_registry.toml` `D2_structmember` (burn-down described, no task#) | tracked (registry) |
 | #13 numpy-multiarray B1 | **task#73.2** (generic source-plan authority) + M15/M55 | tracked |

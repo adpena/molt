@@ -1,4 +1,4 @@
-# 69. Molt Import Bedrock — The Frozen Module Layer
+# Molt Import Bedrock — The Frozen Module Layer
 
 **Status:** Design for one-shot implementation, hardening, and freeze.
 **Scope:** bootstrap, module identity, import, module init, sys.modules,
