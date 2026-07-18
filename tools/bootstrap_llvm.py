@@ -349,8 +349,15 @@ def _windows_msvc_env(
     vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
     if not vsdevcmd.exists():
         raise SystemExit(f"Visual Studio developer command file not found: {vsdevcmd}")
+    activation_var = "MOLT_LLVM_VSDEVCMD_CALL"
+    activation_env = base.copy()
+    # Python's Windows argv quoting escapes embedded quotes using MSVCRT rules,
+    # but cmd.exe does not interpret those backslashes.  Expand a trusted,
+    # pre-quoted environment value inside cmd instead, keeping the /c argument
+    # itself quote-free even when the Visual Studio path contains spaces.
+    activation_env[activation_var] = f'"{vsdevcmd}"'
     command = (
-        f'"{vsdevcmd}" -arch={host.windows_target_arch} '
+        f"call %{activation_var}% -arch={host.windows_target_arch} "
         f"-host_arch={host.windows_host_arch} >nul && set"
     )
     proc = subprocess.run(
@@ -358,7 +365,7 @@ def _windows_msvc_env(
         check=False,
         capture_output=True,
         text=True,
-        env=base,
+        env=activation_env,
     )
     if proc.returncode != 0:
         raise SystemExit(proc.stderr.strip() or "Failed to activate VsDevCmd.bat")
@@ -367,6 +374,8 @@ def _windows_msvc_env(
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
+        if key.casefold() == activation_var.casefold():
+            continue
         env[key] = value
     if shutil.which("cl", path=env.get("PATH")) is None:
         raise SystemExit("VsDevCmd.bat completed, but cl.exe is still not on PATH")

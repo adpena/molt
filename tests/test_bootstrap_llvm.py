@@ -1071,6 +1071,42 @@ def test_windows_arm64_activation_uses_contract_arches(
     assert env["VSCMD_ARG_TGT_ARCH"] == "arm64"
     assert env["VSCMD_ARG_HOST_ARCH"] == "arm64"
     assert any("-arch=arm64 -host_arch=arm64" in part for part in observed)
+    assert any(part.startswith("call %MOLT_LLVM_VSDEVCMD_CALL%") for part in observed)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe and batch semantics")
+def test_windows_activation_executes_batch_path_with_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = tmp_path / "Visual Studio Build Tools"
+    vsdevcmd = install / "Common7" / "Tools" / "VsDevCmd.bat"
+    vsdevcmd.parent.mkdir(parents=True)
+    vsdevcmd.write_text(
+        "@echo off\n"
+        'set "PATH=activated"\n'
+        'set "VSCMD_ARG_TGT_ARCH=x64"\n'
+        'set "VSCMD_ARG_HOST_ARCH=x64"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(bootstrap_llvm.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        bootstrap_llvm, "_visual_studio_installation", lambda _component: install
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm.shutil,
+        "which",
+        lambda name, path=None: (
+            "cl.exe" if name == "cl" and path == "activated" else None
+        ),
+    )
+
+    env = bootstrap_llvm._windows_msvc_env({"PATH": "base"}, machine="AMD64")
+
+    assert env["PATH"] == "activated"
+    assert env["VSCMD_ARG_TGT_ARCH"] == "x64"
+    assert env["VSCMD_ARG_HOST_ARCH"] == "x64"
+    assert "MOLT_LLVM_VSDEVCMD_CALL" not in env
 
 
 def test_resource_preflight_rejects_insufficient_disk(
