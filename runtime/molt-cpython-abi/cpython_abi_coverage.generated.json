@@ -19,9 +19,9 @@
     "private": 61,
     "private-representation": 1,
     "public-version-specific": 144,
-    "stable-abi": 435,
+    "stable-abi": 437,
     "stable-values-version-specific-layout": 1,
-    "total": 689,
+    "total": 691,
     "unstable": 8,
     "version-specific-public": 2
   },
@@ -3980,6 +3980,13 @@
       "verified_at": "3.12"
     },
     {
+      "source": "runtime/molt-cpython-abi/src/api/pending_calls.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_AddPendingCall",
+      "verified_at": "3.12"
+    },
+    {
       "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
       "stability": "stable-abi",
       "surface": "function",
@@ -4124,6 +4131,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "Py_LeaveRecursiveCall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/pending_calls.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_MakePendingCalls",
       "verified_at": "3.12"
     },
     {
