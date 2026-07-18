@@ -96,6 +96,7 @@ class LlvmRelease:
     size: int
     source_sha256: str
     provenance_url: str
+    minimum_cmake: str
     record_sha256: str
 
 
@@ -230,7 +231,13 @@ def _load_llvm_releases_cached(
     for version, row in rows.items():
         if not isinstance(version, str) or not isinstance(row, dict):
             raise LlvmToolchainConfigError(f"invalid LLVM release row in {path}")
-        required = ("url", "size", "source_sha256", "provenance_url")
+        required = (
+            "url",
+            "size",
+            "source_sha256",
+            "provenance_url",
+            "minimum_cmake",
+        )
         if any(name not in row for name in required):
             raise LlvmToolchainConfigError(
                 f"LLVM release {version} is incomplete in {path}"
@@ -239,6 +246,7 @@ def _load_llvm_releases_cached(
         size = row["size"]
         source_sha256 = row["source_sha256"]
         provenance_url = row["provenance_url"]
+        minimum_cmake = row["minimum_cmake"]
         if (
             re.fullmatch(r"\d+\.\d+\.\d+", version) is None
             or not isinstance(url, str)
@@ -249,6 +257,8 @@ def _load_llvm_releases_cached(
             or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
             or not isinstance(provenance_url, str)
             or not provenance_url.startswith("https://")
+            or not isinstance(minimum_cmake, str)
+            or re.fullmatch(r"\d+\.\d+\.\d+", minimum_cmake) is None
         ):
             raise LlvmToolchainConfigError(
                 f"LLVM release {version} has invalid identity fields in {path}"
@@ -259,6 +269,7 @@ def _load_llvm_releases_cached(
             "size": size,
             "source_sha256": source_sha256,
             "provenance_url": provenance_url,
+            "minimum_cmake": minimum_cmake,
         }
         record_sha256 = hashlib.sha256(
             json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -270,6 +281,7 @@ def _load_llvm_releases_cached(
                 size=size,
                 source_sha256=source_sha256,
                 provenance_url=provenance_url,
+                minimum_cmake=minimum_cmake,
                 record_sha256=record_sha256,
             )
         )

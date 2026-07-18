@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import os
@@ -17,7 +17,7 @@ import threading
 import urllib.request
 from pathlib import Path
 import sys
-from typing import Callable
+from typing import Callable, Mapping
 import uuid
 
 
@@ -65,6 +65,12 @@ LLVM_PUBLICATION_SCHEMA = "molt.llvm-publication.v1"
 
 _PROCESS_LOCKS: dict[str, threading.RLock] = {}
 _PROCESS_LOCKS_GUARD = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _BuildTool:
+    path: str
+    version: str
 
 
 class _ExclusiveFileLock(AbstractContextManager["_ExclusiveFileLock"]):
@@ -269,6 +275,91 @@ def _which_required(name: str) -> str:
     return resolved
 
 
+def _executable_candidates(name: str, *, path: str | None = None) -> tuple[str, ...]:
+    """Return every PATH candidate in deterministic search order."""
+
+    search_path = os.environ.get("PATH", "") if path is None else path
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for directory in search_path.split(os.pathsep):
+        directory = directory.strip().strip('"')
+        if not directory:
+            continue
+        candidate = shutil.which(name, path=directory)
+        if candidate is None:
+            continue
+        resolved = str(Path(candidate).resolve())
+        key = os.path.normcase(resolved)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(resolved)
+    return tuple(candidates)
+
+
+def _tool_version(path: str, *, role: str) -> str:
+    try:
+        proc = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(f"Could not query {role} version at {path}: {exc}") from exc
+    output = "\n".join((proc.stdout, proc.stderr)).strip()
+    match = re.search(r"(?<!\d)(\d+\.\d+(?:\.\d+)?)(?!\d)", output)
+    if proc.returncode != 0 or match is None:
+        raise SystemExit(
+            f"Could not parse {role} version at {path} (exit {proc.returncode}): {output}"
+        )
+    parts = match.group(1).split(".")
+    return ".".join((*parts, *("0" for _ in range(3 - len(parts)))))
+
+
+def _version_key(version: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if match is None:
+        raise SystemExit(f"Invalid semantic tool version: {version!r}")
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def _compatible_cmake(minimum: str) -> _BuildTool:
+    required = _version_key(minimum)
+    observed: list[_BuildTool] = []
+    for path in _executable_candidates("cmake"):
+        try:
+            version = _tool_version(path, role="CMake")
+        except SystemExit:
+            continue
+        observed.append(_BuildTool(path=path, version=version))
+    compatible = [tool for tool in observed if _version_key(tool.version) >= required]
+    if not compatible:
+        found = (
+            ", ".join(f"{tool.version} at {tool.path}" for tool in observed) or "none"
+        )
+        raise SystemExit(
+            f"LLVM requires CMake >= {minimum}; compatible executable not found on PATH "
+            f"(observed: {found}). Install a current Kitware CMake or place it on PATH."
+        )
+    selected = max(compatible, key=lambda tool: (_version_key(tool.version), tool.path))
+    first = observed[0] if observed else None
+    if first is not None and first != selected:
+        print(
+            "[bootstrap-llvm] bypassing incompatible/older PATH CMake "
+            f"{first.version} at {first.path}; selected {selected.version} at {selected.path}",
+            flush=True,
+        )
+    return selected
+
+
+def _required_build_tool(name: str) -> _BuildTool:
+    path = _which_required(name)
+    return _BuildTool(
+        path=str(Path(path).resolve()), version=_tool_version(path, role=name)
+    )
+
+
 def _vswhere_path() -> Path | None:
     candidates = [
         Path(os.environ.get("ProgramFiles(x86)", ""))
@@ -311,6 +402,25 @@ def _visual_studio_installation(component: str) -> Path | None:
     return install if install.exists() else None
 
 
+def _require_windows_atl(env: Mapping[str, str], install: Path | None) -> None:
+    include_dirs = tuple(
+        Path(part).expanduser()
+        for part in env.get("INCLUDE", "").split(os.pathsep)
+        if part.strip()
+    )
+    if any((directory / "atlbase.h").is_file() for directory in include_dirs):
+        return
+    install_text = str(install) if install is not None else "<BuildTools-install-path>"
+    raise SystemExit(
+        "Visual Studio C++ ATL is required for LLVM PDB support, but atlbase.h "
+        "is absent from the activated INCLUDE path. Install component "
+        "Microsoft.VisualStudio.Component.VC.ATL from an elevated terminal:\n"
+        '  "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\setup.exe" '
+        f'modify --installPath "{install_text}" --add '
+        "Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart"
+    )
+
+
 def _windows_msvc_env(
     base: dict[str, str],
     *,
@@ -338,6 +448,7 @@ def _windows_msvc_env(
         and active_target == host.windows_target_arch.lower()
         and active_host == host.windows_host_arch.lower()
     ):
+        _require_windows_atl(base, _visual_studio_installation(host.windows_component))
         return base
     install = _visual_studio_installation(host.windows_component)
     if install is None:
@@ -379,6 +490,7 @@ def _windows_msvc_env(
         env[key] = value
     if shutil.which("cl", path=env.get("PATH")) is None:
         raise SystemExit("VsDevCmd.bat completed, but cl.exe is still not on PATH")
+    _require_windows_atl(env, install)
     return env
 
 
@@ -512,8 +624,10 @@ def _source_tree_identity(destination: Path) -> dict[str, object]:
 
 def _source_tree_projection(
     destination: Path,
-) -> tuple[tuple[tuple[object, ...], ...], bool]:
-    rows: list[tuple[object, ...]] = []
+) -> tuple[dict[str, object], bool]:
+    aggregate = hashlib.sha256()
+    file_count = 0
+    total_bytes = 0
     change_time_complete = True
     for path in sorted(
         (
@@ -525,7 +639,16 @@ def _source_tree_projection(
     ):
         relative = path.relative_to(destination).as_posix()
         if path.is_symlink():
-            rows.append(("symlink", relative, os.readlink(path)))
+            target = os.readlink(path)
+            row: tuple[object, ...] = ("symlink", relative, target)
+            total_bytes += len(target.encode("utf-8", errors="surrogateescape"))
+            file_count += 1
+            aggregate.update(
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8", errors="surrogateescape"
+                )
+            )
+            aggregate.update(b"\n")
             continue
         stat = path.stat()
         change_ns = (
@@ -533,8 +656,23 @@ def _source_tree_projection(
         )
         if change_ns is None:
             change_time_complete = False
-        rows.append(("file", relative, stat.st_size, stat.st_mtime_ns, change_ns))
-    return tuple(rows), os.name != "nt" or change_time_complete
+        row = ("file", relative, stat.st_size, stat.st_mtime_ns, change_ns)
+        total_bytes += stat.st_size
+        file_count += 1
+        aggregate.update(
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8", errors="surrogateescape"
+            )
+        )
+        aggregate.update(b"\n")
+    return (
+        {
+            "digest": aggregate.hexdigest(),
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+        },
+        os.name != "nt" or change_time_complete,
+    )
 
 
 def _source_marker_payload(
@@ -542,12 +680,14 @@ def _source_marker_payload(
     archive_sha256: str,
     source_contract: dict[str, object],
     source_tree: dict[str, object],
+    source_projection: dict[str, object],
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema": LLVM_SOURCE_SCHEMA,
         "archive_sha256": archive_sha256,
         "source_contract": source_contract,
         "source_tree": source_tree,
+        "source_projection": source_projection,
     }
     payload["record_sha256"] = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -602,15 +742,51 @@ def _safe_extract_tar_xz(
         )
         live_tree_matches_marker = False
         if marker_has_attestation_shape:
-            live_identity = _source_tree_identity(destination)
-            live_tree_matches_marker = (
-                marker_payload.get("source_tree") == live_identity
-            )
+            recorded_projection = marker_payload.get("source_projection")
+            live_projection: dict[str, object] | None = None
+            live_projection_is_trusted = False
+            projection_matches = False
+            if isinstance(recorded_projection, dict):
+                live_projection, live_projection_is_trusted = _source_tree_projection(
+                    destination
+                )
+                projection_matches = (
+                    live_projection_is_trusted
+                    and recorded_projection.get("trusted") is True
+                    and {
+                        key: value
+                        for key, value in recorded_projection.items()
+                        if key != "trusted"
+                    }
+                    == live_projection
+                )
+                live_tree_matches_marker = projection_matches
+            if not live_tree_matches_marker:
+                live_identity = _source_tree_identity(destination)
+                live_tree_matches_marker = (
+                    marker_payload.get("source_tree") == live_identity
+                )
             if (
                 live_tree_matches_marker
                 and marker_payload.get("archive_sha256") == archive_sha256
                 and marker_payload.get("source_contract") == (source_contract or {})
             ):
+                if not projection_matches:
+                    if live_projection is None:
+                        live_projection, live_projection_is_trusted = (
+                            _source_tree_projection(destination)
+                        )
+                    upgraded = _source_marker_payload(
+                        archive_sha256=archive_sha256,
+                        source_contract=source_contract or {},
+                        source_tree=live_identity,
+                        source_projection={
+                            **live_projection,
+                            "trusted": live_projection_is_trusted,
+                        },
+                    )
+                    _atomic_json(marker, upgraded)
+                    marker_payload = upgraded
                 print(
                     f"[bootstrap-llvm] using verified source tree {destination}",
                     flush=True,
@@ -634,6 +810,10 @@ def _safe_extract_tar_xz(
                 archive_sha256=archive_sha256,
                 source_contract=source_contract or {},
                 source_tree=source_tree,
+                source_projection={
+                    **source_projection,
+                    "trusted": source_projection_is_trusted,
+                },
             )
             _atomic_json(staging / LLVM_SOURCE_MARKER, payload)
 
@@ -879,6 +1059,8 @@ def _build_cache_identity(
     targets: str,
     projects: str,
     build_type: str,
+    cmake: _BuildTool,
+    ninja: _BuildTool,
 ) -> dict[str, object]:
     config: dict[str, object] = {
         "architecture_contract_sha256": architecture_contract_sha256,
@@ -886,6 +1068,10 @@ def _build_cache_identity(
         "projects": sorted(item for item in projects.split(";") if item),
         "build_type": build_type,
         "generator": "Ninja",
+        "build_tools": {
+            "cmake": asdict(cmake),
+            "ninja": asdict(ninja),
+        },
         "cmake_contract": {
             "assertions": True,
             "benchmarks": False,
@@ -1065,6 +1251,8 @@ def _build_and_publish(
     env: dict[str, str],
     is_canonical: bool,
     build_identity: dict[str, object],
+    cmake: _BuildTool,
+    ninja: _BuildTool,
 ) -> tuple[LlvmPrefixVerification, Path] | None:
     lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")
     with _ExclusiveFileLock(lock_path):
@@ -1099,13 +1287,14 @@ def _build_and_publish(
             install_prefix.mkdir()
 
         cmake_configure = [
-            "cmake",
+            cmake.path,
             "-S",
             str(llvm_source),
             "-B",
             str(build_dir),
             "-G",
             "Ninja",
+            f"-DCMAKE_MAKE_PROGRAM={ninja.path}",
             f"-DCMAKE_BUILD_TYPE={args.build_type}",
             f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
             f"-DLLVM_TARGETS_TO_BUILD={targets}",
@@ -1117,16 +1306,14 @@ def _build_and_publish(
             "-DLLVM_INCLUDE_TESTS=OFF",
             "-DLLVM_INSTALL_UTILS=ON",
         ]
-        _run(cmake_configure, cwd=ROOT, env=env)
-        if args.configure_only:
-            if is_canonical and install_prefix.exists():
-                shutil.rmtree(install_prefix)
-            print(f"[bootstrap-llvm] configured {build_dir}")
-            return None
         try:
+            _run(cmake_configure, cwd=ROOT, env=env)
+            if args.configure_only:
+                print(f"[bootstrap-llvm] configured {build_dir}")
+                return None
             _run(
                 [
-                    "cmake",
+                    cmake.path,
                     "--build",
                     str(build_dir),
                     "--target",
@@ -1166,10 +1353,9 @@ def _build_and_publish(
                     "canonical LLVM publication validation did not complete"
                 )
             return projected, prefix / ".molt-llvm-toolchain.json"
-        except BaseException:
+        finally:
             if is_canonical and install_prefix.exists():
                 shutil.rmtree(install_prefix)
-            raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1212,6 +1398,14 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Explicit source URL for an unpinned development build. Development "
             "builds also require --prefix and --development-source-sha256."
+        ),
+    )
+    parser.add_argument(
+        "--development-minimum-cmake",
+        default=None,
+        help=(
+            "Required CMake semantic version for an unpinned development build. "
+            "Canonical releases derive this from the release manifest."
         ),
     )
     parser.add_argument(
@@ -1275,9 +1469,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         if not args.check and not args.development_source_url:
             raise SystemExit("development LLVM builds require --development-source-url")
-    elif args.development_source_url is not None:
+        if (
+            not args.check
+            and re.fullmatch(r"\d+\.\d+\.\d+", args.development_minimum_cmake or "")
+            is None
+        ):
+            raise SystemExit(
+                "development LLVM builds require --development-minimum-cmake X.Y.Z"
+            )
+    elif (
+        args.development_source_url is not None
+        or args.development_minimum_cmake is not None
+    ):
         raise SystemExit(
-            "--development-source-url cannot override a canonical release manifest"
+            "development source/tool requirements cannot override a canonical release manifest"
         )
     if is_canonical and release is None:
         raise SystemExit(
@@ -1376,8 +1581,13 @@ def main(argv: list[str] | None = None) -> int:
         ("build directory", build_dir),
     ):
         reject_poison_toolchain_path(path, authority=f"LLVM bootstrap {label}")
-    _which_required("cmake")
-    _which_required("ninja")
+    minimum_cmake = (
+        release.minimum_cmake
+        if release is not None
+        else str(args.development_minimum_cmake)
+    )
+    cmake = _compatible_cmake(minimum_cmake)
+    ninja = _required_build_tool("ninja")
     env = _windows_msvc_env(os.environ.copy())
     if is_canonical:
         for label, path, expected in (
@@ -1435,6 +1645,8 @@ def main(argv: list[str] | None = None) -> int:
         targets=targets,
         projects=args.projects,
         build_type=args.build_type,
+        cmake=cmake,
+        ninja=ninja,
     )
     result = _build_and_publish(
         args,
@@ -1447,6 +1659,8 @@ def main(argv: list[str] | None = None) -> int:
         env=env,
         is_canonical=is_canonical,
         build_identity=build_identity,
+        cmake=cmake,
+        ninja=ninja,
     )
     if result is None:
         return 0
