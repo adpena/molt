@@ -774,7 +774,10 @@ pub(crate) use crate::state::{
     traceback_suppress_exit, traceback_suppressed,
 };
 #[allow(unused_imports)]
-pub(crate) use molt_obj_model::{opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_ptr};
+pub(crate) use molt_obj_model::{
+    is_registered_ptr, opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_opaque_ptr,
+    resolve_ptr,
+};
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections::argparse::*;
 #[cfg(feature = "stdlib_collections")]

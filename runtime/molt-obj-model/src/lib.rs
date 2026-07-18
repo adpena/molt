@@ -22,28 +22,63 @@ use molt_codegen_abi::{
 pub struct MoltObject(u64);
 
 const PTR_REGISTRY_SHARDS: usize = 64;
+const OPAQUE_SHARD_BITS: u32 = 6;
+const OPAQUE_SLOT_BITS: u32 = 24;
+const OPAQUE_SLOT_MASK: u64 = (1_u64 << OPAQUE_SLOT_BITS) - 1;
+const OPAQUE_GENERATION_SHIFT: u32 = OPAQUE_SHARD_BITS + OPAQUE_SLOT_BITS;
 
 struct PtrRegistry {
     shards: Vec<RwLock<HashMap<u64, PtrSlot>>>,
+    opaque_shards: Vec<RwLock<OpaqueShard>>,
+}
+
+#[derive(Default)]
+struct OpaqueShard {
+    slots: Vec<OpaqueSlot>,
+    free_slots: Vec<u32>,
+    by_ptr: HashMap<usize, u64>,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct OpaqueSlot {
+    ptr: Option<PtrSlot>,
+    generation: u16,
 }
 
 impl PtrRegistry {
     fn new() -> Self {
         let mut shards = Vec::with_capacity(PTR_REGISTRY_SHARDS);
+        let mut opaque_shards = Vec::with_capacity(PTR_REGISTRY_SHARDS);
         for _ in 0..PTR_REGISTRY_SHARDS {
             shards.push(RwLock::new(HashMap::new()));
+            opaque_shards.push(RwLock::new(OpaqueShard::default()));
         }
-        Self { shards }
+        Self {
+            shards,
+            opaque_shards,
+        }
     }
 
-    fn shard(&self, addr: u64) -> &RwLock<HashMap<u64, PtrSlot>> {
+    fn shard_index(addr: u64) -> usize {
         // Bit-mix hash to distribute aligned pointers across shards.
         // Allocators return 16-byte aligned addresses, so naive modular
         // hashing (addr % 64) clusters into 4 of 64 shards. This
         // multiply-shift distributes evenly regardless of alignment.
         let mixed = addr.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58;
-        let idx = mixed as usize & (PTR_REGISTRY_SHARDS - 1);
-        &self.shards[idx]
+        mixed as usize & (PTR_REGISTRY_SHARDS - 1)
+    }
+
+    fn shard(&self, addr: u64) -> &RwLock<HashMap<u64, PtrSlot>> {
+        &self.shards[Self::shard_index(addr)]
+    }
+
+    fn opaque_shard_for_ptr(&self, addr: u64) -> (usize, &RwLock<OpaqueShard>) {
+        let index = Self::shard_index(addr);
+        (index, &self.opaque_shards[index])
+    }
+
+    fn opaque_shard_for_handle(&self, handle: u64) -> &RwLock<OpaqueShard> {
+        &self.opaque_shards[handle as usize & (PTR_REGISTRY_SHARDS - 1)]
     }
 }
 
@@ -106,12 +141,87 @@ pub fn register_ptr(ptr: *mut u8) -> u64 {
 }
 
 pub fn opaque_handle_bits(ptr: *mut u8) -> u64 {
-    let addr = register_ptr(ptr);
-    debug_assert!(
-        addr <= ((1_u64 << 46) - 1),
-        "opaque runtime handle address exceeds Molt immediate int range"
+    if ptr.is_null() {
+        return MoltObject::from_int(0).bits();
+    }
+    let addr = ptr.expose_provenance() as u64;
+    let registry = ptr_registry();
+    let (shard_index, shard) = registry.opaque_shard_for_ptr(addr);
+    let mut shard = shard
+        .write()
+        .expect("opaque pointer registry lock poisoned");
+    if let Some(&handle) = shard.by_ptr.get(&(addr as usize)) {
+        return MoltObject::from_int(handle as i64).bits();
+    }
+
+    let (slot_index, generation) = if let Some(slot_index) = shard.free_slots.pop() {
+        let slot = &mut shard.slots[slot_index as usize];
+        assert!(slot.ptr.is_none(), "opaque free-list slot remains live");
+        assert_ne!(
+            slot.generation,
+            u16::MAX,
+            "retired opaque slot returned to the free list"
+        );
+        slot.generation += 1;
+        slot.ptr = Some(PtrSlot(ptr));
+        (slot_index, slot.generation)
+    } else {
+        let slot_index =
+            u32::try_from(shard.slots.len()).expect("opaque runtime handle slot index exceeds u32");
+        assert!(
+            u64::from(slot_index) <= OPAQUE_SLOT_MASK,
+            "opaque runtime handle shard exhausted its slot domain"
+        );
+        shard.slots.push(OpaqueSlot {
+            ptr: Some(PtrSlot(ptr)),
+            generation: 1,
+        });
+        (slot_index, 1)
+    };
+    let handle = (u64::from(generation) << OPAQUE_GENERATION_SHIFT)
+        | (u64::from(slot_index) << OPAQUE_SHARD_BITS)
+        | shard_index as u64;
+    debug_assert!(handle <= INLINE_INT_MAX as u64);
+    let previous_ptr = shard.by_ptr.insert(addr as usize, handle);
+    assert!(
+        previous_ptr.is_none(),
+        "opaque pointer registry publication collision"
     );
-    MoltObject::from_int(addr as i64).bits()
+    MoltObject::from_int(handle as i64).bits()
+}
+
+pub fn resolve_opaque_ptr(handle: u64) -> Option<*mut u8> {
+    if handle == 0 {
+        return None;
+    }
+    let shard = ptr_registry().opaque_shard_for_handle(handle);
+    let guard = shard.read().expect("opaque pointer registry lock poisoned");
+    let slot_index = (handle >> OPAQUE_SHARD_BITS) & OPAQUE_SLOT_MASK;
+    let generation = handle >> OPAQUE_GENERATION_SHIFT;
+    guard
+        .slots
+        .get(slot_index as usize)
+        .filter(|slot| u64::from(slot.generation) == generation)
+        .and_then(|slot| slot.ptr)
+        .map(|slot| slot.0)
+}
+
+pub fn is_registered_ptr(ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let addr = ptr.expose_provenance() as u64;
+    let registry = ptr_registry();
+    let (_, opaque_shard) = registry.opaque_shard_for_ptr(addr);
+    if opaque_shard
+        .read()
+        .expect("opaque pointer registry lock poisoned")
+        .by_ptr
+        .contains_key(&(addr as usize))
+    {
+        return true;
+    }
+    resolve_ptr(addr).is_some()
 }
 
 pub fn resolve_ptr(addr: u64) -> Option<*mut u8> {
@@ -129,6 +239,25 @@ pub fn release_ptr(ptr: *mut u8) -> Option<u64> {
     }
     let addr = ptr.expose_provenance() as u64;
     if let Some(registry) = PTR_REGISTRY.get() {
+        let (_, opaque_shard) = registry.opaque_shard_for_ptr(addr);
+        let mut opaque = opaque_shard
+            .write()
+            .expect("opaque pointer registry lock poisoned");
+        if let Some(handle) = opaque.by_ptr.remove(&(addr as usize)) {
+            let slot_index = ((handle >> OPAQUE_SHARD_BITS) & OPAQUE_SLOT_MASK) as usize;
+            let generation = handle >> OPAQUE_GENERATION_SHIFT;
+            let slot = opaque
+                .slots
+                .get_mut(slot_index)
+                .expect("opaque reverse index points outside its shard");
+            assert_eq!(u64::from(slot.generation), generation);
+            assert_eq!(slot.ptr.take(), Some(PtrSlot(ptr)));
+            if slot.generation != u16::MAX {
+                opaque.free_slots.push(slot_index as u32);
+            }
+            return Some(handle);
+        }
+        drop(opaque);
         let shard = registry.shard(addr);
         let mut guard = shard.write().expect("pointer registry lock poisoned");
         if guard.remove(&addr).is_some() {
@@ -143,6 +272,13 @@ pub fn reset_ptr_registry() {
         for shard in &registry.shards {
             if let Ok(mut guard) = shard.write() {
                 guard.clear();
+            }
+        }
+        for shard in &registry.opaque_shards {
+            if let Ok(mut guard) = shard.write() {
+                guard.slots.clear();
+                guard.free_slots.clear();
+                guard.by_ptr.clear();
             }
         }
     }
@@ -602,9 +738,22 @@ mod tests {
         let handle = MoltObject::from_bits(bits)
             .as_int()
             .expect("opaque handles are inline-int bits");
-        assert_eq!(resolve_ptr(handle as u64), Some(ptr));
+        let addr = ptr.expose_provenance() as u64;
+        assert!(handle <= INLINE_INT_MAX);
+        assert_eq!(resolve_ptr(addr), None);
+        assert!(is_registered_ptr(ptr));
+        assert_eq!(resolve_opaque_ptr(handle as u64), Some(ptr));
         assert_eq!(release_ptr(ptr), Some(handle as u64));
-        assert_eq!(resolve_ptr(handle as u64), None);
+        assert_eq!(resolve_opaque_ptr(handle as u64), None);
+        assert!(!is_registered_ptr(ptr));
+        let replacement = MoltObject::from_bits(opaque_handle_bits(ptr))
+            .as_int()
+            .expect("replacement opaque handle must remain inline")
+            as u64;
+        assert_ne!(replacement, handle as u64);
+        assert_eq!(resolve_opaque_ptr(handle as u64), None);
+        assert_eq!(resolve_opaque_ptr(replacement), Some(ptr));
+        assert_eq!(release_ptr(ptr), Some(replacement));
         unsafe {
             drop(Box::from_raw(ptr));
         }
