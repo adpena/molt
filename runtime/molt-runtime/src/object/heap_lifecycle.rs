@@ -1,8 +1,10 @@
 //! Generated heap-kind lifecycle dispatch.
 //!
 //! The generated kind token is the single dispatch key shared by reference
-//! counting and cyclic GC.  `visit_owned_edges` is side-effect free and lists
-//! every strong Python edge released at terminal deallocation.  `clear_cycle_edges`
+//! counting and cyclic GC. `visit_owned_values` is the exhaustive strong-edge
+//! authority, including inline NaN-boxed values for Python introspection;
+//! `visit_owned_edges` is its heap-pointer projection for cyclic GC.
+//! `clear_cycle_edges`
 //! publishes an empty/cleared state before releasing the mutable subset used to
 //! break cycles; immutable ownership edges remain for terminal deallocation.
 
@@ -269,21 +271,19 @@ pub(crate) fn terminal_edge_sink_allocation_count() -> usize {
 }
 
 #[inline(always)]
-fn visit_bits(bits: u64, visit: &mut dyn FnMut(*mut u8)) {
-    if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-        visit(ptr);
-    }
+fn visit_bits(bits: u64, visit: &mut dyn FnMut(u64)) {
+    visit(bits);
 }
 
 #[inline(always)]
-fn visit_ptr(ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
+fn visit_ptr(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
     if !ptr.is_null() {
-        visit(ptr);
+        visit(MoltObject::from_ptr(ptr).bits());
     }
 }
 
 #[inline]
-unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
+unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
     if !unsafe { object_class_edge_is_borrowed(ptr) } {
         visit_bits(unsafe { object_class_bits(ptr) }, visit);
     }
@@ -323,14 +323,15 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
     }
 }
 
-/// Side-effect-free, deterministic enumeration of terminally-owned Python edges.
+/// Side-effect-free, deterministic enumeration of every terminally-owned Python
+/// value. Inline values are retained because `gc.get_referents()` exposes them.
 ///
 /// The match is deliberately exhaustive over the generated per-kind token: adding
 /// a heap kind cannot silently inherit an empty traversal lane.
-pub(crate) unsafe fn visit_owned_edges(
+pub(crate) unsafe fn visit_owned_values(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    visit: &mut dyn FnMut(*mut u8),
+    visit: &mut dyn FnMut(u64),
 ) {
     unsafe { visit_common_class_edge(ptr, visit) };
     let type_id = unsafe { object_type_id(ptr) };
@@ -405,7 +406,9 @@ pub(crate) unsafe fn visit_owned_edges(
                 }
             }
             HeapLifecycleHandler::WeakContainerState => {
-                super::weak_container::weakcontainer_traverse(ptr, visit);
+                super::weak_container::weakcontainer_traverse(ptr, &mut |child| {
+                    visit_ptr(child, visit)
+                });
             }
             HeapLifecycleHandler::Iter => {
                 visit_bits(super::layout::iter_target_bits(ptr), visit);
@@ -618,6 +621,24 @@ pub(crate) unsafe fn visit_owned_edges(
                 }
             }
         }
+    }
+}
+
+/// Heap-pointer projection of [`visit_owned_values`], used by reference-cycle
+/// graph algorithms and dynamic tracking. Keeping the projection here prevents
+/// the collector and Python introspection APIs from growing parallel per-kind
+/// traversal authorities.
+pub(crate) unsafe fn visit_owned_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(*mut u8),
+) {
+    unsafe {
+        visit_owned_values(py, ptr, &mut |bits| {
+            if let Some(child) = obj_from_bits(bits).as_ptr() {
+                visit(child);
+            }
+        });
     }
 }
 

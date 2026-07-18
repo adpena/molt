@@ -488,6 +488,7 @@ impl SpecialCache {
 }
 
 pub(crate) struct RuntimeState {
+    pub(crate) gc: crate::object::gc::GcRuntimeState,
     pub(crate) gc_running: AtomicBool,
     pub(crate) gc_last_failure: AtomicU8,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
@@ -590,6 +591,7 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            gc: crate::object::gc::GcRuntimeState::new(),
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
@@ -1142,6 +1144,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         // unknown partial side effects to a second initialization attempt.
         let mut state = Box::new(RuntimeState::new());
         let state_ptr = (&mut *state) as *mut RuntimeState;
+        crate::object::gc::gc_bind_registry(&state);
         set_thread_runtime_state(state_ptr);
         initialize_runtime_state(&gil, &state);
 
@@ -1682,6 +1685,12 @@ mod tests {
             *runtime_lifecycle().phase.lock().unwrap(),
             RuntimeLifecyclePhase::Ready { ptr } if ptr == ready as usize
         ));
+        assert_eq!(
+            crate::object::gc::gc_registry_owner_identity(),
+            ready.expose_provenance(),
+            "racing initializers must converge on the one registry-owning runtime"
+        );
         assert_eq!(molt_runtime_shutdown(), 1);
+        assert_eq!(crate::object::gc::gc_registry_owner_identity(), 0);
     }
 }
