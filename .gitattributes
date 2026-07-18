@@ -1,5 +1,9 @@
-runtime/molt-ir/src/tir/op_kinds_generated.rs text eol=lf
-src/molt/frontend/lowering/op_kinds_generated.py text eol=lf
-src/molt/_runtime_profile_schema_generated.py text eol=lf
-*.rs text eol=lf
-*.sh text eol=lf
+# One checkout representation for every text authority. Generated freshness,
+# source digests, reproducible builds, and tests must see the same bytes on
+# Windows, macOS, and Linux regardless of the user's core.autocrlf setting.
+* text=auto eol=lf
+
+# Native command scripts are the only text family whose consumer requires the
+# Windows line-ending convention.
+*.bat text eol=crlf
+*.cmd text eol=crlf
