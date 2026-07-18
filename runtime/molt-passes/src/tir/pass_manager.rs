@@ -751,6 +751,7 @@ mod tests {
     use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
+    use crate::tir::values::{TirValue, ValueId};
 
     /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). The RC drop-insertion passes
@@ -795,6 +796,76 @@ mod tests {
                 "dce",
             ],
         );
+    }
+
+    #[test]
+    fn poll_payload_survives_the_late_cleanup_suffix() {
+        let mut func = TirFunction::new(
+            "poll_phase_boundary".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 70);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let labeled = |opcode| {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(70));
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs,
+                source_span: None,
+            }
+        };
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            labeled(OpCode::TryStart),
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::DecRef,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+            labeled(OpCode::CheckException),
+        ];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+
+        build_default_pipeline(TargetInfo::native_release_fast()).run(&mut func);
+        let polls: Vec<_> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.is_async_work_poll())
+            .collect();
+        assert_eq!(polls.len(), 1);
+        assert_eq!(polls[0].operands, [ValueId(0)]);
+        crate::tir::verify::verify_function(&func)
+            .expect("later memory/value/cleanup phases must preserve the edge payload");
     }
 
     #[test]

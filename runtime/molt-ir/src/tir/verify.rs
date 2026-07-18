@@ -508,8 +508,33 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 
 fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     let arg_count = |bid: &BlockId| -> Option<usize> { func.blocks.get(bid).map(|b| b.args.len()) };
+    let exception_targets = dominators::exception_label_to_block(func);
 
     for (bid, block) in &func.blocks {
+        for (op_index, op) in block.ops.iter().enumerate() {
+            if !dominators::is_exception_transfer_edge(op.opcode) {
+                continue;
+            }
+            let Some(AttrValue::Int(label)) = op.attrs.get("value") else {
+                continue;
+            };
+            let Some(target) = exception_targets.get(label) else {
+                continue;
+            };
+            let expected = func.blocks[target].args.len();
+            if op.operands.len() != expected {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_index,
+                    format!(
+                        "implicit exception edge to ^{} passes {} args but block expects {}",
+                        target,
+                        op.operands.len(),
+                        expected
+                    ),
+                ));
+            }
+        }
         match &block.terminator {
             Terminator::Branch { target, args } => {
                 if let Some(expected) = arg_count(target)
@@ -888,7 +913,7 @@ mod tests {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::ValueId;
+    use crate::tir::values::{TirValue, ValueId};
 
     /// Build a minimal valid function: add(i64, i64) -> i64.
     fn valid_add_function() -> TirFunction {
@@ -1243,6 +1268,64 @@ mod tests {
             "expected arg-count error, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn implicit_exception_edge_arg_count_is_verified_for_the_full_opcode_family() {
+        for opcode in [OpCode::CheckException, OpCode::TryStart] {
+            let mut func = TirFunction::new(
+                "exception_edge".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+            );
+            let handler = func.fresh_block();
+            let handler_arg = func.fresh_value();
+            func.value_types.insert(handler_arg, TirType::DynBox);
+            func.label_id_map.insert(handler.0, 77);
+            func.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![TirValue {
+                        id: handler_arg,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(77));
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![],
+                    results: vec![],
+                    attrs,
+                    source_span: None,
+                });
+            func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+                Terminator::Return { values: vec![] };
+
+            let errors = verify_function(&func).expect_err("missing exception payload must fail");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("implicit exception edge")),
+                "unexpected errors for {opcode:?}: {errors:?}"
+            );
+
+            func.blocks.get_mut(&func.entry_block).unwrap().ops[0].operands = vec![ValueId(0)];
+            assert!(
+                verify_function(&func).is_ok(),
+                "one payload per handler arg must verify for {opcode:?}: {:?}",
+                verify_function(&func).err()
+            );
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
-use super::op_kinds_generated::opcode_is_exception_transfer_edge_table;
+use super::op_kinds_generated::{kind_to_opcode_table, opcode_is_exception_transfer_edge_table};
 use super::ops::{AttrValue, OpCode};
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,17 @@ pub fn exception_successors(
 /// the handler.
 pub fn is_exception_transfer_edge(opcode: OpCode) -> bool {
     opcode_is_exception_transfer_edge_table(opcode)
+}
+
+/// Whether a SimpleIR spelling lowers to an implicit exception-transfer edge.
+///
+/// SimpleIR has wire aliases (currently `async_work_poll` for
+/// `CheckException`), while TIR control-flow authority is opcode-based. Route
+/// all pre-SSA edge discovery through the generated kind-to-opcode registry so
+/// an alias cannot acquire the right TIR opcode while silently losing its CFG
+/// edge and block-argument payload.
+pub fn is_simple_exception_transfer_kind(kind: &str) -> bool {
+    kind_to_opcode_table(kind).is_some_and(is_exception_transfer_edge)
 }
 
 /// All CFG successors of `block` under the given edge policy.

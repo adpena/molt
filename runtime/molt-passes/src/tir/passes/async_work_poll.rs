@@ -5,10 +5,10 @@
 //! existing authority at every generated call-return site and every canonical
 //! loop backedge. `check_exception_elim` must preserve marked observations.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::tir::analysis::{AnalysisManager, LoopForest};
-use crate::tir::blocks::{Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::exception_regions::{
     ExceptionBoundaryHandler, ExceptionOpPosition, ExceptionRegionFacts, ExceptionRegions,
 };
@@ -17,8 +17,13 @@ use crate::tir::op_kinds_generated::{
     opcode_requires_async_work_poll_after_table, simpleir_kind_is_call_graph_user_call,
 };
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::types::TirType;
+use crate::tir::values::ValueId;
 
 use super::PassStats;
+use super::check_exception_elim::classify::{
+    const_int_values, op_clears_pending_exception, op_may_raise,
+};
 
 fn is_call_return_poll(op: &TirOp) -> bool {
     opcode_requires_async_work_poll_after_table(op.opcode)
@@ -54,6 +59,101 @@ fn check_label(op: &TirOp) -> Option<i64> {
         Some(AttrValue::Int(label)) => Some(*label),
         _ => None,
     }
+}
+
+/// Locate the frontend-authored exception observation for a call boundary.
+///
+/// Optimization and CFG construction may separate a call from its original
+/// payload-bearing `CheckException` or split the observation into a unique
+/// unconditional successor block. Traverse only operations the canonical
+/// check-elimination oracle proves cannot raise or clear pending state, plus
+/// unconditional fallthrough. Never cross another call, lexical transfer,
+/// conditional edge, or cycle and incorrectly let one later check service two
+/// semantic boundaries.
+fn post_call_check_site(
+    func: &TirFunction,
+    block_id: BlockId,
+    call_index: usize,
+    target: Option<i64>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+) -> Option<(BlockId, usize)> {
+    let mut current = block_id;
+    let mut start = call_index + 1;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let block = func.blocks.get(&current)?;
+        for (index, op) in block.ops.iter().enumerate().skip(start) {
+            if op.opcode == OpCode::CheckException {
+                return check_label(op)
+                    .filter(|label| target.is_none() || target == Some(*label))
+                    .map(|_| (current, index));
+            }
+            if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
+                || op_clears_pending_exception(op)
+                || op_may_raise(value_types, const_ints, op)
+            {
+                return None;
+            }
+        }
+        let Terminator::Branch { target, .. } = &block.terminator else {
+            return None;
+        };
+        if predecessors.get(target).map(Vec::as_slice) != Some(&[current]) {
+            return None;
+        }
+        current = *target;
+        start = 0;
+    }
+}
+
+/// Find the payload-bearing observation that services a loop backedge when
+/// non-raising bookkeeping follows it in the latch block.
+fn latch_check_site(
+    func: &TirFunction,
+    latch: BlockId,
+    target: Option<i64>,
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+) -> Option<(BlockId, usize)> {
+    let block = func.blocks.get(&latch)?;
+    for (index, op) in block.ops.iter().enumerate().rev() {
+        if op.opcode == OpCode::CheckException {
+            return check_label(op)
+                .filter(|label| target.is_none() || target == Some(*label))
+                .map(|_| (latch, index));
+        }
+        if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
+            || op_clears_pending_exception(op)
+            || op_may_raise(value_types, const_ints, op)
+        {
+            return None;
+        }
+    }
+    None
+}
+
+/// A post-SSA pass cannot invent the value mapping for a non-empty handler
+/// signature. Such payloads must come from the SSA-authored exception edge.
+/// Fail at the construction site instead of emitting a malformed edge that
+/// lower-to-SimpleIR would silently materialize as uninitialized handler slots.
+fn assert_synthetic_edge_needs_no_payload(func: &TirFunction, label: i64, site: &str) {
+    let Some(target) = crate::tir::dominators::exception_label_to_block(func)
+        .get(&label)
+        .copied()
+    else {
+        return;
+    };
+    let arg_count = func.blocks[&target].args.len();
+    assert_eq!(
+        arg_count, 0,
+        "async-work poll cannot synthesize exception edge at {site} in function {:?} to handler {target} (label {label}) with {arg_count} block args; preserve the SSA-authored payload-bearing CheckException",
+        func.name
+    );
 }
 
 /// Resolve a reachable insertion boundary. The outer `Option` is reachability;
@@ -122,6 +222,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let loops = am.get::<LoopForest>(func).clone();
     let region_facts = am.get::<ExceptionRegions>(func).clone();
+    let predecessors = crate::tir::dominators::build_pred_map(func);
+    let const_ints = const_int_values(func);
+    let value_types = func.value_types.clone();
     let mut latches = BTreeSet::new();
     for header in loops.headers {
         let Some(body) = loops.bodies.get(&header) else {
@@ -188,19 +291,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let call_needs_function_exit = call_sites.iter().any(|(block, index, target)| {
         target.is_none()
-            && func.blocks[block]
-                .ops
-                .get(index + 1)
-                .and_then(check_label)
-                .is_none()
+            && post_call_check_site(
+                func,
+                *block,
+                *index,
+                *target,
+                &predecessors,
+                &value_types,
+                &const_ints,
+            )
+            .is_none()
     });
     let latch_needs_function_exit = latch_sites.iter().any(|(latch, _, target)| {
         target.is_none()
-            && func.blocks[latch]
-                .ops
-                .last()
-                .and_then(check_label)
-                .is_none()
+            && latch_check_site(func, *latch, *target, &value_types, &const_ints).is_none()
     });
     let function_exit_check = (call_needs_function_exit || latch_needs_function_exit)
         .then(|| make_function_exception_exit(func));
@@ -218,49 +322,58 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             .collect();
         sites.sort_unstable_by_key(|(index, _)| *index);
         for (index, target) in sites.into_iter().rev() {
-            let block = func.blocks.get_mut(&block_id).unwrap();
-            // At this exact post-call boundary, a depth-zero adjacent
-            // CheckException is the frontend's function-exit observation; it
-            // is not a proximity search. In a lexical region, require the
-            // fact-selected handler label exactly.
-            let existing_matches = block
-                .ops
-                .get(index + 1)
-                .and_then(check_label)
-                .is_some_and(|label| target.is_none() || target == Some(label));
-            if existing_matches {
-                stats.attrs_changed += usize::from(mark_poll(&mut block.ops[index + 1]));
+            let existing_site = post_call_check_site(
+                func,
+                block_id,
+                index,
+                target,
+                &predecessors,
+                &value_types,
+                &const_ints,
+            );
+            if let Some((existing_block, existing_index)) = existing_site {
+                let block = func.blocks.get_mut(&existing_block).unwrap();
+                stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));
                 continue;
             }
-            let mut check = target.map(check_exception).unwrap_or_else(|| {
+            let mut check = if let Some(label) = target {
+                assert_synthetic_edge_needs_no_payload(
+                    func,
+                    label,
+                    &format!("post-call {block_id} op#{index}"),
+                );
+                check_exception(label)
+            } else {
                 function_exit_check
                     .clone()
                     .expect("depth-zero async-work poll requires a function exception exit")
-            });
+            };
             mark_poll(&mut check);
-            block.ops.insert(index + 1, check);
+            func.blocks
+                .get_mut(&block_id)
+                .unwrap()
+                .ops
+                .insert(index + 1, check);
             stats.ops_added += 1;
         }
     }
 
     for (latch, _headers, target) in latch_sites {
-        let existing = func.blocks[&latch]
-            .ops
-            .last()
-            .and_then(check_label)
-            .is_some_and(|label| target.is_none() || target == Some(label));
-        if existing {
-            let index = func.blocks[&latch].ops.len() - 1;
-            let check = &mut func.blocks.get_mut(&latch).unwrap().ops[index];
+        let existing_site = latch_check_site(func, latch, target, &value_types, &const_ints);
+        if let Some((existing_block, existing_index)) = existing_site {
+            let check = &mut func.blocks.get_mut(&existing_block).unwrap().ops[existing_index];
             stats.attrs_changed += usize::from(mark_poll(check));
             continue;
         }
 
-        let mut check = target.map(check_exception).unwrap_or_else(|| {
+        let mut check = if let Some(label) = target {
+            assert_synthetic_edge_needs_no_payload(func, label, &format!("loop latch {latch}"));
+            check_exception(label)
+        } else {
             function_exit_check
                 .clone()
                 .expect("depth-zero loop poll requires a function exception exit")
-        });
+        };
         mark_poll(&mut check);
         func.blocks.get_mut(&latch).unwrap().ops.push(check);
         stats.ops_added += 1;
@@ -280,6 +393,7 @@ mod tests {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect};
     use crate::tir::types::TirType;
+    use crate::tir::values::{TirValue, ValueId};
 
     fn op(opcode: OpCode) -> TirOp {
         TirOp {
@@ -354,6 +468,229 @@ mod tests {
                 .count(),
             2,
             "the canonical wire spelling must preserve both generated sites"
+        );
+    }
+
+    #[test]
+    fn refcount_bookkeeping_preserves_the_ssa_authored_poll_payload() {
+        let mut func = TirFunction::new(
+            "call_cleanup_poll".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 70);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let mut start = labeled_op(OpCode::TryStart, 70);
+        start.operands.push(ValueId(0));
+        let mut original_check = check(70);
+        original_check.operands.push(ValueId(0));
+        let mut call = op(OpCode::Call);
+        call.operands.push(ValueId(0));
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            start,
+            call,
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::DecRef,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+            original_check,
+        ];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(stats.ops_added, 0, "must reuse the SSA-authored edge");
+        assert_eq!(stats.attrs_changed, 1);
+        assert_eq!(func.blocks[&entry].ops.len(), 4);
+        let poll = &func.blocks[&entry].ops[3];
+        assert!(poll.is_async_work_poll());
+        assert_eq!(poll.operands, [ValueId(0)]);
+        crate::tir::verify::verify_function(&func)
+            .expect("payload-preserving poll must remain well formed");
+        let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
+        let poll_index = simple
+            .iter()
+            .position(|op| op.kind == "async_work_poll" && op.value == Some(70))
+            .expect("lowered async-work poll");
+        let handler_slot = format!("_bb{}_arg0", handler.0);
+        assert!(
+            simple[..poll_index].iter().any(|op| {
+                op.kind == "store_var" && op.var.as_deref() == Some(handler_slot.as_str())
+            }),
+            "lowering must materialize the preserved payload before the poll: {simple:?}"
+        );
+    }
+
+    #[test]
+    fn poll_lookup_never_crosses_a_second_call() {
+        let mut func = TirFunction::new("two_call_barrier".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let mut first = op(OpCode::Call);
+        first.operands.push(ValueId(0));
+        let mut second = op(OpCode::Call);
+        second.operands.push(ValueId(0));
+        func.blocks.get_mut(&entry).unwrap().ops = vec![first, second, check(70)];
+        let value_types = func.value_types.clone();
+        let const_ints = const_int_values(&func);
+        let predecessors = crate::tir::dominators::build_pred_map(&func);
+        assert_eq!(
+            post_call_check_site(
+                &func,
+                entry,
+                0,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
+            None,
+            "a later call is a hard semantic boundary"
+        );
+        assert_eq!(
+            post_call_check_site(
+                &func,
+                entry,
+                1,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
+            Some((entry, 2))
+        );
+    }
+
+    #[test]
+    fn poll_lookup_follows_only_unique_empty_fallthrough_blocks() {
+        let mut func = TirFunction::new("split_call_boundary".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let observer = func.fresh_block();
+        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Call)];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: observer,
+            args: vec![],
+        };
+        func.blocks.insert(
+            observer,
+            TirBlock {
+                id: observer,
+                args: vec![],
+                ops: vec![check(70)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let value_types = func.value_types.clone();
+        let const_ints = const_int_values(&func);
+        let predecessors = crate::tir::dominators::build_pred_map(&func);
+        assert_eq!(
+            post_call_check_site(
+                &func,
+                entry,
+                0,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
+            Some((observer, 0))
+        );
+
+        func.blocks
+            .get_mut(&observer)
+            .unwrap()
+            .ops
+            .insert(0, op(OpCode::Call));
+        assert_eq!(
+            post_call_check_site(
+                &func,
+                entry,
+                0,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
+            None,
+            "a call in the successor is a hard boundary"
+        );
+
+        let other = func.fresh_block();
+        func.blocks.insert(
+            other,
+            TirBlock {
+                id: other,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: observer,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.get_mut(&observer).unwrap().ops.remove(0);
+        let predecessors = crate::tir::dominators::build_pred_map(&func);
+        assert_eq!(
+            post_call_check_site(
+                &func,
+                entry,
+                0,
+                Some(70),
+                &predecessors,
+                &value_types,
+                &const_ints,
+            ),
+            None,
+            "a shared successor observation cannot belong to one incoming call boundary"
+        );
+    }
+
+    #[test]
+    fn latch_lookup_reuses_payload_check_before_nonraising_transport_suffix() {
+        let mut func = TirFunction::new("latch_suffix".into(), vec![], TirType::None);
+        let latch = func.entry_block;
+        let mut transport = op(OpCode::Copy);
+        transport
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+        func.blocks.get_mut(&latch).unwrap().ops = vec![check(70), transport];
+        func.blocks.get_mut(&latch).unwrap().terminator = Terminator::Branch {
+            target: latch,
+            args: vec![],
+        };
+        let value_types = func.value_types.clone();
+        let const_ints = const_int_values(&func);
+        assert_eq!(
+            latch_check_site(&func, latch, Some(70), &value_types, &const_ints,),
+            Some((latch, 0))
+        );
+
+        func.blocks
+            .get_mut(&latch)
+            .unwrap()
+            .ops
+            .push(op(OpCode::Call));
+        assert_eq!(
+            latch_check_site(&func, latch, Some(70), &value_types, &const_ints,),
+            None,
+            "a raising call after the check is a hard latch boundary"
         );
     }
 

@@ -26,6 +26,8 @@ fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
             | "guard_none"
             | "store"
             | "load"
+            | "store_var"
+            | "load_var"
             | "exception_clear"
             | "exception_last"
             | "exception_last_pending"
@@ -69,7 +71,7 @@ fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
     )
 }
 
-pub(super) fn const_int_values(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, i64> {
+pub(crate) fn const_int_values(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, i64> {
     let mut values = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -112,7 +114,7 @@ fn proven_nonzero_i64_divisor(
         && const_ints.get(rhs).is_some_and(|value| *value != 0)
 }
 
-pub(super) fn op_may_raise(
+pub(crate) fn op_may_raise(
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
     op: &TirOp,
@@ -134,7 +136,7 @@ pub(super) fn op_may_raise(
     false
 }
 
-pub(super) fn op_clears_pending_exception(op: &TirOp) -> bool {
+pub(crate) fn op_clears_pending_exception(op: &TirOp) -> bool {
     if op.opcode != OpCode::Copy {
         return false;
     }
