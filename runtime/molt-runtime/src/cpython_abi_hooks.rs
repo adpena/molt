@@ -1497,7 +1497,7 @@ unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int 
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return 0;
         }
-        unsafe { crate::object::gc::gc_track_if_cyclic(ptr, TYPE_ID_LIST) };
+        with_gil(|py| unsafe { crate::object::gc::gc_track_if_cyclic(&py, ptr, TYPE_ID_LIST) });
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {

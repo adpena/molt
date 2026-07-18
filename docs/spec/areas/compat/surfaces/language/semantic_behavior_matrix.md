@@ -54,8 +54,8 @@
 | Recursion Limit | `sys.setrecursionlimit` | Supported | Fixed/Config | Checks depth. |
 | Signal Handling | `KeyboardInterrupt` | Partial | Polling | Checks loop headers/calls (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): signal handling parity). |
 | Threading | GIL semantics | Divergent | No GIL | Molt is essentially single-threaded per isolate. |
-| GC | Refcounting + Cycle Det | Partial | Deterministic RC + explicit cycle collection | Runtime `gc.collect()` now reclaims tracked container/user-object cycles through CPython-style partition collection; remaining work is full generation/API parity and automatic threshold policy. |
-| Finalizers | `__del__` | Partial | Best-effort | Not guaranteed at exit (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): finalizer guarantees). |
+| GC | Refcounting + Cycle Det | Supported | Deterministic RC + CPython 3.12 generational cycle collection | Per-runtime thresholds/counts/stats, automatic scheduling, three generations plus permanent freeze generation, full public introspection, callbacks, debug flags, PEP-442 collection, and canonical DEBUG_SAVEALL garbage retention share one tracked-registry/lifecycle authority across native and WASM. |
+| Finalizers | `__del__` | Supported | PEP-442 run-once + deterministic shutdown | Weakrefs clear before finalizers, resurrection is re-partitioned before deletion, and shutdown performs a final full cycle collection before runtime roots are released. |
 | Module Init | Once per process | Supported | Matches CPython. | Locks on import. |
 | File I/O | `open` + file object semantics | Partial | Full `open()` signature + core file methods/attrs | utf-8/ascii/latin-1 only, partial text-mode seek/tell cookie semantics, and Windows fileno/isatty parity pending. |
 
@@ -78,13 +78,13 @@ Molt explicitly diverges from CPython in these specific areas for performance/de
 
 ## 8. TODOs
 - TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): Formalize "Lazy Task" divergence policy.
-- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): Complete full `gc` generation/API parity beyond the initial runtime cycle collector.
 
 ## 9. Matrix Audit (2026-01-16)
 Coverage evidence (selected):
 - `tests/differential/basic/getattr_calls.py`, `tests/differential/basic/descriptor_delete.py` (descriptor call path + delete/set parity).
 - `tests/differential/basic/object_dunder_builtins.py` (object-level attribute semantics).
 - `tests/differential/basic/args_kwargs_eval_order.py` (evaluation order).
+- `tests/differential/stdlib/gc_generational_control.py`, `tests/differential/stdlib/gc_public_authority.py`, and runtime `object::gc::tests` (generations, public API, callbacks, freeze, finalization, DEBUG_SAVEALL, weakrefs, resurrection, shutdown, and reusable-workspace allocation behavior).
 - `tests/differential/basic/iter_non_iterator.py` (iter non-iterator TypeError parity).
 - `tests/differential/basic/recursion_limit.py` (recursion limit semantics).
 - `tests/differential/basic/pep649_lazy_annotations.py` (PEP 649 lazy annotations + __annotate__ formats).

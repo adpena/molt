@@ -48,6 +48,20 @@ builtins._molt_intrinsics = {{
     "molt_gc_set_debug": lambda flags: None,
     "molt_gc_get_debug": lambda: 0,
     "molt_gc_get_count": lambda: (1, 2, 3),
+    "molt_gc_get_stats": lambda: [
+        {{"collections": 1, "collected": 2, "uncollectable": 0}}
+        for _ in range(3)
+    ],
+    "molt_gc_is_tracked": lambda obj: isinstance(obj, list),
+    "molt_gc_is_finalized": lambda obj: False,
+    "molt_gc_get_objects": lambda generation: [],
+    "molt_gc_get_referents": lambda objs: list(objs),
+    "molt_gc_get_referrers": lambda objs: [],
+    "molt_gc_callbacks": lambda: [],
+    "molt_gc_garbage": lambda: [],
+    "molt_gc_freeze": lambda: None,
+    "molt_gc_unfreeze": lambda: None,
+    "molt_gc_get_freeze_count": lambda: 0,
     "molt_repr_from_obj": lambda value: repr(value),
     "molt_pprint_safe_repr": lambda obj, context, maxlevels: repr(obj),
     "molt_pprint_pformat": lambda obj, indent, width, depth, compact, sort_dicts, underscore_numbers: repr(obj),
@@ -98,6 +112,10 @@ checks = {{
         gc_mod.collect(1) == 1
         and gc_mod.get_threshold() == (700, 10, 10)
         and gc_mod.get_count() == (1, 2, 3)
+        and gc_mod.get_stats()[0]["collections"] == 1
+        and gc_mod.get_referents(1, 2) == [1, 2]
+        and gc_mod.get_freeze_count() == 0
+        and gc_mod.DEBUG_LEAK == 38
         and "molt_stdlib_probe" not in gc_mod.__dict__
         and "molt_gc_collect" not in gc_mod.__dict__
     ),

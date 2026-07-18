@@ -20,7 +20,7 @@ use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
 use std::io::{BufRead, BufReader};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 #[path = "ops_sys_time.rs"]
 mod ops_sys_time;
@@ -264,26 +264,6 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("ord() expected string of length 1, but {type_name} found");
         raise_exception::<_>(_py, "TypeError", &msg)
-    })
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct GcState {
-    pub(crate) enabled: bool,
-    pub(crate) thresholds: (i64, i64, i64),
-    pub(crate) debug_flags: i64,
-    pub(crate) count: (i64, i64, i64),
-}
-
-pub(crate) fn gc_state() -> &'static Mutex<GcState> {
-    static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
-    GC_STATE.get_or_init(|| {
-        Mutex::new(GcState {
-            enabled: true,
-            thresholds: (0, 0, 0),
-            debug_flags: 0,
-            count: (0, 0, 0),
-        })
     })
 }
 
@@ -1391,10 +1371,10 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if generation < 0 {
-            return raise_exception::<_>(_py, "ValueError", "generation must be non-negative");
+        if !(0..crate::object::gc::NUM_GENERATIONS as i64).contains(&generation) {
+            return raise_exception::<_>(_py, "ValueError", "invalid generation");
         }
-        let outcome = unsafe { crate::object::gc::collect_cycles(_py) };
+        let outcome = unsafe { crate::object::gc::collect_generation(_py, generation as u8) };
         let collected = match outcome.status {
             crate::object::gc::GcCollectStatus::Completed
             | crate::object::gc::GcCollectStatus::ReentrantNoop => outcome.collected as i64,
@@ -1409,8 +1389,6 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
                 );
             }
         };
-        let mut state = gc_state().lock().unwrap();
-        state.count = (0, 0, 0);
         MoltObject::from_int(collected).bits()
     })
 }
@@ -1418,8 +1396,7 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_enable() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut state = gc_state().lock().unwrap();
-        state.enabled = true;
+        crate::runtime_state(_py).gc.set_enabled(true);
         MoltObject::none().bits()
     })
 }
@@ -1427,8 +1404,7 @@ pub extern "C" fn molt_gc_enable() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_disable() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut state = gc_state().lock().unwrap();
-        state.enabled = false;
+        crate::runtime_state(_py).gc.set_enabled(false);
         MoltObject::none().bits()
     })
 }
@@ -1436,8 +1412,7 @@ pub extern "C" fn molt_gc_disable() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_isenabled() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = gc_state().lock().unwrap();
-        MoltObject::from_bool(state.enabled).bits()
+        MoltObject::from_bool(crate::runtime_state(_py).gc.enabled()).bits()
     })
 }
 
@@ -1456,8 +1431,7 @@ pub extern "C" fn molt_gc_set_threshold(th0_bits: u64, th1_bits: u64, th2_bits: 
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let mut state = gc_state().lock().unwrap();
-        state.thresholds = (th0, th1, th2);
+        crate::runtime_state(_py).gc.set_thresholds([th0, th1, th2]);
         MoltObject::none().bits()
     })
 }
@@ -1465,8 +1439,7 @@ pub extern "C" fn molt_gc_set_threshold(th0_bits: u64, th1_bits: u64, th2_bits: 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_get_threshold() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = gc_state().lock().unwrap();
-        let (th0, th1, th2) = state.thresholds;
+        let [th0, th1, th2] = crate::runtime_state(_py).gc.thresholds();
         let th0_bits = MoltObject::from_int(th0).bits();
         let th1_bits = MoltObject::from_int(th1).bits();
         let th2_bits = MoltObject::from_int(th2).bits();
@@ -1489,8 +1462,7 @@ pub extern "C" fn molt_gc_set_debug(flags_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let mut state = gc_state().lock().unwrap();
-        state.debug_flags = flags;
+        crate::runtime_state(_py).gc.set_debug_flags(flags);
         MoltObject::none().bits()
     })
 }
@@ -1498,16 +1470,14 @@ pub extern "C" fn molt_gc_set_debug(flags_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_get_debug() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = gc_state().lock().unwrap();
-        MoltObject::from_int(state.debug_flags).bits()
+        MoltObject::from_int(crate::runtime_state(_py).gc.debug_flags()).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_get_count() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = gc_state().lock().unwrap();
-        let (c0, c1, c2) = state.count;
+        let [c0, c1, c2] = crate::runtime_state(_py).gc.counts();
         let c0_bits = MoltObject::from_int(c0).bits();
         let c1_bits = MoltObject::from_int(c1).bits();
         let c2_bits = MoltObject::from_int(c2).bits();
@@ -1523,6 +1493,67 @@ pub extern "C" fn molt_gc_get_count() -> u64 {
     })
 }
 
+fn gc_stats_dict(_py: &PyToken<'_>, stats: crate::object::gc::GenerationStats) -> *mut u8 {
+    let values = [stats.collections, stats.collected, stats.uncollectable];
+    let keys: [&[u8]; 3] = [b"collections", b"collected", b"uncollectable"];
+    let mut pairs = [0u64; 6];
+    let mut owned = [0u64; 6];
+    let mut owned_len = 0usize;
+    for (index, (key, value)) in keys.into_iter().zip(values).enumerate() {
+        let key_ptr = alloc_string(_py, key);
+        if key_ptr.is_null() {
+            for bits in &owned[..owned_len] {
+                dec_ref_bits(_py, *bits);
+            }
+            return std::ptr::null_mut();
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let value = i64::try_from(value).unwrap_or_else(|_| std::process::abort());
+        let value_bits = MoltObject::from_int(value).bits();
+        pairs[index * 2] = key_bits;
+        pairs[index * 2 + 1] = value_bits;
+        owned[owned_len] = key_bits;
+        owned[owned_len + 1] = value_bits;
+        owned_len += 2;
+    }
+    let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+    for bits in owned {
+        dec_ref_bits(_py, bits);
+    }
+    dict_ptr
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_stats() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        // Snapshot before allocating the result containers, matching CPython's
+        // consistency contract for get_stats().
+        let stats = crate::runtime_state(_py).gc.generation_stats();
+        let mut dicts = [0u64; crate::object::gc::NUM_GENERATIONS];
+        let mut initialized = 0usize;
+        for (index, generation) in stats.into_iter().enumerate() {
+            let dict_ptr = gc_stats_dict(_py, generation);
+            if dict_ptr.is_null() {
+                for bits in &dicts[..initialized] {
+                    dec_ref_bits(_py, *bits);
+                }
+                return MoltObject::none().bits();
+            }
+            dicts[index] = MoltObject::from_ptr(dict_ptr).bits();
+            initialized += 1;
+        }
+        let list_ptr = alloc_list(_py, &dicts);
+        for bits in dicts {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_is_tracked(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1531,6 +1562,128 @@ pub extern "C" fn molt_gc_is_tracked(obj_bits: u64) -> u64 {
             .map(|ptr| unsafe { crate::object::gc::gc_is_tracked(ptr) })
             .unwrap_or(false);
         MoltObject::from_bool(tracked).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_is_finalized(obj_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let finalized = obj_from_bits(obj_bits)
+            .as_ptr()
+            .map(|ptr| unsafe {
+                (*header_from_obj_ptr(ptr)).load_synchronized_flags()
+                    & crate::object::HEADER_FLAG_FINALIZER_RAN
+                    != 0
+            })
+            .unwrap_or(false);
+        MoltObject::from_bool(finalized).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_objects(generation_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let generation = if obj_from_bits(generation_bits).is_none() {
+            None
+        } else {
+            let value = match gc_int_arg(_py, generation_bits, "generation") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if !(0..crate::object::gc::NUM_GENERATIONS as i64).contains(&value) {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "generation parameter must be less than the number of GC generations",
+                );
+            }
+            Some(value as u8)
+        };
+        match crate::object::gc::get_objects(_py, generation) {
+            Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
+            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+        }
+    })
+}
+
+fn gc_object_args_ptr(_py: &PyToken<'_>, args_bits: u64) -> Result<*mut u8, u64> {
+    let Some(ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "GC object arguments must be a tuple",
+        ));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "GC object arguments must be a tuple",
+        ));
+    }
+    Ok(ptr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_referents(args_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let args_ptr = match gc_object_args_ptr(_py, args_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        match unsafe { crate::object::gc::get_referents(_py, args_ptr) } {
+            Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
+            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_referrers(args_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let args_ptr = match gc_object_args_ptr(_py, args_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        match unsafe { crate::object::gc::get_referrers(_py, args_ptr) } {
+            Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
+            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_callbacks() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { crate::runtime_state(_py).gc.callbacks_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_garbage() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { crate::runtime_state(_py).gc.garbage_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_freeze() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::object::gc::freeze_tracked_registry();
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_unfreeze() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::object::gc::unfreeze_tracked_registry();
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_freeze_count() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let count = i64::try_from(crate::object::gc::permanent_generation_count())
+            .unwrap_or_else(|_| std::process::abort());
+        MoltObject::from_int(count).bits()
     })
 }
 

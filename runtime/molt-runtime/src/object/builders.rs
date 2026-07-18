@@ -1217,6 +1217,7 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
         }
         unsafe {
             crate::object::gc::gc_untrack(
+                _py,
                 candidate,
                 TYPE_ID_TUPLE,
                 crate::object::gc::GcUntrackReason::DynamicProjection,

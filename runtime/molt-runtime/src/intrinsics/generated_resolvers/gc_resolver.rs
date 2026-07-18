@@ -39,9 +39,49 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_gc_get_count",
             crate::molt_gc_get_count as *const (),
         )),
+        "molt_gc_get_stats" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_get_stats",
+            crate::molt_gc_get_stats as *const (),
+        )),
         "molt_gc_is_tracked" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gc_is_tracked",
             crate::molt_gc_is_tracked as *const (),
+        )),
+        "molt_gc_is_finalized" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_is_finalized",
+            crate::molt_gc_is_finalized as *const (),
+        )),
+        "molt_gc_get_objects" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_get_objects",
+            crate::molt_gc_get_objects as *const (),
+        )),
+        "molt_gc_get_referents" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_get_referents",
+            crate::molt_gc_get_referents as *const (),
+        )),
+        "molt_gc_get_referrers" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_get_referrers",
+            crate::molt_gc_get_referrers as *const (),
+        )),
+        "molt_gc_callbacks" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_callbacks",
+            crate::molt_gc_callbacks as *const (),
+        )),
+        "molt_gc_garbage" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_garbage",
+            crate::molt_gc_garbage as *const (),
+        )),
+        "molt_gc_freeze" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_freeze",
+            crate::molt_gc_freeze as *const (),
+        )),
+        "molt_gc_unfreeze" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_unfreeze",
+            crate::molt_gc_unfreeze as *const (),
+        )),
+        "molt_gc_get_freeze_count" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_get_freeze_count",
+            crate::molt_gc_get_freeze_count as *const (),
         )),
         _ => None,
     }
