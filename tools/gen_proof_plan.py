@@ -16,6 +16,25 @@ JSON_OUTPUT = ROOT / ".github" / "proof-plan.generated.json"
 DOC_OUTPUT = ROOT / "docs" / "agent" / "PROOF_PLAN.generated.md"
 
 
+def _timeout_envelope_projection(plan: ProofPlan) -> dict[str, dict[str, object]]:
+    projection: dict[str, dict[str, object]] = {}
+    for family in plan.families:
+        if family.data["executor"] != "github-job":
+            continue
+        envelope = plan.timeout_envelope(family.name)
+        budget = int(family.data["timeout_minutes"]) * 60
+        projection[family.name] = {
+            "budget_seconds": budget,
+            "projected_makespan_seconds": envelope.projected_makespan_seconds,
+            "critical_path_seconds": envelope.critical_path_seconds,
+            "resource_capacity_floor_seconds": (
+                envelope.resource_capacity_floor_seconds
+            ),
+            "headroom_seconds": budget - envelope.projected_makespan_seconds,
+        }
+    return projection
+
+
 def _json_projection(plan: ProofPlan) -> str:
     local_commands = {
         **{
@@ -44,6 +63,14 @@ def _json_projection(plan: ProofPlan) -> str:
         "authority_inputs": list(plan.authority_inputs),
         "authority_sha256": _authority_sha256(plan),
         "receipt_schema": plan.receipt_schema,
+        "executor": {
+            "max_workers": plan.executor_max_workers,
+            "resource_policies": [
+                {"name": policy.name, "max_parallel": policy.max_parallel}
+                for policy in plan.resource_policies
+            ],
+            "github_job_timeout_envelopes": _timeout_envelope_projection(plan),
+        },
         "ci_families": [family.data for family in plan.families],
         "matrix_cells": [cell.data for cell in plan.matrix_cells],
         "commands": [command.data for command in plan.commands],
@@ -90,15 +117,39 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "commit, command, cell, execution partition, duration, peak RSS, cache "
         "disposition, and version-constrained toolchain identities validate.",
         "",
-        "| Family | Tiers | Required | Executor | Timeout | Resource | Inputs |",
-        "|---|---|---:|---|---:|---|---:|",
+        "The canonical executor admits dependency-ready commands in manifest "
+        "order, bounds global fanout at "
+        f"{plan.executor_max_workers}, and enforces these per-resource limits:",
+        "",
+        "| Resource | Max parallel commands |",
+        "|---|---:|",
+        *[
+            f"| `{policy.name}` | {policy.max_parallel} |"
+            for policy in plan.resource_policies
+        ],
+        "",
+        "GitHub job budgets are validated against a deterministic worst-case "
+        "DAG schedule in which every admitted command consumes its full declared "
+        "timeout. The projection accounts for dependencies, the global worker "
+        "ceiling, and per-resource capacity.",
+        "",
+        "| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Inputs |",
+        "|---|---|---:|---|---:|---:|---:|---|---:|",
     ]
     for family in plan.families:
         data = family.data
+        if data["executor"] == "github-job":
+            projected = plan.timeout_envelope(family.name).projected_makespan_seconds
+            projected_cell = f"{projected} s"
+            headroom_cell = f"{int(data['timeout_minutes']) * 60 - projected} s"
+        else:
+            projected_cell = "n/a"
+            headroom_cell = "n/a"
         lines.append(
             f"| `{family.name}` | {', '.join(data['tiers'])} | "
             f"{'yes' if data['required'] else 'no'} | `{data['executor']}` | "
-            f"{data['timeout_minutes']} min | `{data['resource_class']}` | "
+            f"{data['timeout_minutes']} min | {projected_cell} | {headroom_cell} | "
+            f"`{data['resource_class']}` | "
             f"{len(data['inputs'])} |"
         )
     lines.extend(

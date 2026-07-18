@@ -8,10 +8,11 @@ local gate commands live only in ``tools/proof_plan.toml``.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import datetime as dt
 import fnmatch
 import hashlib
+import heapq
 import json
 import os
 import platform
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from typing import Any, Iterable, Mapping
@@ -111,6 +113,19 @@ class ToolchainPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class ResourcePolicy:
+    name: str
+    max_parallel: int
+
+
+@dataclass(frozen=True, slots=True)
+class TimeoutEnvelope:
+    projected_makespan_seconds: int
+    critical_path_seconds: int
+    resource_capacity_floor_seconds: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class Selection:
     changed_paths: tuple[str, ...]
     selected: tuple[ProofFamily, ...]
@@ -127,8 +142,123 @@ class ProofPlan:
     families: tuple[ProofFamily, ...]
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
+    executor_max_workers: int
+    resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
+
+    def timeout_envelope(self, family_name: str) -> TimeoutEnvelope:
+        """Project the bounded DAG schedule when every partition hits its timeout."""
+        commands = tuple(
+            command for command in self.commands if command.family == family_name
+        )
+        if not commands:
+            raise ValueError(f"{family_name}: selected family has no commands")
+        command_by_id = {command.id: command for command in commands}
+        command_index = {command.id: index for index, command in enumerate(commands)}
+        resource_limits = {
+            policy.name: policy.max_parallel for policy in self.resource_policies
+        }
+        remaining_dependencies: dict[str, int] = {}
+        dependents: dict[str, list[str]] = {command.id: [] for command in commands}
+        critical_paths: dict[str, int] = {}
+        for command in commands:
+            dependencies = tuple(
+                dependency
+                for dependency in command.dependencies
+                if dependency in command_by_id
+            )
+            remaining_dependencies[command.id] = len(dependencies)
+            for dependency in dependencies:
+                dependents[dependency].append(command.id)
+
+        ready_by_resource: dict[str, list[tuple[int, str]]] = {
+            name: [] for name in resource_limits
+        }
+        for command in commands:
+            if remaining_dependencies[command.id] == 0:
+                resource = str(command.data["resource_class"])
+                heapq.heappush(
+                    ready_by_resource[resource],
+                    (command_index[command.id], command.id),
+                )
+        active_by_resource = {name: 0 for name in resource_limits}
+        active: list[tuple[int, int, str, str]] = []
+        completed: set[str] = set()
+        now = 0
+        while len(completed) < len(commands):
+            while len(active) < self.executor_max_workers:
+                available_resources = tuple(
+                    resource
+                    for resource, ready in ready_by_resource.items()
+                    if ready
+                    and active_by_resource[resource] < resource_limits[resource]
+                )
+                if not available_resources:
+                    break
+                resource = min(
+                    available_resources,
+                    key=lambda name: ready_by_resource[name][0][0],
+                )
+                _, command_id = heapq.heappop(ready_by_resource[resource])
+                command = command_by_id[command_id]
+                finish = now + int(command.data["timeout_seconds"])
+                heapq.heappush(
+                    active,
+                    (finish, command_index[command_id], command_id, resource),
+                )
+                active_by_resource[resource] += 1
+            if not active:
+                blocked = sorted(set(command_by_id) - completed)
+                raise ValueError(
+                    f"{family_name}: timeout projection dependency deadlock: {blocked!r}"
+                )
+            now = active[0][0]
+            finishing: list[tuple[int, int, str, str]] = []
+            while active and active[0][0] == now:
+                finishing.append(heapq.heappop(active))
+            for _, _, command_id, resource in finishing:
+                command = command_by_id[command_id]
+                active_by_resource[resource] -= 1
+                completed.add(command_id)
+                parent_paths = [
+                    critical_paths[dependency]
+                    for dependency in command.dependencies
+                    if dependency in critical_paths
+                ]
+                critical_paths[command_id] = int(command.data["timeout_seconds"]) + max(
+                    parent_paths, default=0
+                )
+                for dependent in dependents[command_id]:
+                    remaining_dependencies[dependent] -= 1
+                    if remaining_dependencies[dependent] == 0:
+                        dependent_command = command_by_id[dependent]
+                        dependent_resource = str(
+                            dependent_command.data["resource_class"]
+                        )
+                        heapq.heappush(
+                            ready_by_resource[dependent_resource],
+                            (command_index[dependent], dependent),
+                        )
+        resource_capacity_floor_seconds = {
+            resource: (
+                sum(
+                    int(command.data["timeout_seconds"])
+                    for command in commands
+                    if command.data["resource_class"] == resource
+                )
+                + limit
+                - 1
+            )
+            // limit
+            for resource, limit in resource_limits.items()
+            if any(command.data["resource_class"] == resource for command in commands)
+        }
+        return TimeoutEnvelope(
+            projected_makespan_seconds=now,
+            critical_path_seconds=max(critical_paths.values(), default=0),
+            resource_capacity_floor_seconds=resource_capacity_floor_seconds,
+        )
 
     @classmethod
     def load(cls, path: Path = DEFAULT_MANIFEST) -> "ProofPlan":
@@ -156,6 +286,13 @@ class ProofPlan:
                 ToolchainPolicy(str(entry.get("name", "")), dict(entry))
                 for entry in data.get("toolchain_policy", [])
             ),
+            executor_max_workers=int(data.get("executor_max_workers", 0)),
+            resource_policies=tuple(
+                ResourcePolicy(
+                    str(entry.get("name", "")), int(entry.get("max_parallel", 0))
+                )
+                for entry in data.get("resource_policy", [])
+            ),
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
         )
@@ -168,6 +305,20 @@ class ProofPlan:
         errors: list[str] = []
         if self.receipt_schema != RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {RECEIPT_SCHEMA!r}")
+        if self.executor_max_workers <= 0:
+            errors.append("executor_max_workers must be positive")
+        resource_names = [policy.name for policy in self.resource_policies]
+        if not resource_names or any(not name for name in resource_names):
+            errors.append("resource policies must have non-empty names")
+        if len(resource_names) != len(set(resource_names)):
+            errors.append("resource policy names must be unique")
+        for policy in self.resource_policies:
+            if policy.max_parallel <= 0:
+                errors.append(f"{policy.name}: max_parallel must be positive")
+            elif policy.max_parallel > self.executor_max_workers:
+                errors.append(
+                    f"{policy.name}: max_parallel exceeds executor_max_workers"
+                )
         authority_inputs = list(self.authority_inputs)
         if not authority_inputs:
             errors.append("authority_inputs must declare the executable closure")
@@ -301,6 +452,11 @@ class ProofPlan:
             for field in REQUIRED_FAMILY_FIELDS:
                 if field not in family.data:
                     errors.append(f"{family.name}: missing {field}")
+            if family.data.get("resource_class") not in set(resource_names):
+                errors.append(
+                    f"{family.name}: unknown resource class "
+                    f"{family.data.get('resource_class')!r}"
+                )
             if not family.data.get("required"):
                 errors.append(
                     f"{family.name}: selected proof families must be required"
@@ -382,6 +538,7 @@ class ProofPlan:
         known_commands = set(command_ids)
         known_cells = set(cell_ids)
         known_toolchains = set(policy_names)
+        known_resources = set(resource_names)
         commands_by_family: dict[str, int] = {name: 0 for name in names}
         referenced_cells: set[str] = set()
         command_shapes: set[tuple[str, tuple[str, ...], str]] = set()
@@ -396,6 +553,11 @@ class ProofPlan:
                 errors.append(f"{command.id}: unknown family {command.family!r}")
             else:
                 commands_by_family[command.family] += 1
+            resource_class = command.data.get("resource_class")
+            if resource_class not in known_resources:
+                errors.append(
+                    f"{command.id}: unknown resource class {resource_class!r}"
+                )
             if command.data.get("cell") not in known_cells:
                 errors.append(
                     f"{command.id}: unknown matrix cell {command.data.get('cell')!r}"
@@ -486,6 +648,11 @@ class ProofPlan:
         for family, count in commands_by_family.items():
             if count == 0:
                 errors.append(f"{family}: selected family has no executable commands")
+        used_resources = {
+            str(command.data.get("resource_class", "")) for command in self.commands
+        }
+        for unused in sorted(known_resources - used_resources):
+            errors.append(f"{unused}: resource policy has no executable command")
         for cell_id in sorted(known_cells - referenced_cells):
             errors.append(f"{cell_id}: matrix cell has no executable command")
 
@@ -522,6 +689,23 @@ class ProofPlan:
 
         for command_id in command_ids:
             visit_command(command_id)
+
+        if not any(error.startswith("command dependency cycle:") for error in errors):
+            for family in self.families:
+                if family.data.get("executor") != "github-job":
+                    continue
+                try:
+                    envelope = self.timeout_envelope(family.name)
+                except (KeyError, TypeError, ValueError) as exc:
+                    errors.append(str(exc))
+                    continue
+                job_budget = int(family.data["timeout_minutes"]) * 60
+                if envelope.projected_makespan_seconds > job_budget:
+                    errors.append(
+                        f"{family.name}: projected resource-aware timeout envelope "
+                        f"{envelope.projected_makespan_seconds}s exceeds GitHub job "
+                        f"budget {job_budget}s"
+                    )
         for family in self.families:
             if family.data.get("executor") != "github-workflow":
                 continue
@@ -1068,11 +1252,65 @@ def _topological_commands(
     return tuple(ordered)
 
 
-def _run_command(command: ProofCommand, metrics_path: Path) -> dict[str, Any]:
+def _base_command_record(command: ProofCommand) -> dict[str, Any]:
+    return {
+        "id": command.id,
+        "family": command.family,
+        "cell": command.data["cell"],
+        "argv": list(command.argv),
+        "cwd": str(command.data.get("cwd", ".")),
+        "dependencies": list(command.dependencies),
+        "tiers": list(command.data["tiers"]),
+        "resource_class": command.data["resource_class"],
+        "timeout_seconds": int(command.data["timeout_seconds"]),
+        "timeout_env": list(command.data.get("timeout_env", [])),
+        "environment_overrides": dict(command.data.get("env", {})),
+    }
+
+
+def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
+    """Terminate one guarded-exec owner; its existing custody reaps descendants.
+
+    On POSIX, ``terminate`` delivers SIGTERM to guarded_exec, whose memory guard
+    records the interruption and terminates its tracked process tree. On Windows,
+    terminating guarded_exec closes its sole KILL_ON_JOB_CLOSE handle, so the OS
+    reaps the guarded subtree. Escalation remains scoped to that exact owner PID.
+    """
+
+    if process.poll() is not None:
+        return False
+    process.terminate()
+    try:
+        process.wait(timeout=5.0)
+        return False
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5.0)
+        return True
+
+
+def _run_command(
+    command: ProofCommand,
+    metrics_path: Path,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
     cache = _cache_disposition(command)
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
+    if cancel_event is not None and cancel_event.is_set():
+        return {
+            **_base_command_record(command),
+            "started_at": started_at,
+            "duration_seconds": 0.0,
+            "peak_rss_bytes": None,
+            "cache_disposition": cache,
+            "status": "cancelled",
+            "returncode": 130,
+            "guard_metrics_schema": None,
+            "cancelled_by_fail_fast": True,
+            "termination_escalated": False,
+        }
     wrapped = [
         sys.executable,
         str(ROOT / "tools" / "guarded_exec.py"),
@@ -1096,12 +1334,22 @@ def _run_command(command: ProofCommand, metrics_path: Path) -> dict[str, Any]:
     child_env.update(
         {str(name): str(value) for name, value in command.data.get("env", {}).items()}
     )
-    completed = subprocess.run(
+    process = subprocess.Popen(
         wrapped,
         cwd=ROOT,
         env=child_env,
-        check=False,
     )
+    cancelled = False
+    termination_escalated = False
+    while process.poll() is None:
+        if cancel_event is not None and cancel_event.wait(0.05):
+            if process.poll() is None:
+                cancelled = True
+                termination_escalated = _terminate_guarded_executor(process)
+            break
+    if process.poll() is None:
+        process.wait()
+    completed_returncode = int(process.returncode or 0)
     try:
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -1110,30 +1358,28 @@ def _run_command(command: ProofCommand, metrics_path: Path) -> dict[str, Any]:
         metrics_path.unlink(missing_ok=True)
     metrics_valid = (
         metrics.get("schema") == "molt.guarded-command-metrics.v1"
-        and metrics.get("returncode") == completed.returncode
+        and metrics.get("returncode") == completed_returncode
         and isinstance(metrics.get("duration_seconds"), (int, float))
         and isinstance(metrics.get("peak_tree_rss_bytes"), int)
     )
-    returncode = completed.returncode if metrics_valid else completed.returncode or 2
+    returncode = (
+        130
+        if cancelled
+        else completed_returncode
+        if metrics_valid
+        else completed_returncode or 2
+    )
     status = (
-        "timeout"
+        "cancelled"
+        if cancelled
+        else "timeout"
         if returncode == 124
         else "success"
         if returncode == 0 and metrics_valid
         else "failure"
     )
     return {
-        "id": command.id,
-        "family": command.family,
-        "cell": command.data["cell"],
-        "argv": list(command.argv),
-        "cwd": str(command.data.get("cwd", ".")),
-        "dependencies": list(command.dependencies),
-        "tiers": list(command.data["tiers"]),
-        "resource_class": command.data["resource_class"],
-        "timeout_seconds": timeout,
-        "timeout_env": list(command.data.get("timeout_env", [])),
-        "environment_overrides": dict(command.data.get("env", {})),
+        **_base_command_record(command),
         "started_at": started_at,
         "duration_seconds": (
             round(float(metrics["duration_seconds"]), 6) if metrics_valid else None
@@ -1143,6 +1389,8 @@ def _run_command(command: ProofCommand, metrics_path: Path) -> dict[str, Any]:
         "status": status,
         "returncode": returncode,
         "guard_metrics_schema": metrics.get("schema"),
+        "cancelled_by_fail_fast": cancelled,
+        "termination_escalated": termination_escalated,
     }
 
 
@@ -1161,7 +1409,24 @@ def execute_commands(
             "remove every staged, unstaged, and untracked input first"
         )
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    records: list[dict[str, Any]] = []
+    command_ids = [command.id for command in command_list]
+    if len(command_ids) != len(set(command_ids)):
+        raise ValueError("receipt execution command IDs must be unique")
+    command_by_id = {command.id: command for command in command_list}
+    command_index = {command.id: index for index, command in enumerate(command_list)}
+    resource_limits = {
+        policy.name: policy.max_parallel for policy in plan.resource_policies
+    }
+    unknown_resources = {
+        str(command.data["resource_class"])
+        for command in command_list
+        if str(command.data["resource_class"]) not in resource_limits
+    }
+    if unknown_resources:
+        raise ValueError(
+            f"receipt execution has unknown resources {sorted(unknown_resources)!r}"
+        )
+    records_by_id: dict[str, dict[str, Any]] = {}
     requested_toolchains = tuple(
         dict.fromkeys(
             name for command in command_list for name in _required_toolchains(command)
@@ -1173,7 +1438,20 @@ def execute_commands(
     except ValueError as exc:
         toolchains = {}
         toolchain_error = str(exc)
-    receipt = {
+    execution: dict[str, Any] = {
+        "schema": "molt.proof-plan-dag-executor.v1",
+        "max_workers": plan.executor_max_workers,
+        "resource_limits": resource_limits,
+        "declared_timeout_seconds": sum(
+            int(command.data["timeout_seconds"]) for command in command_list
+        ),
+        "scheduled_commands": 0,
+        "peak_active_commands": 0,
+        "peak_active_by_resource": {name: 0 for name in sorted(resource_limits)},
+        "fail_fast_triggered": False,
+    }
+    receipt_errors: list[str] = []
+    receipt: dict[str, Any] = {
         "schema": plan.receipt_schema,
         "authority_sha256": _authority_sha256(plan),
         "source_commit": _source_commit(),
@@ -1185,44 +1463,208 @@ def execute_commands(
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         },
         "toolchains": toolchains,
-        "commands": records,
+        "commands": [],
         "executed_partitions": [],
         "status": "failure" if toolchain_error else "running",
+        "execution": execution,
     }
     if toolchain_error:
-        receipt["errors"] = [toolchain_error]
+        receipt_errors.append(toolchain_error)
+        receipt["errors"] = receipt_errors
     atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
     if toolchain_error:
         return 2
-    returncode = 0
+    scheduler_started = time.monotonic()
+    pending_ids = set(command_ids)
+    dependents: dict[str, list[str]] = {command_id: [] for command_id in command_ids}
+    remaining_dependencies: dict[str, int] = {}
     for command in command_list:
-        if _source_tree_state() != "clean":
-            receipt["status"] = "failure"
-            receipt.setdefault("errors", []).append(
-                f"{command.id}: source tree changed before executable partition"
-            )
-            atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
-            return 2
-        metrics_path = receipt_path.with_name(
-            f".{receipt_path.name}.{command.id}.metrics.json"
+        included_dependencies = tuple(
+            dependency
+            for dependency in command.dependencies
+            if dependency in command_by_id
         )
-        record = _run_command(command, metrics_path)
-        if _source_tree_state() != "clean":
-            record["status"] = "failure"
-            record["returncode"] = 2
-            record["source_tree_state_after"] = "dirty"
-            receipt.setdefault("errors", []).append(
-                f"{command.id}: executable partition mutated the source tree"
+        remaining_dependencies[command.id] = len(included_dependencies)
+        for dependency in included_dependencies:
+            dependents[dependency].append(command.id)
+    ready_by_resource: dict[str, list[tuple[int, str]]] = {
+        name: [] for name in resource_limits
+    }
+    for command in command_list:
+        if remaining_dependencies[command.id] == 0:
+            resource = str(command.data["resource_class"])
+            heapq.heappush(
+                ready_by_resource[resource], (command_index[command.id], command.id)
             )
-        records.append(record)
-        if record["status"] == "success":
-            receipt["executed_partitions"].append(command.id)
-        else:
-            returncode = int(record["returncode"]) or 1
-        receipt["status"] = "success" if returncode == 0 else "failure"
+    active_by_resource = {name: 0 for name in resource_limits}
+    active: dict[Future[dict[str, Any]], ProofCommand] = {}
+    cancel_event = threading.Event()
+    failed = False
+
+    def record_error(message: str) -> None:
+        receipt_errors.append(message)
+        receipt["errors"] = receipt_errors
+
+    def refresh_receipt() -> None:
+        ordered_records = [
+            records_by_id[command.id]
+            for command in command_list
+            if command.id in records_by_id
+        ]
+        receipt["commands"] = ordered_records
+        receipt["executed_partitions"] = [
+            command.id
+            for command in command_list
+            if records_by_id.get(command.id, {}).get("status") == "success"
+        ]
+        execution["duration_seconds"] = round(time.monotonic() - scheduler_started, 6)
         atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
-        if returncode != 0:
-            break
+
+    with ThreadPoolExecutor(
+        max_workers=plan.executor_max_workers,
+        thread_name_prefix="proof-plan",
+    ) as executor:
+        while pending_ids or active:
+            if not failed:
+                if _source_tree_state() != "clean":
+                    failed = True
+                    cancel_event.set()
+                    receipt["status"] = "failure"
+                    execution["fail_fast_triggered"] = True
+                    record_error(
+                        "source tree changed before executable scheduling wave"
+                    )
+                while not failed and len(active) < plan.executor_max_workers:
+                    available_resources = tuple(
+                        resource
+                        for resource, ready in ready_by_resource.items()
+                        if ready
+                        and active_by_resource[resource] < resource_limits[resource]
+                    )
+                    if not available_resources:
+                        break
+                    resource = min(
+                        available_resources,
+                        key=lambda name: ready_by_resource[name][0][0],
+                    )
+                    _, command_id = heapq.heappop(ready_by_resource[resource])
+                    command = command_by_id[command_id]
+                    pending_ids.remove(command.id)
+                    metrics_path = receipt_path.with_name(
+                        f".{receipt_path.name}.{command.id}.metrics.json"
+                    )
+                    future = executor.submit(
+                        _run_command, command, metrics_path, cancel_event
+                    )
+                    active[future] = command
+                    active_by_resource[resource] += 1
+                    execution["scheduled_commands"] = (
+                        int(execution["scheduled_commands"]) + 1
+                    )
+                    execution["peak_active_commands"] = max(
+                        int(execution["peak_active_commands"]),
+                        len(active),
+                    )
+                    peaks: dict[str, int] = execution["peak_active_by_resource"]
+                    peaks[resource] = max(peaks[resource], active_by_resource[resource])
+
+            if not active:
+                if pending_ids and not failed:
+                    blocked = ", ".join(
+                        command.id
+                        for command in command_list
+                        if command.id in pending_ids
+                    )
+                    record_error(f"executor dependency deadlock: {blocked}")
+                    receipt["status"] = "failure"
+                    execution["fail_fast_triggered"] = True
+                    failed = True
+                break
+
+            completed, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
+            for future in sorted(
+                completed, key=lambda item: command_index[active[item].id]
+            ):
+                command = active.pop(future)
+                resource = str(command.data["resource_class"])
+                active_by_resource[resource] -= 1
+                try:
+                    record = future.result()
+                except Exception as exc:
+                    record = {
+                        **_base_command_record(command),
+                        "started_at": dt.datetime.now(dt.UTC).isoformat(),
+                        "duration_seconds": None,
+                        "peak_rss_bytes": None,
+                        "cache_disposition": _cache_disposition(command),
+                        "status": "failure",
+                        "returncode": 2,
+                        "guard_metrics_schema": None,
+                        "executor_error": f"{type(exc).__name__}: {exc}",
+                    }
+                if _source_tree_state() != "clean":
+                    record["status"] = "failure"
+                    record["returncode"] = 2
+                    record["source_tree_state_after"] = "dirty"
+                    record_error(
+                        f"{command.id}: executable partition mutated the source tree"
+                    )
+                records_by_id[command.id] = record
+                if record["status"] == "success":
+                    for dependent in dependents[command.id]:
+                        remaining_dependencies[dependent] -= 1
+                        if remaining_dependencies[dependent] == 0:
+                            dependent_command = command_by_id[dependent]
+                            dependent_resource = str(
+                                dependent_command.data["resource_class"]
+                            )
+                            heapq.heappush(
+                                ready_by_resource[dependent_resource],
+                                (command_index[dependent], dependent),
+                            )
+                elif record["status"] != "cancelled":
+                    failed = True
+                    cancel_event.set()
+                    execution["fail_fast_triggered"] = True
+                receipt["status"] = "failure" if failed else "running"
+                refresh_receipt()
+
+    if pending_ids:
+        for command in command_list:
+            if command.id not in pending_ids:
+                continue
+            records_by_id[command.id] = {
+                **_base_command_record(command),
+                "started_at": None,
+                "duration_seconds": 0.0,
+                "peak_rss_bytes": None,
+                "cache_disposition": _cache_disposition(command),
+                "status": "skipped",
+                "returncode": None,
+                "guard_metrics_schema": None,
+                "skip_reason": "fail-fast dependency cancellation",
+            }
+    failures = [
+        records_by_id[command.id]
+        for command in command_list
+        if command.id in records_by_id
+        and records_by_id[command.id]["status"]
+        not in {"success", "cancelled", "skipped"}
+    ]
+    if failures or failed:
+        receipt["status"] = "failure"
+        returncode = int(failures[0].get("returncode") or 2) if failures else 2
+    else:
+        receipt["status"] = "success"
+        returncode = 0
+    execution["completed_commands"] = len(records_by_id)
+    execution["cancelled_commands"] = sum(
+        record["status"] == "cancelled" for record in records_by_id.values()
+    )
+    execution["skipped_commands"] = sum(
+        record["status"] == "skipped" for record in records_by_id.values()
+    )
+    refresh_receipt()
     return returncode
 
 
