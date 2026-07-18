@@ -6,6 +6,7 @@ use super::io_limits::{BackendOutputKind, ensure_output_parent_dir, resolve_back
 
 #[cfg(feature = "luau-backend")]
 mod luau;
+#[cfg(any(feature = "luau-backend", test))]
 mod luau_pipeline;
 #[cfg(feature = "native-backend")]
 mod native;
@@ -16,16 +17,17 @@ mod wasm;
 
 #[cfg(feature = "luau-backend")]
 use luau::emit_luau_target;
+#[cfg(test)]
 pub(crate) use luau_pipeline::run_luau_tir_module_pipeline;
 #[cfg(feature = "native-backend")]
 use native::emit_native_target;
 #[cfg(feature = "rust-backend")]
 use rust::emit_rust_target;
-#[cfg(feature = "rust-backend")]
+#[cfg(all(feature = "rust-backend", test))]
 pub(crate) use rust::rust_source_for_ir;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
-#[cfg(feature = "wasm-backend")]
+#[cfg(all(any(unix, test), feature = "wasm-backend"))]
 pub(crate) use wasm::validate_wasm_module_catalog;
 
 pub(crate) struct BackendTargetEmitRequest<'a> {
@@ -60,26 +62,30 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
             {
                 let mut ir = request.ir;
                 emit_luau_target(&mut ir, output_file, request.use_ir_pipeline)?;
+                Ok(())
             }
             #[cfg(not(feature = "luau-backend"))]
             {
-                return Err(io::Error::new(
+                drop(request.ir);
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "backend binary was built without luau-backend support; rebuild with: cargo build -p molt-backend --features luau-backend",
-                ));
+                ))
             }
         }
         BackendOutputKind::Rust => {
             #[cfg(feature = "rust-backend")]
             {
                 emit_rust_target(&request.ir, output_file)?;
+                Ok(())
             }
             #[cfg(not(feature = "rust-backend"))]
             {
-                return Err(io::Error::new(
+                drop(request.ir);
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "backend binary was built without rust-backend support; rebuild with: cargo build -p molt-backend --features rust-backend",
-                ));
+                ))
             }
         }
         BackendOutputKind::Wasm => {
@@ -91,13 +97,15 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                     output_file,
                     request.wasm_options,
                 )?;
+                Ok(())
             }
             #[cfg(not(feature = "wasm-backend"))]
             {
-                return Err(io::Error::new(
+                drop(request.ir);
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend",
-                ));
+                ))
             }
         }
         BackendOutputKind::Native => {
@@ -109,16 +117,16 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                     output_file,
                     request.target_triple,
                 )?;
+                Ok(())
             }
             #[cfg(not(feature = "native-backend"))]
             {
-                return Err(io::Error::new(
+                drop(request.ir);
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend",
-                ));
+                ))
             }
         }
     }
-
-    Ok(())
 }

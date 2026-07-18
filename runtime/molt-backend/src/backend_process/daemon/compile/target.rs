@@ -1,3 +1,4 @@
+#[cfg(feature = "native-backend")]
 use std::path::Path;
 #[cfg(feature = "wasm-backend")]
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use super::super::DaemonJobRequest;
 pub(crate) enum DaemonCompiledOutput {
     #[cfg(feature = "wasm-backend")]
     Bytes(Arc<[u8]>),
+    #[cfg(feature = "native-backend")]
     WrittenToPath,
 }
 
@@ -26,7 +28,7 @@ pub(crate) fn compile_daemon_job_output(
     document: molt_backend::BackendIrDocument,
 ) -> Result<DaemonCompiledOutput, String> {
     let molt_backend::BackendIrDocument {
-        mut ir,
+        ir,
         module_registry,
     } = document;
 
@@ -59,6 +61,7 @@ pub(crate) fn compile_daemon_job_output(
     } else {
         #[cfg(feature = "native-backend")]
         {
+            let mut ir = ir;
             let target_triple = job.target_triple.as_deref();
             let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
             let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();

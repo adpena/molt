@@ -1,3 +1,4 @@
+#[cfg(feature = "native-backend")]
 use std::path::Path;
 
 #[cfg(feature = "native-backend")]

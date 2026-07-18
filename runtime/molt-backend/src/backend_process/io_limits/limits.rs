@@ -2,7 +2,9 @@ use std::env;
 
 #[cfg(any(unix, test))]
 use super::super::config::DEFAULT_DAEMON_MAX_JOBS;
-use super::super::config::{DEFAULT_DAEMON_REQUEST_LIMIT_BYTES, DEFAULT_STDIN_REQUEST_LIMIT_BYTES};
+#[cfg(any(unix, test))]
+use super::super::config::DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
+use super::super::config::DEFAULT_STDIN_REQUEST_LIMIT_BYTES;
 
 fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
     env::var(name)

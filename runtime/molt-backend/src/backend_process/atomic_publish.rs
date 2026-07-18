@@ -79,6 +79,12 @@ pub(crate) fn write_atomically<T>(
     Ok(value)
 }
 
+#[cfg(any(
+    feature = "native-backend",
+    feature = "luau-backend",
+    feature = "rust-backend",
+    test
+))]
 pub(crate) fn write_text_atomically(destination: &Path, contents: &str) -> io::Result<()> {
     write_bytes_atomically(destination, contents.as_bytes())
 }
@@ -86,6 +92,7 @@ pub(crate) fn write_text_atomically(destination: &Path, contents: &str) -> io::R
 /// Commit a producer-owned temporary file through the same durability
 /// boundary used by direct backend output. The producer must place the file on
 /// the destination filesystem so replacement stays atomic.
+#[cfg(any(feature = "native-backend", test))]
 pub(crate) fn commit_existing_file_atomically(
     temporary: &Path,
     destination: &Path,

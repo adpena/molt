@@ -3,6 +3,7 @@ mod ops;
 #[cfg(any(test, feature = "test-util"))]
 mod test_view;
 
+#[cfg(any(test, feature = "test-util"))]
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use wasm_encoder::ValType;
 
