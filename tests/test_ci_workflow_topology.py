@@ -353,6 +353,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'workspaces: ". -> target/sessions/rust-security"' in rust_security
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
+    assert "rm -rf" not in rust_security
+    assert "tmp/security/cargo-audit-advisory-db" in _read("tools/proof_plan.toml")
 
 
 def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
@@ -367,6 +369,7 @@ def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> Non
     assert "$env:RUNNER_TEMP" in workflow_text
     assert "${{ runner.temp }}" not in workflow_text
     assert 'python-version-file: ".python-version"' in workflow_text
+    assert "uses: dtolnay/rust-toolchain@1.96.1" in workflow_text
     assert "uv sync --frozen --group dev" in workflow_text
     assert "timeout-minutes: 10" in workflow_text
     assert (
@@ -379,11 +382,15 @@ def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> Non
     ) in workflow_text
     for path in (
         ".github/workflows/proof-queue-portability.yml",
+        ".python-version",
+        "rust-toolchain.toml",
         "src/molt/dx.py",
         "src/molt/cli/queue_cli.py",
         "tools/process_spawn.py",
         "tools/proof_queue.py",
         "tools/proof_queue_pkg/**",
+        "tools/proof_plan.py",
+        "tools/proof_plan.toml",
         "tests/test_molt_queue_cli.py",
         "tests/test_dx_run_context.py",
         "tests/tools/test_proof_queue.py",

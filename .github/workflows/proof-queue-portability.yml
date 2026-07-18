@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/proof-queue-portability.yml"
+      - ".python-version"
+      - "rust-toolchain.toml"
       - "docs/agent/PROOF_QUEUE.md"
       - "src/molt/dx.py"
       - "src/molt/path_custody.py"
@@ -17,6 +19,8 @@ on:
       - "tools/pytest_memory_guard_bootstrap.py"
       - "tools/proof_queue.py"
       - "tools/proof_queue_pkg/**"
+      - "tools/proof_plan.py"
+      - "tools/proof_plan.toml"
       - "tests/test_molt_queue_cli.py"
       - "tests/test_dx_run_context.py"
       - "tests/test_memory_guard_wiring.py"
@@ -27,6 +31,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/proof-queue-portability.yml"
+      - ".python-version"
+      - "rust-toolchain.toml"
       - "docs/agent/PROOF_QUEUE.md"
       - "src/molt/dx.py"
       - "src/molt/path_custody.py"
@@ -39,6 +45,8 @@ on:
       - "tools/pytest_memory_guard_bootstrap.py"
       - "tools/proof_queue.py"
       - "tools/proof_queue_pkg/**"
+      - "tools/proof_plan.py"
+      - "tools/proof_plan.toml"
       - "tests/test_molt_queue_cli.py"
       - "tests/test_dx_run_context.py"
       - "tests/test_memory_guard_wiring.py"
