@@ -181,6 +181,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     io_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_modules_runtime_state");
     modules_clear_runtime_state(_py, state);
+    trace_shutdown("process_exit_clear_gc_api_roots");
+    crate::object::gc::gc_clear_api_roots(_py);
     trace_shutdown("process_exit_clear_platform_runtime_state");
     platform_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_c_api_module_state");
@@ -297,6 +299,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_module_cache(_py, state);
     trace_shutdown("clear_modules_runtime_state");
     modules_clear_runtime_state(_py, state);
+    trace_shutdown("clear_gc_api_roots");
+    crate::object::gc::gc_clear_api_roots(_py);
     trace_shutdown("clear_platform_runtime_state");
     platform_clear_runtime_state(_py, state);
     trace_shutdown("flush_stdio_post_modules");
@@ -360,9 +364,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();
         trace_shutdown("reset_gc_registry");
-        crate::object::gc::gc_reset_registry();
+        crate::object::gc::gc_reset_registry(state);
         trace_shutdown("reset_gc_workspace");
         crate::object::gc::gc_reset_workspace();
+        trace_shutdown("reset_gc_control_state");
+        state.gc.reset();
         trace_shutdown("reset_detached_sink_pool");
         crate::object::heap_lifecycle::reset_detached_sink_pool();
         trace_shutdown("clear_profile_epoch");

@@ -1916,7 +1916,7 @@ fn alloc_object_zeroed_with_aux_policy(
         profile_alloc_type(_py, type_id);
         profile_alloc_type_bytes(_py, type_id, tracked_bytes);
         let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
-        gc::gc_track_if_cyclic(data_ptr, type_id);
+        gc::gc_track_if_cyclic(_py, data_ptr, type_id);
         data_ptr
     }
 }
@@ -2000,7 +2000,7 @@ pub(crate) fn alloc_object_with_aux(
         profile_alloc_type(_py, type_id);
         profile_alloc_type_bytes(_py, type_id, tracked_bytes);
         let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
-        gc::gc_track_if_cyclic(data_ptr, type_id);
+        gc::gc_track_if_cyclic(_py, data_ptr, type_id);
         data_ptr
     }
 }
@@ -3496,7 +3496,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 // DEALLOCATING before weakref clearing so callbacks cannot create
                 // fresh weakrefs or synthesize a runtime owner from stale bits.
                 (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack(ptr, type_id, gc::GcUntrackReason::Deallocation);
+                gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
                 // Detach weakrefs and invoke callbacks after the death verdict.
                 // The referent remains allocated only as an internal pin; checked
                 // retain/view publication rejects every attempt to reopen it.
@@ -3556,7 +3556,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
             // byte total was snapshotted before the window ran.
             if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
                 (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack(ptr, type_id, gc::GcUntrackReason::Deallocation);
+                gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
             }
             // Remove tuple identity before child retirement, but keep its
             // packed projection and projection-owned C references alive until

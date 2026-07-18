@@ -27,9 +27,10 @@
 //! `gc_collect_main`):
 //!   - move_legacy_finalizers / move_legacy_finalizer_reachable: NO-OP for molt.
 //!     molt has no legacy `tp_del`; every finalizer is a PEP-442 `tp_finalize`-class
-//!     `__del__`, so `gc.garbage` is ALWAYS empty (every `__del__`-bearing cycle is
-//!     collectable). These two steps collapse but their POSITION (before weakrefs)
-//!     is documented here so the surviving order matches CPython.
+//!     `__del__`, so normal collection leaves `gc.garbage` empty (every
+//!     `__del__`-bearing cycle is collectable). `DEBUG_SAVEALL` is the explicit
+//!     retention mode. These two steps collapse but their POSITION (before
+//!     weakrefs) is documented here so the surviving order matches CPython.
 //!   - `handle_weakrefs`: a two-pass batched protocol over the WHOLE unreachable
 //!     set — PASS 1 clears every weakref pointing into the set (so callbacks read
 //!     None) and enqueues a callback only if the weakref object itself is NOT in the
@@ -66,8 +67,10 @@
 //! generated heap-kind authority tracks every cycle-capable owner; exact dicts and
 //! tuples are dynamically projected with CPython-compatible timing.
 
-use std::collections::{HashMap, hash_map::Entry};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Instant;
 
@@ -82,8 +85,488 @@ use crate::{
     profile_enabled_unchecked, profile_hit_bytes_unchecked, profile_hit_unchecked,
 };
 
-/// Side registry of live cycle-capable objects (CPython's gc-tracked
-/// generations, adapted to one generation in v1). Each pointer receives a
+pub(crate) const NUM_GENERATIONS: usize = 3;
+pub(crate) const OLDEST_GENERATION: u8 = (NUM_GENERATIONS - 1) as u8;
+pub(crate) const PERMANENT_GENERATION: u8 = NUM_GENERATIONS as u8;
+const DEFAULT_THRESHOLDS: [i64; NUM_GENERATIONS] = [700, 10, 10];
+const DEBUG_STATS: i64 = 1;
+const DEBUG_COLLECTABLE: i64 = 2;
+const DEBUG_SAVEALL: i64 = 32;
+
+/// A control-plane word selected by the same concurrency policy as object
+/// reference counts: a plain cell under the deterministic GIL (including
+/// wasm32), and lock-free atomic state only for an explicitly free-threaded
+/// native build. Automatic collection itself remains fail-closed in the latter
+/// mode until the runtime owns a real stop-the-world epoch.
+#[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+#[repr(transparent)]
+struct GcWord(AtomicU64);
+
+#[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+#[repr(transparent)]
+struct GcWord(Cell<u64>);
+
+impl GcWord {
+    const fn new(value: u64) -> Self {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            Self(AtomicU64::new(value))
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            Self(Cell::new(value))
+        }
+    }
+
+    #[inline(always)]
+    fn load(&self, order: AtomicOrdering) -> u64 {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.load(order)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            self.0.get()
+        }
+    }
+
+    #[inline(always)]
+    fn store(&self, value: u64, order: AtomicOrdering) {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        self.0.store(value, order);
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            self.0.set(value);
+        }
+    }
+
+    #[inline(always)]
+    fn swap(&self, value: u64, order: AtomicOrdering) -> u64 {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.swap(value, order)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            self.0.replace(value)
+        }
+    }
+
+    #[inline]
+    fn fetch_update<F>(
+        &self,
+        set_order: AtomicOrdering,
+        fetch_order: AtomicOrdering,
+        update: F,
+    ) -> Result<u64, u64>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.fetch_update(set_order, fetch_order, update)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = (set_order, fetch_order);
+            let observed = self.0.get();
+            let mut update = update;
+            let Some(next) = update(observed) else {
+                return Err(observed);
+            };
+            self.0.set(next);
+            Ok(observed)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GenerationStats {
+    pub(crate) collections: u64,
+    pub(crate) collected: u64,
+    pub(crate) uncollectable: u64,
+    pub(crate) scanned: u64,
+}
+
+struct GenerationStatsWords {
+    collections: GcWord,
+    collected: GcWord,
+    uncollectable: GcWord,
+    scanned: GcWord,
+}
+
+#[derive(Default)]
+struct GcApiRoots {
+    callbacks: u64,
+    garbage: u64,
+}
+
+impl GenerationStatsWords {
+    const fn new() -> Self {
+        Self {
+            collections: GcWord::new(0),
+            collected: GcWord::new(0),
+            uncollectable: GcWord::new(0),
+            scanned: GcWord::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> GenerationStats {
+        GenerationStats {
+            collections: self.collections.load(AtomicOrdering::Relaxed),
+            collected: self.collected.load(AtomicOrdering::Relaxed),
+            uncollectable: self.uncollectable.load(AtomicOrdering::Relaxed),
+            scanned: self.scanned.load(AtomicOrdering::Relaxed),
+        }
+    }
+
+    fn reset(&self) {
+        self.collections.store(0, AtomicOrdering::Relaxed);
+        self.collected.store(0, AtomicOrdering::Relaxed);
+        self.uncollectable.store(0, AtomicOrdering::Relaxed);
+        self.scanned.store(0, AtomicOrdering::Relaxed);
+    }
+}
+
+/// Per-runtime GC scheduling and statistics authority. The tracked registry owns
+/// object membership; this state owns only scheduling policy and counters. It is
+/// embedded in `RuntimeState`, so shutdown/re-init cannot inherit thresholds,
+/// pending work, or statistics from a prior embedded interpreter.
+pub(crate) struct GcRuntimeState {
+    enabled: GcWord,
+    pending: GcWord,
+    debug_flags: GcWord,
+    thresholds: [GcWord; NUM_GENERATIONS],
+    counts: [GcWord; NUM_GENERATIONS],
+    stats: [GenerationStatsWords; NUM_GENERATIONS],
+    long_lived_total: GcWord,
+    long_lived_pending: GcWord,
+    api_roots: Mutex<GcApiRoots>,
+}
+
+// Cell-backed words are accessed only while `PyToken` proves the deterministic
+// runtime GIL. The free-threaded representation is entirely atomic.
+unsafe impl Sync for GcRuntimeState {}
+// Isolate initialization catches setup panics only to discard the unpublished
+// RuntimeState. No partially reset GC state can cross that publication boundary,
+// so the cell-backed deterministic representation is unwind-safe in that scope.
+impl std::panic::RefUnwindSafe for GcRuntimeState {}
+impl std::panic::UnwindSafe for GcRuntimeState {}
+
+impl GcRuntimeState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            enabled: GcWord::new(1),
+            pending: GcWord::new(0),
+            debug_flags: GcWord::new(0),
+            thresholds: [
+                GcWord::new(DEFAULT_THRESHOLDS[0] as u64),
+                GcWord::new(DEFAULT_THRESHOLDS[1] as u64),
+                GcWord::new(DEFAULT_THRESHOLDS[2] as u64),
+            ],
+            counts: [GcWord::new(0), GcWord::new(0), GcWord::new(0)],
+            stats: [
+                GenerationStatsWords::new(),
+                GenerationStatsWords::new(),
+                GenerationStatsWords::new(),
+            ],
+            long_lived_total: GcWord::new(0),
+            long_lived_pending: GcWord::new(0),
+            api_roots: Mutex::new(GcApiRoots {
+                callbacks: 0,
+                garbage: 0,
+            }),
+        }
+    }
+
+    #[inline(always)]
+    fn assert_custody() {
+        #[cfg(not(feature = "free-threaded"))]
+        crate::gil_assert();
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        Self::assert_custody();
+        self.enabled.load(AtomicOrdering::Relaxed) != 0
+    }
+
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        Self::assert_custody();
+        self.enabled
+            .store(u64::from(enabled), AtomicOrdering::Relaxed);
+        if !enabled {
+            self.pending.store(0, AtomicOrdering::Relaxed);
+        } else {
+            self.schedule_if_due();
+        }
+    }
+
+    pub(crate) fn thresholds(&self) -> [i64; NUM_GENERATIONS] {
+        Self::assert_custody();
+        std::array::from_fn(|index| self.thresholds[index].load(AtomicOrdering::Relaxed) as i64)
+    }
+
+    pub(crate) fn set_thresholds(&self, thresholds: [i64; NUM_GENERATIONS]) {
+        Self::assert_custody();
+        for (word, threshold) in self.thresholds.iter().zip(thresholds) {
+            word.store(threshold as u64, AtomicOrdering::Relaxed);
+        }
+        self.pending.store(0, AtomicOrdering::Relaxed);
+        self.schedule_if_due();
+    }
+
+    pub(crate) fn counts(&self) -> [i64; NUM_GENERATIONS] {
+        Self::assert_custody();
+        std::array::from_fn(|index| self.counts[index].load(AtomicOrdering::Relaxed) as i64)
+    }
+
+    pub(crate) fn debug_flags(&self) -> i64 {
+        Self::assert_custody();
+        self.debug_flags.load(AtomicOrdering::Relaxed) as i64
+    }
+
+    pub(crate) fn set_debug_flags(&self, flags: i64) {
+        Self::assert_custody();
+        self.debug_flags
+            .store(flags as u64, AtomicOrdering::Relaxed);
+    }
+
+    pub(crate) fn generation_stats(&self) -> [GenerationStats; NUM_GENERATIONS] {
+        Self::assert_custody();
+        std::array::from_fn(|index| self.stats[index].snapshot())
+    }
+
+    pub(crate) fn on_allocation(&self) {
+        Self::assert_custody();
+        self.counts[0]
+            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
+                count.checked_add(1)
+            })
+            .unwrap_or_else(|_| std::process::abort());
+        self.schedule_if_due();
+    }
+
+    pub(crate) fn on_deallocation(&self) {
+        Self::assert_custody();
+        let _ = self.counts[0].fetch_update(
+            AtomicOrdering::Relaxed,
+            AtomicOrdering::Relaxed,
+            |count| (count != 0).then(|| count - 1),
+        );
+    }
+
+    #[inline]
+    fn schedule_if_due(&self) {
+        if cfg!(feature = "free-threaded") || !self.enabled() {
+            return;
+        }
+        let threshold0 = self.thresholds[0].load(AtomicOrdering::Relaxed) as i64;
+        let count0 = self.counts[0].load(AtomicOrdering::Relaxed) as i64;
+        if threshold0 != 0 && count0 > threshold0 {
+            self.pending.store(1, AtomicOrdering::Release);
+        }
+    }
+
+    fn take_scheduled_generation(&self) -> Option<u8> {
+        Self::assert_custody();
+        if self.pending.swap(0, AtomicOrdering::AcqRel) == 0 || !self.enabled() {
+            return None;
+        }
+        for generation in (0..NUM_GENERATIONS).rev() {
+            let count = self.counts[generation].load(AtomicOrdering::Relaxed) as i64;
+            let threshold = self.thresholds[generation].load(AtomicOrdering::Relaxed) as i64;
+            if count <= threshold {
+                continue;
+            }
+            if generation == NUM_GENERATIONS - 1 {
+                let pending = self.long_lived_pending.load(AtomicOrdering::Relaxed);
+                let total = self.long_lived_total.load(AtomicOrdering::Relaxed);
+                if pending < total / 4 {
+                    continue;
+                }
+            }
+            return Some(generation as u8);
+        }
+        None
+    }
+
+    fn rearm_pending(&self) {
+        Self::assert_custody();
+        self.pending.store(1, AtomicOrdering::Release);
+    }
+
+    fn begin_collection(&self, generation: u8) {
+        Self::assert_custody();
+        let generation = generation as usize;
+        if generation + 1 < NUM_GENERATIONS {
+            self.counts[generation + 1]
+                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
+                    count.checked_add(1)
+                })
+                .unwrap_or_else(|_| std::process::abort());
+        }
+        for count in &self.counts[..=generation] {
+            count.store(0, AtomicOrdering::Relaxed);
+        }
+    }
+
+    fn finish_collection(
+        &self,
+        generation: u8,
+        scanned: usize,
+        collected: usize,
+        survivors: usize,
+    ) {
+        Self::assert_custody();
+        let generation = generation as usize;
+        for (word, delta) in [
+            (&self.stats[generation].collections, 1u64),
+            (&self.stats[generation].collected, collected as u64),
+            (&self.stats[generation].scanned, scanned as u64),
+        ] {
+            word.fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+                value.checked_add(delta)
+            })
+            .unwrap_or_else(|_| std::process::abort());
+        }
+        if generation == NUM_GENERATIONS - 2 {
+            self.long_lived_pending
+                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+                    value.checked_add(survivors as u64)
+                })
+                .unwrap_or_else(|_| std::process::abort());
+        } else if generation == NUM_GENERATIONS - 1 {
+            self.long_lived_pending.store(0, AtomicOrdering::Relaxed);
+            self.long_lived_total
+                .store(survivors as u64, AtomicOrdering::Relaxed);
+        }
+        self.schedule_if_due();
+    }
+
+    pub(crate) fn reset(&self) {
+        Self::assert_custody();
+        self.enabled.store(1, AtomicOrdering::Relaxed);
+        self.pending.store(0, AtomicOrdering::Relaxed);
+        self.debug_flags.store(0, AtomicOrdering::Relaxed);
+        for (index, threshold) in DEFAULT_THRESHOLDS.into_iter().enumerate() {
+            self.thresholds[index].store(threshold as u64, AtomicOrdering::Relaxed);
+            self.counts[index].store(0, AtomicOrdering::Relaxed);
+            self.stats[index].reset();
+        }
+        self.long_lived_total.store(0, AtomicOrdering::Relaxed);
+        self.long_lived_pending.store(0, AtomicOrdering::Relaxed);
+        let roots = self
+            .api_roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(roots.callbacks, 0, "GC callback root survived teardown");
+        assert_eq!(roots.garbage, 0, "GC garbage root survived teardown");
+    }
+
+    fn api_root_bits(&self, py: &PyToken<'_>, callbacks: bool) -> u64 {
+        Self::assert_custody();
+        let read = |roots: &GcApiRoots| {
+            if callbacks {
+                roots.callbacks
+            } else {
+                roots.garbage
+            }
+        };
+        {
+            let roots = self
+                .api_roots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let bits = read(&roots);
+            if bits != 0 {
+                crate::inc_ref_bits(py, bits);
+                return bits;
+            }
+        }
+
+        // Never allocate while holding the root mutex: allocation may reach an
+        // automatic-GC safepoint and recursively ask for the callback list.
+        let ptr = crate::alloc_list(py, &[]);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let created = MoltObject::from_ptr(ptr).bits();
+        let mut roots = self
+            .api_roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = if callbacks {
+            &mut roots.callbacks
+        } else {
+            &mut roots.garbage
+        };
+        if *slot == 0 {
+            *slot = created;
+            crate::inc_ref_bits(py, created);
+            created
+        } else {
+            let existing = *slot;
+            crate::inc_ref_bits(py, existing);
+            drop(roots);
+            crate::dec_ref_bits(py, created);
+            existing
+        }
+    }
+
+    pub(crate) fn callbacks_bits(&self, py: &PyToken<'_>) -> u64 {
+        self.api_root_bits(py, true)
+    }
+
+    pub(crate) fn garbage_bits(&self, py: &PyToken<'_>) -> u64 {
+        self.api_root_bits(py, false)
+    }
+
+    fn existing_api_root_bits(&self, py: &PyToken<'_>, callbacks: bool) -> u64 {
+        Self::assert_custody();
+        let roots = self
+            .api_roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let bits = if callbacks {
+            roots.callbacks
+        } else {
+            roots.garbage
+        };
+        if bits != 0 {
+            crate::inc_ref_bits(py, bits);
+        }
+        bits
+    }
+
+    pub(crate) fn clear_api_roots(&self, py: &PyToken<'_>) {
+        Self::assert_custody();
+        let (callbacks, garbage) = {
+            let mut roots = self
+                .api_roots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let values = (roots.callbacks, roots.garbage);
+            roots.callbacks = 0;
+            roots.garbage = 0;
+            values
+        };
+        for bits in [callbacks, garbage] {
+            if bits != 0 {
+                crate::dec_ref_bits(py, bits);
+            }
+        }
+    }
+}
+
+pub(crate) fn gc_clear_api_roots(py: &PyToken<'_>) {
+    crate::runtime_state(py).gc.clear_api_roots(py);
+}
+
+/// Side registry of live cycle-capable objects (CPython's three gc-tracked
+/// generations). Each pointer receives a
 /// monotonic allocation ordinal, and collection snapshots sort by that ordinal;
 /// allocator addresses and randomized hash iteration therefore cannot change
 /// finalizer/clear order across identical runs. Populated at allocation of a
@@ -93,15 +576,25 @@ use crate::{
 /// populated only in debug builds (`from_ptr` skips `register_ptr` in release), so
 /// it cannot enumerate live objects in the shipped profile.
 struct TrackedRegistryShard {
-    entries: HashMap<PtrSlot, u64>,
+    entries: HashMap<PtrSlot, TrackedEntry>,
+}
+
+#[derive(Clone, Copy)]
+struct TrackedEntry {
+    allocation_id: u64,
+    generation: u8,
 }
 
 const TRACKED_REGISTRY_SHARDS: usize = 64;
 const _: () = assert!(TRACKED_REGISTRY_SHARDS.is_power_of_two());
 
+#[cfg(test)]
+static GC_REGISTRY_ACCESS_COUNT: AtomicU64 = AtomicU64::new(0);
+
 struct TrackedRegistry {
     shards: [Mutex<TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS],
     next_allocation_id: AtomicU64,
+    owner_runtime: AtomicUsize,
 }
 
 fn tracked_registry() -> &'static TrackedRegistry {
@@ -113,7 +606,48 @@ fn tracked_registry() -> &'static TrackedRegistry {
             })
         }),
         next_allocation_id: AtomicU64::new(1),
+        owner_runtime: AtomicUsize::new(0),
     })
+}
+
+#[inline]
+fn claim_registry_owner(owner: &AtomicUsize, identity: usize) -> Result<(), usize> {
+    debug_assert_ne!(identity, 0);
+    match owner.compare_exchange(0, identity, AtomicOrdering::AcqRel, AtomicOrdering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(existing) if existing == identity => Ok(()),
+        Err(existing) => Err(existing),
+    }
+}
+
+#[inline]
+fn release_registry_owner(owner: &AtomicUsize, identity: usize) -> Result<(), usize> {
+    owner
+        .compare_exchange(identity, 0, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .map(|_| ())
+}
+
+/// Bind the process-global membership storage to one concrete `RuntimeState`.
+///
+/// Molt's lifecycle publishes at most one process runtime at a time. Keeping the
+/// registry allocation process-global lets a sequential embedded re-init reuse
+/// the authority without a second pointer map, but membership must never cross
+/// runtime identities. A competing embedded runtime therefore fails closed at
+/// initialization instead of silently collecting objects owned by another heap.
+pub(crate) fn gc_bind_registry(state: &crate::RuntimeState) {
+    let identity = std::ptr::from_ref(state).expose_provenance();
+    if let Err(existing) = claim_registry_owner(&tracked_registry().owner_runtime, identity) {
+        panic!(
+            "GC registry already belongs to runtime 0x{existing:x}; competing runtime 0x{identity:x} cannot share process-global membership"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn gc_registry_owner_identity() -> usize {
+    tracked_registry()
+        .owner_runtime
+        .load(AtomicOrdering::Acquire)
 }
 
 #[inline]
@@ -137,6 +671,8 @@ fn tracked_registry_shard_index_from_address(address: usize) -> usize {
 }
 
 fn lock_tracked_registry_shard(index: usize) -> MutexGuard<'static, TrackedRegistryShard> {
+    #[cfg(test)]
+    GC_REGISTRY_ACCESS_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
     let shard = &tracked_registry().shards[index];
     if !profile_enabled_unchecked() {
         return shard
@@ -230,7 +766,10 @@ pub(crate) unsafe fn gc_reproject_dict(py: &PyToken<'_>, ptr: *mut u8) {
                     next.checked_add(1)
                 })
                 .expect("GC allocation ordinal exhausted");
-            entry.insert(allocation_id);
+            entry.insert(TrackedEntry {
+                allocation_id,
+                generation: 0,
+            });
             profile_gc_track();
         }
     } else if shard.entries.remove(&slot).is_some() {
@@ -244,24 +783,34 @@ struct GcCandidate {
     ptr: PtrSlot,
 }
 
-unsafe fn reproject_immutable_tuples(py: &PyToken<'_>, candidates: &mut Vec<GcCandidate>) {
-    candidates.retain(|candidate| {
+unsafe fn reproject_reachable_immutable_tuples(
+    py: &PyToken<'_>,
+    candidates: &[GcCandidate],
+    marks: &[u8],
+) {
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        // CPython runs deduce_unreachable first and untracks atomic tuples only
+        // from the reachable generation list. An unreachable tuple remains a
+        // candidate for this collection and contributes to gc.collect()'s count.
+        if marks[candidate_index] != 2 {
+            continue;
+        }
         let ptr = candidate.ptr.0;
         if super::heap_track_projection(unsafe { object_type_id(ptr) })
             != Some(super::HeapTrackProjection::TupleDynamic)
             || unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
         {
-            return true;
+            continue;
         }
         unsafe {
             gc_untrack(
+                py,
                 ptr,
                 super::TYPE_ID_TUPLE,
                 GcUntrackReason::DynamicProjection,
             )
         };
-        false
-    });
+    }
 }
 
 /// Register a freshly-allocated object in the tracked set IFF it can form a cycle.
@@ -270,7 +819,7 @@ unsafe fn reproject_immutable_tuples(py: &PyToken<'_>, candidates: &mut Vec<GcCa
 /// # Safety
 /// `ptr` must be a live object pointer (data pointer, past the header).
 #[inline]
-pub(crate) unsafe fn gc_track_if_cyclic(ptr: *mut u8, type_id: u32) {
+pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id: u32) {
     if !may_form_cycle(type_id) {
         return;
     }
@@ -279,13 +828,17 @@ pub(crate) unsafe fn gc_track_if_cyclic(ptr: *mut u8, type_id: u32) {
     let mut shard = lock_tracked_registry_shard(shard_index);
     let slot = PtrSlot(ptr);
     if let Entry::Vacant(entry) = shard.entries.entry(slot) {
+        crate::runtime_state(py).gc.on_allocation();
         let allocation_id = registry
             .next_allocation_id
             .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .expect("GC allocation ordinal exhausted");
-        entry.insert(allocation_id);
+        entry.insert(TrackedEntry {
+            allocation_id,
+            generation: 0,
+        });
         profile_gc_track();
     }
 }
@@ -316,7 +869,12 @@ pub(crate) enum GcUntrackReason {
     DynamicProjection,
 }
 
-pub(crate) unsafe fn gc_untrack(ptr: *mut u8, type_id: u32, _reason: GcUntrackReason) {
+pub(crate) unsafe fn gc_untrack(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    type_id: u32,
+    reason: GcUntrackReason,
+) {
     if !may_form_cycle(type_id) {
         return;
     }
@@ -324,6 +882,13 @@ pub(crate) unsafe fn gc_untrack(ptr: *mut u8, type_id: u32, _reason: GcUntrackRe
     let mut shard = lock_tracked_registry_shard(shard_index);
     if shard.entries.remove(&PtrSlot(ptr)).is_some() {
         profile_gc_untrack(1);
+    }
+    drop(shard);
+    // CPython's generation-0 counter is allocations minus deallocations of GC
+    // objects, not current tracked-set membership. Dynamically projected exact
+    // dicts/tuples still retire their original allocation here.
+    if reason == GcUntrackReason::Deallocation {
+        crate::runtime_state(py).gc.on_deallocation();
     }
 }
 
@@ -340,8 +905,14 @@ pub(crate) unsafe fn gc_is_tracked(ptr: *mut u8) -> bool {
 /// Drop the entire tracked set without touching the objects. Used at runtime
 /// teardown AFTER the heap has been reclaimed, so the static does not dangle into
 /// the next embedded runtime instance.
-pub(crate) fn gc_reset_registry() {
+pub(crate) fn gc_reset_registry(state: &crate::RuntimeState) {
     let registry = tracked_registry();
+    let identity = std::ptr::from_ref(state).expose_provenance();
+    assert_eq!(
+        registry.owner_runtime.load(AtomicOrdering::Acquire),
+        identity,
+        "GC registry teardown attempted by a non-owner runtime"
+    );
     // Hold every shard until the ordinal is reset. This makes teardown a single
     // registry transaction and prevents a future free-threaded allocator from
     // inserting between a partial clear and the return to ordinal 1.
@@ -358,6 +929,8 @@ pub(crate) fn gc_reset_registry() {
         .next_allocation_id
         .store(1, AtomicOrdering::Relaxed);
     profile_gc_untrack(removed);
+    release_registry_owner(&registry.owner_runtime, identity)
+        .expect("GC registry owner changed during teardown transaction");
 }
 
 #[inline]
@@ -368,7 +941,27 @@ fn try_reserve_total<T>(values: &mut Vec<T>, required: usize) -> bool {
             .is_ok()
 }
 
-fn snapshot_tracked_registry(candidates: &mut Vec<GcCandidate>) -> bool {
+#[derive(Clone, Copy)]
+enum RegistrySelection {
+    Through(u8),
+    Exact(u8),
+    Ordinary,
+    All,
+}
+
+impl RegistrySelection {
+    #[inline]
+    fn contains(self, generation: u8) -> bool {
+        match self {
+            Self::Through(maximum) => generation <= maximum,
+            Self::Exact(expected) => generation == expected,
+            Self::Ordinary => generation < PERMANENT_GENERATION,
+            Self::All => true,
+        }
+    }
+}
+
+fn snapshot_registry(candidates: &mut Vec<GcCandidate>, selection: RegistrySelection) -> bool {
     // Freeze the entire registry while taking the snapshot. Object graph
     // traversal still requires the runtime's stop-the-world/GIL collection
     // boundary, but tracking metadata itself is now coherent under a future
@@ -378,19 +971,28 @@ fn snapshot_tracked_registry(candidates: &mut Vec<GcCandidate>) -> bool {
     candidates.clear();
     let entry_count = shards
         .iter()
-        .map(|shard| shard.entries.len())
+        .map(|shard| {
+            shard
+                .entries
+                .values()
+                .filter(|entry| selection.contains(entry.generation))
+                .count()
+        })
         .sum::<usize>();
     if !try_reserve_total(candidates, entry_count) {
         profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
         return false;
     }
     for shard in &shards {
-        candidates.extend(shard.entries.iter().filter_map(|(slot, allocation_id)| {
+        candidates.extend(shard.entries.iter().filter_map(|(slot, entry)| {
+            if !selection.contains(entry.generation) {
+                return None;
+            }
             // Acquire pairs with constructor publication. A concurrent
             // collector may observe registry insertion first, but never
             // traverses a partially initialized payload.
             unsafe { (*header_from_obj_ptr(slot.0)).gc_is_published() }.then_some(GcCandidate {
-                allocation_id: *allocation_id,
+                allocation_id: entry.allocation_id,
                 ptr: *slot,
             })
         }));
@@ -398,6 +1000,78 @@ fn snapshot_tracked_registry(candidates: &mut Vec<GcCandidate>) -> bool {
     drop(shards);
     candidates.sort_unstable_by_key(|candidate| candidate.allocation_id);
     true
+}
+
+fn snapshot_tracked_registry(candidates: &mut Vec<GcCandidate>, generation: u8) -> bool {
+    snapshot_registry(candidates, RegistrySelection::Through(generation))
+}
+
+/// Move every ordinary tracked object to CPython's permanent generation.
+/// Allocation order and membership remain unchanged; normal collection
+/// snapshots exclude these entries until `unfreeze()` restores generation 2.
+pub(crate) fn freeze_tracked_registry() {
+    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+        std::array::from_fn(lock_tracked_registry_shard);
+    for shard in &mut shards {
+        for entry in shard.entries.values_mut() {
+            if entry.generation < PERMANENT_GENERATION {
+                entry.generation = PERMANENT_GENERATION;
+            }
+        }
+    }
+}
+
+pub(crate) fn unfreeze_tracked_registry() {
+    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+        std::array::from_fn(lock_tracked_registry_shard);
+    for shard in &mut shards {
+        for entry in shard.entries.values_mut() {
+            if entry.generation == PERMANENT_GENERATION {
+                entry.generation = OLDEST_GENERATION;
+            }
+        }
+    }
+}
+
+pub(crate) fn permanent_generation_count() -> usize {
+    let shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+        std::array::from_fn(lock_tracked_registry_shard);
+    shards
+        .iter()
+        .map(|shard| {
+            shard
+                .entries
+                .values()
+                .filter(|entry| entry.generation == PERMANENT_GENERATION)
+                .count()
+        })
+        .sum()
+}
+
+/// Promote one deterministic candidate partition after a collection. Holding all
+/// shards turns promotion into one metadata transaction and preserves the
+/// snapshot's allocation-ordinal order independently from hash iteration.
+fn promote_marked_candidates(
+    candidates: &[GcCandidate],
+    marks: &[u8],
+    selected_mark: u8,
+    target_generation: u8,
+) -> usize {
+    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+        std::array::from_fn(lock_tracked_registry_shard);
+    let mut promoted = 0usize;
+    for (index, candidate) in candidates.iter().enumerate() {
+        if marks[index] != selected_mark {
+            continue;
+        }
+        let shard_index = tracked_registry_shard_index(candidate.ptr.0);
+        let Some(entry) = shards[shard_index].entries.get_mut(&candidate.ptr) else {
+            continue;
+        };
+        entry.generation = target_generation;
+        promoted += 1;
+    }
+    promoted
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +1120,10 @@ pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
 /// `gc.garbage` is always empty under PEP 442).
 pub(crate) struct CollectStats {
     pub(crate) collected: usize,
+    #[cfg(test)]
+    pub(crate) scanned: usize,
+    #[cfg(test)]
+    pub(crate) survivors: usize,
     pub(crate) status: GcCollectStatus,
 }
 
@@ -458,9 +1136,15 @@ pub(crate) enum GcCollectStatus {
 }
 
 impl CollectStats {
-    fn completed(collected: usize) -> Self {
+    fn completed(collected: usize, scanned: usize, survivors: usize) -> Self {
+        #[cfg(not(test))]
+        let _ = (scanned, survivors);
         Self {
             collected,
+            #[cfg(test)]
+            scanned,
+            #[cfg(test)]
+            survivors,
             status: GcCollectStatus::Completed,
         }
     }
@@ -477,6 +1161,10 @@ impl CollectStats {
             .store(code, AtomicOrdering::Release);
         Self {
             collected: 0,
+            #[cfg(test)]
+            scanned: 0,
+            #[cfg(test)]
+            survivors: 0,
             status,
         }
     }
@@ -606,6 +1294,9 @@ struct GcScratch {
     first_unreachable: Vec<usize>,
     first_unreachable_ptrs: Vec<PtrSlot>,
     final_unreachable: Vec<usize>,
+    api_values: Vec<u64>,
+    api_targets: Vec<u64>,
+    api_target_membership: HashSet<u64>,
 }
 
 impl GcScratch {
@@ -613,7 +1304,7 @@ impl GcScratch {
         let scratch = gc_scratch_pool()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+            .pop()
             .unwrap_or_default();
         GcScratchLease {
             scratch: Some(scratch),
@@ -629,6 +1320,9 @@ impl GcScratch {
         self.first_unreachable.clear();
         self.first_unreachable_ptrs.clear();
         self.final_unreachable.clear();
+        self.api_values.clear();
+        self.api_targets.clear();
+        self.api_target_membership.clear();
         if self.index.try_reserve(len).is_err()
             || !try_reserve_total(&mut self.refs, len)
             || !try_reserve_total(&mut self.marks, len)
@@ -657,16 +1351,20 @@ impl GcScratch {
         self.first_unreachable.clear();
         self.first_unreachable_ptrs.clear();
         self.final_unreachable.clear();
+        self.api_values.clear();
+        self.api_targets.clear();
+        self.api_target_membership.clear();
     }
 }
 
-/// One collection may run per runtime at a time, and recursive collections fail
-/// before acquiring this process-wide workspace. `PtrSlot` is the runtime's
-/// canonical cross-thread opaque-pointer carrier, so the cached capacity needs
-/// no alternate raw-pointer `Send` promise. Runtime teardown drops it explicitly.
-fn gc_scratch_pool() -> &'static Mutex<Option<GcScratch>> {
-    static POOL: OnceLock<Mutex<Option<GcScratch>>> = OnceLock::new();
-    POOL.get_or_init(|| Mutex::new(None))
+/// One collection may run per runtime at a time, while collection callbacks may
+/// re-enter read-only GC introspection and therefore lease a second workspace.
+/// `PtrSlot` is the runtime's canonical cross-thread opaque-pointer carrier, so
+/// cached capacity needs no alternate raw-pointer `Send` promise. Runtime
+/// teardown drops every learned high-water buffer explicitly.
+fn gc_scratch_pool() -> &'static Mutex<Vec<GcScratch>> {
+    static POOL: OnceLock<Mutex<Vec<GcScratch>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 struct GcScratchLease {
@@ -694,19 +1392,147 @@ impl Drop for GcScratchLease {
         let mut pool = gc_scratch_pool()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if pool.replace(scratch).is_some() {
-            std::process::abort();
-        }
+        pool.push(scratch);
     }
 }
 
 /// Release the current runtime thread's cached collector high-water capacity.
 /// Called only after heap and registry teardown, so no live pointer can remain.
 pub(crate) fn gc_reset_workspace() {
-    let _ = gc_scratch_pool()
+    gc_scratch_pool()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
+        .clear();
+}
+
+fn snapshot_api_values(
+    scratch: &mut GcScratch,
+    selection: RegistrySelection,
+) -> Result<(), &'static str> {
+    if !snapshot_registry(&mut scratch.candidates, selection) {
+        return Err("tracked-registry snapshot allocation failed");
+    }
+    scratch.api_values.clear();
+    if !try_reserve_total(&mut scratch.api_values, scratch.candidates.len()) {
+        return Err("GC introspection result allocation failed");
+    }
+    Ok(())
+}
+
+/// Build `gc.get_objects()` from the same deterministic registry snapshot used
+/// by collection. `None` excludes the permanent generation; `Some(g)` selects
+/// exactly one ordinary generation, matching CPython's public contract.
+pub(crate) fn get_objects(
+    py: &PyToken<'_>,
+    generation: Option<u8>,
+) -> Result<*mut u8, &'static str> {
+    let selection = generation.map_or(RegistrySelection::Ordinary, RegistrySelection::Exact);
+    let mut scratch = GcScratch::acquire();
+    snapshot_api_values(&mut scratch, selection)?;
+    let GcScratch {
+        candidates,
+        api_values,
+        ..
+    } = &mut *scratch;
+    for candidate in candidates.iter() {
+        api_values.push(MoltObject::from_ptr(candidate.ptr.0).bits());
+    }
+    let result = crate::alloc_list(py, &scratch.api_values);
+    (!result.is_null())
+        .then_some(result)
+        .ok_or("GC introspection result allocation failed")
+}
+
+/// Build `gc.get_referents(*objects)` from the exhaustive lifecycle value
+/// authority. Unlike cycle traversal, this intentionally retains inline values.
+pub(crate) unsafe fn get_referents(
+    py: &PyToken<'_>,
+    objects_ptr: *mut u8,
+) -> Result<*mut u8, &'static str> {
+    let mut scratch = GcScratch::acquire();
+    scratch.api_values.clear();
+    let mut required = 0usize;
+    unsafe {
+        super::seq_access::with_borrowed(objects_ptr, |objects| {
+            for &bits in objects {
+                if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
+                    super::heap_lifecycle::visit_owned_values(py, ptr, &mut |_| required += 1);
+                }
+            }
+        });
+    }
+    if !try_reserve_total(&mut scratch.api_values, required) {
+        return Err("GC introspection result allocation failed");
+    }
+    unsafe {
+        super::seq_access::with_borrowed(objects_ptr, |objects| {
+            for &bits in objects {
+                if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
+                    super::heap_lifecycle::visit_owned_values(py, ptr, &mut |child| {
+                        scratch.api_values.push(child);
+                    });
+                }
+            }
+        });
+    }
+    let result = crate::alloc_list(py, &scratch.api_values);
+    (!result.is_null())
+        .then_some(result)
+        .ok_or("GC introspection result allocation failed")
+}
+
+/// Build `gc.get_referrers(*objects)` by scanning every tracked generation,
+/// including the frozen permanent generation, through the same lifecycle value
+/// authority. Each referring container appears once regardless of edge count.
+pub(crate) unsafe fn get_referrers(
+    py: &PyToken<'_>,
+    objects_ptr: *mut u8,
+) -> Result<*mut u8, &'static str> {
+    let mut scratch = GcScratch::acquire();
+    snapshot_api_values(&mut scratch, RegistrySelection::All)?;
+    scratch.api_target_membership.clear();
+    let target_count = unsafe { super::seq_access::with_borrowed(objects_ptr, <[u64]>::len) };
+    if scratch.api_target_membership.capacity() < target_count
+        && scratch
+            .api_target_membership
+            .try_reserve(target_count)
+            .is_err()
+    {
+        return Err("GC introspection target allocation failed");
+    }
+    unsafe {
+        super::seq_access::with_borrowed(objects_ptr, |values| {
+            scratch.api_target_membership.extend(values.iter().copied())
+        });
+    }
+    if scratch.api_target_membership.is_empty() {
+        return Ok(crate::alloc_list(py, &[]));
+    }
+    let args_identity = objects_ptr.expose_provenance();
+    let GcScratch {
+        candidates,
+        api_values,
+        api_target_membership,
+        ..
+    } = &mut *scratch;
+    for candidate in candidates.iter() {
+        if candidate.ptr.0.expose_provenance() == args_identity {
+            continue;
+        }
+        let mut refers = false;
+        unsafe {
+            super::heap_lifecycle::visit_owned_values(py, candidate.ptr.0, &mut |child| {
+                refers |= api_target_membership.contains(&child);
+            });
+        }
+        if refers {
+            api_values.push(MoltObject::from_ptr(candidate.ptr.0).bits());
+        }
+    }
+    let result = crate::alloc_list(py, &scratch.api_values);
+    (!result.is_null())
+        .then_some(result)
+        .ok_or("GC introspection result allocation failed")
 }
 
 #[inline]
@@ -855,6 +1681,7 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
         first_unreachable,
         first_unreachable_ptrs: _,
         final_unreachable,
+        ..
     } = scratch;
     unsafe {
         deduce_subset(
@@ -870,14 +1697,132 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
     };
 }
 
-/// The full cyclic collection. Stop-the-world under the GIL. Returns the number of
-/// objects reclaimed.
+fn gc_callback_info(
+    py: &PyToken<'_>,
+    generation: u8,
+    collected: usize,
+    uncollectable: usize,
+) -> Option<*mut u8> {
+    let keys: [&[u8]; 3] = [b"generation", b"collected", b"uncollectable"];
+    let values = [generation as usize, collected, uncollectable];
+    let mut pairs = [0u64; 6];
+    let mut owned_keys = [0u64; 3];
+    for (index, (key, value)) in keys.into_iter().zip(values).enumerate() {
+        let key_ptr = crate::alloc_string(py, key);
+        if key_ptr.is_null() {
+            for bits in &owned_keys[..index] {
+                crate::dec_ref_bits(py, *bits);
+            }
+            return None;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let value = i64::try_from(value).unwrap_or_else(|_| std::process::abort());
+        pairs[index * 2] = key_bits;
+        pairs[index * 2 + 1] = MoltObject::from_int(value).bits();
+        owned_keys[index] = key_bits;
+    }
+    let info = crate::alloc_dict_with_pairs(py, &pairs);
+    for bits in owned_keys {
+        crate::dec_ref_bits(py, bits);
+    }
+    (!info.is_null()).then_some(info)
+}
+
+fn invoke_gc_callbacks(
+    py: &PyToken<'_>,
+    scratch: &mut GcScratch,
+    phase: &'static [u8],
+    generation: u8,
+    collected: usize,
+) -> Result<(), &'static str> {
+    let callbacks_bits = crate::runtime_state(py).gc.existing_api_root_bits(py, true);
+    if callbacks_bits == 0 {
+        return Ok(());
+    }
+    let Some(callbacks_ptr) = crate::obj_from_bits(callbacks_bits).as_ptr() else {
+        crate::dec_ref_bits(py, callbacks_bits);
+        return Ok(());
+    };
+    scratch.api_targets.clear();
+    let callback_count =
+        unsafe { super::seq_access::with_borrowed(callbacks_ptr, |callbacks| callbacks.len()) };
+    if !try_reserve_total(&mut scratch.api_targets, callback_count) {
+        crate::dec_ref_bits(py, callbacks_bits);
+        return Err("GC callback snapshot allocation failed");
+    }
+    unsafe {
+        super::seq_access::with_borrowed(callbacks_ptr, |callbacks| {
+            for &callback in callbacks {
+                crate::inc_ref_bits(py, callback);
+                scratch.api_targets.push(callback);
+            }
+        });
+    }
+    crate::dec_ref_bits(py, callbacks_bits);
+    if scratch.api_targets.is_empty() {
+        return Ok(());
+    }
+
+    let phase_ptr = crate::alloc_string(py, phase);
+    let Some(info_ptr) = gc_callback_info(py, generation, collected, 0) else {
+        for callback in scratch.api_targets.drain(..) {
+            crate::dec_ref_bits(py, callback);
+        }
+        if !phase_ptr.is_null() {
+            crate::dec_ref_bits(py, MoltObject::from_ptr(phase_ptr).bits());
+        }
+        return Err("GC callback argument allocation failed");
+    };
+    if phase_ptr.is_null() {
+        for callback in scratch.api_targets.drain(..) {
+            crate::dec_ref_bits(py, callback);
+        }
+        crate::dec_ref_bits(py, MoltObject::from_ptr(info_ptr).bits());
+        return Err("GC callback argument allocation failed");
+    }
+    let phase_bits = MoltObject::from_ptr(phase_ptr).bits();
+    let info_bits = MoltObject::from_ptr(info_ptr).bits();
+    for callback in scratch.api_targets.drain(..) {
+        let result = crate::builtins::exceptions::run_unraisable(
+            py,
+            callback,
+            Some("Exception ignored in gc callback"),
+            || unsafe {
+                crate::call::dispatch::call_callable2(py, callback, phase_bits, info_bits)
+            },
+        );
+        if !crate::obj_from_bits(result).is_none() {
+            crate::dec_ref_bits(py, result);
+        }
+        crate::dec_ref_bits(py, callback);
+    }
+    crate::dec_ref_bits(py, phase_bits);
+    crate::dec_ref_bits(py, info_bits);
+    Ok(())
+}
+
+fn completed_collection(
+    py: &PyToken<'_>,
+    generation: u8,
+    collected: usize,
+    scanned: usize,
+    survivors: usize,
+) -> CollectStats {
+    crate::runtime_state(py)
+        .gc
+        .finish_collection(generation, scanned, collected, survivors);
+    CollectStats::completed(collected, scanned, survivors)
+}
+
+/// Collect one CPython generation, including every younger generation.
+/// Stop-the-world under the deterministic GIL.
 ///
 /// # Safety
 /// The GIL must be held (asserted). Reentrancy is prevented by `GC_RUNNING`.
-pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
+pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> CollectStats {
     unsafe {
         crate::gil_assert();
+        debug_assert!((generation as usize) < NUM_GENERATIONS);
 
         if cfg!(feature = "free-threaded") {
             // Raw candidate traversal requires a runtime-owned stop-the-world
@@ -896,136 +1841,239 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
         crate::runtime_state(py)
             .gc_last_failure
             .store(0, AtomicOrdering::Release);
-
-        // Snapshot directly into the reusable collector workspace. The registry
-        // mutex is released before traversal so re-entrant dec_ref during
-        // finalize/clear can update it; allocation ordinals preserve order.
         let mut scratch = GcScratch::acquire();
-        let snapshot_ok = snapshot_tracked_registry(&mut scratch.candidates);
-        if !snapshot_ok {
-            return CollectStats::failure(
+        if let Err(message) = invoke_gc_callbacks(py, &mut scratch, b"start", generation, 0) {
+            return CollectStats::failure(py, GcCollectStatus::ResourceError(message));
+        }
+        let outcome = (|| {
+            crate::runtime_state(py).gc.begin_collection(generation);
+
+            // Snapshot directly into the reusable collector workspace. The registry
+            // mutex is released before traversal so re-entrant dec_ref during
+            // finalize/clear can update it; allocation ordinals preserve order.
+            let snapshot_ok = snapshot_tracked_registry(&mut scratch.candidates, generation);
+            if !snapshot_ok {
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::ResourceError("tracked-registry snapshot allocation failed"),
+                );
+            }
+            let scanned = scratch.candidates.len();
+            let target_generation = generation.saturating_add(1).min(OLDEST_GENERATION);
+            let debug_flags = crate::runtime_state(py).gc.debug_flags();
+            if gc_trace_enabled() || debug_flags & DEBUG_STATS != 0 {
+                eprintln!("molt gc: generation={generation} candidates={scanned}",);
+            }
+            if scratch.candidates.is_empty() {
+                return completed_collection(py, generation, 0, 0, 0);
+            }
+
+            if !scratch.try_prepare_candidates() {
+                profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::ResourceError("cycle-collector scratch allocation failed"),
+                );
+            }
+
+            // STEP 1-3: trial-deletion partition using one preallocated index/mark arena.
+            deduce_all(py, &mut scratch);
+            reproject_reachable_immutable_tuples(py, &scratch.candidates, &scratch.marks);
+            if gc_trace_enabled() || debug_flags & DEBUG_STATS != 0 {
+                eprintln!(
+                    "molt gc: deduce_unreachable unreachable={}",
+                    scratch.first_unreachable.len()
+                );
+            }
+            if scratch.first_unreachable.is_empty() {
+                let survivors = promote_marked_candidates(
+                    &scratch.candidates,
+                    &scratch.marks,
+                    2,
+                    target_generation,
+                );
+                return completed_collection(py, generation, 0, scanned, survivors);
+            }
+
+            // Reserve the current detach high-water before any callback. Finalizers
+            // may grow a still-unreachable container; that case is revalidated
+            // fallibly before mutation and restores every pin on failure.
+            let (initial_edges, initial_resources) =
+                detach_requirements(py, &scratch.candidates, &scratch.first_unreachable);
+            let Some(mut detached) = super::heap_lifecycle::DetachedEdgeSink::try_with_capacities(
+                initial_edges,
+                initial_resources,
+            ) else {
+                for &PtrSlot(ptr) in &scratch.first_unreachable_ptrs {
+                    header_set_collecting(ptr, false);
+                }
+                profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::ResourceError("detached-edge reservation failed"),
+                );
+            };
+
+            // CPython promotes the reachable partition before weakref callbacks and
+            // finalizers. Once the detach reservation succeeds, the collection has
+            // a stable destruction workspace and promotion cannot be rolled back.
+            let mut survivors = promote_marked_candidates(
+                &scratch.candidates,
+                &scratch.marks,
+                2,
+                target_generation,
+            );
+
+            // Pin the entire set before the first callback/finalizer.
+            pin_unreachable(&scratch.first_unreachable_ptrs);
+
+            crate::object::weakref::weakref_handle_cycle_unreachable(
                 py,
-                GcCollectStatus::ResourceError("tracked-registry snapshot allocation failed"),
+                &scratch.first_unreachable_ptrs,
+                |wr_ptr| header_is_collecting(wr_ptr),
             );
-        }
-        reproject_immutable_tuples(py, &mut scratch.candidates);
-        if gc_trace_enabled() {
-            eprintln!(
-                "molt gc: collect_cycles candidates={}",
-                scratch.candidates.len()
-            );
-        }
-        if scratch.candidates.is_empty() {
-            return CollectStats::completed(0);
-        }
 
-        if !scratch.try_prepare_candidates() {
-            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
-            return CollectStats::failure(
-                py,
-                GcCollectStatus::ResourceError("cycle-collector scratch allocation failed"),
-            );
-        }
-
-        // STEP 1-3: trial-deletion partition using one preallocated index/mark arena.
-        deduce_all(py, &mut scratch);
-        if gc_trace_enabled() {
-            eprintln!(
-                "molt gc: deduce_unreachable unreachable={}",
-                scratch.first_unreachable.len()
-            );
-        }
-        if scratch.first_unreachable.is_empty() {
-            return CollectStats::completed(0);
-        }
-
-        // Reserve the current detach high-water before any callback. Finalizers
-        // may grow a still-unreachable container; that case is revalidated
-        // fallibly before mutation and restores every pin on failure.
-        let (initial_edges, initial_resources) =
-            detach_requirements(py, &scratch.candidates, &scratch.first_unreachable);
-        let Some(mut detached) = super::heap_lifecycle::DetachedEdgeSink::try_with_capacities(
-            initial_edges,
-            initial_resources,
-        ) else {
             for &PtrSlot(ptr) in &scratch.first_unreachable_ptrs {
-                header_set_collecting(ptr, false);
+                run_finalizer_once(py, ptr);
             }
-            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
-            return CollectStats::failure(
-                py,
-                GcCollectStatus::ResourceError("detached-edge reservation failed"),
+
+            // Reuse the exact same index, refs, mark, queue, and output storage.
+            // No allocation is permitted in the post-callback resurrection partition.
+            deduce_after_finalizers(py, &mut scratch);
+            survivors += promote_marked_candidates(
+                &scratch.candidates,
+                &scratch.marks,
+                2,
+                target_generation,
             );
-        };
-
-        // Pin the entire set before the first callback/finalizer.
-        pin_unreachable(&scratch.first_unreachable_ptrs);
-
-        crate::object::weakref::weakref_handle_cycle_unreachable(
-            py,
-            &scratch.first_unreachable_ptrs,
-            |wr_ptr| header_is_collecting(wr_ptr),
-        );
-
-        for &PtrSlot(ptr) in &scratch.first_unreachable_ptrs {
-            run_finalizer_once(py, ptr);
-        }
-
-        // Reuse the exact same index, refs, mark, queue, and output storage.
-        // No allocation is permitted in the post-callback resurrection partition.
-        deduce_after_finalizers(py, &mut scratch);
-        if scratch.final_unreachable.is_empty() {
-            release_unreachable_pins(py, &scratch.first_unreachable_ptrs);
-            return CollectStats::completed(0);
-        }
-
-        // Marks == 2 are resurrected/reachable after the second partition.
-        for &candidate_index in &scratch.first_unreachable {
-            if scratch.marks[candidate_index] == 2 {
-                let ptr = scratch.candidates[candidate_index].ptr.0;
-                let header = header_from_obj_ptr(ptr);
-                (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED);
-                dec_ref_ptr(py, ptr);
+            if scratch.final_unreachable.is_empty() {
+                release_unreachable_pins(py, &scratch.first_unreachable_ptrs);
+                return completed_collection(py, generation, 0, scanned, survivors);
             }
-        }
 
-        let collected = scratch.final_unreachable.len();
-        if gc_trace_enabled() {
-            eprintln!("molt gc: delete_garbage collected={collected}");
-        }
+            // Marks == 2 are resurrected/reachable after the second partition.
+            for &candidate_index in &scratch.first_unreachable {
+                if scratch.marks[candidate_index] == 2 {
+                    let ptr = scratch.candidates[candidate_index].ptr.0;
+                    let header = header_from_obj_ptr(ptr);
+                    (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED);
+                    dec_ref_ptr(py, ptr);
+                }
+            }
 
-        let (required_edges, required_resources) =
-            detach_requirements(py, &scratch.candidates, &scratch.final_unreachable);
-        if !detached.try_ensure_capacities(required_edges, required_resources) {
+            let collected = scratch.final_unreachable.len();
+            if gc_trace_enabled() || debug_flags & DEBUG_STATS != 0 {
+                eprintln!("molt gc: delete_garbage collected={collected}");
+            }
+
+            if debug_flags & DEBUG_COLLECTABLE != 0 {
+                for &candidate_index in &scratch.final_unreachable {
+                    let object = MoltObject::from_ptr(scratch.candidates[candidate_index].ptr.0);
+                    eprintln!("gc: collectable <{}>", crate::type_name(py, object));
+                }
+            }
+
+            if debug_flags & DEBUG_SAVEALL != 0 {
+                let garbage_bits = crate::runtime_state(py)
+                    .gc
+                    .existing_api_root_bits(py, false);
+                if garbage_bits == 0 {
+                    for &candidate_index in &scratch.final_unreachable {
+                        header_set_collecting(scratch.candidates[candidate_index].ptr.0, false);
+                    }
+                    release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+                    return CollectStats::failure(
+                        py,
+                        GcCollectStatus::ResourceError(
+                            "gc.garbage is unavailable for DEBUG_SAVEALL",
+                        ),
+                    );
+                }
+                let mut appended_all = true;
+                for &candidate_index in &scratch.final_unreachable {
+                    let bits =
+                        MoltObject::from_ptr(scratch.candidates[candidate_index].ptr.0).bits();
+                    appended_all &= crate::object::ops_list::molt_list_append_with_projection(
+                        garbage_bits,
+                        bits,
+                        std::ptr::null_mut(),
+                    );
+                }
+                crate::dec_ref_bits(py, garbage_bits);
+                for &candidate_index in &scratch.final_unreachable {
+                    header_set_collecting(scratch.candidates[candidate_index].ptr.0, false);
+                }
+                release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+                if !appended_all {
+                    return CollectStats::failure(
+                        py,
+                        GcCollectStatus::ResourceError("gc.garbage append failed"),
+                    );
+                }
+                return completed_collection(py, generation, collected, scanned, survivors);
+            }
+
+            let (required_edges, required_resources) =
+                detach_requirements(py, &scratch.candidates, &scratch.final_unreachable);
+            if !detached.try_ensure_capacities(required_edges, required_resources) {
+                for &candidate_index in &scratch.final_unreachable {
+                    header_set_collecting(scratch.candidates[candidate_index].ptr.0, false);
+                }
+                release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+                profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+                return CollectStats::failure(
+                    py,
+                    GcCollectStatus::ResourceError(
+                        "post-finalizer detached-edge reservation failed",
+                    ),
+                );
+            }
+
             for &candidate_index in &scratch.final_unreachable {
                 header_set_collecting(scratch.candidates[candidate_index].ptr.0, false);
             }
+            for &candidate_index in &scratch.final_unreachable {
+                super::heap_lifecycle::clear_cycle_edges_with_sink(
+                    py,
+                    scratch.candidates[candidate_index].ptr.0,
+                    &mut detached,
+                );
+            }
+            detached.release_all(py);
             release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
-            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
-            return CollectStats::failure(
-                py,
-                GcCollectStatus::ResourceError("post-finalizer detached-edge reservation failed"),
-            );
-        }
 
-        for &candidate_index in &scratch.final_unreachable {
-            header_set_collecting(scratch.candidates[candidate_index].ptr.0, false);
-        }
-        for &candidate_index in &scratch.final_unreachable {
-            super::heap_lifecycle::clear_cycle_edges_with_sink(
-                py,
-                scratch.candidates[candidate_index].ptr.0,
-                &mut detached,
-            );
-        }
-        detached.release_all(py);
-        release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
-
-        crate::runtime_state(py)
-            .gc_last_failure
-            .store(0, AtomicOrdering::Release);
-        CollectStats::completed(collected)
+            crate::runtime_state(py)
+                .gc_last_failure
+                .store(0, AtomicOrdering::Release);
+            completed_collection(py, generation, collected, scanned, survivors)
+        })();
+        let _ = invoke_gc_callbacks(py, &mut scratch, b"stop", generation, outcome.collected);
+        outcome
     }
+}
+
+/// Full explicit/shutdown collection (the default `gc.collect()` generation).
+pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
+    unsafe { collect_generation(py, OLDEST_GENERATION) }
+}
+
+/// Consume an allocation-scheduled collection at a generated runtime safepoint.
+/// A recursive finalizer poll re-arms the request for the next outer safepoint;
+/// resource failure likewise preserves pressure rather than silently disabling
+/// automatic GC.
+pub(crate) unsafe fn collect_pending(py: &PyToken<'_>) -> CollectStats {
+    let state = &crate::runtime_state(py).gc;
+    let Some(generation) = state.take_scheduled_generation() else {
+        return CollectStats::completed(0, 0, 0);
+    };
+    let outcome = unsafe { collect_generation(py, generation) };
+    if matches!(
+        outcome.status,
+        GcCollectStatus::ReentrantNoop | GcCollectStatus::ResourceError(_)
+    ) {
+        state.rearm_pending();
+    }
+    outcome
 }
 
 /// Run an object's `__del__` exactly once during cyclic finalization, WITHOUT the
@@ -1076,6 +2124,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             const OBJECTS: usize = 4_096;
             const ROUNDS: usize = 101;
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let _ = unsafe { collect_cycles(_py) };
             let roots = (0..OBJECTS)
                 .map(|_| {
                     let ptr = alloc_list(_py, &[]);
@@ -1102,6 +2153,84 @@ mod tests {
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
+            state.reset();
+        });
+    }
+
+    #[cfg(feature = "l7-attestation-probe")]
+    #[test]
+    #[ignore = "cycle-capable allocation/deallocation registry hot-path probe"]
+    fn cycle_capable_registry_hot_path_bench() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            const OBJECTS: usize = 4_096;
+            const ROUNDS: usize = 31;
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let _ = unsafe { collect_cycles(_py) };
+            let mut roots = Vec::with_capacity(OBJECTS);
+
+            // Warm allocator, registry shards, and Vec capacity outside the sample.
+            for _ in 0..OBJECTS {
+                let ptr = alloc_list(_py, &[]);
+                assert!(!ptr.is_null());
+                roots.push(MoltObject::from_ptr(ptr).bits());
+            }
+            for bits in roots.drain(..) {
+                dec_ref_bits(_py, bits);
+            }
+
+            let mut alloc_ns = Vec::with_capacity(ROUNDS);
+            let mut dealloc_ns = Vec::with_capacity(ROUNDS);
+            let mut round_ns = Vec::with_capacity(ROUNDS);
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            GC_REGISTRY_ACCESS_COUNT.store(0, AtomicOrdering::Relaxed);
+            let lock_contention_before =
+                GC_REGISTRY_LOCK_CONTENTION_COUNT.load(AtomicOrdering::Relaxed);
+            let lock_wait_before = GC_REGISTRY_LOCK_WAIT_NS.load(AtomicOrdering::Relaxed);
+            for _ in 0..ROUNDS {
+                let round_started = std::time::Instant::now();
+                let alloc_started = std::time::Instant::now();
+                for _ in 0..OBJECTS {
+                    let ptr = alloc_list(_py, &[]);
+                    assert!(!ptr.is_null());
+                    roots.push(MoltObject::from_ptr(ptr).bits());
+                }
+                alloc_ns.push(alloc_started.elapsed().as_nanos() as u64);
+                let dealloc_started = std::time::Instant::now();
+                for bits in roots.drain(..) {
+                    dec_ref_bits(_py, bits);
+                }
+                dealloc_ns.push(dealloc_started.elapsed().as_nanos() as u64);
+                round_ns.push(round_started.elapsed().as_nanos() as u64);
+            }
+            crate::attestation_probe::set_tracking(false);
+            let observed = crate::attestation_probe::snapshot();
+            let registry_accesses = GC_REGISTRY_ACCESS_COUNT.load(AtomicOrdering::Relaxed);
+            let lock_contention = GC_REGISTRY_LOCK_CONTENTION_COUNT
+                .load(AtomicOrdering::Relaxed)
+                .saturating_sub(lock_contention_before);
+            let lock_wait_ns = GC_REGISTRY_LOCK_WAIT_NS
+                .load(AtomicOrdering::Relaxed)
+                .saturating_sub(lock_wait_before);
+            alloc_ns.sort_unstable();
+            dealloc_ns.sort_unstable();
+            round_ns.sort_unstable();
+            println!(
+                "{{\"objects\":{OBJECTS},\"rounds\":{ROUNDS},\"registry_accesses\":{registry_accesses},\"lock_contention\":{lock_contention},\"lock_wait_ns\":{lock_wait_ns},\"allocations\":{},\"allocated_bytes\":{},\"peak_live_bytes\":{},\"alloc_median_ns\":{},\"alloc_p95_ns\":{},\"dealloc_median_ns\":{},\"dealloc_p95_ns\":{},\"round_median_ns\":{},\"round_p95_ns\":{}}}",
+                observed.allocations,
+                observed.allocated_bytes,
+                observed.peak_live_bytes,
+                alloc_ns[ROUNDS / 2],
+                alloc_ns[ROUNDS * 95 / 100],
+                dealloc_ns[ROUNDS / 2],
+                dealloc_ns[ROUNDS * 95 / 100],
+                round_ns[ROUNDS / 2],
+                round_ns[ROUNDS * 95 / 100],
+            );
+            assert_eq!(registry_accesses, (OBJECTS * ROUNDS * 2) as u64);
+            state.reset();
         });
     }
 
@@ -1110,6 +2239,9 @@ mod tests {
     fn repeated_reachable_collection_workspace_allocations() {
         let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let _ = unsafe { collect_cycles(_py) };
             let roots = (0..256)
                 .map(|_| {
                     let ptr = alloc_list(_py, &[]);
@@ -1134,6 +2266,182 @@ mod tests {
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
+            state.reset();
+        });
+    }
+
+    #[test]
+    fn generation_control_matches_cpython_312_threshold_and_count_semantics() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = GcRuntimeState::new();
+            assert!(state.enabled());
+            assert_eq!(state.thresholds(), [700, 10, 10]);
+            assert_eq!(state.counts(), [0, 0, 0]);
+
+            state.set_thresholds([2, 1, 1]);
+            state.on_allocation();
+            state.on_allocation();
+            assert_eq!(state.take_scheduled_generation(), None);
+            state.on_allocation();
+            assert_eq!(state.take_scheduled_generation(), Some(0));
+            state.begin_collection(0);
+            state.finish_collection(0, 3, 0, 3);
+            assert_eq!(state.counts(), [0, 1, 0]);
+            assert_eq!(state.generation_stats()[0].collections, 1);
+
+            state.set_enabled(false);
+            for _ in 0..8 {
+                state.on_allocation();
+            }
+            assert_eq!(state.take_scheduled_generation(), None);
+            state.set_enabled(true);
+            assert_eq!(state.take_scheduled_generation(), Some(0));
+
+            state.set_thresholds([0, 1, 1]);
+            for _ in 0..8 {
+                state.on_allocation();
+            }
+            assert_eq!(state.take_scheduled_generation(), None);
+        });
+    }
+
+    #[test]
+    fn young_collection_excludes_promoted_long_lived_objects() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let _ = unsafe { collect_cycles(_py) };
+
+            let long_lived = (0..512)
+                .map(|_| {
+                    let ptr = alloc_list(_py, &[]);
+                    assert!(!ptr.is_null());
+                    MoltObject::from_ptr(ptr).bits()
+                })
+                .collect::<Vec<_>>();
+            let promotion = unsafe { collect_generation(_py, 0) };
+            assert_eq!(promotion.status, GcCollectStatus::Completed);
+            assert_eq!(promotion.scanned, 512);
+            assert_eq!(promotion.survivors, 512);
+
+            let young = (0..16)
+                .map(|_| {
+                    let ptr = alloc_list(_py, &[]);
+                    assert!(!ptr.is_null());
+                    MoltObject::from_ptr(ptr).bits()
+                })
+                .collect::<Vec<_>>();
+            let young_only = unsafe { collect_generation(_py, 0) };
+            assert_eq!(young_only.status, GcCollectStatus::Completed);
+            assert_eq!(young_only.scanned, 16);
+            assert_eq!(young_only.survivors, 16);
+            assert_eq!(promotion.scanned / young_only.scanned, 32);
+
+            for bits in young.into_iter().chain(long_lived) {
+                dec_ref_bits(_py, bits);
+            }
+            state.reset();
+        });
+    }
+
+    #[test]
+    fn automatic_collection_is_deferred_to_the_runtime_safepoint() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let _ = unsafe { collect_cycles(_py) };
+            state.reset();
+            state.set_thresholds([2, 10, 10]);
+
+            let roots = (0..3)
+                .map(|_| {
+                    let ptr = alloc_list(_py, &[]);
+                    assert!(!ptr.is_null());
+                    MoltObject::from_ptr(ptr).bits()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(state.counts()[0], 3);
+            assert_eq!(state.generation_stats()[0].collections, 0);
+
+            let outcome = unsafe { collect_pending(_py) };
+            assert_eq!(outcome.status, GcCollectStatus::Completed);
+            assert_eq!(outcome.scanned, 3);
+            assert_eq!(outcome.survivors, 3);
+            assert_eq!(state.counts(), [0, 1, 0]);
+            assert_eq!(state.generation_stats()[0].collections, 1);
+
+            for bits in roots {
+                dec_ref_bits(_py, bits);
+            }
+            state.reset();
+        });
+    }
+
+    #[test]
+    #[ignore = "generational GC long-lived/young scan and tail-latency probe"]
+    fn generational_scan_reduction_bench() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            const LONG_LIVED: usize = 4_096;
+            const YOUNG: usize = 64;
+            const ROUNDS: usize = 31;
+            let state = &crate::runtime_state(_py).gc;
+            state.set_enabled(false);
+            let baseline = unsafe { collect_cycles(_py) }.scanned;
+            let roots = (0..LONG_LIVED)
+                .map(|_| {
+                    let ptr = alloc_list(_py, &[]);
+                    assert!(!ptr.is_null());
+                    MoltObject::from_ptr(ptr).bits()
+                })
+                .collect::<Vec<_>>();
+            let full_scan = unsafe { collect_cycles(_py) }.scanned;
+            assert!(
+                (baseline + LONG_LIVED).abs_diff(full_scan) <= baseline,
+                "long-lived population did not enter the full-generation snapshot: baseline={baseline} full={full_scan}"
+            );
+
+            let mut young_ns = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                let young = (0..YOUNG)
+                    .map(|_| {
+                        let ptr = alloc_list(_py, &[]);
+                        assert!(!ptr.is_null());
+                        MoltObject::from_ptr(ptr).bits()
+                    })
+                    .collect::<Vec<_>>();
+                let started = Instant::now();
+                let outcome = unsafe { collect_generation(_py, 0) };
+                young_ns.push(started.elapsed().as_nanos() as u64);
+                assert_eq!(outcome.scanned, YOUNG);
+                for bits in young {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+            let mut full_ns = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                let started = Instant::now();
+                let outcome = unsafe { collect_cycles(_py) };
+                full_ns.push(started.elapsed().as_nanos() as u64);
+                assert_eq!(outcome.scanned, full_scan);
+            }
+            young_ns.sort_unstable();
+            full_ns.sort_unstable();
+            println!(
+                "{{\"long_lived\":{LONG_LIVED},\"young\":{YOUNG},\"rounds\":{ROUNDS},\"scan_reduction_x\":{},\"young_median_ns\":{},\"young_p95_ns\":{},\"full_median_ns\":{},\"full_p95_ns\":{}}}",
+                full_scan / YOUNG,
+                young_ns[ROUNDS / 2],
+                young_ns[ROUNDS * 95 / 100],
+                full_ns[ROUNDS / 2],
+                full_ns[ROUNDS * 95 / 100],
+            );
+            for bits in roots {
+                dec_ref_bits(_py, bits);
+            }
+            state.reset();
         });
     }
 
@@ -1149,6 +2457,18 @@ mod tests {
             counts.iter().copied().max().unwrap_or(0) < 100,
             "compact arena distribution is pathologically skewed: {counts:?}"
         );
+    }
+
+    #[test]
+    fn process_registry_rejects_competing_runtime_owner() {
+        let owner = AtomicUsize::new(0);
+        assert_eq!(claim_registry_owner(&owner, 0x111), Ok(()));
+        assert_eq!(claim_registry_owner(&owner, 0x111), Ok(()));
+        assert_eq!(claim_registry_owner(&owner, 0x222), Err(0x111));
+        assert_eq!(release_registry_owner(&owner, 0x222), Err(0x111));
+        assert_eq!(release_registry_owner(&owner, 0x111), Ok(()));
+        assert_eq!(claim_registry_owner(&owner, 0x222), Ok(()));
+        assert_eq!(release_registry_owner(&owner, 0x222), Ok(()));
     }
 
     #[test]
@@ -1360,8 +2680,8 @@ mod tests {
             unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
             assert_eq!(
                 unsafe { collect_cycles(_py) }.collected,
-                2,
-                "releasing the direct C root exposes the exception and its tracked args tuple"
+                1,
+                "the prior collection projected the atomic args tuple out of GC; releasing the direct C root exposes the exception cycle"
             );
             assert!(!crate::exception_pending(_py));
         });
