@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,12 @@ from molt.browser_asset_closure import (
     wasm_loader_asset_closure,
     wasm_loader_asset_scope_paths,
 )
-from tools.gen_browser_asset_graph import AssetSource, generate, scan_sources
+from tools.gen_browser_asset_graph import (
+    AssetSource,
+    generate,
+    generated_output_is_current,
+    scan_sources,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +97,75 @@ def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls == 1
     assert len(results) == 32
     assert telemetry["source_count"] == 32
+
+
+def test_generated_output_check_accepts_git_platform_line_endings(tmp_path: Path) -> None:
+    output = tmp_path / "graph.json"
+    generated = b'{\n  "schema_version": 2\n}\n'
+    output.write_bytes(generated.replace(b"\n", b"\r\n"))
+    assert generated_output_is_current(output, generated)
+
+    output.write_bytes(output.read_bytes().replace(b"2", b"3"))
+    assert not generated_output_is_current(output, generated)
+
+
+def test_scanner_waits_for_chunked_nonblocking_stdin() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required")
+    scanner_root = ROOT / "tools" / "browser_asset_graph"
+    payload = json.dumps(
+        {
+            "sources": [
+                {
+                    "id": "fixture",
+                    "path": "fixture.js",
+                    "role": "browser",
+                    "source": "new Worker('./worker.js');\n",
+                    "source_type": "module",
+                }
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    process = subprocess.Popen(
+        [node, str(scanner_root / "scan.mjs")],
+        stdin=read_fd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=scanner_root,
+    )
+    os.close(read_fd)
+    try:
+        # Give the child a chance to observe an empty nonblocking pipe. The old
+        # readFileSync(0) authority failed here with EAGAIN on hosted runners.
+        time.sleep(0.05)
+        with os.fdopen(write_fd, "wb", buffering=0) as stream:
+            for offset in range(0, len(payload), 7):
+                stream.write(payload[offset : offset + 7])
+                time.sleep(0.001)
+        write_fd = -1
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if write_fd >= 0:
+            os.close(write_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 0, stderr.decode(errors="replace")
+    result = json.loads(stdout)
+    assert result["telemetry"]["source_bytes"] == len(payload)
+    assert result["results"][0]["references"] == [
+        {
+            "column": 1,
+            "kind": "worker",
+            "line": 1,
+            "request": "./worker.js",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
