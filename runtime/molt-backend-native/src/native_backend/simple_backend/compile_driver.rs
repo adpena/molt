@@ -1,3 +1,4 @@
+use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
 
 #[cfg(feature = "native-backend")]
@@ -7,8 +8,8 @@ impl SimpleBackend {
         // missing LLVM feature must fail closed instead of substituting a
         // different backend and producing misleading validation evidence.
         let backend_setting = env_setting("MOLT_BACKEND");
-        let use_llvm = backend_setting_requests_llvm(backend_setting.as_deref());
-        self.compile_selected(ir, use_llvm)
+        let backend = select_native_codegen_backend(backend_setting.as_deref());
+        self.compile_selected(ir, backend)
     }
 
     /// Compile directly through LLVM without mutating process-global backend
@@ -16,17 +17,17 @@ impl SimpleBackend {
     /// and parallel tests.
     #[cfg(feature = "llvm")]
     pub fn compile_llvm(self, ir: SimpleIR) -> CompileOutput {
-        self.compile_selected(ir, true)
+        self.compile_selected(ir, NativeCodegenBackend::Llvm)
     }
 
-    fn compile_selected(mut self, ir: SimpleIR, use_llvm: bool) -> CompileOutput {
+    fn compile_selected(mut self, ir: SimpleIR, backend: NativeCodegenBackend) -> CompileOutput {
+        let use_llvm = backend.uses_llvm();
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        assert_requested_llvm_backend_available(use_llvm);
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
         let emit_resolver_here = prepared.emit_resolver_here;
         let app_callable_manifest = prepared.app_callable_manifest;

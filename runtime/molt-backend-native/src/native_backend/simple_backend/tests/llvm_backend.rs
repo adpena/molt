@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(feature = "llvm")]
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
     let _guard = acquire_backend_env_lock();
@@ -107,19 +106,4 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         None => unsafe { std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS") },
     }
     let _ = std::fs::remove_dir_all(&tmp_dir);
-}
-
-#[cfg(not(feature = "llvm"))]
-#[test]
-#[should_panic(
-    expected = "MOLT_BACKEND=llvm requested but molt-backend was built without the llvm feature"
-)]
-fn llvm_backend_request_without_feature_fails_closed() {
-    assert_requested_llvm_backend_available(true);
-}
-
-#[cfg(not(feature = "llvm"))]
-#[test]
-fn llvm_missing_feature_guard_allows_non_llvm_backend_selection() {
-    assert_requested_llvm_backend_available(false);
 }
