@@ -64,7 +64,7 @@ The hazard inventory -> countermeasure map (the spec this file implements)
        -> `probe` reports size+mtime (python `os.stat`) and pid liveness
           (`os.kill(pid, 0)`), replacing ad-hoc shell one-liners.
  10. Gate selection by change-class
-       -> `integrate` reads tools/molt_dev_gates.toml (touched-path glob ->
+       -> `integrate` reads tools/proof_plan.toml (touched-path glob ->
           required gate commands) and runs exactly the gates the change-class
           demands; --extra-gate adds arc-specific gates.
  11. Backgrounded long-runs die silently (observed 2026-06-06, twice in one
@@ -165,7 +165,7 @@ from dirty_tree_policy import (
 # Constants / locations
 # --------------------------------------------------------------------------
 
-GATES_CONFIG_NAME = "molt_dev_gates.toml"
+GATES_CONFIG_NAME = "proof_plan.toml"
 
 # Recovery marker prefix for secure-wip commits, greppable so a salvaged WIP is
 # never mistaken for a deliberate landing.

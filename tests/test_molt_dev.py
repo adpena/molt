@@ -64,7 +64,7 @@ import dirty_tree_policy  # noqa: E402
 from molt_dev_common import _run_fast_captured_command  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
-COMMITTED_GATES = REPO_ROOT / "tools" / "molt_dev_gates.toml"
+COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
 KEYED_PIN_DIGEST = "0123456789abcdef" * 4
 KEYED_RUNTIME_PIN = f"wasm/molt_runtime.wasm.{KEYED_PIN_DIGEST}.sha256"
 NON_KEYED_RUNTIME_PIN = "wasm/molt_runtime.wasm.release-fast.sha256"
@@ -171,12 +171,12 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     assert "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings" in (
         gates
     )
-    assert "cargo test -p molt-tir --all-features" in gates
+    assert "cargo test -p molt-tir --all-features --no-fail-fast" in gates
     assert (
         "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features" in gates
+    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
@@ -184,7 +184,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
         "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features" in gates
+    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
@@ -192,7 +192,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
         "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
     )
-    assert "cargo test -p molt-passes --all-features" in gates
+    assert "cargo test -p molt-passes --all-features --no-fail-fast" in gates
 
 
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):

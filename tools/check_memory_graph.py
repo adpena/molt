@@ -14,7 +14,7 @@ by ``POINTERS.md``. Two integrity invariants keep it navigable by machine:
 
 LIFECYCLE (A9). This lands WARN-ONLY: ``--check`` prints the report and ALWAYS
 exits 0. The NAMED flip condition is recorded as a ``[[gate_flip]]`` entry in
-``tools/molt_dev_gates.toml`` (``name = "memory_graph_integrity"``). Its
+``tools/proof_plan.toml`` (``name = "memory_graph_integrity"``). Its
 ``strict_when`` is deliberately a *manual-review* (free-text) token, not a machine
 ``live_count == 0``: the live corpus lives in Claude's auto-memory dir, which CI
 cannot see (``discover_memory_dir`` returns ``None`` in CI -> 0/0), so only the

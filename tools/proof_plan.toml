@@ -1,6 +1,171 @@
-# molt_dev_gates.toml — the change-class -> required-gates manifest.
+# proof_plan.toml — the sole path-to-proof policy authority.
 #
-# Consumed by tools/molt_dev.py `integrate` (hazard 10): the set of touched
+# CI families, local integration rules, and strict-flip proof authorities live
+# together here.  Generated workflow matrices and documentation are derived by
+# tools/gen_proof_plan.py; event selection is performed by tools/proof_plan.py.
+# Workflows retain only executor mechanics.  Do not add path classifiers to
+# workflow YAML or another tool.
+
+schema = "molt.proof-plan.v1"
+
+authority_inputs = [
+  "tools/proof_plan.py",
+  "tools/proof_plan.toml",
+  "tools/gen_proof_plan.py",
+  "tests/test_proof_plan.py",
+  "tests/test_ci_workflow_topology.py",
+]
+
+# Gates that run for any non-empty local integration change.
+always = [
+  "python3 tools/venv_exec.py python -m ruff check .",
+  "python3 tools/venv_exec.py python -m ruff format --check .",
+  "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
+  "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
+]
+
+[[ci_family]]
+name = "python_tooling"
+description = "Python compiler, developer tooling, and smoke-contract proof."
+inputs = [".github/workflows/ci.yml", ".pre-commit-config.yaml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/**", "tools/**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "python-tooling-smoke"
+tiers = ["pre-push", "pr", "main"]
+required = true
+timeout_minutes = 25
+memory_class = "medium"
+cache_domain = "python-dev"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = []
+resource_class = "python-tests"
+targets = ["native"]
+backends = ["python-tooling"]
+profiles = ["dev"]
+python_versions = ["3.12"]
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+[[ci_family]]
+name = "rust"
+description = "Rust workspace compile, lint, test, and target-smoke proof."
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "rust-build-unit-smoke"
+tiers = ["pre-push", "pr", "main"]
+required = true
+timeout_minutes = 60
+memory_class = "compile-heavy"
+cache_domain = "cargo-workspace"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = []
+resource_class = "compiler-build-resource"
+targets = ["native", "wasm32-unknown", "wasm32-wasip1", "i686"]
+backends = ["rust", "native", "wasm"]
+profiles = ["dev", "release-fast"]
+python_versions = ["3.12"]
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+[[ci_family]]
+name = "llvm"
+description = "LLVM and MLIR compiler stack build, lowering, and differential proof."
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/tools/test_guarded_exec.py", "tools/bootstrap_llvm.py", "tools/guarded_exec.py", "runtime/molt-backend/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+executor = "github-job"
+workflow = ".github/workflows/ci.yml"
+job = "llvm-backend"
+tiers = ["pre-push", "pr", "main", "nightly"]
+required = true
+timeout_minutes = 60
+memory_class = "compile-heavy"
+cache_domain = "llvm-cargo"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = ["rust"]
+resource_class = "compiler-build-resource"
+targets = ["native"]
+backends = ["llvm", "mlir"]
+profiles = ["release-fast"]
+python_versions = ["3.12"]
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+[[ci_family]]
+name = "python_security"
+description = "Locked Python dependency vulnerability proof."
+inputs = [".github/workflows/security_hardening.yml", ".python-version", "pyproject.toml", "uv.lock"]
+executor = "github-job"
+workflow = ".github/workflows/security_hardening.yml"
+job = "python-security"
+tiers = ["pr", "main", "weekly"]
+required = true
+timeout_minutes = 20
+memory_class = "light"
+cache_domain = "python-security"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = []
+resource_class = "network-audit"
+targets = ["host"]
+backends = ["python"]
+profiles = ["audit"]
+python_versions = ["3.12"]
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+[[ci_family]]
+name = "rust_security"
+description = "Locked Rust dependency policy and vulnerability proof."
+inputs = [".github/workflows/security_hardening.yml", "Cargo.lock", "Cargo.toml", "deny.toml", "rust-toolchain.toml"]
+executor = "github-job"
+workflow = ".github/workflows/security_hardening.yml"
+job = "rust-security"
+tiers = ["pr", "main", "weekly"]
+required = true
+timeout_minutes = 20
+memory_class = "medium"
+cache_domain = "rust-security"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = []
+resource_class = "network-audit"
+targets = ["host"]
+backends = ["rust"]
+profiles = ["audit"]
+python_versions = []
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+[[ci_family]]
+name = "formal"
+description = "Lean, Quint, Luau correspondence, deterministic IR, and formal-method proof."
+inputs = ["formal/**", "runtime/molt-backend-luau/**", "runtime/molt-ir/**", "runtime/molt-tir/**", "runtime/molt-passes/**", "tools/check_formal_methods.py", "tools/check_correspondence.py", ".github/workflows/formal.yml"]
+executor = "github-workflow"
+workflow = ".github/workflows/formal.yml"
+job = "formal-methods"
+tiers = ["pr", "main", "nightly"]
+required = true
+timeout_minutes = 45
+memory_class = "medium"
+cache_domain = "formal"
+artifact_schema = "molt.proof-result.v1"
+zero_work_policy = "fail"
+dependencies = []
+resource_class = "formal-tools"
+targets = ["tir", "luau"]
+backends = ["formal", "luau"]
+profiles = ["verification"]
+python_versions = ["3.12"]
+operating_systems = ["ubuntu"]
+architectures = ["x86_64"]
+
+# Local integration families retain their established command spelling below.
+# `tools/molt_dev.py integrate` reads these rules from this same authority.
+#
+# Local rules are consumed by tools/molt_dev.py `integrate` (hazard 10): touched
 # paths in the commits being integrated is matched against each rule's `globs`;
 # a rule matches when ANY touched path matches ANY of its globs, and its `gates`
 # are added to the run. `always` gates run for every non-empty change. Gates are
@@ -23,15 +188,6 @@
 # require_fresh_toolchain = true on a rule makes `integrate` additionally
 # demand a fresh built binary (hazard 6) when --toolchain-binary is supplied —
 # so a Rust change is never integrated against a stale artifact's gate result.
-
-# Gates that run for ANY non-empty change: the cheap Python contracts that must
-# never regress regardless of what was touched.
-always = [
-  "python3 tools/venv_exec.py python -m ruff check .",
-  "python3 tools/venv_exec.py python -m ruff format --check .",
-  "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
-  "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
-]
 
 # --- Native (Cranelift) backend Rust -------------------------------------
 [[rule]]
@@ -446,7 +602,7 @@ globs = [
   "tools/check_rust_toolchain.py",
   "tools/check_rustfmt.py",
   "tools/molt_dev.py",
-  "tools/molt_dev_gates.toml",
+  "tools/proof_plan.toml",
   "tests/tools/test_check_rust_ffi_blocks.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
@@ -555,10 +711,17 @@ name = "ci-wiring"
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/workflows/**",
+  ".github/proof-plan.generated.json",
+  "docs/agent/PROOF_PLAN.generated.md",
   "pyproject.toml",
+  "tools/proof_plan.py",
+  "tools/proof_plan.toml",
+  "tools/gen_proof_plan.py",
+  "tests/test_proof_plan.py",
 ]
 gates = [
-  "python3 tools/venv_exec.py python -m pytest -q tests/test_ci_workflow_topology.py",
+  "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py",
 ]
 
 # --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------

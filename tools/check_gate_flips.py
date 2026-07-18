@@ -5,7 +5,7 @@ pact's lifecycle discipline: a gate lands WARN-ONLY with a NAMED, machine-
 checkable flip condition, then is flipped to STRICT in a separate commit once
 the condition is met. Left to prose, the flip is forgotten and gates rot
 warn-only forever. This tool is "the ratchet that ratchets the ratchets": it
-reads the ``[[gate_flip]]`` registry in ``tools/molt_dev_gates.toml`` and reports
+reads the ``[[gate_flip]]`` registry in ``tools/proof_plan.toml`` and reports
 any gate whose ``strict_when`` is MET but is still ``state = "warn"``.
 
 ``strict_when`` machine tokens:
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "tools" / "molt_dev_gates.toml"
+DEFAULT_CONFIG = ROOT / "tools" / "proof_plan.toml"
 
 _COND_RE = re.compile(r"^live_count\s*(==|<=|<|>=|>)\s*(\d+)$")
 
