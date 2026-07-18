@@ -9,6 +9,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+formal/lean/.lake/
+formal/lean/lake-packages/
 .playwright-mcp/
 .wrangler/
 .tmp/
@@ -62,6 +64,7 @@ hello_molt
 main_stub.c
 *.exe
 logs/
+proof-receipts/
 tests/harness/reports/
 docs/python_documentation/
 third_party/

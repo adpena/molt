@@ -12,7 +12,11 @@ molt-tir = { path = "../molt-tir" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 libc = "0.2"
 llvm-sys = { version = "221.0.1", optional = true }
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
+# Molt's shipped native compiler supports the primary x86 and ARM64 families
+# independent of the machine running the compiler. `host-arch` preserves native
+# support for additional Cranelift hosts while the explicit features keep the
+# documented x86_64 <-> aarch64 cross-compilation contract available everywhere.
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64", "host-arch", "std", "unwind", "x86"] }
 cranelift-frontend = { version = "0.133.1", optional = true }
 cranelift-module = { version = "0.133.1", optional = true }
 cranelift-object = { version = "0.133.1", optional = true }
@@ -29,11 +33,9 @@ molt-tir = { path = "../molt-tir", features = ["test-util"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64"] }
 inkwell = { version = "0.9", default-features = false, features = ["target-aarch64"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }
 inkwell = { version = "0.9", default-features = false, features = ["target-x86"], optional = true }
 
 [target.'cfg(target_arch = "x86")'.dependencies]
@@ -46,14 +48,12 @@ inkwell = { version = "0.9", default-features = false, features = ["target-arm"]
 inkwell = { version = "0.9", default-features = false, features = ["target-riscv"], optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["riscv64"] }
 inkwell = { version = "0.9", default-features = false, features = ["target-riscv"], optional = true }
 
 [target.'cfg(any(target_arch = "powerpc", target_arch = "powerpc64"))'.dependencies]
 inkwell = { version = "0.9", default-features = false, features = ["target-powerpc"], optional = true }
 
 [target.'cfg(target_arch = "s390x")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["s390x"] }
 inkwell = { version = "0.9", default-features = false, features = ["target-systemz"], optional = true }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]

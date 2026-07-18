@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,19 +46,23 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "name: Changed Path Classifier" in ci_text
     # The frontend-Python ty type-check is a zero-diagnostic ratchet enforced in
     # CI (pre-commit is not run in Actions), mirroring the pre-commit `ty` hook.
-    assert "uv run ty check src" in ci_text
-    # The differential suite-layout checker (lane/naming hygiene) runs in
-    # docs-gates alongside the suite-honesty ratchet — a blocking gate so new
-    # lane/naming debt cannot land silently.
-    assert "uv run python3 tools/check_differential_suite_layout.py" in ci_text
-    assert "python-tooling-smoke:" in ci_text
+    assert 'argv = ["uv", "run", "ty", "check", "src"]' in _read(
+        "tools/proof_plan.toml"
+    )
+    # Proof spelling lives only in the manifest; docs-gates is executor mechanics.
+    assert "--run-family repository_policy --receipt" in ci_text
+    assert 'id = "repository.differential.layout"' in _read("tools/proof_plan.toml")
+    assert "uv run python3 tools/check_differential_suite_layout.py" not in ci_text
+    assert "python-static:" in ci_text
+    assert "python-unit:" in ci_text
+    assert "native-integration:" in ci_text
     assert "needs: classify-changes" in ci_text
-    assert "if: needs.classify-changes.outputs.python_tooling == 'true'" in ci_text
+    assert "if: needs.classify-changes.outputs.python_static == 'true'" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
     assert "if: needs.classify-changes.outputs.rust == 'true'" in ci_text
     assert "llvm-backend:" in ci_text
     assert "if: needs.classify-changes.outputs.llvm == 'true'" in ci_text
-    assert "needs: docs-gates" not in ci_text
+    assert "      - docs-gates" in ci_text
     assert "differential-tests:" not in ci_text
     assert "benchmark:" not in ci_text
     assert "parity:" not in ci_text
@@ -73,12 +78,9 @@ def test_ci_push_path_is_cheap_only() -> None:
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
     assert "uv sync --frozen --group dev" in ci_text
-    assert '-m "not slow"' in ci_text
-    assert "Run bench CLI native smoke tests" in ci_text
-    assert (
-        "tests/test_bench_tool.py::"
-        "test_bench_cli_native_smoke_contract_batch_reuses_compiler" in ci_text
-    )
+    proof_plan_text = _read("tools/proof_plan.toml")
+    assert '"-m", "not slow"' in proof_plan_text
+    assert "native.integration.bench-cli" in proof_plan_text
     assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
         ci_text
     )
@@ -86,36 +88,16 @@ def test_ci_push_path_is_cheap_only() -> None:
         "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
         not in (ci_text)
     )
-    assert "tests/test_bench_harness.py" in ci_text
-    assert "tests/test_bench_tool.py" in ci_text
-    assert "tests/test_ci_workflow_topology.py" in ci_text
-    assert "tests/test_harness_conformance.py" in ci_text
-    assert "tests/test_harness_layers.py" in ci_text
-    assert "tests/test_monty_conformance_runner.py" in ci_text
-    assert "Install native linker" in ci_text
-    assert "sudo apt-get install -y lld" in ci_text
-    assert "ld.lld --version" in ci_text
-    timeout_guard = (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
-        "--timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC --"
-    )
-    timeout_steps = {
-        "Run Python smoke tests",
-        "Run bench CLI native smoke tests",
-        "LLVM int-overflow differential tests (build/run vs CPython)",
-    }
-    blocks_by_name = {
-        block.splitlines()[0].removeprefix("      - name: "): block
-        for block in _named_step_blocks(ci_text)
-    }
-    assert ci_text.count(timeout_guard) == len(timeout_steps)
-    for name in timeout_steps:
-        block = blocks_by_name[name]
-        assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in block
-        assert timeout_guard in block
-    assert timeout_guard not in blocks_by_name["Test capability manifest import"]
-    assert timeout_guard not in blocks_by_name["Test harness report import"]
-    assert ci_text.count("Run bench CLI native smoke tests") == 1
+    assert "tests/test_bench_harness.py" in proof_plan_text
+    assert "tests/test_bench_tool.py" in proof_plan_text
+    assert "tests/test_ci_workflow_topology.py" in proof_plan_text
+    assert "tests/test_harness_conformance.py" in proof_plan_text
+    assert "tests/test_harness_layers.py" in proof_plan_text
+    assert "tests/test_monty_conformance_runner.py" in proof_plan_text
+    assert "Setup canonical native linker SDK" in ci_text
+    assert "uses: ./.github/actions/setup-llvm" in ci_text
+    assert "sudo apt-get install -y lld" not in ci_text
+    assert "timeout_seconds" in proof_plan_text
     # Four jobs summarize hotspots: docs-gates, python-tooling-smoke,
     # rust-build-unit-smoke, and the LLVM backend job.
     assert ci_text.count("Summarize guarded command hotspots") == 4
@@ -126,25 +108,26 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
     assert 'python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"' in (ci_text)
-    assert "python_tooling: ${{ steps.paths.outputs.python_tooling }}" in ci_text
+    assert "python_static: ${{ steps.paths.outputs.python_static }}" in ci_text
+    assert "python_unit: ${{ steps.paths.outputs.python_unit }}" in ci_text
+    assert (
+        "native_integration: ${{ steps.paths.outputs.native_integration }}" in ci_text
+    )
     assert "rust: ${{ steps.paths.outputs.rust }}" in ci_text
     assert "llvm: ${{ steps.paths.outputs.llvm }}" in ci_text
     assert "python_security: ${{ steps.paths.outputs.python_security }}" in ci_text
     assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in ci_text
     assert "matrix: ${{ steps.paths.outputs.matrix }}" in ci_text
     assert "selected: ${{ steps.paths.outputs.selected }}" in ci_text
-    assert ci_text.count("needs: classify-changes") == 4
+    assert ci_text.count("needs: classify-changes") >= 4
     assert "proof-plan-verdict:" in ci_text
     assert "name: Proof Plan Verdict" in ci_text
     assert (
         "--verify-selected '${{ needs.classify-changes.outputs.selected }}'" in ci_text
     )
-    assert "python_tooling=${{ needs.python-tooling-smoke.result }}:${{" in ci_text
-    assert "rust=${{ needs.rust-build-unit-smoke.result }}:${{" in ci_text
-    assert "llvm=${{ needs.llvm-backend.result }}:${{" in ci_text
-    assert "python_security=${{ needs.security-hardening.result }}:${{" in ci_text
-    assert "rust_security=${{ needs.security-hardening.result }}:${{" in ci_text
-    assert ci_text.count("== 'success' && 1 || 0") == 5
+    assert "--receipt-dir proof-receipts" in ci_text
+    assert "actions/download-artifact@v7" in ci_text
+    assert "== 'success' && 1 || 0" not in ci_text
     assert ci_text.count("fetch-depth: 0") == 1
 
 
@@ -246,7 +229,6 @@ def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
         "actions/setup-node@v4",
         "actions/cache@v4",
         "actions/upload-artifact@v4",
-        "actions/upload-artifact@v6",
         "actions/download-artifact@v4",
         "actions/github-script@v7",
         "actions/attest-build-provenance@v2",
@@ -276,6 +258,63 @@ def test_github_workflows_use_current_setup_uv_release() -> None:
             workflow,
             setup_uv_lines,
         )
+
+
+def test_executable_proof_workflows_pin_uv_tool_version() -> None:
+    for relative in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/molt-wasm-ci.yml",
+        ".github/workflows/security_hardening.yml",
+    ):
+        text = _read(relative)
+        assert text.count("astral-sh/setup-uv@v8.2.0") == text.count(
+            'version: "0.11.24"'
+        ), relative
+
+
+def test_executable_receipt_root_is_git_ignored() -> None:
+    ignored = {
+        line.strip()
+        for line in _read(".gitignore").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert "proof-receipts/" in ignored
+    for relative in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/formal.yml",
+        ".github/workflows/molt-wasm-ci.yml",
+        ".github/workflows/security_hardening.yml",
+    ):
+        for line in _read(relative).splitlines():
+            if "--receipt " in line or "--receipt-dir " in line:
+                assert "proof-receipts" in line, (relative, line)
+
+
+def test_executable_proof_workflows_contain_only_executor_mechanics() -> None:
+    allowed_tools = {
+        "tools/bootstrap_browser_asset_graph.py",
+        "tools/ci_resource_env.py",
+        "tools/guarded_exec.py",
+        "tools/profile_hotspots.py",
+        "tools/proof_plan.py",
+    }
+    for relative in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/formal.yml",
+        ".github/workflows/molt-wasm-ci.yml",
+        ".github/workflows/security_hardening.yml",
+    ):
+        for line_number, line in enumerate(_read(relative).splitlines(), start=1):
+            # Setup/cache inputs may legitimately live under tools/ without
+            # executing repository policy. Only Python tool invocations are
+            # proof-authority candidates that must route through the plan.
+            if "tools/" not in line or ".py" not in line:
+                continue
+            assert any(tool in line for tool in allowed_tools), (
+                relative,
+                line_number,
+                line,
+            )
 
 
 def test_github_workflows_keep_cargo_target_dirs_cache_stable() -> None:
@@ -312,8 +351,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     )
     assert "uses: Swatinem/rust-cache@v2" in rust_security
     assert 'workspaces: ". -> target/sessions/rust-security"' in rust_security
-    assert "cargo install cargo-deny --locked" in rust_security
-    assert "cargo install cargo-audit --locked" in rust_security
+    assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
+    assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
 
 
 def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
@@ -398,67 +437,33 @@ def test_repo_githook_delegates_to_pre_commit_authority() -> None:
 
 def test_ci_clippy_failures_are_not_swallowed() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-    backend_clippy_lines = [
-        line.strip()
-        for line in ci_text.splitlines()
-        if "cargo clippy -p molt-backend --features native-backend -- -D warnings"
-        in line
-    ]
-    tir_clippy_lines = [
-        line.strip()
-        for line in ci_text.splitlines()
-        if "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
-        in line
-    ]
-
-    assert backend_clippy_lines == [
-        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo clippy -p molt-backend --features native-backend -- -D warnings"
-    ]
-    assert tir_clippy_lines == [
-        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
-    ]
+    proof_plan_text = _read("tools/proof_plan.toml")
+    assert "rust.clippy.workspace-default" in proof_plan_text
+    assert "rust.clippy.feature-surfaces" in proof_plan_text
+    assert "--run-family rust --receipt" in ci_text
+    assert "continue-on-error" not in ci_text
 
 
-def test_ci_warning_check_reuses_primary_build_output() -> None:
+def test_ci_build_and_lint_truth_is_owned_by_executable_plan() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-
-    assert "2>&1 | tee logs/ci-cargo-build.log" in ci_text
-    assert "WARNING_COUNT=$(grep -c 'warning\\[' logs/ci-cargo-build.log || true)" in (
-        ci_text
-    )
-    assert "WARNING_LINES=$(grep 'warning\\[' logs/ci-cargo-build.log || true)" in (
-        ci_text
-    )
-    assert "WARNING_COUNT=$(cargo build" not in ci_text
-    assert "cargo build 2>&1 | grep 'warning\\['" not in ci_text
+    proof_plan_text = _read("tools/proof_plan.toml")
+    assert 'id = "rust.build.workspace"' in proof_plan_text
+    assert 'id = "rust.clippy.workspace-default"' in proof_plan_text
+    assert "logs/ci-cargo-build.log" not in ci_text
 
 
 def test_ci_memory_intensive_steps_use_memory_guard() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \\\n"
-        "            uv run python3 -m pytest -q"
-    ) in ci_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build"
-        in ci_text
-    )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend"
-        in ci_text
-    )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy"
-        in ci_text
-    )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \\\n"
-        "            env PYTHONPATH=src uv run python3 -c"
-    ) in ci_text
-    assert "\n          PYTHONPATH=src uv run python3 -c" not in ci_text
+    assert "--run-family repository_policy --receipt" in ci_text
+    assert "uv run python3 -m pytest -q" not in ci_text
+    assert "--run-family rust --receipt" in ci_text
+    assert "--run-family llvm --receipt" in ci_text
+    proof_executor = _read("tools/proof_plan.py")
+    assert "peak_rss_bytes" in proof_executor
+    assert "guard_metrics_schema" in proof_executor
+    assert "os.killpg" not in proof_executor
+    assert "psutil" not in proof_executor
     assert "python3 tools/profile_hotspots.py --limit 20" in ci_text
 
 
@@ -505,7 +510,7 @@ def test_kani_workflow_has_single_cargo_cache_authority() -> None:
 def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
     formal_workflow = _read(".github/workflows/formal.yml")
 
-    assert "python3 tools/check_formal_methods.py --quint-only" in formal_workflow
+    assert "--run-command formal.quint.models --receipt" in formal_workflow
     assert "for model in *.qnt" not in formal_workflow
     assert 'quint verify "$model"' not in formal_workflow
     assert "failed verification (non-blocking)" not in formal_workflow
@@ -516,7 +521,7 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     nightly_workflow = _read(".github/workflows/nightly.yml")
 
     assert "actions/setup-node@v6" in formal_workflow
-    assert "node-version: '24.16.0'" in formal_workflow
+    assert 'node-version: "24.16.0"' in formal_workflow
     assert "check-latest: true" in formal_workflow
     assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
         formal_workflow
@@ -604,18 +609,10 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "run: cargo deny check" not in nightly_text
     assert "          quint verify formal/quint/" not in nightly_text
 
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd formal/lean -- "
-        "lake build"
-    ) in formal_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "python3 tools/check_formal_methods.py --quint-only"
-    ) in formal_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "python3 tools/check_formal_methods.py --check-correspondence"
-    ) in formal_text
+    assert "--run-command formal.lean.build --receipt" in formal_text
+    assert "--run-command formal.lean.sorry-baseline --receipt" in formal_text
+    assert "--run-command formal.quint.models --receipt" in formal_text
+    assert "--run-command formal.correspondence --receipt" in formal_text
     assert "run: lake build" not in formal_text
     assert "run: python3 tools/check_formal_methods.py --quint-only" not in formal_text
     assert (
@@ -623,25 +620,15 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         not in formal_text
     )
 
+    assert "--run-family python_security --receipt" in security_text
+    assert "--run-family rust_security --receipt" in security_text
     assert (
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "uv run pip-audit --ignore-vuln CVE-2025-69872"
-    ) in security_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check"
-        in security_text
-    )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo audit"
-        in security_text
-    )
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo install cargo-deny --locked"
+        "cargo install cargo-deny --version 0.20.2 --locked"
     ) in security_text
     assert (
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo install cargo-audit --locked"
+        "cargo install cargo-audit --version 0.22.2 --locked"
     ) in security_text
     assert "run: uv run pip-audit --ignore-vuln CVE-2025-69872" not in security_text
     assert "run: cargo deny check" not in security_text
@@ -664,11 +651,10 @@ def test_security_hardening_is_reusable_and_ci_uses_one_planner() -> None:
 
     assert "workflow_call:" in security_text
     assert "classify-changes:" not in security_text
-    assert "tools/proof_plan.py" not in security_text
+    assert "--github-output" not in security_text
     assert "inputs.python_security" in security_text
     assert "inputs.rust_security" in security_text
     assert "uses: ./.github/workflows/security_hardening.yml" in ci_text
-    assert ci_text.count("tools/proof_plan.py") == 2
     assert ci_text.count('tools/proof_plan.py --github-output "$GITHUB_OUTPUT"') == 1
     assert ci_text.count("tools/proof_plan.py\n          --verify-selected") == 1
 
@@ -736,15 +722,14 @@ def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
 
 def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
+    proof_text = _read("tools/proof_plan.toml")
 
-    assert "timeout-minutes: 50" in wasm_text
-    assert "cargo build --profile dev-fast -p molt-wasm-host" in wasm_text
-    assert "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm" in wasm_text
-    assert (
-        "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm"
-        in wasm_text
-    )
-    assert "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm" in wasm_text
+    assert "--run-family wasm --receipt" in wasm_text
+    assert 'id = "wasm.build.host"' in proof_text
+    assert 'id = "wasm.run.hello"' in proof_text
+    assert 'id = "wasm.run.comprehension"' in proof_text
+    assert 'id = "wasm.run.sieve"' in proof_text
+    assert "cargo build --profile dev-fast -p molt-wasm-host" not in wasm_text
     assert "wasmtime run /tmp/test_hello.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_comprehension.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_sieve.wasm" not in wasm_text
@@ -752,10 +737,15 @@ def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
 
 def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    wasm_commands = [
+        command for command in plan["command"] if command["family"] == "wasm"
+    ]
 
     assert "MOLT_EXT_ROOT: /tmp/molt-ext" in wasm_text
-    assert "- '.python-version'" in wasm_text
-    assert "- 'tools/venv_exec.py'" in wasm_text
+    assert "workflow_call:" in wasm_text
+    assert "push:" not in wasm_text
+    assert "pull_request:" not in wasm_text
     assert (
         "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci" in wasm_text
     )
@@ -782,88 +772,40 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert "tool: wasm-tools@1.253.0" in wasm_text
     assert "fallback: none" in wasm_text
-    assert "wasm-tools --version" in wasm_text
     assert (
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
     )
     assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in wasm_text
-    assert 'MOLT_WASM_TEST_TIMEOUT_SEC: "600"' in wasm_text
-    assert 'MOLT_CARGO_TIMEOUT: "1200"' in wasm_text
     assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
-    assert wasm_text.count('MOLT_BACKEND_DAEMON: "0"') == 5
+    assert 'CARGO_INCREMENTAL: "1"' in wasm_text
+    assert 'CARGO_BUILD_JOBS: "1"' not in wasm_text
+    assert "Configure adaptive Rust parallelism" in wasm_text
+    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in wasm_text
+    assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
+    assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
     assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in wasm_text
     assert "MOLT_BACKEND_DAEMON_CACHE_MB" not in wasm_text
-    parity_step = next(
-        block
-        for block in _named_step_blocks(wasm_text)
-        if block.startswith("      - name: Run WASM control flow parity tests")
-    )
-    assert "MOLT_BACKEND_DAEMON" not in parity_step
-    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in parity_step
-    assert (
-        'python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \\\n'
-        "            cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
-        in wasm_text
-    )
-    assert (
-        'python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \\\n'
-        "            cargo build --profile dev-fast -p molt-wasm-host" in wasm_text
-    )
-    assert (
-        "cargo build --profile dev-fast -p molt-runtime --target wasm32-wasip1"
-        not in wasm_text
-    )
-    assert "cargo build --release -p molt-wasm-host" not in wasm_text
-    assert "cargo build --profile release-fast -p molt-wasm-host" not in wasm_text
-    assert "python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST" in wasm_text
-    assert (
-        "-- python3 tools/venv_exec.py python3 -m pytest tests/test_wasm_control_flow.py -q"
-        in wasm_text
-    )
-    assert "uv run python3 -m molt.cli build" not in wasm_text
-    assert "uv run python3 -m pytest tests/test_wasm_control_flow.py -q" not in (
-        wasm_text
-    )
-    assert "python3 tools/venv_exec.py python3 -m molt.cli build" in wasm_text
-    assert (
-        wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
-    )
-    assert "python3 -m molt.cli internal-runtime-wasm-build" in wasm_text
-    assert "=== Guarded Command Hotspots ===" in wasm_text
+    assert "tools/guarded_exec.py" not in wasm_text
+    assert "tools/venv_exec.py" not in wasm_text
+    assert "--run-family wasm --receipt" in wasm_text
+    assert len(wasm_commands) >= 12
+    assert all(command.get("timeout_env") for command in wasm_commands)
+    assert all(command["timeout_seconds"] <= 1500 for command in wasm_commands)
+    assert any(command["id"] == "wasm.compile.hello" for command in wasm_commands)
+    assert any(command["id"] == "wasm.test.control-flow" for command in wasm_commands)
     assert "python3 tools/profile_hotspots.py --limit 20" in wasm_text
-    assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text
 
 
 def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
-    guarded_steps = [
-        block
-        for block in _named_step_blocks(wasm_text)
-        if "tools/guarded_exec.py --prefix MOLT_WASM_TEST" in block
-    ]
+    proof_text = _read("tools/proof_plan.py")
 
-    assert len(guarded_steps) >= 10
-    missing = [
-        block.splitlines()[0].removeprefix("      - name: ")
-        for block in guarded_steps
-        if "timeout-minutes:" not in block
-    ]
-    assert missing == []
-    for block in guarded_steps:
-        timeout_line = next(
-            line.strip()
-            for line in block.splitlines()
-            if line.strip().startswith("timeout-minutes:")
-        )
-        timeout_minutes = int(timeout_line.split(":", 1)[1].strip())
-        step_name = block.splitlines()[0].removeprefix("      - name: ")
-        wasm_build_steps = {
-            "Build Molt WASM backend",
-            "Build Molt WASM host",
-            "Prebuild shared Molt WASM runtime",
-        }
-        max_timeout = 25 if step_name in wasm_build_steps else 20
-        assert 1 <= timeout_minutes <= max_timeout, block
+    assert "timeout-minutes: 90" in wasm_text
+    assert "--timeout" not in wasm_text
+    assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
+    assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
+    assert '"--timeout",' in proof_text
+    assert 'command.data.get("timeout_env", [])' in proof_text

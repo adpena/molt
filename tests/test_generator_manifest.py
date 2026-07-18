@@ -294,14 +294,26 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
         dst = tmp_path / cd["enum_file"]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / cd["enum_file"], dst)
-    # A CI file that contains every ci_checkable generator's --check step.
-    (tmp_path / ".github" / "workflows").mkdir(parents=True)
-    ci_lines = ["name: CI"]
+    # The proof plan contains every CI-checkable generator's stable --check
+    # command; workflows retain executor mechanics only.
+    proof_lines = ['schema = "synthetic"']
+    command_ids = {
+        g["tool"]: f"generator-{index}"
+        for index, g in enumerate(manifest.generators)
+    }
     for g in manifest.generators:
         if g.get("ci_checkable", True) and not g.get("discovery_only", False):
-            ci_lines.append(f"      - run: {g['check_command']}")
-    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
-        "\n".join(ci_lines) + "\n", encoding="utf-8"
+            dependencies = [command_ids[tool] for tool in g.get("upstream_generators", [])]
+            proof_lines.extend(
+                (
+                    "[[command]]",
+                    f'id = "{command_ids[g["tool"]]}"',
+                    f"dependencies = {dependencies!r}".replace("'", '"'),
+                    f'argv = ["python3", "{g["tool"]}", "--check"]',
+                )
+            )
+    (tmp_path / "tools" / "proof_plan.toml").write_text(
+        "\n".join(proof_lines) + "\n", encoding="utf-8"
     )
     return tmp_path
 
@@ -365,6 +377,29 @@ def test_injected_orphan_generated_file_fails_the_gate(tmp_path: Path):
     assert any("ghost_generated.rs" in v.location for v in orphans)
 
 
+def test_generator_dependency_missing_from_proof_plan_fails_gate(tmp_path: Path):
+    root = _mirror_min_tree(tmp_path)
+    proof_plan_path = root / "tools" / "proof_plan.toml"
+    text = proof_plan_path.read_text(encoding="utf-8")
+    browser_id = next(
+        f"generator-{index}"
+        for index, generator in enumerate(CGM.load_manifest(root).generators)
+        if generator["tool"] == "tools/gen_browser_asset_graph.py"
+    )
+    marker = f'id = "{browser_id}"\ndependencies = '
+    start = text.index(marker) + len(marker)
+    end = text.index("\n", start)
+    proof_plan_path.write_text(text[:start] + "[]" + text[end:], encoding="utf-8")
+
+    _violations, _summary, gating = CGM.run_all(root)
+    assert any(
+        violation.kind == "ungated"
+        and violation.location == "tools/gen_browser_asset_graph.py"
+        and "generator DAG" in violation.detail
+        for violation in gating
+    )
+
+
 def test_generated_marker_inside_string_literal_is_not_an_orphan(tmp_path: Path):
     """Generated banners emitted as data are not generated-file headers."""
     root = _mirror_min_tree(tmp_path)
@@ -390,14 +425,14 @@ def test_generated_marker_inside_string_literal_is_not_an_orphan(tmp_path: Path)
 
 
 def test_ungated_generator_is_flagged(tmp_path: Path):
-    """A registered generator with no CI --check step (and ci_checkable true) is
+    """A registered generator with no proof-plan command (and ci_checkable true) is
     flagged ungated."""
     import shutil
 
     (tmp_path / "tools").mkdir()
     shutil.copy(ROOT / "tools" / "structural_audit.py", tmp_path / "tools")
     shutil.copy(ROOT / "tools" / "check_generator_manifest.py", tmp_path / "tools")
-    # A minimal manifest with one ci_checkable generator and an empty CI file.
+    # A minimal manifest with one ci_checkable generator and an empty proof plan.
     (tmp_path / "tools" / "generator_manifest.toml").write_text(
         "schema_version = 1\n"
         'generated_scan_roots = ["runtime", "src", "tools"]\n'
@@ -414,13 +449,12 @@ def test_ungated_generator_is_flagged(tmp_path: Path):
     )
     # The generator file must exist for the "ungated, not missing" path.
     (tmp_path / "tools" / "gen_op_kinds.py").write_text("# stub\n", encoding="utf-8")
-    (tmp_path / ".github" / "workflows").mkdir(parents=True)
-    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
-        "name: CI\n", encoding="utf-8"
+    (tmp_path / "tools" / "proof_plan.toml").write_text(
+        'schema = "synthetic"\n', encoding="utf-8"
     )
     _violations, summary, gating = CGM.run_all(tmp_path)
     ungated = [v for v in gating if v.kind == "ungated"]
-    assert ungated, "a generator with no CI --check step was not flagged ungated"
+    assert ungated, "a generator with no proof-plan --check command was not flagged"
 
 
 def test_phantom_sync_test_fails_loud(tmp_path: Path):

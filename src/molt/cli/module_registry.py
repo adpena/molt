@@ -5,7 +5,7 @@ Design authority: ``docs/design/foundation/69_import_bedrock_frozen_module_layer
 (the runtime registry blob, the native ``MODULE_INIT_TABLE`` relocations, the
 ``module_registry.json`` diagnostics file) is emitted from this one module and
 stamped with the same ``registry_digest``.  The CLI front for out-of-build
-checks lives in ``tools/gen_module_registry.py`` and is a thin wrapper over
+checks lives in ``tools/check_module_registry.py`` and is a thin wrapper over
 this module.
 
 Layout contract

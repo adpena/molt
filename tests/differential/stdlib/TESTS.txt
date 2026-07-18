@@ -1212,6 +1212,8 @@ tests/differential/stdlib/functools_wraps_basic.py
 tests/differential/stdlib/future_module.py
 tests/differential/stdlib/gc_collect.py
 tests/differential/stdlib/gc_cycle_collector.py
+tests/differential/stdlib/gc_generational_control.py
+tests/differential/stdlib/gc_public_authority.py
 tests/differential/stdlib/getpass_basic.py
 tests/differential/stdlib/gettext_basic.py
 tests/differential/stdlib/glob_api_surface_312plus.py

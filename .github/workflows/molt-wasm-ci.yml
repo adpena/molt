@@ -1,40 +1,8 @@
 name: Molt WASM CI
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'runtime/**'
-      - 'src/**'
-      - 'tools/guarded_exec.py'
-      - 'tools/harness_memory_guard.py'
-      - 'tools/memory_guard.py'
-      - 'tools/venv_exec.py'
-      - 'tools/wasm_*.py'
-      - 'tests/test_wasm_*.py'
-      - 'tests/wasm_harness.py'
-      - 'tests/wasm_linked_runner.py'
-      - 'wasm/**'
-      - 'examples/*.py'
-      - '.python-version'
-      - '.github/workflows/molt-wasm-ci.yml'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'runtime/**'
-      - 'src/**'
-      - 'tools/guarded_exec.py'
-      - 'tools/harness_memory_guard.py'
-      - 'tools/memory_guard.py'
-      - 'tools/venv_exec.py'
-      - 'tools/wasm_*.py'
-      - 'tests/test_wasm_*.py'
-      - 'tests/wasm_harness.py'
-      - 'tests/wasm_linked_runner.py'
-      - 'wasm/**'
-      - 'examples/*.py'
-      - '.python-version'
-      - '.github/workflows/molt-wasm-ci.yml'
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -49,7 +17,7 @@ env:
 jobs:
   wasm-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 90
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext
@@ -63,17 +31,19 @@ jobs:
       MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"
-      MOLT_WASM_TEST_TIMEOUT_SEC: "600"
       MOLT_WASM_TEST_KEEPALIVE_SEC: "20"
       MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"
       MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_BUILD_LOCK_TIMEOUT: "120"
-      MOLT_CARGO_TIMEOUT: "1200"
-      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "1"
       TMPDIR: /tmp/molt-ext/tmp
       UV_CACHE_DIR: /tmp/molt-ext/uv-cache
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
 
       - name: Prepare portable artifact root
         run: |
@@ -87,7 +57,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
         with:
-          version: "latest"
+          version: "0.11.24"
           enable-cache: true
           cache-dependency-glob: uv.lock
 
@@ -102,190 +72,39 @@ jobs:
         with:
           targets: wasm32-wasip1
 
+      - name: Configure adaptive Rust parallelism
+        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+
       - name: Install WASM validator
         uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: wasm-tools@1.253.0
           fallback: none
 
-      - name: Install native and wasm linkers
+      - name: Setup canonical native and WASM linker SDK
+        uses: ./.github/actions/setup-llvm
+
+      - name: Install WASI libc
         run: |
-          if ! command -v mold >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y mold
-          fi
-          if ! command -v wasm-ld >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y lld
-          fi
           sudo apt-get update
           sudo apt-get install -y wasi-libc
-          mold --version
-          wasm-ld --version
-          wasm-tools --version
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/sessions/wasm-ci"
 
-      - name: Build Molt WASM backend
-        timeout-minutes: 25
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \
-            cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend
+      - name: Execute WASM, Luau, and parity partitions
+        run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
 
-      - name: Build Molt WASM host
-        timeout-minutes: 25
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \
-            cargo build --profile dev-fast -p molt-wasm-host
-
-      - name: Prebuild shared Molt WASM runtime
-        timeout-minutes: 25
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \
-            python3 tools/venv_exec.py python3 -m molt.cli internal-runtime-wasm-build \
-            --build-profile dev --kind shared --cargo-timeout "$MOLT_CARGO_TIMEOUT" --json
-        env:
-          RUSTC_WRAPPER: ""
-
-      # ── WASM target: hello.py (class + arithmetic) ──
-      - name: Compile hello.py to WASM
-        timeout-minutes: 16
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout 240 -- \
-            python3 tools/venv_exec.py python3 -m molt.cli build \
-            examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
-        env:
-          MOLT_BACKEND_DAEMON: "0"
-          RUSTC_WRAPPER: ""
-
-      - name: Validate hello.wasm is non-zero
-        run: |
-          WASM_SIZE=$(stat --format=%s /tmp/test_hello.wasm)
-          echo "WASM size: ${WASM_SIZE} bytes"
-          if [ "$WASM_SIZE" -lt 100 ]; then
-            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes)"
-            exit 1
-          fi
-
-      - name: Run hello.wasm with molt-wasm-host
-        timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout 180 -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
-        env:
-          MOLT_WASM_HOST_DEBUG: "1"
-
-      # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
-      - name: Compile comprehension_fail.py to WASM
-        timeout-minutes: 16
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            python3 tools/venv_exec.py python3 -m molt.cli build \
-            examples/comprehension_fail.py --build-profile dev --target wasm --output /tmp/test_comprehension.wasm
-        env:
-          MOLT_BACKEND_DAEMON: "0"
-          RUSTC_WRAPPER: ""
-
-      - name: Validate comprehension.wasm is non-zero
-        run: |
-          WASM_SIZE=$(stat --format=%s /tmp/test_comprehension.wasm)
-          echo "WASM size: ${WASM_SIZE} bytes"
-          if [ "$WASM_SIZE" -lt 100 ]; then
-            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes)"
-            exit 1
-          fi
-
-      - name: Run comprehension.wasm with molt-wasm-host
-        timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm
-
-      # ── Luau target: hello.py ──
-      - name: Compile hello.py to Luau
-        timeout-minutes: 16
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            python3 tools/venv_exec.py python3 -m molt.cli build \
-            examples/hello.py --build-profile dev --target luau --output /tmp/test_hello.luau
-        env:
-          MOLT_BACKEND_DAEMON: "0"
-          RUSTC_WRAPPER: ""
-
-      - name: Validate hello.luau is non-zero
-        run: |
-          LUAU_SIZE=$(stat --format=%s /tmp/test_hello.luau)
-          echo "Luau size: ${LUAU_SIZE} bytes"
-          if [ "$LUAU_SIZE" -lt 10 ]; then
-            echo "ERROR: Luau output is suspiciously small (${LUAU_SIZE} bytes)"
-            exit 1
-          fi
-
-      # ── Luau target: comprehension_fail.py (comprehension regression gate) ──
-      - name: Compile comprehension_fail.py to Luau
-        timeout-minutes: 16
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            python3 tools/venv_exec.py python3 -m molt.cli build \
-            examples/comprehension_fail.py --build-profile dev --target luau --output /tmp/test_comprehension.luau
-        env:
-          MOLT_BACKEND_DAEMON: "0"
-          RUSTC_WRAPPER: ""
-
-      - name: Validate comprehension.luau is non-zero
-        run: |
-          LUAU_SIZE=$(stat --format=%s /tmp/test_comprehension.luau)
-          echo "Luau size: ${LUAU_SIZE} bytes"
-          if [ "$LUAU_SIZE" -lt 10 ]; then
-            echo "ERROR: Luau output is suspiciously small (${LUAU_SIZE} bytes)"
-            exit 1
-          fi
-
-      # ── WASM target: sieve benchmark (arithmetic + loops + list ops) ──
-      - name: Compile sieve_bench.py to WASM
-        timeout-minutes: 16
-        run: |
-          cat > /tmp/sieve_bench.py << 'PYEOF'
-          def sieve(n):
-              is_prime = [True] * (n + 1)
-              is_prime[0] = is_prime[1] = False
-              p = 2
-              while p * p <= n:
-                  if is_prime[p]:
-                      for i in range(p * p, n + 1, p):
-                          is_prime[i] = False
-                  p += 1
-              return sum(1 for x in is_prime if x)
-          count = sieve(10000)
-          assert count == 1229, f"Expected 1229 primes, got {count}"
-          print(f"Sieve(10000) = {count} primes")
-          PYEOF
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            python3 tools/venv_exec.py python3 -m molt.cli build \
-            /tmp/sieve_bench.py --build-profile dev --target wasm --output /tmp/test_sieve.wasm
-        env:
-          MOLT_BACKEND_DAEMON: "0"
-          RUSTC_WRAPPER: ""
-
-      - name: Run sieve.wasm with molt-wasm-host
-        timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm
-
-      # ── WASM parity tests (pytest) ──
-      - name: Run WASM control flow parity tests
-        timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- python3 tools/venv_exec.py python3 -m pytest tests/test_wasm_control_flow.py -q
-        env:
-          MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"
-
-      # ── Summary ──
-      - name: Build summary
+      - name: Upload WASM receipt
         if: always()
-        run: |
-          echo "=== WASM Build Summary ==="
-          for f in /tmp/test_hello.wasm /tmp/test_comprehension.wasm /tmp/test_sieve.wasm /tmp/test_hello.luau /tmp/test_comprehension.luau; do
-            if [ -f "$f" ]; then
-              echo "  $(basename "$f"): $(stat --format=%s "$f") bytes"
-            else
-              echo "  $(basename "$f"): MISSING"
-            fi
-          done
-          echo "=== Guarded Command Hotspots ==="
-          python3 tools/profile_hotspots.py --limit 20
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-receipt-wasm
+          path: proof-receipts/wasm.json
+          if-no-files-found: error
+
+      - name: Summarize guarded command hotspots
+        if: always()
+        run: python3 tools/profile_hotspots.py --limit 20

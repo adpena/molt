@@ -1,7 +1,7 @@
 """Import bedrock freeze-contract gates (design doc 69 §12.2) — PR1 set.
 
 G1  test_module_registry_projection_digests      — every projection carries the
-    same registry_digest, and `tools/gen_module_registry.py --check` fails
+    same registry_digest, and `tools/check_module_registry.py --check` fails
     closed on any drift.
 G3  test_init_reachable_only_via_table           — prepared native backend IR
     contains no direct `call molt_init_*` edges and no isolate string_eq
@@ -123,7 +123,7 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
     check = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "tools" / "gen_module_registry.py"),
+            str(ROOT / "tools" / "check_module_registry.py"),
             "--check",
             str(clean_path),
         ],
@@ -140,7 +140,7 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
     check = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "tools" / "gen_module_registry.py"),
+            str(ROOT / "tools" / "check_module_registry.py"),
             "--check",
             str(corrupt_path),
         ],

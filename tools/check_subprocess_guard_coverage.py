@@ -111,6 +111,33 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_run_git",
+        "check_output",
+        "bounded git diff/ref metadata used only for fail-closed proof selection",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_version_fingerprint",
+        "run",
+        "bounded content-path and version probes enforcing manifest-owned "
+        "toolchain contracts",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_source_tree_state",
+        "check_output",
+        "bounded git status metadata proving executable receipts are commit-backed",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_plan.py",
+        "_run_command",
+        "run",
+        "waits only on canonical guarded_exec; timeout, custody, process-tree "
+        "sampling, and cleanup remain exclusively owned by that guard",
+    ),
+    AllowedRawSubprocessUse(
         "tools/batch_compile_client.py",
         "BatchCompileServerClient.__init__",
         "Popen",
