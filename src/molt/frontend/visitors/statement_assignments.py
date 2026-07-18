@@ -35,8 +35,6 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Only simple annotated assignments are supported",
             )
-        if node.value is not None:
-            self._maybe_record_module_overrides([node.target], node.value)
         hint = None
         if self._hints_enabled():
             hint = self._annotation_to_hint(node.annotation)
@@ -251,7 +249,6 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         return None
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        self._maybe_record_module_overrides(node.targets, node.value)
         dict_inc_match = self._match_dict_increment_assign(node)
         if dict_inc_match is not None:
             dict_expr, key_expr, delta_expr = dict_inc_match

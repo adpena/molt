@@ -12,6 +12,9 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Sequence
 
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+)
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -34,45 +37,20 @@ class ImportLoweringMixin(_MixinBase):
             return module_name[len("molt.stdlib.") :]
         return module_name
 
-    @staticmethod
-    def _spec_parent(spec_name: str, is_package: bool) -> str:
-        if is_package:
-            return spec_name
-        if "." in spec_name:
-            return spec_name.rsplit(".", 1)[0]
-        return ""
-
-    def _relative_import_package(self) -> str:
-        if self.module_package_override_set:
-            return self.module_package_override or ""
-        spec_is_package = self.module_is_package
-        spec_name = None
-        if self.module_spec_override_set and self.module_spec_override:
-            spec_name = self.module_spec_override
-            if self.module_spec_override_is_package is not None:
-                spec_is_package = self.module_spec_override_is_package
-        if spec_name is None:
-            spec_name = self.module_spec_name or self.module_name or ""
-        return self._spec_parent(spec_name, spec_is_package)
-
-    def _resolve_relative_import(
-        self, module: str | None, level: int
-    ) -> tuple[str | None, str | None]:
-        if level <= 0:
-            return module, None
-        package = self._relative_import_package()
-        if not package:
-            return None, "no_parent"
-        parts = package.split(".")
-        if level > len(parts):
-            return None, "beyond_top"
-        base_parts = parts[: len(parts) - (level - 1)]
-        base_name = ".".join(base_parts)
-        if module:
-            if base_name:
-                return f"{base_name}.{module}", None
-            return module, None
-        return base_name or None, None
+    def _module_import_contexts(self, node: ast.AST) -> tuple[ModuleImportContext, ...]:
+        base = ModuleImportContext(
+            module_name=self.module_name,
+            is_package=self.module_is_package,
+            state=self.module_import_state,
+            spec_name=self.module_spec_name,
+            target_python=self.target_python,
+            execution_kind=self.module_execution_kind,
+        )
+        if self.module_import_flow is None:
+            return (base,)
+        return tuple(
+            base.with_state(state) for state in self.module_import_flow.states_for(node)
+        )
 
     def _emit_relative_import_error(self, kind: str | None) -> None:
         if kind == "beyond_top":
@@ -81,98 +59,6 @@ class ImportLoweringMixin(_MixinBase):
             message = "attempted relative import with no known parent package"
         exc_val = self._emit_exception_new("ImportError", message)
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-
-    def _should_track_module_overrides(self) -> bool:
-        # Names assigned inside a class body lowered as a block (P0 #50) are
-        # class-namespace members, never module overrides — even though the
-        # outermost class may live at module scope with ``control_flow_depth``
-        # 0.  The class-ns stack being non-empty means we are emitting such a
-        # body; suppress module-override tracking for it.
-        if self._class_ns_stack:
-            return False
-        return self.current_func_name == "molt_main" and self.control_flow_depth == 0
-
-    @staticmethod
-    def _is_modulespec_ctor(node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return node.id == "ModuleSpec"
-        if isinstance(node, ast.Attribute):
-            return node.attr == "ModuleSpec"
-        return False
-
-    def _parse_modulespec_override(
-        self, value: ast.AST
-    ) -> tuple[str, bool | None] | None:
-        if not isinstance(value, ast.Call):
-            return None
-        if not self._is_modulespec_ctor(value.func):
-            return None
-        spec_name = None
-        if value.args:
-            first = value.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                spec_name = first.value
-        for kw in value.keywords:
-            if (
-                kw.arg == "name"
-                and spec_name is None
-                and isinstance(kw.value, ast.Constant)
-                and isinstance(kw.value.value, str)
-            ):
-                spec_name = kw.value.value
-        if spec_name is None:
-            return None
-        is_package = None
-        if len(value.args) >= 4:
-            arg = value.args[3]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, bool):
-                is_package = arg.value
-        for kw in value.keywords:
-            if (
-                kw.arg == "is_package"
-                and isinstance(kw.value, ast.Constant)
-                and isinstance(kw.value.value, bool)
-            ):
-                is_package = kw.value.value
-        return spec_name, is_package
-
-    def _record_module_override(self, target: ast.AST, value: ast.AST) -> None:
-        if not isinstance(target, ast.Name):
-            return
-        if target.id == "__package__":
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                self.module_package_override_set = True
-                self.module_package_override = value.value
-            elif isinstance(value, ast.Constant) and value.value is None:
-                self.module_package_override_set = False
-                self.module_package_override = None
-            else:
-                self.module_package_override_set = False
-                self.module_package_override = None
-            return
-        if target.id == "__spec__":
-            if isinstance(value, ast.Constant) and value.value is None:
-                self.module_spec_override_set = False
-                self.module_spec_override = None
-                self.module_spec_override_is_package = None
-                return
-            parsed = self._parse_modulespec_override(value)
-            if parsed is None:
-                return
-            spec_name, is_package = parsed
-            self.module_spec_override_set = True
-            self.module_spec_override = spec_name
-            self.module_spec_override_is_package = None
-            if is_package is not None:
-                self.module_spec_override_is_package = is_package
-
-    def _maybe_record_module_overrides(
-        self, targets: Sequence[ast.AST], value: ast.AST
-    ) -> None:
-        if not self._should_track_module_overrides():
-            return
-        for target in targets:
-            self._record_module_override(target, value)
 
     def _is_known_project_module(self, module_name: str | None) -> bool:
         """Return True only when *module_name* was discovered in the graph.

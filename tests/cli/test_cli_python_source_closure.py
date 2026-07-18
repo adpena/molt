@@ -788,7 +788,7 @@ def test_dynamic_module_name_with_path_separator_fails_closed(tmp_path: Path) ->
     ("source", "message"),
     [
         ("__import__('pkg', level=-1)\n", "negative __import__ level"),
-        ("__import__('pkg', level=True)\n", "non-literal __import__ level"),
+        ("__import__('pkg', level=1.0)\n", "non-literal __import__ level"),
     ],
 )
 def test_invalid_dunder_import_levels_fail_closed(

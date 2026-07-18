@@ -30,6 +30,7 @@ from molt.cli.source_extensions import (
     source_extension_manifest_runtime_python_imports,
     source_extension_manifest_source_path,
 )
+from molt.cli.target_python import _parse_target_python_version
 from molt.wasm_artifact import read_wasm_function_exports
 
 
@@ -586,6 +587,19 @@ def extension_seal(
     ):
         errors.append("extension seal requires existing extension_sha256 custody")
 
+    raw_target_python = manifest.get("target_python")
+    if not isinstance(raw_target_python, str) or not raw_target_python.strip():
+        errors.append("extension seal requires target_python custody")
+        target_python = None
+    else:
+        try:
+            target_python = _parse_target_python_version(raw_target_python)
+        except ValueError as exc:
+            errors.append(str(exc))
+            target_python = None
+    if target_python is None:
+        return _fail("; ".join(errors), json_output, command="extension-seal")
+
     raw_python_exports = (
         list(python_export or [])
         if python_export
@@ -629,6 +643,7 @@ def extension_seal(
         package=package,
         extension_module=module_name,
         callable_exports=callable_exports,
+        target_python=target_python,
         errors=support_sha_errors,
     )
     support_file_sha256 = tuple(

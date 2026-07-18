@@ -22,6 +22,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
+    ModuleExecutionKind,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _BinaryImageScope,
     _ImportAdmissionPolicy,
@@ -37,8 +38,16 @@ from molt.cli.source_extensions import source_extension_manifest_source_path
 from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_source_for_target,
 )
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    StaticImportRequest,
+    analyze_module_import_flow,
+    plan_static_import_request,
+    require_static_import_modules,
+)
 
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 
@@ -221,17 +230,20 @@ def _build_module_lowering_metadata(
     *,
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
+    entry_execution_kind: ModuleExecutionKind,
     namespace_module_names: Collection[str],
 ) -> tuple[
     dict[str, str],
     dict[str, str | None],
     dict[str, bool],
     dict[str, bool],
+    dict[str, ModuleExecutionKind],
 ]:
     logical_source_path_by_module: dict[str, str] = {}
     entry_override_by_module: dict[str, str | None] = {}
     module_is_namespace_by_module: dict[str, bool] = {}
     module_is_package_by_module: dict[str, bool] = {}
+    module_execution_kind_by_module: dict[str, ModuleExecutionKind] = {}
     namespace_modules = set(namespace_module_names)
     for module_name in sorted(module_graph):
         module_path = module_graph[module_name]
@@ -246,11 +258,15 @@ def _build_module_lowering_metadata(
         entry_override_by_module[module_name] = entry_module
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
+        module_execution_kind_by_module[module_name] = (
+            entry_execution_kind if module_name == entry_module else "imported"
+        )
     return (
         logical_source_path_by_module,
         entry_override_by_module,
         module_is_namespace_by_module,
         module_is_package_by_module,
+        module_execution_kind_by_module,
     )
 
 
@@ -283,6 +299,7 @@ def _build_module_graph_metadata(
     *,
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
+    entry_execution_kind: ModuleExecutionKind,
     namespace_module_names: Collection[str],
     module_sources: Mapping[str, str] | None = None,
     module_source_catalog: _module_source._ModuleSourceCatalog | None = None,
@@ -293,10 +310,12 @@ def _build_module_graph_metadata(
         entry_override_by_module,
         module_is_namespace_by_module,
         module_is_package_by_module,
+        module_execution_kind_by_module,
     ) = _build_module_lowering_metadata(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
+        entry_execution_kind=entry_execution_kind,
         namespace_module_names=namespace_module_names,
     )
     frontend_module_costs = None
@@ -320,6 +339,9 @@ def _build_module_graph_metadata(
         entry_override_by_module=MappingProxyType(entry_override_by_module),
         module_is_namespace_by_module=MappingProxyType(module_is_namespace_by_module),
         module_is_package_by_module=MappingProxyType(module_is_package_by_module),
+        module_execution_kind_by_module=MappingProxyType(
+            module_execution_kind_by_module
+        ),
         frontend_module_costs=(
             MappingProxyType(frontend_module_costs)
             if frontend_module_costs is not None
@@ -479,7 +501,8 @@ def _extend_native_support_source_closure(
     if not support_paths_by_module:
         return frozenset()
     native_support_function_roots_by_module = _native_support_function_roots_by_module(
-        native_artifact_plan
+        native_artifact_plan,
+        target_python=target_python,
     )
     runtime_python_import_modules = (
         native_artifact_plan.runtime_python_import_module_names()
@@ -625,38 +648,42 @@ def _extend_native_runtime_python_import_closure(
     return frozenset(explicit_imports)
 
 
-def _relative_import_module_name(
-    current_module: str,
-    *,
-    level: int,
-    module: str | None,
-) -> str:
-    if level <= 0:
-        return module or ""
-    package_parts = current_module.split(".")[:-1]
-    if level > 1:
-        package_parts = package_parts[: max(0, len(package_parts) - (level - 1))]
-    tail = [part for part in (module or "").split(".") if part]
-    return ".".join([*package_parts, *tail])
-
-
 def _support_source_import_bindings(
     module_name: str,
     tree: ast.Module,
+    *,
+    is_package: bool,
+    target_python: TargetPythonVersion,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     imported_functions: dict[str, tuple[str, str]] = {}
     imported_modules: dict[str, str] = {}
+    base_context = ModuleImportContext(
+        module_name,
+        is_package=is_package,
+        target_python=target_python.feature_version,
+    )
+    import_flow = analyze_module_import_flow(tree, base_context)
     for stmt in tree.body:
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
                 bind_name = alias.asname or alias.name.split(".", 1)[0]
                 imported_modules[bind_name] = alias.name
         elif isinstance(stmt, ast.ImportFrom):
-            source_module = _relative_import_module_name(
-                module_name,
-                level=stmt.level,
-                module=stmt.module,
+            contexts = tuple(
+                base_context.with_state(state) for state in import_flow.states_for(stmt)
             )
+            source_modules = require_static_import_modules(
+                plan_static_import_request(
+                    StaticImportRequest.statement(
+                        stmt.module or "", level=stmt.level
+                    ),
+                    contexts,
+                ),
+                consumer="native support binding graph",
+            )
+            if len(source_modules) != 1:
+                continue
+            source_module = source_modules[0]
             for alias in stmt.names:
                 if alias.name == "*":
                     continue
@@ -678,6 +705,8 @@ def _support_source_top_level_defs(
 
 def _native_support_function_roots_by_module(
     native_artifact_plan,
+    *,
+    target_python: TargetPythonVersion,
 ) -> dict[str, tuple[str, ...]]:
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
     if not support_paths_by_module:
@@ -706,12 +735,23 @@ def _native_support_function_roots_by_module(
             return None
         try:
             source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(path))
+            tree = _parse_source_for_target(
+                source,
+                filename=str(path),
+                target_python=target_python,
+            )
+            if not isinstance(tree, ast.Module):
+                return None
         except (OSError, SyntaxError, UnicodeDecodeError):
             return None
         parsed[module] = tree
         support_defs_by_module[module] = _support_source_top_level_defs(tree)
-        imports_by_module[module] = _support_source_import_bindings(module, tree)
+        imports_by_module[module] = _support_source_import_bindings(
+            module,
+            tree,
+            is_package=path.name == "__init__.py",
+            target_python=target_python,
+        )
         return tree
 
     class _ReferenceVisitor(ast.NodeVisitor):
@@ -1216,7 +1256,7 @@ def _materialize_import_plan(
                 stdlib_root=stdlib_root,
                 stdlib_allowlist=stdlib_allowlist,
                 resolver_cache=prepared_module_graph.module_resolution_cache,
-                target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                target_python=prepared_module_graph.target_python,
                 capability_config_digest="",
             )
         )
@@ -1230,7 +1270,7 @@ def _materialize_import_plan(
                 stdlib_root=stdlib_root,
                 stdlib_allowlist=stdlib_allowlist,
                 resolver_cache=prepared_module_graph.module_resolution_cache,
-                target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                target_python=prepared_module_graph.target_python,
                 capability_config_digest="",
                 slice_cache=native_support_slice_cache,
                 operation_counts=module_graph_operation_counts,
@@ -1276,7 +1316,8 @@ def _materialize_import_plan(
     source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
     native_support_function_roots_by_module = _native_support_function_roots_by_module(
-        native_artifact_plan
+        native_artifact_plan,
+        target_python=prepared_module_graph.target_python,
     )
     known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(STUB_MODULES)
@@ -1286,6 +1327,7 @@ def _materialize_import_plan(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
+        entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,
         namespace_module_names=set(namespace_module_names),
     )
     declared_root_modules = (
@@ -1488,6 +1530,7 @@ def _prepare_entry_module_graph(
                     entry_tree,
                     entry_module,
                     entry_is_package,
+                    target_python=target_python,
                 )
             ),
             entry_tree,
@@ -1613,7 +1656,10 @@ def _prepare_entry_module_graph(
         "core_required",
     )
     intrinsic_enforced = _module_stdlib_policy._enforce_intrinsic_stdlib(
-        module_graph, stdlib_root, json_output
+        module_graph,
+        stdlib_root,
+        json_output,
+        target_python=target_python,
     )
     if intrinsic_enforced is not None:
         return None, intrinsic_enforced
@@ -1729,4 +1775,5 @@ def _prepare_entry_module_graph(
             if import_admission_policy is not None
             else _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
         ),
+        target_python=target_python,
     ), None

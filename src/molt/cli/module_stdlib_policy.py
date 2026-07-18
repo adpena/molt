@@ -13,6 +13,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.output import fail as _fail
+from molt.cli.target_python import TargetPythonVersion
 from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
 
 _INTRINSIC_CALL_NAMES = _stdlib_intrinsic_policy.INTRINSIC_CALL_NAMES
@@ -24,7 +25,6 @@ _classify_stdlib_module_statuses = (
 _is_fail_closed_import_policy_gate = (
     _stdlib_intrinsic_policy.is_fail_closed_import_policy_gate
 )
-_module_relative_import_base = _stdlib_intrinsic_policy.module_relative_import_base
 _same_package_intrinsic_import_closure = (
     _stdlib_intrinsic_policy.same_package_intrinsic_import_closure
 )
@@ -78,6 +78,8 @@ def _enforce_intrinsic_stdlib(
     module_graph: dict[str, Path],
     stdlib_root: Path,
     json_output: bool,
+    *,
+    target_python: TargetPythonVersion,
 ) -> int | None:
     missing: list[str] = []
     probe_only: list[str] = []
@@ -91,7 +93,10 @@ def _enforce_intrinsic_stdlib(
         except ValueError:
             continue
         stdlib_modules[name] = path
-    statuses = _classify_stdlib_module_statuses(stdlib_modules)
+    statuses = _classify_stdlib_module_statuses(
+        stdlib_modules,
+        target_python=target_python,
+    )
     for name, status in statuses.items():
         if status == "python-only":
             missing.append(name)
