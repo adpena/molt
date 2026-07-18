@@ -31,5 +31,19 @@ runs:
           echo "invalid formal/lean/lean-toolchain authority: $toolchain" >&2
           exit 2
         fi
-        "$HOME/.elan/bin/elan" toolchain install "$toolchain"
-        (cd formal/lean && "$HOME/.elan/bin/lean" --version)
+        elan="$HOME/.elan/bin/elan"
+        if ! "$elan" run "$toolchain" lean --version >/dev/null 2>&1; then
+          "$elan" toolchain install "$toolchain"
+        fi
+        expected_version="${toolchain##*:v}"
+        exact_version="$("$elan" run "$toolchain" lean --version)"
+        if [[ "$exact_version" != "Lean (version $expected_version,"* ]]; then
+          echo "Lean toolchain identity mismatch: expected $toolchain, got $exact_version" >&2
+          exit 3
+        fi
+        selected_version="$(cd formal/lean && "$HOME/.elan/bin/lean" --version)"
+        if [[ "$selected_version" != "$exact_version" ]]; then
+          echo "formal/lean selected $selected_version instead of $exact_version" >&2
+          exit 4
+        fi
+        printf '%s\n' "$selected_version"

@@ -574,7 +574,15 @@ def test_lean_workflows_share_exact_provisioning_authority() -> None:
     assert "toolchain=\"$(tr -d '\\r\\n' < formal/lean/lean-toolchain)\"" in (
         setup_action
     )
-    assert '"$HOME/.elan/bin/elan" toolchain install "$toolchain"' in setup_action
+    probe = 'if ! "$elan" run "$toolchain" lean --version >/dev/null 2>&1; then'
+    assert '"$elan" toolchain install "$toolchain"' in setup_action
+    assert probe in setup_action
+    assert setup_action.index(probe) < setup_action.index(
+        '"$elan" toolchain install "$toolchain"'
+    )
+    assert 'expected_version="${toolchain##*:v}"' in setup_action
+    assert '"$exact_version" != "Lean (version $expected_version,"*' in setup_action
+    assert '"$selected_version" != "$exact_version"' in setup_action
     assert "key: lean-toolchain-${{ runner.os }}-${{ hashFiles(" in setup_action
     assert formal_workflow.count("uses: ./.github/actions/setup-lean") == 1
     assert nightly_workflow.count("uses: ./.github/actions/setup-lean") == 1
