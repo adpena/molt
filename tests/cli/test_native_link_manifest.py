@@ -15,7 +15,9 @@ import pytest
 from molt.cli import native_link_deps
 from molt.cli import native_link_manifest
 from molt.cli import runtime_build
+from molt.cli import runtime_callable_symbols
 from molt.cli import cargo_execution
+from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
     manifest_from_cargo_json,
@@ -522,6 +524,142 @@ def test_native_static_lib_note_is_captured_from_exact_rustc_stderr(
     ]
 
 
+def test_native_static_lib_note_ignores_terminal_color_decoration(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"runtime")
+    # Exact shape produced by rustc when CI exports CARGO_TERM_COLOR=always.
+    colored_note = (
+        "\x1b[1m\x1b[92mnote\x1b[0m\x1b[1m\x1b[97m: "
+        "native-static-libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc\x1b[0m\n"
+    )
+    manifest = manifest_from_cargo_json(
+        "",
+        cargo_stderr=colored_note,
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple="x86_64-unknown-linux-gnu",
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
+    )
+    assert manifest["native_static_libs"]["arguments"] == [
+        "-lgcc_s",
+        "-lutil",
+        "-lrt",
+        "-lpthread",
+        "-lm",
+        "-ldl",
+        "-lc",
+    ]
+
+
+def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime_lib = tmp_path / "dev-fast" / "libmolt_runtime.stdlib_micro.a"
+    state = _RuntimeArtifactState(runtime_lib=runtime_lib)
+    cargo_stdout = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "cannot find value `BROKEN_RUNTIME` in this scope",
+                "rendered": (
+                    "\x1b[31merror[E0425]\x1b[0m: cannot find value "
+                    "`BROKEN_RUNTIME` in this scope"
+                ),
+            },
+        }
+    )
+    fingerprint = {
+        "hash": "4" * 64,
+        "inputs_digest": "5" * 64,
+        "meta_digest": "6" * 64,
+        "rustc": "rustc 1.96.1",
+    }
+    monkeypatch.setattr(
+        runtime_build,
+        "_runtime_fingerprint",
+        lambda *_args, **_kwargs: fingerprint,
+    )
+    monkeypatch.setattr(
+        runtime_build,
+        "_runtime_fingerprint_path",
+        lambda *_args, **_kwargs: tmp_path / "runtime.fingerprint.json",
+    )
+    monkeypatch.setattr(runtime_build, "_read_runtime_fingerprint", lambda _path: None)
+    monkeypatch.setattr(
+        runtime_build,
+        "_maybe_hydrate_artifact_from_canonical_target",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        runtime_build,
+        "_build_lock",
+        lambda *_args, **_kwargs: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(runtime_build, "_maybe_enable_sccache", lambda _env: None)
+    monkeypatch.setattr(
+        runtime_build,
+        "_build_state_root",
+        lambda _root: tmp_path / "state",
+    )
+    monkeypatch.setattr(
+        runtime_build,
+        "_run_cargo_with_sccache_retry",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd,
+            101,
+            cargo_stdout,
+            "",
+        ),
+    )
+    assert not runtime_build._ensure_runtime_lib(
+        runtime_lib,
+        target_triple=None,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        cargo_timeout=30.0,
+        stdlib_profile="micro",
+        runtime_state=state,
+    )
+    assert state.native_runtime_build_failure is not None
+    assert "error[E0425]" in state.native_runtime_build_failure.summary
+    assert "\x1b" not in state.native_runtime_build_failure.summary
+    evidence_path = state.native_runtime_build_failure.evidence_path
+    assert evidence_path is not None and evidence_path.is_file()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["returncode"] == 101
+    assert evidence["cargo_stdout"] == cargo_stdout
+
+    monkeypatch.setattr(
+        runtime_callable_symbols,
+        "_ensure_native_runtime_lib_ready_before_link",
+        lambda *_args, **_kwargs: False,
+    )
+    _digest, rc = (
+        runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen(
+            state,
+            target_triple=None,
+            json_output=True,
+            runtime_cargo_profile="dev-fast",
+            molt_root=tmp_path,
+            cargo_timeout=None,
+        )
+    )
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["returncode"] == 2
+    runtime_failure = payload["data"]["runtime_build_failure"]
+    assert runtime_failure["stage"] == "cargo"
+    assert runtime_failure["returncode"] == 101
+    assert runtime_failure["evidence_path"] == str(evidence_path)
+    assert "BROKEN_RUNTIME" in payload["errors"][0]
+
+
 def test_multiple_native_static_lib_notes_fail_closed(tmp_path: Path) -> None:
     runtime = tmp_path / "dev-fast" / "molt_runtime.lib"
     runtime.parent.mkdir(parents=True)
@@ -632,7 +770,9 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
     replacement.write_bytes(b"runtime-b")
     os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
     os.replace(replacement, runtime)
-    with pytest.raises(NativeLinkDependencyManifestError, match="archive digest mismatch"):
+    with pytest.raises(
+        NativeLinkDependencyManifestError, match="archive digest mismatch"
+    ):
         read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
@@ -697,8 +837,7 @@ def test_coff_rustc_linker_tokens_are_forwarded_through_driver_exactly(
     write_native_link_dependency_manifest(
         "",
         cargo_stderr=(
-            "note: native-static-libs: kernel32.lib /defaultlib:msvcrt "
-            "kernel32.lib\n"
+            "note: native-static-libs: kernel32.lib /defaultlib:msvcrt kernel32.lib\n"
         ),
         runtime_lib=runtime,
         cargo_profile="dev-fast",
@@ -848,9 +987,10 @@ def test_runtime_manifest_refresh_uses_exact_cargo_json_command(
         concrete_stdlib_feature="stdlib_micro",
         target_triple=None,
     )
-    assert command[:7] == [
+    assert command[:8] == [
         "cargo",
         "rustc",
+        "--color=never",
         "-p",
         "molt-runtime",
         "--profile",
