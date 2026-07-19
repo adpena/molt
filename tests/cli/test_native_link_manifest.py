@@ -1189,5 +1189,8 @@ def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -
     manifest_source = inspect.getsource(native_link_deps.read_native_link_flags)
     assert "source_fingerprint=source_fingerprint" in manifest_source
     cargo_source = inspect.getsource(cargo_execution._run_cargo_with_sccache_retry)
-    assert cargo_source.count('encoding="utf-8"') == 2
-    assert cargo_source.count('errors="strict"') == 2
+    attempt_source = inspect.getsource(cargo_execution._run_cargo_attempt)
+    assert "_sccache_wrapper_failure_reason" in cargo_source
+    assert "retrying once without sccache" in cargo_source
+    assert attempt_source.count('encoding="utf-8"') == 1
+    assert attempt_source.count('errors="strict"') == 1

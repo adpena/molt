@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
+import signal
 import shutil
 import subprocess
 import sys
 import time
-from typing import Iterator
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
@@ -24,6 +27,190 @@ from molt.cli.project_roots import _find_molt_root
 
 
 _MAX_CONCURRENT_BUILDS = 2
+_CARGO_ATTEMPT_TEXT_LIMIT = 128 * 1024
+_CARGO_ATTEMPT_EVIDENCE_SCHEMA = "molt.cargo-attempt.v1"
+_CARGO_EXECUTION_EVIDENCE_SCHEMA = "molt.cargo-execution.v1"
+
+
+def _bounded_cargo_attempt_text(text: str) -> str:
+    if len(text) <= _CARGO_ATTEMPT_TEXT_LIMIT:
+        return text
+    half = _CARGO_ATTEMPT_TEXT_LIMIT // 2
+    omitted = len(text) - (half * 2)
+    return (
+        text[:half]
+        + f"\n... <{omitted} chars omitted from cargo attempt evidence> ...\n"
+        + text[-half:]
+    )
+
+
+def _text_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _rss_bytes(result: subprocess.CompletedProcess[Any], attr: str) -> int | None:
+    sample = getattr(result, attr, None)
+    rss_kb = getattr(sample, "rss_kb", None)
+    return int(rss_kb) * 1024 if isinstance(rss_kb, int) and rss_kb >= 0 else None
+
+
+def _cargo_result_signal(
+    result: subprocess.CompletedProcess[Any], stderr: str
+) -> dict[str, object] | None:
+    guard_signal = getattr(result, "guard_signal", None)
+    if isinstance(guard_signal, int) and guard_signal > 0:
+        try:
+            name = signal.Signals(guard_signal).name
+        except ValueError:
+            name = str(guard_signal)
+        return {"number": guard_signal, "name": name, "source": "guard"}
+    if result.returncode < 0:
+        number = -result.returncode
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = str(number)
+        return {"number": number, "name": name, "source": "returncode"}
+    match = re.search(
+        r"\bsignal:\s*(?:(\d+)\s*,\s*)?(SIG[A-Z0-9]+)(?::[^\r\n)]*)?",
+        stderr,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    number = int(match.group(1)) if match.group(1) is not None else None
+    return {
+        "number": number,
+        "name": match.group(2).upper(),
+        "source": "cargo-diagnostic",
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class CargoAttemptEvidence:
+    index: int
+    wrapper: str | None
+    returncode: int
+    signal: dict[str, object] | None
+    timed_out: bool
+    duration_seconds: float
+    peak_process_rss_bytes: int | None
+    peak_tree_rss_bytes: int | None
+    failure_kind: str | None
+    stdout: str
+    stderr: str
+
+    def json_payload(self) -> dict[str, object]:
+        return {
+            "schema": _CARGO_ATTEMPT_EVIDENCE_SCHEMA,
+            "index": self.index,
+            "wrapper": self.wrapper,
+            "returncode": self.returncode,
+            "signal": self.signal,
+            "timed_out": self.timed_out,
+            "duration_seconds": round(self.duration_seconds, 6),
+            "peak_process_rss_bytes": self.peak_process_rss_bytes,
+            "peak_tree_rss_bytes": self.peak_tree_rss_bytes,
+            "failure_kind": self.failure_kind,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+        }
+
+
+class CargoExecutionResult(subprocess.CompletedProcess[str]):
+    """Terminal Cargo result plus bounded, ordered evidence for every attempt."""
+
+    def __init__(
+        self,
+        terminal: subprocess.CompletedProcess[Any],
+        *,
+        attempts: Sequence[CargoAttemptEvidence],
+        retry_reason: str | None,
+    ) -> None:
+        stdout = _text_output(terminal.stdout)
+        stderr = _text_output(terminal.stderr)
+        super().__init__(terminal.args, terminal.returncode, stdout, stderr)
+        self.attempts = tuple(attempts)
+        self.retry_reason = retry_reason
+        self.elapsed_s = sum(attempt.duration_seconds for attempt in attempts)
+        self.peak_process_rss_bytes = max(
+            (
+                attempt.peak_process_rss_bytes
+                for attempt in attempts
+                if attempt.peak_process_rss_bytes is not None
+            ),
+            default=None,
+        )
+        self.peak_tree_rss_bytes = max(
+            (
+                attempt.peak_tree_rss_bytes
+                for attempt in attempts
+                if attempt.peak_tree_rss_bytes is not None
+            ),
+            default=None,
+        )
+        self.timed_out = bool(getattr(terminal, "timed_out", False))
+        self.guard_signal = getattr(terminal, "guard_signal", None)
+
+
+def cargo_execution_evidence(
+    result: subprocess.CompletedProcess[Any],
+) -> dict[str, object]:
+    """Return one stable JSON-ready execution payload for Cargo build failures."""
+    attempts = getattr(result, "attempts", None)
+    if isinstance(attempts, tuple) and all(
+        isinstance(attempt, CargoAttemptEvidence) for attempt in attempts
+    ):
+        attempt_payloads = [attempt.json_payload() for attempt in attempts]
+    else:
+        stderr = _text_output(result.stderr)
+        stdout = _text_output(result.stdout)
+        elapsed = getattr(result, "elapsed_s", 0.0)
+        duration = float(elapsed) if isinstance(elapsed, (int, float)) else 0.0
+        attempt_payloads = [
+            CargoAttemptEvidence(
+                index=1,
+                wrapper=None,
+                returncode=result.returncode,
+                signal=_cargo_result_signal(result, f"{stderr}\n{stdout}"),
+                timed_out=bool(getattr(result, "timed_out", False)),
+                duration_seconds=max(0.0, duration),
+                peak_process_rss_bytes=_rss_bytes(result, "peak"),
+                peak_tree_rss_bytes=_rss_bytes(result, "peak_total"),
+                failure_kind=None,
+                stdout=_bounded_cargo_attempt_text(stdout),
+                stderr=_bounded_cargo_attempt_text(stderr),
+            ).json_payload()
+        ]
+    final = attempt_payloads[-1]
+    durations = [float(attempt["duration_seconds"]) for attempt in attempt_payloads]
+    process_peaks = [
+        int(attempt["peak_process_rss_bytes"])
+        for attempt in attempt_payloads
+        if isinstance(attempt.get("peak_process_rss_bytes"), int)
+    ]
+    tree_peaks = [
+        int(attempt["peak_tree_rss_bytes"])
+        for attempt in attempt_payloads
+        if isinstance(attempt.get("peak_tree_rss_bytes"), int)
+    ]
+    retry_reason = getattr(result, "retry_reason", None)
+    return {
+        "schema": _CARGO_EXECUTION_EVIDENCE_SCHEMA,
+        "attempt_count": len(attempt_payloads),
+        "retry_reason": retry_reason if isinstance(retry_reason, str) else None,
+        "timed_out": bool(final.get("timed_out", False)),
+        "duration_seconds": round(sum(durations), 6),
+        "peak_process_rss_bytes": max(process_peaks, default=None),
+        "peak_tree_rss_bytes": max(tree_peaks, default=None),
+        "signal": final.get("signal"),
+        "attempts": attempt_payloads,
+    }
+
 
 # Cargo `--jobs` memory-bounding authority now lives in molt.dx (the resource
 # authority, importable without a cycle). See dx._memory_bounded_cargo_jobs.
@@ -93,8 +280,13 @@ def _sccache_server_responsive(sccache: str) -> bool:
     server. A server that answers --show-stats but crashes mid-compile is caught
     by the retry-degrade in `_run_cargo_with_sccache_retry`."""
     try:
-        result = subprocess.run(
-            [sccache, "--show-stats"], capture_output=True, text=True, timeout=15
+        result = _run_completed_command(
+            [sccache, "--show-stats"],
+            cwd=Path.cwd(),
+            env=os.environ.copy(),
+            capture_output=True,
+            memory_guard_prefix="MOLT_BUILD",
+            timeout=15,
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -111,7 +303,9 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     sccache = shutil.which("sccache")
     if sccache is None:
         if forced:
-            _sccache_diag("MOLT_USE_SCCACHE set but sccache is not on PATH; using direct rustc.")
+            _sccache_diag(
+                "MOLT_USE_SCCACHE set but sccache is not on PATH; using direct rustc."
+            )
         return
     # sccache delivers 0 cache hits on this Windows host and crashes builds
     # mid-compile (os error 10054), converting cacheable compiler builds into
@@ -124,7 +318,9 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
         )
         return
     if not _sccache_server_responsive(sccache):
-        _sccache_diag("server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence).")
+        _sccache_diag(
+            "server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence)."
+        )
         return
     root = _find_molt_root(Path.cwd()) or Path.cwd()
     ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
@@ -137,7 +333,9 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     # turn incremental off (else the wrapper caches nothing). When sccache is OFF
     # (the Windows default now), incremental stays ON — see _cargo_build_env.
     env["CARGO_INCREMENTAL"] = "0"
-    _sccache_diag(f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness.")
+    _sccache_diag(
+        f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness."
+    )
 
 
 def _cargo_build_env() -> dict[str, str]:
@@ -175,8 +373,13 @@ def _attest_sccache_stats(sccache: str, label: str) -> None:
     the wrapper overhead. Cumulative counts: requests==0 after a build means the
     cache did nothing."""
     try:
-        result = subprocess.run(
-            [sccache, "--show-stats"], capture_output=True, text=True, timeout=15
+        result = _run_completed_command(
+            [sccache, "--show-stats"],
+            cwd=Path.cwd(),
+            env=os.environ.copy(),
+            capture_output=True,
+            memory_guard_prefix="MOLT_BUILD",
+            timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return
@@ -197,12 +400,99 @@ def _attest_sccache_stats(sccache: str, label: str) -> None:
     )
 
 
-def _is_sccache_wrapper_failure(result: subprocess.CompletedProcess[str]) -> bool:
-    stderr = result.stderr or ""
-    stdout = result.stdout or ""
-    combined = f"{stderr}\n{stdout}"
-    return "sccache: error:" in combined or (
-        "process didn't exit successfully" in combined and "sccache" in combined
+_SCCACHE_EXPLICIT_ERROR_RE = re.compile(
+    r"(?im)^\s*(?:error:\s*)?sccache:\s*error:\s*\S"
+)
+_SCCACHE_LAUNCH_FAILURE_RE = re.compile(
+    r"(?im)^\s*error:\s*(?:could not|failed to)\s+(?:execute|spawn)\s+"
+    r"(?:process\s+)?[^\r\n]*\bsccache(?:\.exe)?\b"
+)
+
+
+def _wrapper_is_sccache(wrapper: str) -> bool:
+    name = Path(wrapper).name.lower()
+    return name == "sccache" or name == "sccache.exe"
+
+
+def _sccache_wrapper_failure_reason(
+    result: subprocess.CompletedProcess[Any],
+) -> str | None:
+    """Classify only failures that explicitly identify the wrapper as broken.
+
+    Cargo includes the entire rustc invocation in its generic
+    ``process didn't exit successfully`` diagnostic.  When ``RUSTC_WRAPPER`` is
+    active that line necessarily contains ``sccache`` even when rustc itself
+    failed, was killed, or exhausted memory.  Command text is therefore never
+    retry authority; an explicit sccache diagnostic or wrapper launch failure is.
+    """
+    combined = f"{_text_output(result.stderr)}\n{_text_output(result.stdout)}"
+    if _SCCACHE_EXPLICIT_ERROR_RE.search(combined):
+        return "explicit-sccache-error"
+    if _SCCACHE_LAUNCH_FAILURE_RE.search(combined):
+        return "sccache-launch-failure"
+    return None
+
+
+def _cargo_attempt(
+    result: subprocess.CompletedProcess[Any],
+    *,
+    index: int,
+    wrapper: str | None,
+    duration_seconds: float,
+    failure_kind: str | None,
+) -> CargoAttemptEvidence:
+    stdout = _text_output(result.stdout)
+    stderr = _text_output(result.stderr)
+    elapsed = getattr(result, "elapsed_s", None)
+    duration = (
+        float(elapsed)
+        if isinstance(elapsed, (int, float)) and elapsed >= 0
+        else duration_seconds
+    )
+    return CargoAttemptEvidence(
+        index=index,
+        wrapper=wrapper,
+        returncode=result.returncode,
+        signal=_cargo_result_signal(result, f"{stderr}\n{stdout}"),
+        timed_out=bool(getattr(result, "timed_out", False)),
+        duration_seconds=max(0.0, duration),
+        peak_process_rss_bytes=_rss_bytes(result, "peak"),
+        peak_tree_rss_bytes=_rss_bytes(result, "peak_total"),
+        failure_kind=failure_kind,
+        stdout=_bounded_cargo_attempt_text(stdout),
+        stderr=_bounded_cargo_attempt_text(stderr),
+    )
+
+
+_TempfileCargoRunner = Callable[..., subprocess.CompletedProcess[bytes]]
+
+
+def _run_cargo_attempt(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout: float | None,
+    tempfile_runner: _TempfileCargoRunner | None,
+    progress_label: str | None,
+) -> subprocess.CompletedProcess[Any]:
+    if tempfile_runner is not None:
+        return tempfile_runner(
+            cmd,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            progress_label=progress_label,
+        )
+    return _run_completed_command(
+        cmd,
+        cwd=cwd,
+        env=dict(env),
+        capture_output=True,
+        memory_guard_prefix="MOLT_BUILD",
+        timeout=timeout,
+        encoding="utf-8",
+        errors="strict",
     )
 
 
@@ -214,45 +504,69 @@ def _run_cargo_with_sccache_retry(
     timeout: float | None,
     json_output: bool,
     label: str,
-) -> subprocess.CompletedProcess[str]:
-    build = _run_completed_command(
+    tempfile_runner: _TempfileCargoRunner | None = None,
+    progress_label: str | None = None,
+) -> CargoExecutionResult:
+    started = time.perf_counter()
+    build = _run_cargo_attempt(
         cmd,
         cwd=cwd,
         env=env,
-        capture_output=True,
-        memory_guard_prefix="MOLT_BUILD",
         timeout=timeout,
-        encoding="utf-8",
-        errors="strict",
+        tempfile_runner=tempfile_runner,
+        progress_label=progress_label,
     )
+    first_duration = time.perf_counter() - started
     wrapper = env.get("RUSTC_WRAPPER", "")
-    if (
-        build.returncode != 0
-        and wrapper
-        and Path(wrapper).name == "sccache"
-        and _is_sccache_wrapper_failure(build)
-    ):
+    retry_reason = (
+        _sccache_wrapper_failure_reason(build)
+        if build.returncode != 0 and wrapper and _wrapper_is_sccache(wrapper)
+        else None
+    )
+    attempts = [
+        _cargo_attempt(
+            build,
+            index=1,
+            wrapper=wrapper or None,
+            duration_seconds=first_duration,
+            failure_kind=retry_reason,
+        )
+    ]
+    if retry_reason is not None:
         retry_env = env.copy()
         retry_env.pop("RUSTC_WRAPPER", None)
         if not json_output:
             print(
-                f"{label}: sccache wrapper failure detected; retrying without sccache.",
+                f"{label}: sccache wrapper failure detected ({retry_reason}); "
+                "retrying once without sccache.",
                 file=sys.stderr,
             )
-        build = _run_completed_command(
+        started = time.perf_counter()
+        build = _run_cargo_attempt(
             cmd,
             cwd=cwd,
             env=retry_env,
-            capture_output=True,
-            memory_guard_prefix="MOLT_BUILD",
             timeout=timeout,
-            encoding="utf-8",
-            errors="strict",
+            tempfile_runner=tempfile_runner,
+            progress_label=progress_label,
+        )
+        attempts.append(
+            _cargo_attempt(
+                build,
+                index=2,
+                wrapper=None,
+                duration_seconds=time.perf_counter() - started,
+                failure_kind=None,
+            )
         )
     active_wrapper = env.get("RUSTC_WRAPPER", "")
-    if not json_output and active_wrapper and Path(active_wrapper).name == "sccache":
+    if not json_output and active_wrapper and _wrapper_is_sccache(active_wrapper):
         _attest_sccache_stats(active_wrapper, label)
-    return build
+    return CargoExecutionResult(
+        build,
+        attempts=attempts,
+        retry_reason=retry_reason,
+    )
 
 
 def _build_slot_dir() -> Path:
