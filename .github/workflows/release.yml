@@ -7,315 +7,317 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g., v0.0.001)"
-        required: false
+        description: "Existing release tag (for example v0.0.001)"
+        required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build:
-    # This job currently attests and publishes its matrix artifact. Keep write
-    # authority local to the publishing job instead of granting it workflow-wide.
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            platform: macos
-            arch: arm64
-            self_hosted: false
-          - os: [self-hosted, macos, x64, molt-release]
-            platform: macos
-            arch: x86_64
-            self_hosted: true
-          - os: ubuntu-24.04
-            platform: linux
-            arch: x86_64
-            self_hosted: false
-          - os: ubuntu-24.04-arm
-            platform: linux
-            arch: aarch64
-            self_hosted: false
-          - os: windows-2022
-            platform: windows
-            arch: x86_64
-            self_hosted: false
-    env:
-      EVENT_NAME: ${{ github.event_name }}
-      REF_NAME: ${{ github.ref_name }}
-      INPUT_VERSION: ${{ inputs.version }}
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      source_date_epoch: ${{ steps.plan.outputs.source_date_epoch }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
 
-      - name: Resolve version
-        shell: bash
-        run: |
-          if [ "$EVENT_NAME" = "push" ] && [ -n "$REF_NAME" ]; then
-            VERSION="$REF_NAME"
-          elif [ -n "$INPUT_VERSION" ]; then
-            VERSION="$INPUT_VERSION"
-          else
-            echo "Version is required (tag or input)." >&2
-            exit 1
-          fi
-          VERSION="${VERSION#v}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
-      - name: Select Python
-        shell: bash
-        run: |
-          if [ "${{ matrix.self_hosted }}" = "true" ]; then
-            echo "PYTHON_BIN=python3" >> "$GITHUB_ENV"
-          else
-            echo "PYTHON_BIN=python" >> "$GITHUB_ENV"
-          fi
-
-      - name: Setup release project toolchains
+      - name: Setup release planner
         uses: ./.github/actions/setup-project
         with:
-          python: ${{ !matrix.self_hosted && 'true' || 'false' }}
-          rust-toolchain: ${{ !matrix.self_hosted && '1.96.1' || '' }}
-          cache-cargo: ${{ !matrix.self_hosted && 'true' || 'false' }}
-          cache-namespace: release-${{ matrix.platform }}-${{ matrix.arch }}
+          uv: "false"
+          cache-uv: "false"
 
-      - name: Verify version matches pyproject.toml
-        shell: bash
+      - name: Resolve exact tagged release plan
+        id: plan
+        env:
+          REQUESTED_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: >-
+          python -m tools.release.release_authority plan
+          --requested-version "$REQUESTED_VERSION"
+          --github-output "$GITHUB_OUTPUT"
+
+  wheel:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.source_sha }}
+
+      - name: Setup exact wheel build environment
+        uses: ./.github/actions/setup-project
+
+      - name: Synchronize locked release build tools
+        run: uv sync --frozen --only-group release
+
+      - name: Build the canonical wheel twice from independent source exports
         run: |
-          "$PYTHON_BIN" - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
+          mkdir -p dist/source-a dist/source-b dist/wheel-a dist/wheel-b dist/wheel
+          git archive --format=tar --output=dist/source.tar HEAD
+          tar -xf dist/source.tar -C dist/source-a
+          tar -xf dist/source.tar -C dist/source-b
+          uv run --no-sync python -m build --wheel --no-isolation \
+            --outdir "$GITHUB_WORKSPACE/dist/wheel-a" dist/source-a
+          uv run --no-sync python -m build --wheel --no-isolation \
+            --outdir "$GITHUB_WORKSPACE/dist/wheel-b" dist/source-b
+          primary="$(python -m tools.release.release_authority select-one \
+            --root dist/wheel-a --pattern '*.whl')"
+          secondary="$(python -m tools.release.release_authority select-one \
+            --root dist/wheel-b --pattern '*.whl')"
+          python -m tools.release.release_authority verify-wheel \
+            --primary "$primary" \
+            --secondary "$secondary" \
+            --output "dist/wheel/$(basename "$primary")" \
+            > dist/wheel/reproducibility.json
 
-          data = tomllib.loads(Path("pyproject.toml").read_text())
-          version = data["project"]["version"]
-          expected = os.environ["VERSION"]
-          if version != expected:
-              raise SystemExit(f"pyproject.toml version {version} != {expected}")
-          PY
-
-      - name: Install Rust toolchain (self-hosted)
-        if: ${{ matrix.self_hosted }}
-        shell: bash
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- -y --profile minimal
-          fi
-          echo "PATH=$HOME/.cargo/bin:$PATH" >> "$GITHUB_ENV"
-          rustup toolchain install 1.96.1 --profile minimal --component rustfmt --component clippy --no-self-update
-          rustup default 1.96.1
-
-      - name: Install system deps (Linux)
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld pkg-config libssl-dev
-
-      - name: Build wheel
-        shell: bash
-        run: |
-          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            uv pip install --system --python "$PYTHON_BIN" build
-          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            "$PYTHON_BIN" -m build --wheel --outdir dist
-
-      - name: Build molt-worker
-        shell: bash
-        run: |
-          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- cargo build -p molt-worker --release
-
-      - name: Build bundles
-        shell: bash
-        run: |
-          mkdir -p dist
-          set -- dist/molt-*.whl
-          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-            echo "expected exactly one Molt wheel, found $#" >&2
-            exit 1
-          fi
-          WHEEL=$1
-
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            WORKER="target/release/molt-worker.exe"
-            EXT="zip"
-          else
-            WORKER="target/release/molt-worker"
-            EXT="tar.gz"
-          fi
-
-          if [ ! -f "$WORKER" ]; then
-            echo "Worker binary missing: $WORKER" >&2
-            exit 1
-          fi
-
-          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            "$PYTHON_BIN" tools/release/build_bundle.py \
-            --version "$VERSION" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
-            --wheel "$WHEEL" \
-            --worker "$WORKER" \
-            --output "dist/molt-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
-
-          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
-            "$PYTHON_BIN" tools/release/build_bundle.py \
-            --version "$VERSION" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
-            --kind molt-worker \
-            --worker "$WORKER" \
-            --output "dist/molt-worker-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
-
-      - name: Upload build artifacts
+      - name: Upload canonical wheel authority
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
+          name: release-wheel-${{ needs.plan.outputs.source_sha }}
+          path: dist/wheel
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+  candidates:
+    needs: [plan, wheel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          subject-path: |
-            dist/*.whl
-            dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.source_sha }}
 
-      - name: Upload release assets
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+      - name: Setup exact candidate toolchains
+        uses: ./.github/actions/setup-project
         with:
-          tag_name: v${{ env.VERSION }}
-          files: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          cache-namespace: release-${{ matrix.id }}
 
-  manifest:
+      - name: Verify candidate toolchain identity
+        shell: bash
+        run: |
+          rustc --version --verbose | grep -F 'release: 1.96.1'
+          cargo --version | grep -F 'cargo 1.96.1'
+          clang --version
+
+      - name: Download the one canonical wheel
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-wheel-${{ needs.plan.outputs.source_sha }}
+          path: dist/wheel
+
+      - name: Build independent release-output workers
+        shell: bash
+        run: |
+          python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            cargo build --locked --profile release-output -p molt-worker \
+            --target-dir dist/worker-primary
+          python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            cargo build --locked --profile release-output -p molt-worker \
+            --target-dir dist/worker-secondary
+
+      - name: Assemble immutable reproducible candidate
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: |
+          wheel="$(python -m tools.release.release_authority select-one \
+            --root dist/wheel --pattern '*.whl')"
+          worker="molt-worker"
+          if [ "${{ matrix.platform }}" = "windows" ]; then worker="molt-worker.exe"; fi
+          python -m tools.release.release_authority candidate \
+            --target "${{ matrix.id }}" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --wheel "$wheel" \
+            --primary-worker "dist/worker-primary/release-output/$worker" \
+            --secondary-worker "dist/worker-secondary/release-output/$worker" \
+            --output dist/candidate
+
+      - name: Verify clean install, CLI, native compile, execution, and uninstall
+        shell: bash
+        run: >-
+          python tools/guarded_exec.py --prefix MOLT_RELEASE --
+          python -m tools.release.verify_consumer
+          --candidate dist/candidate
+          --receipt dist/candidate/consumer-verification.json
+
+      - name: Upload verified immutable candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-${{ matrix.id }}-${{ needs.plan.outputs.source_sha }}
+          path: dist/candidate
+          if-no-files-found: error
+          retention-days: 14
+
+  attest:
+    needs: [plan, wheel, candidates]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
-    runs-on: ubuntu-24.04
-    needs: build
-    env:
-      EVENT_NAME: ${{ github.event_name }}
-      REF_NAME: ${{ github.ref_name }}
-      INPUT_VERSION: ${{ inputs.version }}
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ needs.plan.outputs.source_sha }}
 
-      - name: Resolve version
-        shell: bash
-        run: |
-          if [ "$EVENT_NAME" = "push" ] && [ -n "$REF_NAME" ]; then
-            VERSION="$REF_NAME"
-          elif [ -n "$INPUT_VERSION" ]; then
-            VERSION="$INPUT_VERSION"
-          else
-            echo "Version is required (tag or input)." >&2
-            exit 1
-          fi
-          VERSION="${VERSION#v}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
-      - name: Setup release manifest Python
+      - name: Setup release index authority
         uses: ./.github/actions/setup-project
         with:
           uv: "false"
           cache-uv: "false"
 
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+      - name: Download verified candidates
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          path: dist
-          pattern: release-*
-          merge-multiple: true
+          pattern: release-candidate-*-${{ needs.plan.outputs.source_sha }}
+          path: dist/candidates
 
-      - name: Generate checksums and manifest
-        shell: bash
+      - name: Download canonical wheel
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-wheel-${{ needs.plan.outputs.source_sha }}
+          path: dist/wheel
+
+      - name: Build collision-free release index, checksums, and SPDX SBOM
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
         run: |
-          python tools/release/write_checksums.py --out dist/SHA256SUMS dist/molt-*.*
-          python tools/release/release_manifest.py --version "$VERSION" --out dist/release_manifest.json dist/molt-*.*
+          wheel="$(python -m tools.release.release_authority select-one \
+            --root dist/wheel --pattern '*.whl')"
+          python -m tools.release.release_authority index \
+            --candidate-root dist/candidates \
+            --wheel "$wheel" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --output dist/publish
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+      - name: Sign SLSA provenance with GitHub Sigstore identity
+        id: provenance
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
         with:
           subject-path: |
-            dist/SHA256SUMS
-            dist/release_manifest.json
+            dist/publish/*.whl
+            dist/publish/*.tar.gz
+            dist/publish/*.zip
+            dist/publish/SHA256SUMS
+            dist/publish/release_manifest.json
+            dist/publish/release.spdx.json
 
-      - name: Upload release manifest assets
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+      - name: Sign SPDX SBOM with GitHub Sigstore identity
+        id: sbom
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
         with:
-          tag_name: v${{ env.VERSION }}
-          files: |
-            dist/SHA256SUMS
-            dist/release_manifest.json
+          subject-path: |
+            dist/publish/*.whl
+            dist/publish/*.tar.gz
+            dist/publish/*.zip
+          sbom-path: dist/publish/release.spdx.json
 
-  deploy-worker:
-    runs-on: ubuntu-24.04
-    needs: manifest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          persist-credentials: false
-
-      - name: Deploy Cloudflare Worker
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: deploy/cloudflare
-          command: deploy
-
-      - name: Smoke test Worker
+      - name: Preserve portable Sigstore bundles and verify attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sleep 5
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-            --max-time 30 \
-            https://falcon-ocr.adpena.workers.dev/health)
-          if [ "$STATUS" != "200" ]; then
-            echo "Worker health check failed: HTTP $STATUS" >&2
-            exit 1
-          fi
-          echo "Worker health check passed (HTTP $STATUS)"
+          cp "${{ steps.provenance.outputs.bundle-path }}" \
+            dist/publish/release.provenance.sigstore.json
+          cp "${{ steps.sbom.outputs.bundle-path }}" \
+            dist/publish/release.sbom.sigstore.json
+          find dist/publish -maxdepth 1 -type f \
+            ! -name '*.sigstore.json' ! -name 'RELEASE_NOTES.md' -print0 \
+            | xargs -0 -n1 gh attestation verify --repo "$GITHUB_REPOSITORY"
 
-  deploy-modal:
+      - name: Upload the only promotable release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-promotion-${{ needs.plan.outputs.source_sha }}
+          path: dist/publish
+          if-no-files-found: error
+          retention-days: 14
+
+  promote:
+    needs: [plan, attest]
     runs-on: ubuntu-24.04
-    needs: manifest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+    environment: release-production
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ needs.plan.outputs.source_sha }}
 
-      - name: Setup Modal deployment Python
+      - name: Setup promotion verifier
         uses: ./.github/actions/setup-project
         with:
           uv: "false"
           cache-uv: "false"
 
-      - name: Install Modal
-        run: pip install modal
+      - name: Download the signed verified payload
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-promotion-${{ needs.plan.outputs.source_sha }}
+          path: dist/publish
 
-      - name: Deploy Falcon-OCR to Modal
+      - name: Stage, byte-verify, then atomically publish the GitHub Release
         env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: modal deploy deploy/modal/falcon_ocr.py
-
-      - name: Deploy Nemotron OCR to Modal
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: modal deploy deploy/modal/nemotron_ocr.py
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft)"
+            test "$draft" = "true" || {
+              echo "published release already exists for $tag" >&2
+              exit 1
+            }
+          else
+            gh release create "$tag" --draft --verify-tag \
+              --title "Molt $VERSION" \
+              --notes-file dist/publish/RELEASE_NOTES.md
+          fi
+          gh release upload "$tag" dist/publish/* --clobber
+          mkdir -p dist/remote
+          gh release download "$tag" --dir dist/remote
+          python -m tools.release.release_authority verify-promotion \
+            --local dist/publish --remote dist/remote
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false -f make_latest=true >/dev/null

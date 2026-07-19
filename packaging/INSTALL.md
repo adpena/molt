@@ -110,7 +110,8 @@ Failed checks include a `level` and optional `advice` list in `data.checks`.
   - Windows: `winget install Astral.Uv` or `scoop install uv`
   - Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **cargo/rustup**: install Rust toolchain and ensure PATH is updated.
-  - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+  - macOS: `brew install rustup` or use the signed installer from <https://rustup.rs/>.
+  - Linux: use the distribution package or the signed installer from <https://rustup.rs/>.
   - Windows: `winget install Rustlang.Rustup`
   - Then: `source $HOME/.cargo/env` (macOS/Linux) or reopen your terminal (Windows)
 - **clang**: install a C toolchain.

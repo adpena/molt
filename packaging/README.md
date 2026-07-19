@@ -7,21 +7,15 @@ This folder holds release assets, install scripts, and packaging templates.
 - `install.sh` / `install.ps1`: end-user installers (download + PATH setup).
 - `INSTALL.md`: bundled in release artifacts as offline install notes.
 - `templates/`: boilerplate for Homebrew, Scoop, and Winget.
-- `config.toml`: naming + repo metadata used by release helpers.
+- `../config/release_supply_chain.toml`: sole repository, target-matrix, and pinned-download
+  authority used by release execution.
 
-## Canonical namespace
+## Release workflow
 
-- Canonical cross-registry package name: `molt-python`
-- Cargo crate path in this repo: `runtime/molt-python`
-- Cargo release version must start at `0.0.1`; `0.0.001` is invalid SemVer for Cargo
-- `packaging/config.toml` `[ecosystem_names]` is the source of truth for the
-  cross-registry target names we want to reserve/publish
-
-## Release workflow (summary)
-
-1. Tag the release `v0.0.001` (increment the thousandths place).
-2. GitHub Actions builds artifacts for macOS/Linux/Windows and publishes a release.
-3. Update external package repos (Homebrew/Scoop/Winget) using the templates.
+`PACKAGING.md` defines the executable candidate → verify → attest → promote
+authority. Tag the exact version from `pyproject.toml`; every target must prove
+reproducibility and clean-consumer native execution before the one protected
+promotion job can make a draft GitHub Release public.
 
 ## Packaging invariants
 
@@ -40,8 +34,8 @@ This repo only contains templates. You will need to push updates to:
 - Scoop bucket: `adpena/scoop-molt`
 - Winget: submit manifest PRs via winget-pkgs
 
-Use `tools/release/` helpers to generate updated manifests from the release
-manifest (checksums + URLs).
+Use `tools/release/` helpers to render package-manager projections from the
+signed release manifest. They do not rebuild, rehash, or republish artifacts.
 
 ### Manifest rendering
 
