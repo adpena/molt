@@ -43,8 +43,19 @@ fn runtime_registers_one_canonical_pending_call_authority() {
     assert!(authority.contains("compare_exchange_weak"));
     assert!(authority.contains(".store(Self::advance(pos, 1), Ordering::Release)"));
     assert!(authority.contains(".store(Self::advance(pos, N), Ordering::Release)"));
-    assert!(!authority.contains("Mutex<"));
+    assert!(!authority.contains("Mutex<VecDeque"));
     assert!(!authority.contains("VecDeque"));
+    assert!(authority.contains(
+        "#[cfg(not(feature = \"runtime-test-support\"))]\nuse std::sync::OnceLock;"
+    ));
+    assert!(authority.contains(
+        "#[cfg(feature = \"runtime-test-support\")]\nuse std::sync::Mutex;"
+    ));
+    assert_eq!(
+        authority.matches("static MAIN_THREAD:").count(),
+        2,
+        "production and runtime-test-support must each declare one cfg-exclusive owner store"
+    );
 
     let lifecycle_win = runtime_init
         .find("RuntimeLifecyclePhase::Uninitialized =>")
