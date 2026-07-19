@@ -39,7 +39,7 @@ jobs:
         timeout-minutes: 15
 
       - name: Upload Lean proof receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/formal-lean.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-lean
@@ -50,7 +50,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean-sorry.json
 
       - name: Upload Lean sorry receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/formal-lean-sorry.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-lean-sorry
@@ -94,7 +94,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-command formal.quint.models --receipt proof-receipts/formal-quint.json
 
       - name: Upload Quint proof receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/formal-quint.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-quint
@@ -120,7 +120,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-command formal.correspondence --receipt proof-receipts/formal-correspondence.json
 
       - name: Upload correspondence receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/formal-correspondence.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-formal-correspondence

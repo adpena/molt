@@ -1,7 +1,8 @@
 [package]
 name = "molt-runtime-audit"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 license = "Apache-2.0"
 

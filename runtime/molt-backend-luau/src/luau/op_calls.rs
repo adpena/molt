@@ -69,7 +69,11 @@ impl LuauBackend {
             "func_new" | "func_new_closure" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    let Some(name) = op.s_value.as_deref().map(sanitize_ident) else {
+                    let Some(name) = op
+                        .s_value
+                        .as_deref()
+                        .map(|raw| self.invocation_target_ident(raw))
+                    else {
                         self.emit_unsupported_op(op);
                         return true;
                     };
@@ -229,7 +233,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 // First check for s_value function name (pedagogical IR form).
                 if let Some(ref func_name) = op.s_value {
-                    let func_name = sanitize_ident(func_name);
+                    let func_name = self.invocation_target_ident(func_name);
                     let call_args = op
                         .args
                         .as_deref()
@@ -286,7 +290,7 @@ impl LuauBackend {
             }
             "call_internal" => {
                 if let Some(ref s_val) = op.s_value {
-                    let func_name = sanitize_ident(s_val);
+                    let func_name = self.invocation_target_ident(s_val);
                     let call_args = op
                         .args
                         .as_deref()
@@ -363,7 +367,11 @@ impl LuauBackend {
                 // already carries the concrete poll target in s_value. Execute
                 // that target directly for the admitted synchronous subset.
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let Some(func_ref) = op.s_value.as_deref().map(sanitize_ident) else {
+                let Some(func_ref) = op
+                    .s_value
+                    .as_deref()
+                    .map(|raw| self.invocation_target_ident(raw))
+                else {
                     self.emit_unsupported_op(op);
                     return true;
                 };
@@ -453,14 +461,16 @@ impl LuauBackend {
         &self,
         emit_funcs: &[&FunctionIR],
     ) -> Vec<String> {
-        let defined_names: HashSet<String> =
-            emit_funcs.iter().map(|f| sanitize_ident(&f.name)).collect();
+        let defined_names: HashSet<String> = emit_funcs
+            .iter()
+            .map(|f| emit_function_ident(&f.name))
+            .collect();
         let mut extra_decls_set = HashSet::new();
         let mut extra_forward_decls = Vec::new();
         for func in emit_funcs {
             for op in &func.ops {
                 let mut check_ident = |raw: &str| {
-                    let ident = sanitize_ident(raw);
+                    let ident = self.invocation_target_ident(raw);
                     if should_forward_declare_invocation_target(&ident, &defined_names)
                         && !extra_decls_set.contains(&ident)
                     {

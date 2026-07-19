@@ -11,13 +11,13 @@ name: Sanitizers
 #   AddressSanitizer (runtime lib tests):
 #     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
 #     ASAN_OPTIONS='detect_leaks=0' \
-#     cargo +nightly test -p molt-runtime --lib --no-default-features \
+#     cargo +nightly-2026-03-10 test -p molt-runtime --lib --no-default-features \
 #       --features stdlib_micro --target <triple> -Zbuild-std
 #   AddressSanitizer (backend lib tests):
 #     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
-#     cargo +nightly test -p molt-backend --lib --target <triple> -Zbuild-std
+#     cargo +nightly-2026-03-10 test -p molt-backend --lib --target <triple> -Zbuild-std
 #   Miri (NaN-boxing object model):
-#     cargo +nightly miri test -p molt-lang-obj-model --lib
+#     cargo +nightly-2026-03-10 miri test -p molt-lang-obj-model --lib
 #
 # Feasibility notes (see the hardening-wave baton):
 #   * ASan + -Zbuild-std: WORKS on aarch64-apple-darwin and x86_64 Linux.
@@ -53,17 +53,19 @@ jobs:
           persist-credentials: false
 
       - name: Setup ASAN nightly toolchain
+        id: project
         uses: ./.github/actions/setup-project
         with:
           uv: "false"
           cache-uv: "false"
-          rust-toolchain: nightly
+          rust-toolchain: sanitizer-nightly
           rust-components: rust-src
           cache-cargo: "true"
           cache-namespace: asan-${{ env.SANITIZER_TARGET }}
 
       - name: AddressSanitizer — molt-runtime lib tests (stdlib_micro)
         env:
+          RUST_NIGHTLY: ${{ steps.project.outputs.rust-toolchain }}
           RUSTFLAGS: "-Zsanitizer=address"
           RUSTDOCFLAGS: "-Zsanitizer=address"
           # The known DropInsertion P0 leaks compiled-Python-code allocations,
@@ -72,18 +74,19 @@ jobs:
           ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:halt_on_error=0"
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo +nightly test -p molt-runtime --lib \
+            cargo "+$RUST_NIGHTLY" test -p molt-runtime --lib \
               --no-default-features --features stdlib_micro \
               --target "$SANITIZER_TARGET" -Zbuild-std
 
       - name: AddressSanitizer — molt-backend lib tests (native backend)
         env:
+          RUST_NIGHTLY: ${{ steps.project.outputs.rust-toolchain }}
           RUSTFLAGS: "-Zsanitizer=address"
           RUSTDOCFLAGS: "-Zsanitizer=address"
           ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:halt_on_error=0"
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo +nightly test -p molt-backend --lib \
+            cargo "+$RUST_NIGHTLY" test -p molt-backend --lib \
               --features native-backend \
               --target "$SANITIZER_TARGET" -Zbuild-std
 
@@ -97,11 +100,12 @@ jobs:
           persist-credentials: false
 
       - name: Setup Miri nightly toolchain
+        id: project
         uses: ./.github/actions/setup-project
         with:
           uv: "false"
           cache-uv: "false"
-          rust-toolchain: nightly
+          rust-toolchain: sanitizer-nightly
           rust-components: miri, rust-src
           cache-cargo: "true"
           cache-namespace: miri-obj-model
@@ -110,12 +114,15 @@ jobs:
         # Permissive provenance: molt's NaN-boxing recovers TAG_PTR values via
         # exposed provenance by design (the registry is a debug-only checker), so
         # strict-provenance is intentionally NOT enabled.
+        env:
+          RUST_NIGHTLY: ${{ steps.project.outputs.rust-toolchain }}
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo +nightly miri test -p molt-lang-obj-model --lib
+            cargo "+$RUST_NIGHTLY" miri test -p molt-lang-obj-model --lib
 
       - name: Miri — obj-model NaN-boxing property tests
         env:
+          RUST_NIGHTLY: ${{ steps.project.outputs.rust-toolchain }}
           # Miri isolation disables filesystem access; proptest's failure
           # persistence needs cwd/file IO, so disable isolation + persistence and
           # cap case count (Miri is ~100x slower than native).
@@ -124,4 +131,4 @@ jobs:
           PROPTEST_CASES: "16"
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo +nightly miri test -p molt-lang-obj-model --test nan_boxing_props
+            cargo "+$RUST_NIGHTLY" miri test -p molt-lang-obj-model --test nan_boxing_props

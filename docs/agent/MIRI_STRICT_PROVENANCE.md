@@ -22,24 +22,25 @@ nightly (1.96.0) trails the workspace MSRV (1.96.1):
 cd <worktree>/runtime
 export CARGO_TARGET_DIR=C:/Molt/miri-target CARGO_INCREMENTAL=0
 
-# 1. Build the sysroot once (slow, cached thereafter):
-cargo +nightly miri setup
+# 1. Select the repository pin and build the sysroot once (slow, cached thereafter):
+RUST_NIGHTLY=$(tr -d '\r\n' < config/rust_nightly_toolchain.txt)
+cargo "+$RUST_NIGHTLY" miri setup
 
 # 2. Core UB audit — library unit tests, default (permissive/exposed) provenance.
 #    GREEN = 0 UB. A one-time informational note per `with_exposed_provenance`
 #    site is expected (see "Provenance model" below), not a failure.
-cargo +nightly miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
+cargo "+$RUST_NIGHTLY" miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
 
 # 3. Second aliasing model (Tree Borrows) + alignment model — both must stay green:
-MIRIFLAGS="-Zmiri-tree-borrows"             cargo +nightly miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
-MIRIFLAGS="-Zmiri-symbolic-alignment-check" cargo +nightly miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
+MIRIFLAGS="-Zmiri-tree-borrows"             cargo "+$RUST_NIGHTLY" miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
+MIRIFLAGS="-Zmiri-symbolic-alignment-check" cargo "+$RUST_NIGHTLY" miri test -p molt-lang-cpython-abi --lib --ignore-rust-version
 
 # 4. Whole-crate audit (all integration binaries). Leaks OFF because the
 #    process-global immortal type/cache state is intentionally never freed
 #    (see "Miri limitations"). --no-fail-fast so one blocked binary does not
 #    hide the rest.
 MIRIFLAGS="-Zmiri-ignore-leaks" \
-  cargo +nightly miri test -p molt-lang-cpython-abi --ignore-rust-version --no-fail-fast
+  cargo "+$RUST_NIGHTLY" miri test -p molt-lang-cpython-abi --ignore-rust-version --no-fail-fast
 ```
 
 Known non-green binaries in step 4 are enumerated under *Coverage* and are all

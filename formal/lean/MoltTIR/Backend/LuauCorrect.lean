@@ -221,6 +221,67 @@ theorem emitUnOp_correct_not (b : Bool) :
       (MoltTIR.evalUnOp .not (.bool b)).map valueToLuau := by
   rfl
 
+/-- Operand-returning `and` commutes with the value correspondence for every
+    scalar right operand; only the left Boolean selects the returned value. -/
+private theorem evalAnd_valueToLuau (lhs : Bool) (rhs v : MoltTIR.Value)
+    (heval : MoltTIR.evalBinOp .and_ (.bool lhs) rhs = some v) :
+    evalLuauBinOp (emitBinOp .and_) (valueToLuau (.bool lhs)) (valueToLuau rhs) =
+      some (valueToLuau v) := by
+  cases lhs <;>
+    simp [MoltTIR.evalBinOp, emitBinOp, evalLuauBinOp, valueToLuau] at heval ⊢ <;>
+    subst_vars <;>
+    rfl
+
+/-- Operand-returning `or` commutes with the value correspondence for every
+    scalar right operand; only the left Boolean selects the returned value. -/
+private theorem evalOr_valueToLuau (lhs : Bool) (rhs v : MoltTIR.Value)
+    (heval : MoltTIR.evalBinOp .or_ (.bool lhs) rhs = some v) :
+    evalLuauBinOp (emitBinOp .or_) (valueToLuau (.bool lhs)) (valueToLuau rhs) =
+      some (valueToLuau v) := by
+  cases lhs <;>
+    simp [MoltTIR.evalBinOp, emitBinOp, evalLuauBinOp, valueToLuau] at heval ⊢ <;>
+    subst_vars <;>
+    rfl
+
+/-- Every successfully evaluated scalar binary operation commutes with the
+    Luau value correspondence. This is the single authority used by expression
+    emission for arithmetic, operand-returning Boolean operators, equality,
+    and structural identity. -/
+theorem evalBinOp_valueToLuau (op : MoltTIR.BinOp) (a b v : MoltTIR.Value)
+    (heval : MoltTIR.evalBinOp op a b = some v) :
+    evalLuauBinOp (emitBinOp op) (valueToLuau a) (valueToLuau b) =
+      some (valueToLuau v) := by
+  cases op
+  case and_ =>
+    cases a
+    case bool lhs => exact evalAnd_valueToLuau lhs b v heval
+    all_goals simp [MoltTIR.evalBinOp] at heval
+  case or_ =>
+    cases a
+    case bool lhs => exact evalOr_valueToLuau lhs b v heval
+    all_goals simp [MoltTIR.evalBinOp] at heval
+  all_goals cases a <;> cases b <;>
+    simp [MoltTIR.evalBinOp, emitBinOp, evalLuauBinOp, valueToLuau,
+          luauScalarEq, MoltTIR.scalarIdentityEq] at heval ⊢
+  all_goals subst_vars
+  all_goals try simp_all
+  -- String repetition has the same guard and payload on both sides.
+  case mul.int.str n s =>
+    by_cases hnonpositive : n ≤ 0 <;>
+      simp [hnonpositive] at heval ⊢ <;>
+      subst_vars <;>
+      rfl
+  case mul.str.int s n =>
+    by_cases hnonpositive : n ≤ 0 <;>
+      simp [hnonpositive] at heval ⊢ <;>
+      subst_vars <;>
+      rfl
+  -- Guarded integer operations expose their successful result as the second
+  -- conjunct; use that equality directly rather than enumerating `v`.
+  case floordiv.int.int | mod.int.int | pow.int.int =>
+    rcases heval with ⟨_, rfl⟩
+    rfl
+
 /-- Expression emission correctness for value literals:
     emitting a value literal and evaluating it in any Luau environment
     produces the corresponding Luau value. -/
@@ -277,22 +338,7 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       have iha' := iha va ha_eval
       have ihb' := ihb vb hb_eval
       simp only [emitExpr, evalLuauExpr, iha', ihb']
-      -- Case-split on operator and value types, substitute v via heval
-      cases op <;> cases va <;> cases vb <;> simp [MoltTIR.evalBinOp] at heval
-      -- For each case, heval tells us what v is; substitute and close
-      all_goals (first
-        | (subst heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
-        | (obtain ⟨hne, rfl⟩ := heval; simp [emitBinOp, evalLuauBinOp, valueToLuau, hne]; done)
-        | (split at heval <;> (first | subst heval | obtain ⟨_, rfl⟩ := heval) <;>
-           simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
-        | simp_all [emitBinOp, evalLuauBinOp, valueToLuau])
-      -- String repetition: mul.{int,str}.{str,int} — if-split on n ≤ 0
-      all_goals (split at heval
-        <;> simp only [Option.some.injEq] at heval
-        <;> subst heval
-        <;> (first | (simp_all; done)
-                   | (simp only;
-                      split <;> (first | rfl | omega | (intro h; omega)))))
+      exact evalBinOp_valueToLuau op va vb v heval
     | some _, none => simp [ha_eval, hb_eval] at heval
     | none, _ => simp [ha_eval] at heval
   | un op a iha =>

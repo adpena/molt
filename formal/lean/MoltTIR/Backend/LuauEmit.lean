@@ -59,8 +59,8 @@ def emitBinOp : MoltTIR.BinOp → LuauBinOp
   | .rshift  => .lshr   -- real backend uses bit32.rshift
   | .and_    => .land   -- short-circuit modeled at terminator level
   | .or_     => .lor    -- short-circuit modeled at terminator level
-  | .is      => .eq     -- identity mapped to equality in Luau
-  | .is_not  => .ne     -- identity mapped to inequality in Luau
+  | .is      => .rawequal
+  | .is_not  => .not_rawequal
   | .in_     => .eq     -- membership approximated (placeholder)
   | .not_in  => .ne     -- membership approximated (placeholder)
 
@@ -70,7 +70,7 @@ def emitUnOp : MoltTIR.UnOp → LuauUnOp
   | .not => .lnot
   | .abs => .abs
   | .invert => .lnot  -- approximation; real backend uses bit32.bnot
-  | .pos => .abs     -- unary plus approximated as abs (identity for numeric)
+  | .pos => .pos
 
 -- ======================================================================
 -- Section 3: Expression emission

@@ -1277,27 +1277,10 @@ def _cache_disposition(command: ProofCommand) -> str:
     domain = str(command.data["cache_domain"])
     if domain in {"none", "network"}:
         return "not-applicable"
-    candidates: list[Path] = []
-    if domain.startswith(("cargo", "llvm", "mlir")):
-        default_target = ROOT / str(command.data.get("cwd", ".")) / "target"
-        candidates.append(Path(os.environ.get("CARGO_TARGET_DIR", default_target)))
-    elif domain == "pytest":
-        candidates.append(ROOT / "tmp" / "pytest-cache")
-    elif domain == "uv":
-        cache = os.environ.get("UV_CACHE_DIR")
-        if cache:
-            candidates.append(Path(cache))
-        elif os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-            candidates.append(Path(os.environ["LOCALAPPDATA"]) / "uv" / "cache")
-        else:
-            candidates.append(
-                Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "uv"
-            )
-    elif domain == "lean":
-        candidates.append(ROOT / "formal" / "lean" / ".lake")
-    if not candidates:
-        return "unknown"
-    return "warm" if any(path.exists() for path in candidates) else "cold"
+    # Directory existence is not cache-hit evidence: a failed or partial build
+    # also leaves directories behind. Until a command supplies counted restore
+    # or rebuilt-byte telemetry, receipts must remain explicitly unobserved.
+    return "unknown"
 
 
 def _required_toolchains(command: ProofCommand) -> tuple[str, ...]:

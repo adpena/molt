@@ -10,6 +10,9 @@ from pathlib import Path
 from collections.abc import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
+RUST_NIGHTLY = (ROOT / "config" / "rust_nightly_toolchain.txt").read_text(
+    encoding="utf-8"
+).strip()
 RUNTIME_DIR = ROOT / "runtime/molt-runtime"
 ROOT_FUZZ_DIR = ROOT / "fuzz"
 RUNTIME_FUZZ_DIR = RUNTIME_DIR / "fuzz"
@@ -115,7 +118,7 @@ def run_sanitizer(kind: str, log_dir: Path | None) -> None:
     _run(
         [
             "cargo",
-            "+nightly",
+            f"+{RUST_NIGHTLY}",
             "test",
             "-p",
             "molt-runtime",
@@ -136,14 +139,14 @@ def run_miri(log_dir: Path | None) -> None:
     env.setdefault("TMPDIR", str(miri_tmp))
     log_path = log_dir / "runtime_miri.log" if log_dir else None
     _run(
-        ["cargo", "+nightly", "miri", "test", "-p", "molt-runtime"],
+        ["cargo", f"+{RUST_NIGHTLY}", "miri", "test", "-p", "molt-runtime"],
         env=env,
         log_path=log_path,
     )
 
 
 def run_fuzz(target: str, runs: int, log_dir: Path | None) -> None:
-    cmd = ["cargo", "+nightly", "fuzz", "run", target]
+    cmd = ["cargo", f"+{RUST_NIGHTLY}", "fuzz", "run", target]
     if runs > 0:
         cmd.extend(["--", f"-runs={runs}"])
     log_path = log_dir / f"runtime_fuzz_{target}.log" if log_dir else None

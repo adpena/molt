@@ -9,6 +9,180 @@ import MoltTIR.Semantics.State
 
 namespace MoltTIR
 
+/-- Identity for the scalar Value universe where source provenance is sufficient.
+    Bool and None are singletons and distinct constructors are disjoint. Equal
+    int, float, and string payloads do not prove object identity, so those
+    same-kind cases deliberately remain undefined. -/
+def scalarIdentityEq : Value → Value → Option Bool
+  | .bool x, .bool y => some (x == y)
+  | .none, .none => some true
+  | .int _, .int _ | .float _, .float _ | .str _, .str _ => none
+  | _, _ => some false
+
+/-- Provenance classes consumed by the backend identity-admission table. The
+    first five constructors are the scalar subset represented by `Value`;
+    references and unknowns model the wider emitted-IR boundary explicitly. -/
+inductive IdentityProvenance where
+  | singletonBool | singletonNone
+  | valueInt | valueFloat | valueStr
+  | reference | unknown
+  deriving DecidableEq, Repr
+
+/-- Exact backend action for a Python identity comparison. -/
+inductive IdentityLowering where
+  | constant (value : Bool)
+  | directRawEqual
+  | reject
+  deriving DecidableEq, Repr
+
+def scalarIdentityProvenance : Value → IdentityProvenance
+  | .bool _ => .singletonBool
+  | .none => .singletonNone
+  | .int _ => .valueInt
+  | .float _ => .valueFloat
+  | .str _ => .valueStr
+
+/-- Formal counterpart of the Rust `identity_lowering_for_provenance` table.
+    `directRawEqual` means the trusted Luau `rawequal` primitive, never `==`. -/
+def identityLowering (sameSsa : Bool) : IdentityProvenance → IdentityProvenance → IdentityLowering
+  | lhs, rhs => if sameSsa then .constant true else match lhs, rhs with
+    | .valueInt, .valueInt | .valueFloat, .valueFloat | .valueStr, .valueStr => .reject
+    | .valueInt, .unknown | .valueFloat, .unknown | .valueStr, .unknown
+    | .unknown, .valueInt | .unknown, .valueFloat | .unknown, .valueStr
+    | .unknown, .unknown => .reject
+    | .singletonBool, .singletonBool | .singletonNone, .singletonNone => .directRawEqual
+    | .reference, .reference | .reference, .unknown | .unknown, .reference
+    | .singletonBool, .unknown | .singletonNone, .unknown
+    | .unknown, .singletonBool | .unknown, .singletonNone => .directRawEqual
+    | _, _ => .constant false
+
+/-- SSA self-identity dominates every provenance class. -/
+@[simp] theorem identityLowering_sameSsa (lhs rhs : IdentityProvenance) :
+    identityLowering true lhs rhs = .constant true := by
+  rfl
+
+def identityLoweringOutcome (lowering : IdentityLowering) (lhs rhs : Value) : Option Bool :=
+  match lowering with
+  | .constant value => some value
+  | .directRawEqual => scalarIdentityEq lhs rhs
+  | .reject => none
+
+/-- The admitted scalar-provenance table is extensionally identical to the
+    source identity semantics for distinct SSA names. -/
+@[simp] theorem identityLowering_scalar_correspondence (lhs rhs : Value) :
+    identityLoweringOutcome
+        (identityLowering false (scalarIdentityProvenance lhs) (scalarIdentityProvenance rhs))
+        lhs rhs = scalarIdentityEq lhs rhs := by
+  cases lhs <;> cases rhs <;> rfl
+
+/-- Counted 7x7 admission receipt. The correspondence checker compares this
+    kernel-checked matrix with the Rust matrix exercised by backend tests. -/
+theorem identityLowering_complete_matrix :
+    [
+      identityLowering false .singletonBool .singletonBool,
+      identityLowering false .singletonBool .singletonNone,
+      identityLowering false .singletonBool .valueInt,
+      identityLowering false .singletonBool .valueFloat,
+      identityLowering false .singletonBool .valueStr,
+      identityLowering false .singletonBool .reference,
+      identityLowering false .singletonBool .unknown,
+      identityLowering false .singletonNone .singletonBool,
+      identityLowering false .singletonNone .singletonNone,
+      identityLowering false .singletonNone .valueInt,
+      identityLowering false .singletonNone .valueFloat,
+      identityLowering false .singletonNone .valueStr,
+      identityLowering false .singletonNone .reference,
+      identityLowering false .singletonNone .unknown,
+      identityLowering false .valueInt .singletonBool,
+      identityLowering false .valueInt .singletonNone,
+      identityLowering false .valueInt .valueInt,
+      identityLowering false .valueInt .valueFloat,
+      identityLowering false .valueInt .valueStr,
+      identityLowering false .valueInt .reference,
+      identityLowering false .valueInt .unknown,
+      identityLowering false .valueFloat .singletonBool,
+      identityLowering false .valueFloat .singletonNone,
+      identityLowering false .valueFloat .valueInt,
+      identityLowering false .valueFloat .valueFloat,
+      identityLowering false .valueFloat .valueStr,
+      identityLowering false .valueFloat .reference,
+      identityLowering false .valueFloat .unknown,
+      identityLowering false .valueStr .singletonBool,
+      identityLowering false .valueStr .singletonNone,
+      identityLowering false .valueStr .valueInt,
+      identityLowering false .valueStr .valueFloat,
+      identityLowering false .valueStr .valueStr,
+      identityLowering false .valueStr .reference,
+      identityLowering false .valueStr .unknown,
+      identityLowering false .reference .singletonBool,
+      identityLowering false .reference .singletonNone,
+      identityLowering false .reference .valueInt,
+      identityLowering false .reference .valueFloat,
+      identityLowering false .reference .valueStr,
+      identityLowering false .reference .reference,
+      identityLowering false .reference .unknown,
+      identityLowering false .unknown .singletonBool,
+      identityLowering false .unknown .singletonNone,
+      identityLowering false .unknown .valueInt,
+      identityLowering false .unknown .valueFloat,
+      identityLowering false .unknown .valueStr,
+      identityLowering false .unknown .reference,
+      identityLowering false .unknown .unknown
+    ] =
+    [
+      .directRawEqual,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .directRawEqual,
+      .constant false,
+      .directRawEqual,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .directRawEqual,
+      .constant false,
+      .constant false,
+      .reject,
+      .constant false,
+      .constant false,
+      .constant false,
+      .reject,
+      .constant false,
+      .constant false,
+      .constant false,
+      .reject,
+      .constant false,
+      .constant false,
+      .reject,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .reject,
+      .constant false,
+      .reject,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .constant false,
+      .directRawEqual,
+      .directRawEqual,
+      .directRawEqual,
+      .directRawEqual,
+      .reject,
+      .reject,
+      .reject,
+      .directRawEqual,
+      .reject
+    ] := by
+  rfl
+
+
 /-- Evaluate a binary operator on two values. Returns none on type mismatch. -/
 def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   match op, a, b with
@@ -48,6 +222,25 @@ def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   | .le,  .int x, .int y => some (.bool (x ≤ y))
   | .gt,  .int x, .int y => some (.bool (x > y))
   | .ge,  .int x, .int y => some (.bool (x ≥ y))
+  -- comparison across the complete numeric carrier family
+  | .eq,  .int x, .float y => some (.bool (x == y))
+  | .ne,  .int x, .float y => some (.bool (x != y))
+  | .lt,  .int x, .float y => some (.bool (x < y))
+  | .le,  .int x, .float y => some (.bool (x ≤ y))
+  | .gt,  .int x, .float y => some (.bool (x > y))
+  | .ge,  .int x, .float y => some (.bool (x ≥ y))
+  | .eq,  .float x, .int y => some (.bool (x == y))
+  | .ne,  .float x, .int y => some (.bool (x != y))
+  | .lt,  .float x, .int y => some (.bool (x < y))
+  | .le,  .float x, .int y => some (.bool (x ≤ y))
+  | .gt,  .float x, .int y => some (.bool (x > y))
+  | .ge,  .float x, .int y => some (.bool (x ≥ y))
+  | .eq,  .float x, .float y => some (.bool (x == y))
+  | .ne,  .float x, .float y => some (.bool (x != y))
+  | .lt,  .float x, .float y => some (.bool (x < y))
+  | .le,  .float x, .float y => some (.bool (x ≤ y))
+  | .gt,  .float x, .float y => some (.bool (x > y))
+  | .ge,  .float x, .float y => some (.bool (x ≥ y))
   -- comparison (bool × bool → bool)
   | .eq,  .bool x, .bool y => some (.bool (x == y))
   | .ne,  .bool x, .bool y => some (.bool (x != y))
@@ -57,8 +250,8 @@ def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   | .and_, .bool true, y => some y
   | .or_, .bool true, _ => some (.bool true)
   | .or_, .bool false, y => some y
-  | .is, x, y => some (.bool (x == y))
-  | .is_not, x, y => some (.bool (x != y))
+  | .is, x, y => (scalarIdentityEq x y).map .bool
+  | .is_not, x, y => (scalarIdentityEq x y).map (fun same => .bool (!same))
   -- bitwise ops (bit_and, bit_or, bit_xor, lshift, rshift) are defined in
   -- the syntax but not evaluated here — they fall to the catch-all.
   -- Lean's Int lacks HAnd/HOr/HXor; add implementations when needed.

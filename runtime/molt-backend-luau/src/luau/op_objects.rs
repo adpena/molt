@@ -489,7 +489,7 @@ impl LuauBackend {
                     // Create a list by running the generator to completion.
                     // The genexpr function uses state_yield to produce values
                     // as {value, false} tuples and returns {nil, true} when done.
-                    let func_name = sanitize_ident(task_func);
+                    let func_name = self.invocation_target_ident(task_func);
                     self.emit_line(&format!(
                         "local {out} = (function()\n\
                          \t\tlocal __result = {{}}\n\

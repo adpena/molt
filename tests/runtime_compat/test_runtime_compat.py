@@ -17,7 +17,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -27,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tests import process_guard_common  # noqa: E402
 
 # Timeouts in seconds
 CPYTHON_TIMEOUT = 30
@@ -140,7 +140,9 @@ def run_molt(
     verbose: bool = False,
 ) -> tuple[str, int, str]:
     """Compile with molt and run. Returns (output, exit_code, build_log)."""
-    with tempfile.TemporaryDirectory(prefix="molt_compat_") as tmpdir:
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt_compat_"
+    ) as tmpdir:
         binary_path = os.path.join(tmpdir, script.stem)
 
         # Build

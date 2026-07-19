@@ -319,10 +319,6 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
         if trimmed.contains("-- [unsupported op:") {
             issues.push((ln, "unsupported", trimmed.to_string()));
         }
-
-        // Note: Python `is` on non-None operands maps to == (value equality,
-        // not identity).  This is an accepted semantic gap — no inline marker
-        // is emitted because comments break when inlined by optimization passes.
     }
     issues
 }

@@ -43,19 +43,25 @@ jobs:
           rust-targets: wasm32-wasip1
           cache-cargo: "true"
           actionlint: "true"
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
 
       - name: Provision browser asset parser
         run: uv run python3 tools/bootstrap_browser_asset_graph.py
 
       - name: Fetch performance freshness reference
-        run: git fetch --no-tags --depth=1 origin main || true
+        run: |
+          if ! git fetch --no-tags --depth=1 origin main; then
+            echo "::error title=baseline_fetch_failed::Required origin/main freshness reference could not be fetched"
+            exit 1
+          fi
 
       - name: Execute repository policy partitions
         run: python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json
 
       - name: Upload repository policy receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/repository_policy.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-repository-policy
@@ -122,7 +128,9 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
 
       - name: Execute selected platform portability partition
         run: >-
@@ -132,7 +140,7 @@ jobs:
           --matrix-cell "${{ matrix.cell }}"
 
       - name: Upload platform portability receipt
-        if: always()
+        if: always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-platform-portability-${{ matrix.cell }}
@@ -176,13 +184,15 @@ jobs:
       - name: Setup Python static toolchain
         uses: ./.github/actions/setup-project
         with:
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
 
       - name: Execute selected Python static partitions
         run: python3 tools/proof_plan.py --run-family python_static --receipt proof-receipts/python_static.json
 
       - name: Upload Python static receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/python_static.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-python-static
@@ -206,11 +216,13 @@ jobs:
       - name: Setup Python unit toolchain
         uses: ./.github/actions/setup-project
         with:
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
       - name: Execute selected Python unit partitions
         run: python3 tools/proof_plan.py --run-family python_unit --receipt proof-receipts/python_unit.json
       - name: Upload Python unit receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/python_unit.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-python-unit
@@ -232,7 +244,9 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
       - name: Setup canonical native linker SDK
@@ -240,7 +254,7 @@ jobs:
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/native_integration.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-native-integration
@@ -280,7 +294,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json
 
       - name: Upload Rust receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/rust.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-rust
@@ -309,7 +323,9 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
 
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
@@ -324,11 +340,13 @@ jobs:
         run: python3 tools/proof_plan.py --run-family llvm --receipt proof-receipts/llvm.json
 
       - name: Upload LLVM/MLIR/linker receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/llvm.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-llvm
-          path: proof-receipts/llvm.json
+          path: |
+            proof-receipts/llvm.json
+            proof-receipts/evidence/llvm-differential-truth.json
           if-no-files-found: error
 
       - name: Summarize guarded command hotspots

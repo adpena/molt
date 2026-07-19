@@ -46,11 +46,13 @@ jobs:
       - name: Setup project Python dependencies
         uses: ./.github/actions/setup-project
         with:
-          sync-args: "--frozen --group dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
       - name: pip-audit
         run: uv run python3 tools/proof_plan.py --run-family python_security --receipt proof-receipts/python_security.json
       - name: Upload Python security receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/python_security.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-python-security
@@ -84,7 +86,7 @@ jobs:
       - name: Execute Rust security partitions
         run: python3 tools/proof_plan.py --run-family rust_security --receipt proof-receipts/rust_security.json
       - name: Upload Rust security receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/rust_security.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-rust-security

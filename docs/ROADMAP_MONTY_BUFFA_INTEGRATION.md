@@ -106,9 +106,9 @@ Sprint 2026-03-28. All items verified: 4 crates compile, 40 Rust + 69 Python tes
 - [ ] Track pass rate (target: >95% on shared subset)
 
 ### 2.2 Fuzz Campaign
-- [ ] `cargo +nightly fuzz run fuzz_nan_boxing` — 24 hours minimum
-- [ ] `cargo +nightly fuzz run fuzz_tir_passes` — 24 hours minimum
-- [ ] `cargo +nightly fuzz run fuzz_wasm_type_section` — 24 hours minimum
+- [ ] `python tools/runtime_safety.py fuzz --target fuzz_nan_boxing --runs 0` — 24 hours minimum
+- [ ] `python tools/runtime_safety.py fuzz --target fuzz_tir_passes --runs 0` — 24 hours minimum
+- [ ] `python tools/runtime_safety.py fuzz --target fuzz_wasm_type_section --runs 0` — 24 hours minimum
 - [ ] Triage and fix all crashes (P0 priority)
 
 ### 2.3 Optimization Measurement

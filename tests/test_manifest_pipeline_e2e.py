@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests import process_guard_common
 
 sys.path.insert(0, "src")
 
@@ -248,8 +249,9 @@ def test_molt_build_with_manifest():
         print("  SKIP (molt not in PATH)")
         return
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt-manifest-build-"
+    ) as tmpdir:
         manifest = tmpdir / "test.capabilities.toml"
         _write_manifest(manifest)
 
@@ -313,8 +315,9 @@ def test_molt_build_recursion_program():
         print("  SKIP (molt not in PATH)")
         return
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt-manifest-recursion-"
+    ) as tmpdir:
         manifest = tmpdir / "test.capabilities.toml"
         _write_manifest(manifest)  # max_recursion_depth = 100
 
@@ -398,8 +401,9 @@ def test_molt_build_dos_program():
         print("  SKIP (molt not in PATH)")
         return
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt-manifest-dos-"
+    ) as tmpdir:
         manifest = tmpdir / "test.capabilities.toml"
         _write_manifest(manifest)
 

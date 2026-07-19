@@ -468,13 +468,13 @@ Miri is Rust's MIR interpreter with UB detection. Recent developments:
 
 **Critical for Molt's runtime correctness.** The runtime (`runtime/molt-runtime/`, `runtime/molt-obj-model/`) uses extensive `unsafe` Rust:
 
-1. **Run Miri on the runtime**: `cargo +nightly miri test -p molt-runtime -p molt-obj-model`. This catches Tree Borrows violations in existing code. The `tools/runtime_safety.py miri` command should be run regularly.
+1. **Run Miri on the runtime**: `python tools/runtime_safety.py miri`. This catches Tree Borrows violations in existing code and consumes the repository's dated-nightly authority.
 2. **NaN-boxed object model**: The `transmute`-heavy NaN-boxing code is exactly the kind of unsafe code that Tree Borrows models. Each NaN-box operation creates a new borrow tree node.
 3. **Reference counting**: RC increment/decrement involves raw pointer manipulation. Tree Borrows' Reserved-to-Active transition models whether concurrent RC access is safe.
 4. **CallArgs aliasing bug**: The fixed `call_bind` use-after-free was a Tree Borrows violation: accessing freed memory through an invalidated (Disabled) pointer.
 5. **Collection handles**: The `thread_local!` to `LazyLock<Mutex>` migration for collections is a concurrency correctness issue that GenMC+Miri could validate.
 
-**Recommendation**: Add Miri to CI. Run `cargo +nightly miri test` on every PR that touches `runtime/`. The cost is manageable (Miri is ~10-50x slower than native execution) and it catches real bugs.
+**Recommendation**: Keep the dated-nightly Miri workflow on runtime changes. The cost is manageable (Miri is ~10-50x slower than native execution) and it catches real bugs.
 
 ---
 

@@ -30,12 +30,23 @@ namespace MoltTIR.Backend
     type system: all numbers are doubles (modeled as Int for the integer subset),
     strings, booleans, nil, and tables. -/
 inductive LuauValue where
-  | number (n : Int)       -- Luau number (double); Int for integer subset
+  | number (n : Int)       -- Python int carried by a Luau number
+  | float (f : Int)        -- Python float carried by a Luau number
   | boolean (b : Bool)     -- Luau boolean
   | str (s : String)       -- Luau string
   | nil                    -- Luau nil
   | table (entries : List (Int × LuauValue))  -- array-like table (1-based keys)
   deriving Repr
+
+/-- Identity for the scalar carrier subset where provenance is sufficient.
+    Equal number/float/string payloads do not establish Python object identity;
+    reference identity is outside this pure expression model. -/
+def luauScalarEq : LuauValue → LuauValue → Option Bool
+  | .boolean x, .boolean y => some (x == y)
+  | .nil, .nil => some true
+  | .number _, .number _ | .float _, .float _ | .str _, .str _ => none
+  | .table _, .table _ => none
+  | _, _ => some false
 
 -- ======================================================================
 -- Section 2: Luau environment
@@ -71,25 +82,32 @@ end LuauEnv
     value domains. -/
 def valueToLuau : MoltTIR.Value → LuauValue
   | .int n   => .number n
-  | .float f => .number f   -- Luau unifies int and float as number
+  | .float f => .float f
   | .bool b  => .boolean b
   | .str s   => .str s
   | .none    => .nil
+
+/-- The target scalar equality authority exactly preserves TIR structural
+    identity, including the distinction between int and float carriers. -/
+@[simp] theorem luauScalarEq_valueToLuau (x y : MoltTIR.Value) :
+    luauScalarEq (valueToLuau x) (valueToLuau y) =
+      MoltTIR.scalarIdentityEq x y := by
+  cases x <;> cases y <;> rfl
 
 /-- Convert a Luau value back to MoltTIR value (partial inverse).
     Tables have no MoltTIR.Value counterpart at the expression level,
     so they map to none. -/
 def luauToValue : LuauValue → Option MoltTIR.Value
   | .number n  => some (.int n)
+  | .float f   => some (.float f)
   | .boolean b => some (.bool b)
   | .str s     => some (.str s)
   | .nil       => some .none
   | .table _   => none
 
-/-- valueToLuau and luauToValue form a round-trip for non-float values.
-    Float loses identity because Luau unifies int and float as number;
-    luauToValue maps number back to int. For int, bool, str, none the
-    round-trip is exact. -/
+/-- `valueToLuau` and `luauToValue` preserve the source scalar kind. The
+    semantic model retains int/float provenance even though both lower through
+    Luau's numeric carrier, because Python identity distinguishes them. -/
 theorem luauToValue_valueToLuau_int (n : Int) :
     luauToValue (valueToLuau (.int n)) = some (.int n) := by rfl
 
@@ -101,6 +119,9 @@ theorem luauToValue_valueToLuau_str (s : String) :
 
 theorem luauToValue_valueToLuau_none :
     luauToValue (valueToLuau .none) = some .none := by rfl
+
+theorem luauToValue_valueToLuau_float (f : Int) :
+    luauToValue (valueToLuau (.float f)) = some (.float f) := by rfl
 
 -- ======================================================================
 -- Section 4: Luau binary and unary operator evaluation
@@ -114,6 +135,15 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
   | .add,  .number x, .number y => some (.number (x + y))
   | .sub,  .number x, .number y => some (.number (x - y))
   | .mul,  .number x, .number y => some (.number (x * y))
+  | .add,  .number x, .float y => some (.float (x + y))
+  | .sub,  .number x, .float y => some (.float (x - y))
+  | .mul,  .number x, .float y => some (.float (x * y))
+  | .add,  .float x, .number y => some (.float (x + y))
+  | .sub,  .float x, .number y => some (.float (x - y))
+  | .mul,  .float x, .number y => some (.float (x * y))
+  | .add,  .float x, .float y => some (.float (x + y))
+  | .sub,  .float x, .float y => some (.float (x - y))
+  | .mul,  .float x, .float y => some (.float (x * y))
   | .mod,  .number x, .number y => if y == 0 then none else some (.number (x % y))
   | .idiv, .number x, .number y => if y == 0 then none else some (.number (x / y))
   | .pow,  .number x, .number y =>
@@ -126,16 +156,42 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
   | .mul,  .number n, .str s =>
       if n ≤ 0 then some (.str "")
       else some (.str (String.join (List.replicate n.toNat s)))
-  -- comparison (number × number → boolean)
+  -- value equality and ordered comparison (verified scalar subset)
   | .eq,   .number x, .number y => some (.boolean (x == y))
   | .ne,   .number x, .number y => some (.boolean (x != y))
+  | .eq,   .boolean x, .boolean y => some (.boolean (x == y))
+  | .ne,   .boolean x, .boolean y => some (.boolean (x != y))
   | .lt,   .number x, .number y => some (.boolean (x < y))
   | .le,   .number x, .number y => some (.boolean (x ≤ y))
   | .gt,   .number x, .number y => some (.boolean (x > y))
   | .ge,   .number x, .number y => some (.boolean (x ≥ y))
-  -- comparison (boolean × boolean → boolean)
-  | .eq,   .boolean x, .boolean y => some (.boolean (x == y))
-  | .ne,   .boolean x, .boolean y => some (.boolean (x != y))
+  | .eq,   .number x, .float y => some (.boolean (x == y))
+  | .ne,   .number x, .float y => some (.boolean (x != y))
+  | .lt,   .number x, .float y => some (.boolean (x < y))
+  | .le,   .number x, .float y => some (.boolean (x ≤ y))
+  | .gt,   .number x, .float y => some (.boolean (x > y))
+  | .ge,   .number x, .float y => some (.boolean (x ≥ y))
+  | .eq,   .float x, .number y => some (.boolean (x == y))
+  | .ne,   .float x, .number y => some (.boolean (x != y))
+  | .lt,   .float x, .number y => some (.boolean (x < y))
+  | .le,   .float x, .number y => some (.boolean (x ≤ y))
+  | .gt,   .float x, .number y => some (.boolean (x > y))
+  | .ge,   .float x, .number y => some (.boolean (x ≥ y))
+  | .eq,   .float x, .float y => some (.boolean (x == y))
+  | .ne,   .float x, .float y => some (.boolean (x != y))
+  | .lt,   .float x, .float y => some (.boolean (x < y))
+  | .le,   .float x, .float y => some (.boolean (x ≤ y))
+  | .gt,   .float x, .float y => some (.boolean (x > y))
+  | .ge,   .float x, .float y => some (.boolean (x ≥ y))
+  -- Identity is structural over source scalar kinds. In particular an int and
+  -- float with the same numeric payload are not identical.
+  | .rawequal, x, y => (luauScalarEq x y).map .boolean
+  | .not_rawequal, x, y => (luauScalarEq x y).map (fun same => .boolean (!same))
+  -- operand-returning Boolean operators
+  | .land, .boolean false, _ => some (.boolean false)
+  | .land, .boolean true, y => some y
+  | .lor, .boolean true, _ => some (.boolean true)
+  | .lor, .boolean false, y => some y
   -- string concatenation
   | .concat, .str x, .str y => some (.str (x ++ y))
   -- bitwise (models bit32.band/bor/bxor/lshift/rshift on integers)
@@ -154,8 +210,12 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
 def evalLuauUnOp (op : LuauUnOp) (a : LuauValue) : Option LuauValue :=
   match op, a with
   | .neg,  .number x  => some (.number (-x))
+  | .neg,  .float x   => some (.float (-x))
+  | .pos,  .number x  => some (.number x)
+  | .pos,  .float x   => some (.float x)
   | .lnot, .boolean x => some (.boolean (!x))
   | .lnot, .number x  => some (.boolean (x == 0))     -- truthy: 0 is falsy
+  | .lnot, .float x   => some (.boolean (x == 0))
   | .lnot, .str s     => some (.boolean (s == ""))     -- truthy: "" is falsy
   | .lnot, .nil       => some (.boolean true)          -- truthy: nil is falsy
   | .abs,  .number x  => some (.number (if x < 0 then -x else x))
@@ -169,7 +229,7 @@ def evalLuauUnOp (op : LuauUnOp) (a : LuauValue) : Option LuauValue :=
     Total, deterministic. Returns none on undefined variables, type errors, etc. -/
 def evalLuauExpr (env : LuauEnv) : LuauExpr → Option LuauValue
   | .intLit n     => some (.number n)
-  | .floatLit f   => some (.number f)
+  | .floatLit f   => some (.float f)
   | .strLit s     => some (.str s)
   | .boolLit b    => some (.boolean b)
   | .nil          => some .nil
@@ -254,6 +314,6 @@ theorem execLuauStmts_singleton (env : LuauEnv) (s : LuauStmt) :
   simp [execLuauStmts]
   cases execLuauStmt env s with
   | none => rfl
-  | some env' => simp [execLuauStmts]
+  | some env' => rfl
 
 end MoltTIR.Backend

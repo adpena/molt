@@ -8,7 +8,8 @@ untrusted or arbitrary input.
 
 ```bash
 cargo install cargo-fuzz
-rustup install nightly
+RUST_NIGHTLY=$(tr -d '\r\n' < config/rust_nightly_toolchain.txt)
+rustup toolchain install "$RUST_NIGHTLY" --profile minimal
 ```
 
 ## Available Targets
@@ -27,19 +28,19 @@ From the **repository root**:
 
 ```bash
 # Run a single target (5 minutes, 4KB max input):
-cargo +nightly fuzz run fuzz_nan_boxing -- -max_len=4096 -max_total_time=300
+cargo "+$RUST_NIGHTLY" fuzz run fuzz_nan_boxing -- -max_len=4096 -max_total_time=300
 
 # Run with more workers:
-cargo +nightly fuzz run fuzz_wasm_compile -- -max_len=4096 -jobs=4 -workers=4
+cargo "+$RUST_NIGHTLY" fuzz run fuzz_wasm_compile -- -max_len=4096 -jobs=4 -workers=4
 
 # Run all targets sequentially:
 for target in fuzz_ir_parse fuzz_wasm_compile fuzz_nan_boxing fuzz_ir_passes fuzz_ir_validate; do
   echo "=== $target ==="
-  cargo +nightly fuzz run "$target" -- -max_len=4096 -max_total_time=60
+  cargo "+$RUST_NIGHTLY" fuzz run "$target" -- -max_len=4096 -max_total_time=60
 done
 
 # List available targets:
-cargo +nightly fuzz list
+cargo "+$RUST_NIGHTLY" fuzz list
 ```
 
 ## Reproducing Crashes
@@ -48,7 +49,7 @@ When a crash is found, libFuzzer saves the input to `fuzz/artifacts/<target>/`.
 Reproduce it with:
 
 ```bash
-cargo +nightly fuzz run fuzz_nan_boxing fuzz/artifacts/fuzz_nan_boxing/crash-<hash>
+cargo "+$RUST_NIGHTLY" fuzz run fuzz_nan_boxing fuzz/artifacts/fuzz_nan_boxing/crash-<hash>
 ```
 
 ## Corpus Management
@@ -56,7 +57,7 @@ cargo +nightly fuzz run fuzz_nan_boxing fuzz/artifacts/fuzz_nan_boxing/crash-<ha
 Corpus files accumulate in `fuzz/corpus/<target>/`. To minimize:
 
 ```bash
-cargo +nightly fuzz cmin fuzz_nan_boxing
+cargo "+$RUST_NIGHTLY" fuzz cmin fuzz_nan_boxing
 ```
 
 ## Coverage
@@ -64,7 +65,7 @@ cargo +nightly fuzz cmin fuzz_nan_boxing
 Generate a coverage report to see which code paths the fuzzer has explored:
 
 ```bash
-cargo +nightly fuzz coverage fuzz_nan_boxing
+cargo "+$RUST_NIGHTLY" fuzz coverage fuzz_nan_boxing
 ```
 
 ## Adding New Targets

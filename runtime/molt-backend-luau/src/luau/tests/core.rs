@@ -4,9 +4,120 @@ use super::*;
 #[test]
 fn test_sanitize_ident() {
     assert_eq!(sanitize_ident("foo"), "foo");
-    assert_eq!(sanitize_ident("my.attr"), "my_attr");
-    assert_eq!(sanitize_ident("and"), "_m_and");
+    assert_eq!(sanitize_ident("my.attr"), "_m_user_6d792e61747472");
+    assert_eq!(sanitize_ident("and"), "_m_user_616e64");
     assert_eq!(sanitize_ident("v0"), "v0");
+    assert_eq!(sanitize_ident("molt_equal"), "_m_user_6d6f6c745f657175616c");
+    assert_eq!(
+        sanitize_ident("_m_user_616e64"),
+        "_m_user_5f6d5f757365725f363136653634"
+    );
+    let collision_family = ["a.b", "a-b", "a b", "a_b"];
+    let mapped = collision_family.map(sanitize_ident);
+    assert_eq!(mapped[3], "a_b");
+    assert_eq!(
+        mapped
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
+    assert_eq!(
+        classify_function_symbol("molt_main"),
+        LuauFunctionSymbol::CompilerEntrypoint
+    );
+    assert_eq!(
+        classify_function_symbol("__main____molt_main"),
+        LuauFunctionSymbol::User("__main____molt_main")
+    );
+
+    let invalid = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec!["user_arg".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+        }],
+        profile: None,
+    };
+    let error = LuauBackend::new().compile_checked(&invalid).unwrap_err();
+    assert!(error.contains("compiler ABI entrypoint"), "{error}");
+
+    let valid = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+            },
+            FunctionIR {
+                name: "__main____molt_main".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+            },
+        ],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile_checked(&valid).unwrap();
+    assert!(source.contains("local molt_main"), "{source}");
+    assert!(
+        source.contains("local _m_user_5f5f6d61696e5f5f5f5f6d6f6c745f6d61696e"),
+        "{source}"
+    );
+}
+
+#[test]
+fn control_flow_labels_share_the_injective_symbol_authority() {
+    let mut backend = LuauBackend::new();
+    for label in ["a-b", "a.b"] {
+        assert!(backend.emit_control_op(&OpIR {
+            kind: "label".to_string(),
+            s_value: Some(label.to_string()),
+            ..OpIR::default()
+        }));
+        assert!(backend.emit_control_op(&OpIR {
+            kind: "jump".to_string(),
+            s_value: Some(label.to_string()),
+            ..OpIR::default()
+        }));
+    }
+    assert!(backend.emit_control_op(&OpIR {
+        kind: "label".to_string(),
+        value: Some(1),
+        ..OpIR::default()
+    }));
+    assert!(backend.emit_control_op(&OpIR {
+        kind: "label".to_string(),
+        s_value: Some("label_1".to_string()),
+        ..OpIR::default()
+    }));
+    assert!(backend.output.contains("::_m_label_612d62::"));
+    assert!(backend.output.contains("goto _m_label_612d62"));
+    assert!(backend.output.contains("::_m_label_612e62::"));
+    assert!(backend.output.contains("goto _m_label_612e62"));
+    assert!(backend.output.contains("::label_1::"));
+    assert!(backend.output.contains("::_m_label_6c6162656c5f31::"));
 }
 
 #[test]
@@ -122,8 +233,8 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "const".to_string(),
-                    value: Some(7),
+                    kind: "const_bool".to_string(),
+                    value: Some(1),
                     out: Some("seven".to_string()),
                     ..OpIR::default()
                 },
@@ -1207,6 +1318,590 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
     assert!(source.contains("local equal: boolean = (left == right)"));
     assert!(!source.contains("local molt_dict_metadata_key = {}"));
     assert!(!source.contains("molt_equal(left, right)"));
+}
+
+#[test]
+fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "scalar_identity".to_string(),
+            params: vec![
+                "integer".to_string(),
+                "float".to_string(),
+                "boolean".to_string(),
+            ],
+            param_types: Some(vec![
+                "int".to_string(),
+                "float".to_string(),
+                "bool".to_string(),
+            ]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["integer".to_string(), "float".to_string()]),
+                    out: Some("same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is_not".to_string(),
+                    args: Some(vec!["integer".to_string(), "float".to_string()]),
+                    out: Some("different".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["integer".to_string(), "boolean".to_string()]),
+                    out: Some("int_is_bool".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "tuple_new".to_string(),
+                    args: Some(vec![
+                        "same".to_string(),
+                        "different".to_string(),
+                        "int_is_bool".to_string(),
+                    ]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(source.contains("local same: boolean = false"), "{source}");
+    assert!(
+        source.contains("local different: boolean = true"),
+        "{source}"
+    );
+    assert!(
+        source.contains("local int_is_bool: boolean = false"),
+        "{source}"
+    );
+    assert!(!source.contains("[unsupported op: is_not]"), "{source}");
+}
+
+#[test]
+fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "dynamic_identity".to_string(),
+            params: vec!["left".to_string(), "right".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    out: Some("same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["same".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+    assert!(
+        error.contains("identity needs alias/reference/singleton provenance"),
+        "{error}"
+    );
+}
+
+#[test]
+fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
+    for scalar_kind in ["const", "const_float", "const_str"] {
+        let make_const = |out: &str| match scalar_kind {
+            "const" => OpIR {
+                kind: scalar_kind.to_string(),
+                value: Some(1),
+                out: Some(out.to_string()),
+                ..OpIR::default()
+            },
+            "const_float" => OpIR {
+                kind: scalar_kind.to_string(),
+                f_value: Some(1.0),
+                out: Some(out.to_string()),
+                ..OpIR::default()
+            },
+            "const_str" => OpIR {
+                kind: scalar_kind.to_string(),
+                s_value: Some("equal".to_string()),
+                out: Some(out.to_string()),
+                ..OpIR::default()
+            },
+            _ => unreachable!(),
+        };
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("{scalar_kind}_identity"),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_const("left"),
+                    make_const("right"),
+                    OpIR {
+                        kind: "is".to_string(),
+                        args: Some(vec!["left".to_string(), "right".to_string()]),
+                        out: Some("same".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["same".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        let error = compile_pipeline::validate_luau_identity_contract(&ir).unwrap_err();
+        assert!(
+            error.contains("identity needs alias/reference/singleton provenance"),
+            "{scalar_kind}: {error}"
+        );
+    }
+}
+
+#[test]
+fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "exact_identity_classes".to_string(),
+            params: vec!["unknown".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    value: Some(1),
+                    out: Some("truth_a".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    value: Some(1),
+                    out: Some("truth_b".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("none_a".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("none_b".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "list_new".to_string(),
+                    args: Some(vec![]),
+                    out: Some("left_ref".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "list_new".to_string(),
+                    args: Some(vec![]),
+                    out: Some("right_ref".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["truth_a".to_string(), "truth_b".to_string()]),
+                    out: Some("bool_same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["none_a".to_string(), "none_b".to_string()]),
+                    out: Some("none_same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["left_ref".to_string(), "right_ref".to_string()]),
+                    out: Some("refs_same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is_not".to_string(),
+                    args: Some(vec!["left_ref".to_string(), "left_ref".to_string()]),
+                    out: Some("alias_different".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["unknown".to_string(), "left_ref".to_string()]),
+                    out: Some("unknown_is_ref".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "tuple_new".to_string(),
+                    args: Some(vec![
+                        "bool_same".to_string(),
+                        "none_same".to_string(),
+                        "refs_same".to_string(),
+                        "alias_different".to_string(),
+                        "unknown_is_ref".to_string(),
+                    ]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(
+        source.contains("local bool_same: boolean = molt_rawequal(truth_a, truth_b)"),
+        "{source}"
+    );
+    assert!(
+        source.contains("local none_same: boolean = molt_rawequal(none_a, none_b)"),
+        "{source}"
+    );
+    assert!(
+        source.contains("local refs_same: boolean = molt_rawequal(left_ref, right_ref)"),
+        "{source}"
+    );
+    assert!(
+        source.contains("local alias_different: boolean = false"),
+        "{source}"
+    );
+    assert!(
+        source.contains("local unknown_is_ref: boolean = molt_rawequal(unknown, left_ref)"),
+        "{source}"
+    );
+    for forbidden in [
+        "truth_a == truth_b",
+        "none_a == none_b",
+        "left_ref == right_ref",
+        "unknown == left_ref",
+        "left_ref ~= left_ref",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "identity must bypass __eq metamethod dispatch: {forbidden}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "shadow_helpers".to_string(),
+            params: vec![
+                "rawequal".to_string(),
+                "molt_rawequal".to_string(),
+                "molt_equal".to_string(),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "list_new".to_string(),
+                    args: Some(vec![]),
+                    out: Some("left".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["left".to_string(), "left".to_string()]),
+                    out: Some("same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["same".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(
+        source.contains("local molt_rawequal = rawequal"),
+        "{source}"
+    );
+    assert!(source.contains("rawequal: any"), "{source}");
+    assert!(
+        source.contains("_m_user_6d6f6c745f726177657175616c: any"),
+        "{source}"
+    );
+    assert!(
+        source.contains("_m_user_6d6f6c745f657175616c: any"),
+        "{source}"
+    );
+    assert!(!source.contains("molt_rawequal: any"), "{source}");
+    assert!(!source.contains("molt_equal: any"), "{source}");
+}
+
+#[test]
+fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "temporary_collision".to_string(),
+            params: vec![
+                "__ok_1".to_string(),
+                "__err_1".to_string(),
+                "__idx_item".to_string(),
+                "__closure_slot".to_string(),
+                "xs".to_string(),
+                "idx".to_string(),
+                "slot".to_string(),
+            ],
+            param_types: Some(vec![
+                "any".to_string(),
+                "any".to_string(),
+                "any".to_string(),
+                "any".to_string(),
+                "list".to_string(),
+                "int".to_string(),
+                "any".to_string(),
+            ]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    value: Some(1),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "closure_store".to_string(),
+                    args: Some(vec!["slot".to_string(), "value".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "closure_load".to_string(),
+                    args: Some(vec!["slot".to_string()]),
+                    out: Some("loaded".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "pcall_wrap_begin".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "get_item".to_string(),
+                    args: Some(vec!["xs".to_string(), "idx".to_string()]),
+                    out: Some("item".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "pcall_wrap_end".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["loaded".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile(&ir);
+    for raw in ["__ok_1", "__err_1", "__idx_item", "__closure_slot"] {
+        let encoded = sanitize_ident(raw);
+        assert!(source.contains(&format!("{encoded}: any")), "{source}");
+    }
+    assert!(source.contains("local __ok_1, __err_1"), "{source}");
+    assert!(source.contains("local __closure_slot"), "{source}");
+    assert!(source.contains("local __idx_item"), "{source}");
+    assert!(!source.contains("(__ok_1: any"), "{source}");
+}
+
+#[test]
+fn identity_provenance_matrix_matches_the_formal_admission_table() {
+    use IdentityLowering::{Constant, Direct, Reject};
+    use IdentityProvenance::{Reference, Singleton, Unknown, ValueScalar};
+
+    let provenances = [
+        Singleton(ScalarKind::Bool),
+        Singleton(ScalarKind::NoneValue),
+        ValueScalar(ScalarKind::Int),
+        ValueScalar(ScalarKind::Float),
+        ValueScalar(ScalarKind::Str),
+        Reference,
+        Unknown,
+    ];
+    let expected = [
+        [
+            Direct,
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Direct,
+        ],
+        [
+            Constant(false),
+            Direct,
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Direct,
+        ],
+        [
+            Constant(false),
+            Constant(false),
+            Reject,
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Reject,
+        ],
+        [
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Reject,
+            Constant(false),
+            Constant(false),
+            Reject,
+        ],
+        [
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Reject,
+            Constant(false),
+            Reject,
+        ],
+        [
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Constant(false),
+            Direct,
+            Direct,
+        ],
+        [Direct, Direct, Reject, Reject, Reject, Direct, Reject],
+    ];
+
+    for (lhs_index, lhs) in provenances.iter().copied().enumerate() {
+        for (rhs_index, rhs) in provenances.iter().copied().enumerate() {
+            assert_eq!(
+                identity_lowering_for_provenance(false, lhs, rhs),
+                expected[lhs_index][rhs_index],
+                "identity provenance cell ({lhs_index}, {rhs_index}) drifted"
+            );
+            assert_eq!(
+                identity_lowering_for_provenance(true, lhs, rhs),
+                Constant(true),
+                "same-SSA identity must dominate provenance"
+            );
+        }
+    }
+}
+
+#[test]
+fn value_scalar_plus_unknown_identity_is_rejected() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "float_unknown_identity".to_string(),
+            params: vec!["unknown".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_float".to_string(),
+                    f_value: Some(1.0),
+                    out: Some("float".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["float".to_string(), "unknown".to_string()]),
+                    out: Some("same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["same".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+    assert!(error.contains("identity needs alias/reference/singleton provenance"));
+}
+
+#[test]
+fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "same_float_alias".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_float".to_string(),
+                    f_value: Some(1.0),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    args: Some(vec!["value".to_string(), "value".to_string()]),
+                    out: Some("same".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["same".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(source.contains("local same: boolean = true"), "{source}");
 }
 
 #[test]

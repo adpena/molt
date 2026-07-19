@@ -32,7 +32,8 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--group dev"
+          sync: "true"
+          sync-groups: dev
 
       - name: Add local venv tools to PATH
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
@@ -46,7 +47,7 @@ jobs:
             --json-out logs/conformance/full.json
 
       - name: Upload conformance artifact
-        if: always()
+        if: always() && hashFiles('logs/conformance/full.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: molt-conformance-full
@@ -67,7 +68,8 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--group dev"
+          sync: "true"
+          sync-groups: dev
 
       - name: Run differential correctness lane
         env:
@@ -94,7 +96,8 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen"
+          sync: "true"
+          sync-frozen: "true"
 
       - name: Build Molt runtime
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build -p molt-runtime --profile dev-fast
@@ -107,7 +110,7 @@ jobs:
             --timeout 600
 
       - name: Upload regrtest results
-        if: always()
+        if: always() && hashFiles('regrtest_*.json', 'regrtest_*.log') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regrtest-results
@@ -131,7 +134,8 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen"
+          sync: "true"
+          sync-frozen: "true"
 
       - name: Build Molt runtime
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build -p molt-runtime --profile dev-fast
@@ -154,7 +158,7 @@ jobs:
             --json-out proof-results/ir-verification.json
 
       - name: Upload determinism proof results
-        if: always()
+        if: always() && hashFiles('proof-results/*.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-determinism-proof-results
@@ -180,7 +184,8 @@ jobs:
         with:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
-          sync-args: "--frozen"
+          sync: "true"
+          sync-frozen: "true"
 
       - name: Install clang
         run: |
@@ -211,7 +216,7 @@ jobs:
           "
 
       - name: Upload Tier 3 gate results
-        if: always()
+        if: always() && hashFiles('ci_gate_tier3.json', 'proof-results/*.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gate-tier3
