@@ -5,29 +5,22 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-from tests.wasm_harness import write_wasm_runner
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-ROOT = Path(__file__).resolve().parents[1]
-TOOLS_ROOT = ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-
-import harness_memory_guard  # noqa: E402
+from tests.process_guard_common import run_guarded_test_process  # noqa: E402
+from tests.wasm_harness import write_wasm_runner  # noqa: E402
 
 
 def _run_guarded(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None):
-    return harness_memory_guard.guarded_completed_process(
+    return run_guarded_test_process(
         cmd,
         prefix="MOLT_WASM_TEST",
         cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
-        timeout=harness_memory_guard.timeout_from_env(
-            "MOLT_WASM_TEST",
-            env or os.environ,
-            default=300.0,
-        ),
     )
 
 

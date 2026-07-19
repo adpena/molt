@@ -671,15 +671,21 @@ def _guarded_popen_process_isolation_kwargs() -> dict[str, object]:
 
 
 def _read_child_started_at(fd: int | None) -> float | None:
+    """Read the child-start timestamp without consuming descriptor ownership.
+
+    ``run_guarded`` owns ``GuardedLaunch.started_read_fd`` from launch through
+    its single finalizer.  Closing it here as well creates an ABA race: once
+    the kernel reuses the descriptor number for an unrelated file, the
+    finalizer's second close can corrupt that concurrent read.  The launch
+    finalizer therefore remains the only close authority for this descriptor.
+    """
+
     if fd is None:
         return None
     try:
         raw = os.read(fd, 64)
     except OSError:
         return None
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(fd)
     try:
         return int(raw.strip()) / 1_000_000_000
     except ValueError:
@@ -954,7 +960,10 @@ def run_guarded(
                 spawn_error_type=type(exc).__name__,
                 spawn_error=str(exc),
             )
-            _close_fds((*launch.close_fds, launch.started_read_fd))
+            # The outer finalizer is the sole owner of started_read_fd.  Do not
+            # close it here as well: a reused numeric descriptor would make the
+            # finalizer's second close corrupt an unrelated concurrent file.
+            _close_fds(launch.close_fds)
             if stdout_capture is not None:
                 stdout_capture.close()
             if stderr_capture is not None:

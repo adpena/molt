@@ -28,7 +28,7 @@ def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> Non
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(
-        wasm_runner.harness_memory_guard,
+        wasm_runner.process_guard_common.harness_memory_guard,
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
@@ -54,13 +54,13 @@ def test_wasm_test_process_preserves_timeout_semantics(
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
         return subprocess.CompletedProcess(
             cmd,
-            wasm_runner.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            wasm_runner.process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
             stdout="partial",
             stderr="memory_guard: timeout after 2.00s\n",
         )
 
     monkeypatch.setattr(
-        wasm_runner.harness_memory_guard,
+        wasm_runner.process_guard_common.harness_memory_guard,
         "guarded_completed_process",
         fake_guarded_completed_process,
     )

@@ -437,15 +437,13 @@ def run_binary(binary: Path) -> tuple[int | None, str, str]:
     returncode is None on timeout.
     """
     try:
-        r = harness_memory_guard.guarded_completed_process(
+        r = process_guard_common.run_guarded_test_process(
             [str(binary)],
             prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=RUN_TIMEOUT,
         )
-        if r.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
-            return None, r.stdout, r.stderr
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return None, "", "run timeout"

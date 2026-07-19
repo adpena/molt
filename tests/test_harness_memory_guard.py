@@ -649,6 +649,7 @@ def test_guarded_completed_process_writes_command_profile(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
+        operation_role="build",
         env={"MOLT_GUARD_PROFILE_LOG": str(profile_log), "MOLT_SESSION_ID": "unit"},
         limits=limits,
     )
@@ -664,6 +665,7 @@ def test_guarded_completed_process_writes_command_profile(
     event = payload[0]
     assert event["event"] == "guarded_command_profile"
     assert event["prefix"] == "MOLT_TEST"
+    assert event["operation_role"] == "build"
     assert event["session_id"] == "unit"
     assert event["status"] == "pass"
     assert event["elapsed_s"] == 0.25

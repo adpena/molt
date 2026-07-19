@@ -118,7 +118,6 @@ def _compile_and_run_rust(
                 "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
             }
         )
-        build_timeout = int(os.environ.get("MOLT_RUST_BUILD_TIMEOUT", "1200"))
         py_exec = sys.executable or _find_cpython()
         build_cmd = [
             py_exec,
@@ -159,13 +158,12 @@ def _compile_and_run_rust(
                 build_cmd,
                 capture_output=True,
                 text=True,
-                timeout=build_timeout,
                 env=env,
                 cwd=MOLT_DIR,
             )
         except subprocess.TimeoutExpired as exc:
             pytest.fail(
-                f"molt build --target rust timed out after {build_timeout}s ({exc.cmd})"
+                f"molt build --target rust timed out after {exc.timeout}s ({exc.cmd})"
             )
         if result.returncode != 0:
             if expect_fail:

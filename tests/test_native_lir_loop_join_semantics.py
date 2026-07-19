@@ -49,7 +49,6 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
             env=env,
             capture_output=True,
             text=True,
-            timeout=300,
         )
         assert build.returncode == 0, build.stderr
         assert binary_path.exists(), f"expected binary at {binary_path}"
