@@ -41,6 +41,9 @@ REQUIRED_FAMILY_FIELDS = (
     "executor",
     "workflow",
     "job",
+    "admission_workflow",
+    "admission_job",
+    "admission_needs",
     "tiers",
     "required",
     "timeout_minutes",
@@ -505,6 +508,69 @@ class ProofPlan:
                         errors.append(
                             f"{family.name}: workflow job does not enforce {timeout!r}"
                         )
+            admission_workflow_name = str(family.data.get("admission_workflow", ""))
+            admission_workflow = ROOT / admission_workflow_name
+            admission_job = str(family.data.get("admission_job", ""))
+            admission_needs = family.data.get("admission_needs")
+            if admission_workflow_name != ".github/workflows/ci.yml":
+                errors.append(
+                    f"{family.name}: admission must join the canonical CI verdict "
+                    "workflow"
+                )
+            if re.fullmatch(r"[A-Za-z0-9_-]+", admission_job) is None:
+                errors.append(
+                    f"{family.name}: admission_job must be a literal job name"
+                )
+            if not isinstance(admission_needs, list) or not all(
+                isinstance(dependency, str) and dependency
+                for dependency in admission_needs
+            ):
+                errors.append(
+                    f"{family.name}: admission_needs must be a list of job names"
+                )
+            elif len(admission_needs) != len(set(admission_needs)):
+                errors.append(f"{family.name}: admission_needs must be unique")
+            if not admission_workflow.is_file():
+                errors.append(
+                    f"{family.name}: admission workflow does not exist: "
+                    f"{admission_workflow}"
+                )
+            else:
+                admission_text = admission_workflow.read_text(encoding="utf-8")
+                if isinstance(admission_needs, list):
+                    for dependency in admission_needs:
+                        if _workflow_job_block(admission_text, dependency) is None:
+                            errors.append(
+                                f"{family.name}: admission dependency "
+                                f"{dependency!r} is not a workflow job"
+                            )
+                admission_block = _workflow_job_block(admission_text, admission_job)
+                if admission_block is None:
+                    errors.append(
+                        f"{family.name}: admission job {admission_job!r} is missing"
+                    )
+                else:
+                    try:
+                        actual_admission_needs = _workflow_job_needs(admission_block)
+                    except ValueError as exc:
+                        errors.append(f"{family.name}: {exc}")
+                    else:
+                        expected_admission_needs = (
+                            tuple(admission_needs)
+                            if isinstance(admission_needs, list)
+                            else ()
+                        )
+                        if actual_admission_needs != expected_admission_needs:
+                            errors.append(
+                                f"{family.name}: admission job {admission_job!r} "
+                                f"needs {list(actual_admission_needs)!r}; authority "
+                                f"requires {list(expected_admission_needs)!r}"
+                            )
+                    if "continue-on-error" in admission_block:
+                        errors.append(
+                            f"{family.name}: claimed correctness admission may not "
+                            "continue-on-error"
+                        )
         known = set(names)
         dependency_graph: dict[str, tuple[str, ...]] = {}
         for family in self.families:
@@ -780,6 +846,28 @@ class ProofPlan:
                 errors.append(
                     "proof-plan-verdict: legacy synthetic job results are forbidden"
                 )
+            if verdict_block is not None:
+                try:
+                    actual_verdict_needs = _workflow_job_needs(verdict_block)
+                except ValueError as exc:
+                    errors.append(f"proof-plan-verdict: {exc}")
+                else:
+                    expected_verdict_needs = {
+                        "classify-changes",
+                        *(
+                            str(family.data["admission_job"])
+                            for family in self.families
+                        ),
+                    }
+                    if len(actual_verdict_needs) != len(set(actual_verdict_needs)):
+                        errors.append("proof-plan-verdict: needs must be unique")
+                    if set(actual_verdict_needs) != expected_verdict_needs:
+                        errors.append(
+                            "proof-plan-verdict: needs must be the exact conjunction "
+                            f"of classifier and family admissions; got "
+                            f"{sorted(actual_verdict_needs)!r}, expected "
+                            f"{sorted(expected_verdict_needs)!r}"
+                        )
         local_names: set[str] = set()
         for rule in self.local_rules:
             name = rule.get("name")
@@ -870,6 +958,49 @@ def _workflow_job_block(text: str, job: str) -> str | None:
         rf"(?ms)^  {re.escape(job)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)", text
     )
     return match.group(0) if match is not None else None
+
+
+def _workflow_job_needs(block: str) -> tuple[str, ...]:
+    """Read one job's literal ``needs`` edge list without a YAML dependency.
+
+    The changed-path classifier runs before repository toolchain setup, so proof
+    authority validation must stay in the Python standard library.  CI admission
+    edges are intentionally restricted to literal scalar, inline-list, or block-
+    list job names; expressions and mappings are not valid dependency authority.
+    """
+
+    declarations: list[tuple[int, str]] = []
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"    needs:\s*(.*?)\s*", line)
+        if match is not None:
+            declarations.append((index, match.group(1)))
+    if len(declarations) > 1:
+        raise ValueError("admission job declares needs more than once")
+    if not declarations:
+        return ()
+    index, value = declarations[0]
+    if value:
+        if value.startswith("[") and value.endswith("]"):
+            items = tuple(part.strip().strip("'\"") for part in value[1:-1].split(","))
+            if any(not item for item in items):
+                raise ValueError("admission job has an empty inline needs item")
+            return items
+        if value.startswith(("{", "${{")):
+            raise ValueError("admission job needs must be literal job names")
+        return (value.strip("'\""),)
+    items: list[str] = []
+    for line in lines[index + 1 :]:
+        match = re.fullmatch(r"      -\s+([A-Za-z0-9_-]+)\s*", line)
+        if match is not None:
+            items.append(match.group(1))
+            continue
+        if line.startswith("      ") and not line.strip():
+            continue
+        break
+    if not items:
+        raise ValueError("admission job needs block is empty or non-literal")
+    return tuple(items)
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -1025,6 +1156,10 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
                     "executor",
                     "workflow",
                     "job",
+                    "admission_workflow",
+                    "admission_job",
+                    "admission_needs",
+                    "dependencies",
                     "required",
                     "timeout_minutes",
                     "resource_class",

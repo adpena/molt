@@ -17,6 +17,8 @@
 
 Every selected family expands to stable command IDs. Each command binds an exact OS/architecture/Python/backend/target/profile cell, timeout, resource class, cache domain, and DAG parents. CI admission requires receipts whose canonical LF-normalized authority-closure digest, source commit, command, cell, execution partition, duration, peak RSS, cache disposition, and version-constrained toolchain identities validate.
 
+Proof-family selection parents and GitHub admission edges are distinct authorities. A family may depend on another family only when it consumes that family's data or control result. Independent admissions depend only on the changed-path classifier, so a selected sibling failure cannot mask their execution; the Proof Plan Verdict remains the sole conjunction.
+
 The canonical executor admits dependency-ready commands in manifest order, bounds global fanout at 4, and enforces these per-resource limits:
 
 | Resource | Max parallel commands |
@@ -31,19 +33,19 @@ The canonical executor admits dependency-ready commands in manifest order, bound
 
 GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity.
 
-| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Inputs |
-|---|---|---:|---|---:|---:|---:|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3300 s | 300 s | `repository-policy` | 1 |
-| `wasm` | pr, main | yes | `github-job` | 90 min | 4200 s | 1200 s | `compiler-build-resource` | 17 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | 7 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | 9 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | 10 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | 21 |
-| `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 4 |
-| `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | 5 |
-| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | 25 |
+| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
+|---|---|---:|---|---:|---:|---:|---|---|---|---:|
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3300 s | 300 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `wasm` | pr, main | yes | `github-job` | 90 min | 4200 s | 1200 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
+| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 7 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 9 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
+| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
+| `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
+| `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
+| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 25 |
 
 ## Matrix cells
 

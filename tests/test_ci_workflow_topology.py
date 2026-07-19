@@ -18,6 +18,17 @@ def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def _literal_job_needs(job: dict[str, object]) -> tuple[str, ...]:
+    raw = job.get("needs")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        return (raw,)
+    assert isinstance(raw, list)
+    assert all(isinstance(item, str) for item in raw)
+    return tuple(raw)
+
+
 def _named_step_blocks(workflow_text: str) -> list[str]:
     blocks: list[list[str]] = []
     current: list[str] = []
@@ -279,6 +290,79 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
     )
     assert "== 'success' && 1 || 0" not in ci_text
     assert ci_text.count("fetch-depth: 0") == 1
+
+
+def test_ci_proof_families_are_admitted_independently() -> None:
+    """A selected sibling failure must never mask another proof family."""
+
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    ci_jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
+    families = plan["ci_family"]
+
+    assert all(family["dependencies"] == [] for family in families)
+    admission_jobs = {family["admission_job"] for family in families}
+    assert admission_jobs == {
+        "docs-gates",
+        "formal-verification",
+        "llvm-backend",
+        "native-integration",
+        "platform-portability",
+        "python-static",
+        "python-unit",
+        "rust-build-unit-smoke",
+        "security-hardening",
+        "wasm-validation",
+    }
+
+    for family in families:
+        assert family["admission_workflow"] == ".github/workflows/ci.yml"
+        job_name = family["admission_job"]
+        assert _literal_job_needs(ci_jobs[job_name]) == tuple(family["admission_needs"])
+        assert "continue-on-error" not in ci_jobs[job_name]
+
+    assert _literal_job_needs(ci_jobs["docs-gates"]) == ()
+    for job_name in admission_jobs - {"docs-gates"}:
+        assert _literal_job_needs(ci_jobs[job_name]) == ("classify-changes",)
+        condition = str(ci_jobs[job_name].get("if", ""))
+        assert ".result" not in condition
+
+    # Simulate every family admission failing in turn. Every other selected
+    # admission still has all of its own prerequisites satisfied because no
+    # proof admission consumes a sibling result.
+    for failed_job in admission_jobs:
+        statuses = {"classify-changes": "success", failed_job: "failure"}
+        for candidate_job in admission_jobs - {failed_job}:
+            assert all(
+                statuses.get(dependency) == "success"
+                for dependency in _literal_job_needs(ci_jobs[candidate_job])
+            )
+
+    verdict_needs = _literal_job_needs(ci_jobs["proof-plan-verdict"])
+    assert set(verdict_needs) == {"classify-changes", *admission_jobs}
+    assert len(verdict_needs) == len(set(verdict_needs))
+    assert ci_jobs["proof-plan-verdict"]["if"] == "always()"
+
+
+def test_proof_plan_validation_rejects_cross_family_admission_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import proof_plan
+
+    plan = proof_plan.ProofPlan.load()
+    original = proof_plan._workflow_job_needs
+
+    def masked_needs(block: str) -> tuple[str, ...]:
+        if block.startswith("  wasm-validation:"):
+            return ("classify-changes", "rust-build-unit-smoke")
+        return original(block)
+
+    monkeypatch.setattr(proof_plan, "_workflow_job_needs", masked_needs)
+    validation_errors = plan.validate()
+    assert any(
+        "wasm: admission job 'wasm-validation' needs " in error
+        and "rust-build-unit-smoke" in error
+        for error in validation_errors
+    )
 
 
 def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
