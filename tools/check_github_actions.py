@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +11,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.bootstrap_actionlint import ensure_actionlint  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def main() -> int:
@@ -20,7 +25,7 @@ def main() -> int:
     except (OSError, RuntimeError) as exc:
         print(f"actionlint: {exc}", file=sys.stderr)
         return 2
-    return subprocess.run([str(executable)], cwd=ROOT, check=False).returncode
+    return _COMMANDS.run([str(executable)], cwd=ROOT, check=False).returncode
 
 
 if __name__ == "__main__":

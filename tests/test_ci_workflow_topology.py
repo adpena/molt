@@ -234,6 +234,10 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "proof-receipts/evidence/cargo-test-truth.json" in ci_text
     assert "proof-receipts/evidence/llvm-differential-truth.json" in ci_text
     assert "target/**/.molt_state/build_failures/*.json" in ci_text
+    llvm_upload = ci_text.split("- name: Upload LLVM/MLIR/linker receipt", 1)[1].split(
+        "- name: Summarize guarded command hotspots", 1
+    )[0]
+    assert "include-hidden-files: true" in llvm_upload
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "sudo apt-get install -y lld" not in ci_text
     assert "timeout_seconds" in proof_plan_text

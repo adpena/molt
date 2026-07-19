@@ -13,6 +13,13 @@ from pathlib import Path
 
 import check_suite_honesty
 
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 RECEIPT = ROOT / "proof-receipts" / "evidence" / "cargo-test-truth.json"
 TARGET_RUNNER = ROOT / "tools" / "cargo_test_binary_runner.py"
@@ -73,7 +80,7 @@ def verdict(output: str, returncode: int, context: dict[str, str]) -> list[str]:
 
 
 def host_target() -> str:
-    process = subprocess.run(
+    process = _COMMANDS.run(
         ["rustc", "-vV"],
         cwd=ROOT,
         check=False,
@@ -97,7 +104,7 @@ def target_runner_config(target: str) -> str:
 
 
 def run_streamed(command: tuple[str, ...]) -> tuple[int, str]:
-    process = subprocess.Popen(
+    process = _COMMANDS.start_guarded(
         command,
         cwd=ROOT,
         stdout=subprocess.PIPE,

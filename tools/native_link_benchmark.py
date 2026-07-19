@@ -22,7 +22,6 @@ import os
 from pathlib import Path
 import platform
 import statistics
-import subprocess
 import sys
 import time
 import tracemalloc
@@ -46,6 +45,12 @@ from molt.cli.native_link_manifest import (  # noqa: E402
 )
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 SCHEMA_VERSION = 1
@@ -537,11 +542,13 @@ def inspect_binary(path: Path, tool_facts: Mapping[str, object]) -> dict[str, ob
         "--relocations",
         str(path),
     ]
-    result = subprocess.run(
+    result = _COMMANDS.run(
         command,
         cwd=path.parent,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )

@@ -7,15 +7,15 @@ enable the pre-existing pre-commit type-check and block every commit).
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
-import subprocess
 from pathlib import Path
 
 import tools.install_git_hooks as ig
 
 
 def _git_init(path: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    run_guarded_test_process(["git", "init", "-q", str(path)], check=True)
 
 
 def _fake_source(tmp_path: Path) -> Path:

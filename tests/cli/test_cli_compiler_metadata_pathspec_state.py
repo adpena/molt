@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import importlib
 import subprocess
@@ -8,7 +9,7 @@ COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded_test_process(
         ["git", *args],
         cwd=repo,
         check=True,

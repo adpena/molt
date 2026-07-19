@@ -152,7 +152,11 @@ def test_resource_binary_runner_isolates_each_test_and_continues_after_failure(
         identity = argv[argv.index("--exact") + 1]
         return SimpleNamespace(returncode=6 if identity == "limit_one" else 0)
 
-    monkeypatch.setattr(binary_runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        binary_runner,
+        "_COMMANDS",
+        SimpleNamespace(run=fake_run),
+    )
 
     assert binary_runner.run_resource_tests("resource_enforcement-hash", []) == 1
     assert [call[call.index("--exact") + 1] for call in calls[1:]] == [

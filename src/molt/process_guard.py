@@ -9,6 +9,7 @@ from typing import Any
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
+DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS = 30.0
 
 _MEMORY_GUARD_ENV_SUFFIXES = (
     "MEMORY_GUARD",
@@ -100,43 +101,91 @@ def timeout_from_env(
 def run_completed_command(
     cmd: Sequence[str],
     *,
-    env: Mapping[str, str] | None,
-    cwd: Path | None,
-    capture_output: bool,
-    memory_guard_prefix: str | None,
-    input: str | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
+    capture_output: bool = False,
+    memory_guard_prefix: str | None = CLI_MEMORY_GUARD_PREFIX,
+    input: str | bytes | None = None,
     timeout: float | None = None,
-    encoding: str = "utf-8",
-    errors: str = "replace",
+    text: bool | None = True,
+    check: bool = False,
+    stdout: int | None = None,
+    stderr: int | None = None,
+    encoding: str | None = None,
+    errors: str | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
-) -> subprocess.CompletedProcess[str]:
+) -> subprocess.CompletedProcess[Any]:
+    if isinstance(cmd, (str, bytes)):
+        raise TypeError("command must be typed argv, not shell text")
     command = [str(part) for part in cmd]
+    if not command:
+        raise ValueError("command argv must not be empty")
+    if capture_output and (stdout is not None or stderr is not None):
+        raise ValueError("capture_output cannot be combined with stdout or stderr")
+    supported_streams = {None, subprocess.PIPE, subprocess.DEVNULL}
+    if stdout not in supported_streams:
+        raise ValueError("stdout must inherit, PIPE, or DEVNULL")
+    if stderr not in supported_streams | {subprocess.STDOUT}:
+        raise ValueError("stderr must inherit, PIPE, DEVNULL, or STDOUT")
+    text_mode = bool(text or encoding is not None or errors is not None)
     if memory_guard_prefix is None:
+        probe_timeout = (
+            DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
+        )
         return subprocess.run(
             command,
             env=dict(env) if env is not None else None,
             cwd=cwd,
             input=input,
             capture_output=capture_output,
-            text=True,
-            timeout=timeout,
+            text=text_mode,
+            timeout=probe_timeout,
+            check=check,
+            stdout=stdout,
+            stderr=stderr,
             encoding=encoding,
             errors=errors,
         )
+    if stderr == subprocess.STDOUT:
+        raise ValueError(
+            "guarded completed commands preserve stdout/stderr separately; "
+            "use an explicitly owned streaming process when interleaving is required"
+        )
     guard_env = with_memory_guard_env(env, memory_guard_prefix)
-    harness_memory_guard = guard_loader(cwd)
+    cwd_path = None if cwd is None else Path(cwd)
+    harness_memory_guard = guard_loader(cwd_path)
     guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
         memory_guard_prefix,
         guard_env,
-        repo_root=(cwd or Path.cwd()),
+        repo_root=(cwd_path or Path.cwd()),
     )
-    return guard_context.run(
+    capture_streams = capture_output or stdout is not None or stderr is not None
+    result = guard_context.run(
         command,
         cwd=cwd,
-        input=input,
-        capture_output=capture_output,
-        text=True,
+        input=input,  # type: ignore[arg-type]
+        capture_output=capture_streams,
+        text=text_mode,
         timeout=timeout,
-        encoding=encoding,
-        errors=errors,
+        encoding=encoding or "utf-8",
+        errors=errors or "strict",
     )
+    if stderr == subprocess.DEVNULL:
+        result.stderr = None
+    if stdout == subprocess.DEVNULL:
+        result.stdout = None
+    if result.timed_out:
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            command,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result

@@ -822,6 +822,7 @@ def run_guarded(
     running_summary_json: str | None = None,
     running_summary_environ: Mapping[str, str] | None = None,
     running_summary_max_global_rss_kb: int | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -938,9 +939,9 @@ def run_guarded(
         # the child SUSPENDED so it is placed in the job before it can spawn any
         # descendant (race-free capture). The guard holds the sole handle, so if
         # it dies for ANY reason the OS reaps the whole build subtree instead of
-        # leaking orphaned cargo/rustc/link/tail that reserve GB. Best-effort:
-        # if the job can't be created this degrades to today's spawn (no
-        # CREATE_SUSPENDED added) with tools/orphan_reaper.py as the backstop.
+        # leaking orphaned cargo/rustc/link/tail that reserve GB. Creation,
+        # assignment, and resume are fail-closed: Windows never launches an
+        # unassigned child.
         guard_job = _win_job.create_kill_on_close_job()
         if guard_job is not None:
             popen_kwargs["creationflags"] = (
@@ -970,9 +971,9 @@ def run_guarded(
                 stderr_capture.close()
             raise
         if guard_job is not None:
-            # Child was spawned SUSPENDED; assign it to the job and resume it
-            # immediately. assign_and_resume ALWAYS resumes (even if assignment
-            # fails), so a build can never hang suspended.
+            # Child was spawned SUSPENDED; assignment completes before resume.
+            # A custody failure terminates the still-suspended child or its job
+            # and raises with exact Win32 evidence.
             _win_job.assign_and_resume(guard_job, proc)
         _close_fds(launch.close_fds)
         child_process = GuardedChildProcess(
@@ -1281,6 +1282,38 @@ def run_guarded(
                 )
             )
             terminate_direct_child_handle(reason=f"{reason}_direct_child_handle")
+
+        if on_spawn is not None:
+            try:
+                on_spawn(proc.pid)
+            except BaseException as callback_error:
+                try:
+                    if guard_job is not None:
+                        _win_job.terminate_job(guard_job)
+                        _win_job.wait_until_empty(guard_job, timeout=termination_wait_s)
+                    else:
+                        termination_reports.append(
+                            _validated_termination_report(
+                                terminate_watched_processes(
+                                    proc.pid,
+                                    grace=0.0,
+                                    reason="on_spawn_callback_failure",
+                                    sampler=sampler,
+                                    tracker=tracker,
+                                    root_owned=True,
+                                ),
+                                caller="terminate_watched_processes",
+                            )
+                        )
+                        terminate_direct_child_handle(
+                            reason="on_spawn_callback_failure_direct_child_handle"
+                        )
+                except BaseException as cleanup_error:
+                    callback_error.add_note(
+                        "owned-tree cleanup after on_spawn failure: "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
+                raise
 
         last_sample_cost_s = 0.0
 
@@ -1742,6 +1775,11 @@ def run_guarded(
                     "--kill-processes` if stale Cargo state still blocks rebuilds.\n",
                     text=text,
                 )
+        peak_job_commit_bytes = (
+            None
+            if guard_job is None
+            else _win_job.peak_job_memory_bytes(guard_job)
+        )
         result = GuardResult(
             returncode=final_returncode,
             violation=violation,
@@ -1758,6 +1796,7 @@ def run_guarded(
             child_process=child_process,
             termination_reports=tuple(termination_reports),
             sampling_telemetry=final_sampling_telemetry,
+            peak_job_commit_bytes=peak_job_commit_bytes,
         )
         _update_active_guard_marker(
             guard_marker,
@@ -2353,6 +2392,7 @@ def _write_summary_json(
         "violation": _rss_record_payload(result.violation),
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
+        "peak_job_commit_bytes": result.peak_job_commit_bytes,
         "timed_out": result.timed_out,
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),
@@ -2512,6 +2552,7 @@ def _write_running_summary_json(
         "violation": None,
         "peak": None,
         "peak_total": None,
+        "peak_job_commit_bytes": None,
         "timed_out": False,
         "orphaned_process_groups": [],
         "child_process": child_payload,
@@ -2578,6 +2619,16 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Abort if the watched process tree exceeds this aggregate RSS; "
             f"must be <{DEFAULT_HARD_MAX_RSS_GB:g}GB "
+            "(default: adaptive from live available memory)."
+        ),
+    )
+    parser.add_argument(
+        "--max-global-rss-gb",
+        type=float,
+        default=None,
+        help=(
+            "Record and constrain the resolved host-wide RSS custody budget; "
+            f"must be <{DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g}GB "
             "(default: adaptive from live available memory)."
         ),
     )
@@ -2663,6 +2714,8 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
         worker_args.extend(["--max-rss-gb", str(args.max_rss_gb)])
     if args.max_total_rss_gb is not None:
         worker_args.extend(["--max-total-rss-gb", str(args.max_total_rss_gb)])
+    if args.max_global_rss_gb is not None:
+        worker_args.extend(["--max-global-rss-gb", str(args.max_global_rss_gb)])
     if args.summary_json:
         worker_args.extend(["--summary-json", args.summary_json])
     if args.samples_jsonl:
@@ -2716,7 +2769,12 @@ def main(
         )
         max_rss_kb = max_rss_kb_from_gb(max_rss_gb)
         max_total_rss_kb = max_rss_kb_from_gb(max_total_rss_gb)
-        max_global_rss_kb = max_global_rss_kb_from_gb(budget.max_global_rss_gb)
+        max_global_rss_gb = (
+            budget.max_global_rss_gb
+            if args.max_global_rss_gb is None
+            else float(args.max_global_rss_gb)
+        )
+        max_global_rss_kb = max_global_rss_kb_from_gb(max_global_rss_gb)
         poll_interval = float(args.poll_interval)
         if poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
@@ -2727,7 +2785,7 @@ def main(
             default_child_rlimit_gb(
                 max_process_rss_gb=max_rss_gb,
                 max_total_rss_gb=max_total_rss_gb,
-                max_global_rss_gb=budget.max_global_rss_gb,
+                max_global_rss_gb=max_global_rss_gb,
             )
             if args.child_rlimit_gb is None
             else float(args.child_rlimit_gb)

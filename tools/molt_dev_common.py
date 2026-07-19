@@ -9,6 +9,12 @@ import sys
 from pathlib import Path
 
 import harness_memory_guard
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 DEFAULT_REPO = Path(__file__).resolve().parents[1]
 
@@ -98,7 +104,7 @@ def _run_fast_captured_command(
 ) -> subprocess.CompletedProcess[str]:
     """Run cheap non-shell plumbing directly, with a bounded fail-loud timeout."""
     try:
-        return subprocess.run(
+        return _COMMANDS.run(
             cmd,
             cwd=cwd or DEFAULT_REPO,
             env=env,

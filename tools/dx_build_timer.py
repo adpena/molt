@@ -33,7 +33,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 import statistics
 import sys
 import tempfile
@@ -46,7 +45,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 TOUCH_MARKER = b"\n// dx_build_timer touch\n"
 PYTHON_TOUCH_MARKER = "\n__molt_dx_build_timer_edit__ = 1\n"
@@ -237,7 +239,7 @@ def _run_completed_inside_active_guard(
         encoding="utf-8",
         errors="replace",
     ) as stderr_tmp:
-        proc = subprocess.Popen(
+        proc = _COMMANDS.start_owned(
             cmd,
             cwd=cwd,
             env=env,

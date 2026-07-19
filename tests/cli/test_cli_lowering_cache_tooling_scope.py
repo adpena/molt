@@ -20,6 +20,7 @@ teeth: without the scoping the cache keys would move.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import importlib
 import os
@@ -250,7 +251,6 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
     ``backend_*`` helper that no in-scope file imports must stay excluded. This
     exercises the import-following mechanism the denylist never had.
     """
-    import importlib
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -326,7 +326,6 @@ def test_import_molt_cli_does_not_load_backend() -> None:
     scope. Runs in a fresh subprocess so the assertion is not polluted by modules
     an earlier test already imported.
     """
-    import subprocess
     import sys
 
     root = Path(cf_module_file()).resolve().parents[3]
@@ -347,7 +346,7 @@ def test_import_molt_cli_does_not_load_backend() -> None:
         "print('OK')\n"
     )
     env = {**os.environ, "PYTHONPATH": str(root / "src")}
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,

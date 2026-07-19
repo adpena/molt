@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import tomllib
 from typing import Any
@@ -24,6 +23,12 @@ from .release_model import (
     target_by_id,
     write_json,
 )
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v1"
@@ -31,7 +36,7 @@ MANIFEST_SCHEMA = "molt.release-manifest.v2"
 
 
 def _git(*args: str) -> str:
-    result = subprocess.run(
+    result = _COMMANDS.run(
         ["git", *args],
         cwd=ROOT,
         check=True,

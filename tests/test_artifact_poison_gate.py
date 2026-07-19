@@ -5,6 +5,7 @@ when it does not — the mechanical guard against marking a "resolve != effectiv
 capability done on a proxy signal.
 """
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 from pathlib import Path
 import subprocess
@@ -18,11 +19,12 @@ LONG_DOUBLE_MARKER = b"Support for formatting long double values is currently di
 
 
 def _run_gate(*wasm: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded_test_process(
         [sys.executable, str(GATE), *[str(p) for p in wasm]],
         cwd=ROOT,
+        capture_output=False,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         check=False,
     )
@@ -109,11 +111,12 @@ def test_debug_knob_never_allows_link_time_metadata(tmp_path: Path) -> None:
         + _custom_section("name")
     )
 
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(GATE), "--preserve-debug-sections", str(artifact)],
         cwd=ROOT,
+        capture_output=False,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         check=False,
     )

@@ -37,6 +37,7 @@ from typing import Any, Mapping, Sequence
 
 from molt.cli.dependency_files import parse_make_depfile
 from molt.cli.file_hashing import _sha256_file
+from molt import process_guard
 
 # Cython emits the ``.pyx`` -> C generated file with the same stem. A Cython
 # source group in a meson build pairs the ``.pyx`` (a non-compiled input) with
@@ -191,7 +192,7 @@ def cython_build_requirement_from_pyproject(
 
 def _installed_cython_version(python_exe: str) -> str | None:
     try:
-        result = subprocess.run(
+        result = process_guard.run_completed_command(
             [
                 python_exe,
                 "-c",
@@ -247,7 +248,7 @@ def provision_cython(
 
     specifier = _pip_specifier(requirement)
     try:
-        install = subprocess.run(
+        install = process_guard.run_completed_command(
             [
                 python_exe,
                 "-m",
@@ -432,7 +433,7 @@ def _cimport_pxd_roots(
             "os.path.exists(os.path.join(pkg_dir, '__init__.pxd')) else '')\n"
         )
         try:
-            completed = subprocess.run(
+            completed = process_guard.run_completed_command(
                 [interpreter, "-c", probe],
                 capture_output=True,
                 text=True,
@@ -617,7 +618,7 @@ for name in json.loads(sys.argv[1]):
 print(json.dumps(roots))
 """
     try:
-        result = subprocess.run(
+        result = process_guard.run_completed_command(
             [interpreter, "-c", probe, json.dumps(requested)],
             capture_output=True,
             text=True,
@@ -809,7 +810,7 @@ def _query_ninja_generator_commands(
     if not command:
         return None, "canonical Ninja command is empty"
     try:
-        query = subprocess.run(
+        query = process_guard.run_completed_command(
             [
                 *command,
                 "-C",
@@ -1044,7 +1045,7 @@ def regenerate_cython_c_standalone(
     argv.extend([str(pyx_path), "-o", str(regenerated_c)])
     working_directory = Path.cwd().resolve()
     try:
-        result = subprocess.run(
+        result = process_guard.run_completed_command(
             argv,
             cwd=working_directory,
             capture_output=True,

@@ -10,6 +10,7 @@ that consumed the ``--shared`` C would fail this test.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import os
 import re
@@ -159,7 +160,7 @@ def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
     clang = shutil.which("clang")
     assert clang is not None
     abi_include = ROOT / "runtime" / "molt-cpython-abi" / "include"
-    preprocess = subprocess.run(
+    preprocess = run_guarded_test_process(
         [
             clang,
             "-E",
@@ -173,7 +174,7 @@ def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
         text=True,
     )
     assert preprocess.returncode == 0, preprocess.stderr
-    macro_dump = subprocess.run(
+    macro_dump = run_guarded_test_process(
         [
             clang,
             "-dM",
@@ -468,7 +469,11 @@ def test_regeneration_replays_real_ninja_cython_directives(
         )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(cython_authority.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cython_authority.process_guard,
+        "run_completed_command",
+        fake_run,
+    )
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=pyx,
         original_c=original_c,
@@ -534,8 +539,8 @@ def test_ninja_command_strips_separate_shared_and_replaced_paths(
         ]
     )
     monkeypatch.setattr(
-        cython_authority.subprocess,
-        "run",
+        cython_authority.process_guard,
+        "run_completed_command",
         lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv, 0, command + "\n", ""
         ),
@@ -568,8 +573,8 @@ def test_ninja_generator_command_ambiguity_fails_closed(
         ["/tools/cython", "-3", str(pyx), "-o", str(original_c)]
     )
     monkeypatch.setattr(
-        cython_authority.subprocess,
-        "run",
+        cython_authority.process_guard,
+        "run_completed_command",
         lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv, 0, f"{command}\n{command}\n", ""
         ),
@@ -662,7 +667,7 @@ def test_shared_variant_would_import_cyutility_proving_teeth(
         )
         for arg in ("-I", str(include_dir))
     ]
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             sys.executable,
             "-m",

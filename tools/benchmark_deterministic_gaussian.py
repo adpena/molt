@@ -4,18 +4,23 @@ import argparse
 import ctypes
 import json
 import statistics
-import subprocess
 import time
 from pathlib import Path
 
 import numpy as np
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "tools" / "native" / "deterministic_correlate1d.c"
 
 
 def _compile(output: Path) -> None:
-    subprocess.run(
+    _COMMANDS.run(
         [
             "clang",
             "-O3",

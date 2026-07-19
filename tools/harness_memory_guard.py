@@ -108,6 +108,7 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         child_process: memory_guard.GuardedChildProcess | None = None,
         termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
         guard_signal: int | None = None,
+        peak_job_commit_bytes: int | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -123,6 +124,7 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         self.child_process = child_process
         self.termination_reports = tuple(termination_reports)
         self.guard_signal = guard_signal
+        self.peak_job_commit_bytes = peak_job_commit_bytes
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -982,6 +984,7 @@ def _append_guarded_command_profile(
     child_process: memory_guard.GuardedChildProcess | None = None,
     termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
     guard_signal: int | None = None,
+    peak_job_commit_bytes: int | None = None,
     operation_role: str | None = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
@@ -1030,6 +1033,7 @@ def _append_guarded_command_profile(
         "violation": _rss_record_payload(violation),
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
+        "peak_job_commit_bytes": peak_job_commit_bytes,
         "orphaned_process_groups": list(orphaned_process_groups),
         "child_process": memory_guard.guarded_child_process_payload(child_process),
         "termination_reports": memory_guard.termination_reports_payload(
@@ -1330,6 +1334,7 @@ def guarded_completed_process(
     encoding: str = "utf-8",
     errors: str = "replace",
     operation_role: str | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
@@ -1389,6 +1394,7 @@ def guarded_completed_process(
             keepalive_interval=keepalive_interval,
             encoding=encoding,
             errors=errors,
+            on_spawn=on_spawn,
         )
     stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
@@ -1507,6 +1513,7 @@ def guarded_completed_process(
         child_process=guarded.child_process,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
+        peak_job_commit_bytes=guarded.peak_job_commit_bytes,
         operation_role=operation_role,
     )
     if profile_error:
@@ -1527,6 +1534,7 @@ def guarded_completed_process(
         child_process=guarded.child_process,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
+        peak_job_commit_bytes=guarded.peak_job_commit_bytes,
     )
 
 
@@ -1746,6 +1754,7 @@ def guarded_completed_process_to_tempfiles(
         child_process=guarded.child_process,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
+        peak_job_commit_bytes=guarded.peak_job_commit_bytes,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1765,6 +1774,7 @@ def guarded_completed_process_to_tempfiles(
         child_process=guarded.child_process,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
+        peak_job_commit_bytes=guarded.peak_job_commit_bytes,
     )
 
 
@@ -2412,6 +2422,7 @@ class HarnessExecutionContext:
         progress_label: str | None = None,
         encoding: str = "utf-8",
         errors: str = "replace",
+        on_spawn: Callable[[int], None] | None = None,
     ) -> GuardedCompletedProcess:
         command_env = (
             self.env
@@ -2443,6 +2454,7 @@ class HarnessExecutionContext:
             progress_label=progress_label,
             encoding=encoding,
             errors=errors,
+            on_spawn=on_spawn,
         )
 
     def process_group_kwargs(self) -> dict[str, object]:

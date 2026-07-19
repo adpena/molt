@@ -4,10 +4,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 REQUIRED_PHASES = frozenset(
@@ -67,7 +72,7 @@ def main() -> int:
         env = os.environ.copy()
         env["MOLT_BUILD_DIAGNOSTICS"] = "1"
         env["MOLT_BUILD_DIAGNOSTICS_FILE"] = str(args.diagnostics.resolve())
-        completed = subprocess.run(command, env=env, check=False)
+        completed = _COMMANDS.run(command, env=env, check=False)
         if completed.returncode != 0:
             return completed.returncode
     try:

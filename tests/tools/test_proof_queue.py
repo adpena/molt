@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import argparse
 import hashlib
@@ -103,7 +104,7 @@ rc = cli.main([
 assert rc == 0
 assert 'tools.proof_queue_pkg.pact' not in sys.modules
 """
-    completed = subprocess.run(
+    completed = run_guarded_test_process(
         [sys.executable, "-c", script],
         cwd=state.ROOT,
         check=False,
@@ -251,7 +252,7 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        subprocess.run(
+        run_guarded_test_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,
@@ -299,7 +300,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        subprocess.run(
+        run_guarded_test_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,

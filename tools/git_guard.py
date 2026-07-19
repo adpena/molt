@@ -39,6 +39,12 @@ import os
 import subprocess
 import sys
 import time
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # git <subcommand> -> predicate(rest_args) -> True if this invocation discards
 # working-tree / index / ref state that is not otherwise recoverable.
@@ -111,7 +117,7 @@ DESTRUCTIVE = {
 
 
 def _git(args: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, text=True, **kw)
+    return _COMMANDS.run(["git", *args], capture_output=True, text=True, **kw)
 
 
 def in_plumbing_mode() -> bool:
@@ -190,7 +196,7 @@ def cmd_run(git_args: list[str], override: bool) -> int:
             f"[git-guard] OVERRIDE: proceeding with `git {' '.join(git_args)}`; "
             f"{snaptxt}\n"
         )
-    proc = subprocess.run(["git", *git_args])
+    proc = _COMMANDS.run(["git", *git_args])
     return proc.returncode
 
 

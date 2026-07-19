@@ -13,6 +13,7 @@ clean tree. A gate that only ever passes clean is not proven to have teeth.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import subprocess
 import sys
@@ -145,7 +146,7 @@ def test_regressions_allows_burn_down() -> None:
 
 
 def _run_check() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded_test_process(
         [sys.executable, str(TOOLS_ROOT / "encoding_gate.py"), "--check"],
         cwd=str(REPO_ROOT),
         capture_output=True,

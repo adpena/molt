@@ -42,10 +42,15 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 try:  # pragma: no cover - trivial import shim
     from tools import claims_status as cs
@@ -213,7 +218,7 @@ def git_recent_file_matches(root: Path, files: list[str], hours: float) -> list[
         _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
     ).isoformat()
     try:
-        r = subprocess.run(
+        r = _COMMANDS.run(
             [
                 "git",
                 "log",

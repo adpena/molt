@@ -2,6 +2,7 @@
 and fail-closed (back off on a live claim; allow claim on free/stale/released)."""
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import datetime as dt
 import shutil
@@ -17,11 +18,11 @@ FF_LAND = TOOLS / "ff_land.py"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    return run_guarded_test_process(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(repo / "tools" / "claim_lane.py"), *args],
+    return run_guarded_test_process([sys.executable, str(CLAIM), *args],
                           cwd=repo, capture_output=True, text=True)
 
 

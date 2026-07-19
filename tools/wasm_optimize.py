@@ -28,6 +28,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.wasm_metrics import wasm_metrics  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # Optimization levels supported by wasm-opt.
 VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
@@ -305,7 +311,7 @@ def optimize(
         "peak_rss_kb": peak_rss_kb,
         "peak_total_rss_kb": peak_total_rss_kb,
         "output_path": str(output_path),
-        "binaryen_version": subprocess.run(
+        "binaryen_version": _COMMANDS.run(
             [wasm_opt, "--version"],
             capture_output=True,
             text=True,

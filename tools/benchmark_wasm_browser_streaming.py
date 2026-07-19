@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 PW = ["npx.cmd", "--yes", "--package", "@playwright/cli", "playwright-cli"]
@@ -60,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
 def sample(base: str, mode: str, index: int) -> dict[str, object]:
     session = f"optmatrix-browser-{mode}-{index}-{time.time_ns()}"
     command = [*PW, f"-s={session}"]
-    subprocess.run(
+    _COMMANDS.run(
         [*command, "open", f"{base}/probe.html?mode={mode}", "--browser", "msedge"],
         cwd=ROOT,
         check=True,
@@ -70,7 +75,7 @@ def sample(base: str, mode: str, index: int) -> dict[str, object]:
         errors="replace",
     )
     try:
-        done = subprocess.run(
+        done = _COMMANDS.run(
             [
                 *command,
                 "--raw",
@@ -87,7 +92,7 @@ def sample(base: str, mode: str, index: int) -> dict[str, object]:
         )
         return json.loads(done.stdout)
     finally:
-        subprocess.run(
+        _COMMANDS.run(
             [*command, "close"],
             cwd=ROOT,
             check=False,
