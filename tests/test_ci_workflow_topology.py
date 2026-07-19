@@ -83,12 +83,21 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
     assert "dtolnay/rust-toolchain@" not in action
     assert "rustup toolchain install" in action
     assert "rustup default" in action
-    assert "components=()" in action
-    assert "targets=()" in action
     assert 'if [[ -n "$RUST_COMPONENTS" ]]' in action
     assert 'if [[ -n "$RUST_TARGETS" ]]' in action
-    assert "groups=()" in action
     assert 'if [[ -n "$SYNC_GROUPS" ]]' in action
+    component_guard = action.split('if [[ -n "$RUST_COMPONENTS" ]]', 1)[1].split(
+        "        fi", 1
+    )[0]
+    target_guard = action.split('if [[ -n "$RUST_TARGETS" ]]', 1)[1].split(
+        "        fi", 1
+    )[0]
+    group_guard = action.split('if [[ -n "$SYNC_GROUPS" ]]', 1)[1].split(
+        "        fi", 1
+    )[0]
+    assert 'for component in "${components[@]}"' in component_guard
+    assert 'for target in "${targets[@]}"' in target_guard
+    assert 'for group in "${groups[@]}"' in group_guard
     assert "steps.inputs.outputs.rust-cache-token" in action
     assert "steps.inputs.outputs.cache-namespace" in action
     assert "sync-args" not in action

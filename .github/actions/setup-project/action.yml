@@ -114,21 +114,19 @@ runs:
         RUST_TARGETS: ${{ steps.inputs.outputs.rust-targets }}
       run: |
         set -euo pipefail
-        components=()
-        targets=()
+        args=(--profile minimal)
         if [[ -n "$RUST_COMPONENTS" ]]; then
           IFS=',' read -r -a components <<< "$RUST_COMPONENTS"
+          for component in "${components[@]}"; do
+            args+=(--component "$component")
+          done
         fi
         if [[ -n "$RUST_TARGETS" ]]; then
           IFS=',' read -r -a targets <<< "$RUST_TARGETS"
+          for target in "${targets[@]}"; do
+            args+=(--target "$target")
+          done
         fi
-        args=(--profile minimal)
-        for component in "${components[@]}"; do
-          [[ -z "$component" ]] || args+=(--component "$component")
-        done
-        for target in "${targets[@]}"; do
-          [[ -z "$target" ]] || args+=(--target "$target")
-        done
         rustup toolchain install "$RUST_TOOLCHAIN" "${args[@]}"
         rustup default "$RUST_TOOLCHAIN"
         rustc --version --verbose
@@ -195,11 +193,10 @@ runs:
         args=(sync)
         [[ "$SYNC_FROZEN" != "true" ]] || args+=(--frozen)
         [[ "$SYNC_DEV" != "true" ]] || args+=(--dev)
-        groups=()
         if [[ -n "$SYNC_GROUPS" ]]; then
           IFS=',' read -r -a groups <<< "$SYNC_GROUPS"
+          for group in "${groups[@]}"; do
+            args+=(--group "$group")
+          done
         fi
-        for group in "${groups[@]}"; do
-          [[ -z "$group" ]] || args+=(--group "$group")
-        done
         uv "${args[@]}"

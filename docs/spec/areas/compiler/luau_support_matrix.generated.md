@@ -9,8 +9,8 @@
 - `compile-error`: `0`
 - `implemented-exact`: `22`
 - `implemented-target-limited`: `8`
-- `not-admitted`: `375`
-- `total`: `405`
+- `not-admitted`: `376`
+- `total`: `406`
 
 ## Matrix
 
@@ -239,6 +239,7 @@
 | `is` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `is_callable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `is_native_awaitable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `is_not` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `isinstance` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `issubclass` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `iter` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
