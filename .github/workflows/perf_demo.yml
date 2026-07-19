@@ -51,7 +51,6 @@ jobs:
           ./bench/scripts/run_stack.sh
       - name: Check regressions (p95 thresholds)
         run: |
-          latest=$(ls -1 bench/results/demo_k6_*.json | sort | tail -n 1)
           python - <<'PY'
           import json, sys, pathlib
           path = pathlib.Path("bench/results").glob("demo_k6_*.json")

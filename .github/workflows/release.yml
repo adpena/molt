@@ -140,11 +140,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          WHEEL=$(ls dist/molt-*.whl | head -1)
-          if [ -z "$WHEEL" ]; then
-            echo "Wheel not found" >&2
+          set -- dist/molt-*.whl
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "expected exactly one Molt wheel, found $#" >&2
             exit 1
           fi
+          WHEEL=$1
 
           if [ "${{ matrix.platform }}" = "windows" ]; then
             WORKER="target/release/molt-worker.exe"
