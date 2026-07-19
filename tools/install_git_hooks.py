@@ -27,11 +27,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import stat
-import subprocess
 import sys
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 MARKER = "molt-drift-gate-hook"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +43,7 @@ SOURCE = REPO_ROOT / ".githooks" / "pre-push"
 
 
 def _common_hooks_dir(repo_root: Path = REPO_ROOT) -> Path:
-    out = subprocess.run(
+    out = _COMMANDS.run(
         ["git", "rev-parse", "--git-common-dir"],
         cwd=str(repo_root),
         capture_output=True,
@@ -128,7 +132,7 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
     target.write_text(want, encoding="utf-8", newline="\n")
     _make_executable(target)
     # Belt-and-suspenders: do NOT let core.hooksPath shadow us into the broken pre-commit.
-    hp = subprocess.run(
+    hp = _COMMANDS.run(
         ["git", "config", "--get", "core.hooksPath"],
         cwd=str(repo_root), capture_output=True, text=True,
     ).stdout.strip()

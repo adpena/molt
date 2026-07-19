@@ -9,6 +9,7 @@ nothing.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import datetime as _dt
 import subprocess
@@ -122,7 +123,7 @@ def test_falsified_sister_does_not_block_a_fresh_lane() -> None:
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return run_guarded_test_process(
         ["git", *args], cwd=str(root), capture_output=True, text=True, encoding="utf-8"
     )
 
@@ -187,7 +188,7 @@ def test_selftest_fails_if_precedence_rots(monkeypatch) -> None:
 
 
 def test_cli_check_exit_code() -> None:
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(ROOT / "tools" / "check_sister_landed.py"), "--check"],
         capture_output=True,
         text=True,
@@ -197,7 +198,7 @@ def test_cli_check_exit_code() -> None:
 
 
 def test_cli_usage_error_without_target() -> None:
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(ROOT / "tools" / "check_sister_landed.py")],
         capture_output=True,
         text=True,
@@ -212,7 +213,7 @@ def test_cli_stands_down_on_matching_claims(tmp_path: Path) -> None:
         _claims(_row("DONE", "COMPLETE", "landed in src/done.rs", 100)),
         encoding="utf-8",
     )
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [
             sys.executable,
             str(ROOT / "tools" / "check_sister_landed.py"),

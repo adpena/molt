@@ -6,8 +6,13 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from tests.process_guard_common import (
+    close_owned_test_process,
+    start_owned_test_process,
+)
 
 from molt.browser_asset_closure import (
     BROWSER_HOST_ENTRY_ASSETS,
@@ -20,6 +25,7 @@ from molt.browser_asset_closure import (
     wasm_loader_asset_closure,
     wasm_loader_asset_scope_paths,
 )
+from tools import gen_browser_asset_graph as asset_graph_tool
 from tools.gen_browser_asset_graph import (
     AssetSource,
     generate,
@@ -79,7 +85,7 @@ def test_canonical_browser_and_node_entries_close_over_declared_roles() -> None:
 
 def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
-    real_run = subprocess.run
+    real_run = asset_graph_tool._COMMANDS.run
 
     def counted_run(
         *args: object, **kwargs: object
@@ -88,7 +94,11 @@ def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None
         calls += 1
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(subprocess, "run", counted_run)
+    monkeypatch.setattr(
+        asset_graph_tool,
+        "_COMMANDS",
+        SimpleNamespace(run=counted_run),
+    )
     rows = tuple(
         AssetSource(f"fixture-{idx}.js", "browser", "module", "test", b"export {};\n")
         for idx in range(32)
@@ -146,7 +156,7 @@ def test_scanner_waits_for_chunked_nonblocking_stdin() -> None:
     ).encode()
     read_fd, write_fd = os.pipe()
     os.set_blocking(read_fd, False)
-    process = subprocess.Popen(
+    process = start_owned_test_process(
         [node, str(scanner_root / "scan.mjs")],
         stdin=read_fd,
         stdout=subprocess.PIPE,
@@ -168,8 +178,7 @@ def test_scanner_waits_for_chunked_nonblocking_stdin() -> None:
         if write_fd >= 0:
             os.close(write_fd)
         if process.poll() is None:
-            process.kill()
-            process.wait()
+            close_owned_test_process(process)
 
     assert process.returncode == 0, stderr.decode(errors="replace")
     result = json.loads(stdout)

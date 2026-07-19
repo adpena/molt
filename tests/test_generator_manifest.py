@@ -19,11 +19,11 @@ CI : python3 tools/check_generator_manifest.py --check  (the same gate)
 """
 
 from __future__ import annotations
+from tests.process_guard_common import check_output_guarded_test_process, run_guarded_test_process
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 import time
@@ -56,7 +56,7 @@ def test_repository_text_checkout_has_one_cross_platform_eol_authority() -> None
         "docs/agent/PROOF_PLAN.generated.md",
         "packaging/install.ps1",
     )
-    attributes = subprocess.check_output(
+    attributes = check_output_guarded_test_process(
         ["git", "check-attr", "eol", "--", *representative_text_authorities],
         cwd=ROOT,
         text=True,
@@ -135,7 +135,7 @@ def test_generator_family_parallel_checks_preserve_source_state() -> None:
         if generator.get("check_mode", False) and generator.get("ci_checkable", True)
     ]
     assert len(generators) >= 16
-    baseline = subprocess.check_output(
+    baseline = check_output_guarded_test_process(
         [
             "git",
             "status",
@@ -149,7 +149,7 @@ def test_generator_family_parallel_checks_preserve_source_state() -> None:
 
     def run_check(generator: dict[str, object]) -> tuple[str, int, str]:
         command = str(generator["check_command"])
-        completed = subprocess.run(
+        completed = run_guarded_test_process(
             [sys.executable, *shlex.split(command, posix=True)],
             cwd=ROOT,
             capture_output=True,
@@ -165,7 +165,7 @@ def test_generator_family_parallel_checks_preserve_source_state() -> None:
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(run_check, generator) for generator in generators]
         while not all(future.done() for future in futures):
-            current = subprocess.check_output(
+            current = check_output_guarded_test_process(
                 [
                     "git",
                     "status",

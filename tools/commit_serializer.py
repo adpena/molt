@@ -49,11 +49,16 @@ import contextlib
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 try:  # pragma: no cover - trivial import shim
     from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
@@ -248,7 +253,7 @@ def serializer_lock(root: Path, timeout: float = LOCK_TIMEOUT_SECONDS):
 
 def _git_head(root: Path) -> str | None:
     try:
-        r = subprocess.run(
+        r = _COMMANDS.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(root),
             capture_output=True,
@@ -301,7 +306,7 @@ def serialized_commit(
             # Stage the NAMED files only (the M20-safe add -- never `-A`/`.`), so a
             # new/untracked target commits too; `git commit -- <pathspec>` alone
             # would only commit already-tracked changes.
-            add = subprocess.run(
+            add = _COMMANDS.run(
                 ["git", "add", "--", *files],
                 cwd=str(root),
                 capture_output=True,
@@ -316,7 +321,7 @@ def serialized_commit(
                     RC_GIT_FAILED,
                     "git add failed: " + (tail[-1] if tail else "unknown error"),
                 )
-            proc = subprocess.run(
+            proc = _COMMANDS.run(
                 ["git", "commit", "-m", message, "--", *files],
                 cwd=str(root),
                 capture_output=True,

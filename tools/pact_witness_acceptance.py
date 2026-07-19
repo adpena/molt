@@ -19,6 +19,12 @@ from molt.scientific_stack_versions import (
     numpy_witness_seal_root,
     resolve_scientific_stack,
 )
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # Defensive UTF-8 stdio (recurring Windows cp1252 encoding bug class): this tool
 # relays captured subprocess output via print(); if that capture contains a
@@ -46,7 +52,7 @@ KERNEL_A_GATES = KERNEL_ROOT / "field_solve_gates.json"
 
 
 def _git_output(*args: str) -> str:
-    result = subprocess.run(
+    result = _COMMANDS.run(
         ["git", *args],
         cwd=ROOT,
         stdout=subprocess.PIPE,
@@ -126,7 +132,7 @@ def _run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> No
     print(f"+ {' '.join(args)}", flush=True)
     started = time.perf_counter()
     try:
-        subprocess.run(args, cwd=cwd, env=env, check=True)
+        _COMMANDS.run(args, cwd=cwd, env=env, check=True)
     finally:
         print(
             f"[wall] {_phase_label(args)}: {time.perf_counter() - started:.1f}s",
@@ -142,12 +148,12 @@ def _run_capture(
 ) -> subprocess.CompletedProcess[str]:
     print(f"+ {' '.join(args)}", flush=True)
     started = time.perf_counter()
-    result = subprocess.run(
+    result = _COMMANDS.run(
         args,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -159,6 +165,8 @@ def _run_capture(
     )
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.stderr:
+        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
     return result
 
 
@@ -390,11 +398,11 @@ def _run_build_health_gate(diagnostics_path: Path) -> None:
     gate = ROOT / "tools" / "build_health_gate.py"
     if not gate.is_file():
         return
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [sys.executable, str(gate), "--diagnostics", str(diagnostics_path)],
         cwd=ROOT,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -403,6 +411,10 @@ def _run_build_health_gate(diagnostics_path: Path) -> None:
     if result.stdout:
         print(
             result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True
+        )
+    if result.stderr:
+        print(
+            result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True
         )
 
 
@@ -428,11 +440,11 @@ def _assert_no_poison_stubs(build_dir: Path, entry: Path) -> None:
     unique = [p for p in targets if not (str(p) in seen or seen.add(str(p)))]
     if not unique:
         return
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [sys.executable, str(gate), *[str(p) for p in unique]],
         cwd=ROOT,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -440,6 +452,8 @@ def _assert_no_poison_stubs(build_dir: Path, entry: Path) -> None:
     )
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.stderr:
+        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
     if result.returncode != 0:
         raise SystemExit(
             "pact witness acceptance ABORTED: built wasm ships a stub capability "
@@ -780,7 +794,7 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
     result = _run_capture(node_args, cwd=run_dir, env=env)
     if result.returncode != 0:
         _write_static_extension_init_failure_diagnostic(
-            output_text=result.stdout,
+            output_text=(result.stdout or "") + (result.stderr or ""),
             run_dir=run_dir,
             env=env,
         )
@@ -788,6 +802,7 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
             result.returncode,
             node_args,
             output=result.stdout,
+            stderr=result.stderr,
         )
     if not raw_output.is_file():
         raise SystemExit(

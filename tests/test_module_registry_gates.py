@@ -18,11 +18,11 @@ G7  test_module_registry_schema_authority_is_synchronized — the blob layout
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import json
 import re
 import struct
-import subprocess
 import sys
 from pathlib import Path
 
@@ -120,7 +120,7 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
     # The checker CLI is the out-of-build gate: clean file passes...
     clean_path = tmp_path / "module_registry.json"
     clean_path.write_text(json.dumps(json_payload), encoding="utf-8")
-    check = subprocess.run(
+    check = run_guarded_test_process(
         [
             sys.executable,
             str(ROOT / "tools" / "check_module_registry.py"),
@@ -137,7 +137,7 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
     corrupted["rows"][0]["init_symbol"] = "molt_init_smuggled"
     corrupt_path = tmp_path / "module_registry_corrupt.json"
     corrupt_path.write_text(json.dumps(corrupted), encoding="utf-8")
-    check = subprocess.run(
+    check = run_guarded_test_process(
         [
             sys.executable,
             str(ROOT / "tools" / "check_module_registry.py"),

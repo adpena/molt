@@ -305,6 +305,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded checked-in detector argv; repository data cannot become shell syntax",
     ),
     AllowedRawSubprocessUse(
+        "tools/command_execution.py",
+        "CommandExecutor.start_owned",
+        "Popen",
+        "single typed-argv start boundary for caller-owned and detached tool processes",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_rustfmt.py",
         "_run_git",
         "run",
@@ -433,12 +439,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "tools/memory_guard.py when POSIX exec is unavailable",
     ),
     AllowedRawSubprocessUse(
-        "tools/pact_witness_acceptance.py",
-        "_run",
-        "run",
-        "named proof-queue lane runner; outer queue/memory guard owns timeout and process custody",
-    ),
-    AllowedRawSubprocessUse(
         "tools/pact_witness_oracle.py",
         "_run",
         "run",
@@ -475,10 +475,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git ls-files metadata probe for agent-doc budget tests",
     ),
     AllowedRawSubprocessUse(
-        "tests/test_generate_worker.py",
-        "test_loader_bridge_enforces_manifest_reserved_callable_dispatch",
-        "run",
-        "bounded node fixture for generated worker loader manifest enforcement",
+        "tests/process_guard_common.py",
+        "start_owned_test_process",
+        "Popen",
+        "single platform process-group boundary for caller-owned interactive test children",
     ),
     AllowedRawSubprocessUse(
         "tests/tools/test_build_graph_audit.py",
@@ -748,7 +748,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "src/molt/process_guard.py",
         "run_completed_command",
         "run",
-        "shared subprocess guard helper's explicit unguarded branch for opt-out call sites",
+        "single typed-argv boundary for explicitly bounded metadata probes",
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli/backend_execution.py",

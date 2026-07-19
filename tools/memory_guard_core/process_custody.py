@@ -91,6 +91,7 @@ class GuardResult:
     child_process: GuardedChildProcess | None = None
     termination_reports: tuple[GuardTerminationReport, ...] = ()
     sampling_telemetry: GuardSamplingTelemetry | None = None
+    peak_job_commit_bytes: int | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage

@@ -345,7 +345,11 @@ def test_tool_identity_uses_driver_trace_not_print_prog_name_guess(
         assert "-###" in command
         return subprocess.CompletedProcess(command, 0, "", f' "{linker}" /OUT:x')
 
-    monkeypatch.setattr(native_link_tool_identity.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        native_link_tool_identity.process_guard,
+        "run_completed_command",
+        fake_run,
+    )
     monkeypatch.setattr(native_link_tool_identity, "_tool_version", lambda _path: "v")
     monkeypatch.setattr(
         native_link_tool_identity, "_sha256_file", lambda path: f"hash:{path.name}"

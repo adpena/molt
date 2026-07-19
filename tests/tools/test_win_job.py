@@ -6,6 +6,7 @@ orphan-leak prevention (complement to tools/orphan_reaper.py's sweep net)."""
 from __future__ import annotations
 
 import ctypes
+import contextlib
 import os
 import subprocess
 import sys
@@ -13,6 +14,11 @@ import tempfile
 import time
 
 import pytest
+from tests.process_guard_common import (
+    close_owned_test_process,
+    run_guarded_test_process,
+    start_owned_test_process,
+)
 
 from tools import win_job
 
@@ -58,13 +64,13 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
         job = win_job.create_kill_on_close_job()
         assert job, "create_kill_on_close_job returned None on Windows"
 
-        proc = subprocess.Popen(
+        proc = start_owned_test_process(
             [sys.executable, "-c", _CHILD, pidfile.name],
             creationflags=(
                 win_job.suspended_creationflag() | subprocess.CREATE_NO_WINDOW
             ),
         )
-        assert win_job.assign_and_resume(job, proc), "child was not placed in job"
+        win_job.assign_and_resume(job, proc)
 
         for _ in range(100):
             raw = open(pidfile.name).read().strip()
@@ -76,6 +82,11 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
 
         assert _alive(proc.pid), "child not alive after resume"
         assert _alive(gc_pid), "grandchild not alive after resume"
+        job_members = set(win_job.process_ids(job))
+        assert {proc.pid, gc_pid} <= job_members
+        assert win_job.active_process_count(job) == len(job_members)
+        assert win_job.current_working_set_bytes(job) > 0
+        assert win_job.peak_job_memory_bytes(job) > 0
 
         # Simulate guard death: drop the sole job handle -> KILL_ON_JOB_CLOSE.
         win_job.close_job(job)
@@ -91,10 +102,10 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
         assert gc_dead, "grandchild survived job close (no-race capture failed)"
     finally:
         if proc is not None and proc.poll() is None:
-            proc.kill()
+            close_owned_test_process(proc)
         if gc_pid is not None and _alive(gc_pid):
-            subprocess.run(
+            run_guarded_test_process(
                 ["taskkill", "/PID", str(gc_pid), "/F"], capture_output=True
             )
-        with __import__("contextlib").suppress(OSError):
+        with contextlib.suppress(OSError):
             os.unlink(pidfile.name)

@@ -62,6 +62,12 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt.frontend import SimpleTIRGenerator, _ic_counter  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _utc_stamp() -> str:
@@ -96,10 +102,9 @@ def _read_python_source(path: Path) -> str:
 
 
 def _git_rev() -> str | None:
-    import subprocess
 
     try:
-        result = subprocess.run(
+        result = _COMMANDS.run(
             ["git", "rev-parse", "HEAD"],
             cwd=ROOT,
             capture_output=True,

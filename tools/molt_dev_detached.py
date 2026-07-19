@@ -26,6 +26,13 @@ from molt_dev_common import (
 )
 from molt_dev_probe import probe_path, probe_pid
 
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
+
 # State root for detached daemons. Per-name dirs hold: pid, sid, cmd.json,
 # run.log, rc. The rc file is the ONLY proof of orderly completion: a dead
 # pid with no rc is the hazard-11 died-silent class, and detached-verify
@@ -80,17 +87,17 @@ def _exec_wait_rc(
         _write_exec_message("detached-run: empty command\n", log_file)
         return 127
     try:
-        proc = subprocess.run(
+        proc = _COMMANDS.start_owned(
             command,
             env=env,
-            check=False,
             creationflags=(
                 _windows_owned_child_creationflags() if os.name == "nt" else 0
             ),
             stdout=log_file if log_file is not None else None,
             stderr=subprocess.STDOUT if log_file is not None else None,
         )
-        return proc.returncode if proc.returncode >= 0 else 128 + abs(proc.returncode)
+        returncode = proc.wait()
+        return returncode if returncode >= 0 else 128 + abs(returncode)
     except FileNotFoundError as exc:
         _write_exec_message(f"detached-run: exec failed: {exc}\n", log_file)
         return 127
@@ -120,28 +127,17 @@ def _detached_daemonize(
         "--detached-worker",
         str(payload_path),
     ]
-    if os.name == "nt":
-        proc = subprocess.Popen(
-            worker,
-            cwd=str(cwd),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=_windows_hidden_creationflags(),
-        )
-    else:
-        proc = subprocess.Popen(
-            worker,
-            cwd=str(cwd),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=True,
-        )
+    proc = _COMMANDS.start_owned(
+        worker,
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
+        start_new_session=os.name != "nt",
+    )
     if os.name == "nt":
         _atomic_write_text(state / "sid", f"windows-process-group:{proc.pid}")
         _atomic_write_text(state / "pid", str(proc.pid))

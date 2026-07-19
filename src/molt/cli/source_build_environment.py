@@ -25,6 +25,7 @@ from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.file_hashing import _sha256_file
 from molt.dx import checkout_custody
+from molt import process_guard
 
 
 class SourceBuildEnvironmentError(ValueError):
@@ -139,7 +140,7 @@ def _uv_identity() -> tuple[Path, dict[str, str]]:
     uv = Path(raw_uv).resolve()
     # This is a bounded bootstrap identity probe, before the guarded build
     # environment exists. It never launches package build work.
-    result = subprocess.run(
+    result = process_guard.run_completed_command(
         [str(uv), "--version"],
         capture_output=True,
         text=True,
@@ -326,7 +327,7 @@ def _probe_environment_distributions(python_executable: Path) -> list[dict[str, 
     probe_environment.pop("PYTHONHOME", None)
     probe_environment.pop("PYTHONPATH", None)
     probe_environment["PYTHONNOUSERSITE"] = "1"
-    result = subprocess.run(
+    result = process_guard.run_completed_command(
         [str(python_executable), "-P", "-c", _DISTRIBUTION_PROBE],
         capture_output=True,
         text=True,
@@ -450,7 +451,7 @@ def _run_uv_sync(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run the single provisioning mutation behind its module-owned seam."""
 
-    return subprocess.run(
+    return process_guard.run_completed_command(
         list(argv),
         cwd=cwd,
         env=dict(environment),

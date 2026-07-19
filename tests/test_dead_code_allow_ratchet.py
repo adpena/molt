@@ -1,6 +1,7 @@
 """Teeth for the dead-code and cfg-corpse registry ratchet."""
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import json
 from pathlib import Path
@@ -13,11 +14,12 @@ REGISTRY = ROOT / "tools" / "dead_code_allow_baseline.json"
 
 
 def _run() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded_test_process(
         [sys.executable, str(GATE)],
         cwd=ROOT,
+        capture_output=False,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         check=False,
     )

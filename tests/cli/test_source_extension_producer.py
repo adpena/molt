@@ -960,7 +960,11 @@ def test_distribution_probe_sanitizes_python_import_authority(
         observed["env"] = kwargs["env"]
         return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
 
-    monkeypatch.setattr(build_environment.subprocess, "run", run)
+    monkeypatch.setattr(
+        build_environment.process_guard,
+        "run_completed_command",
+        run,
+    )
 
     assert (
         build_environment._probe_environment_distributions(Path(sys.executable)) == []
@@ -1169,7 +1173,7 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
         observed.update(kwargs)
         return subprocess.CompletedProcess(argv, 19)
 
-    monkeypatch.setattr(producer.subprocess, "run", run)
+    monkeypatch.setattr(producer.process_guard, "run_completed_command", run)
     monkeypatch.setenv("PYTHONPATH", r"D:\poison;C:\OneDrive\stale")
     monkeypatch.setenv("PYTHONHOME", r"D:\poison-python")
     ambient_scripts = tmp_path / "ambient-scripts"

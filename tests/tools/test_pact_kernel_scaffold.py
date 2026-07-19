@@ -8,10 +8,10 @@ numpy to import `collab.pact.parity.check_parity`.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -54,7 +54,7 @@ def test_scaffold_kernel_entry_point_raises_not_implemented(tmp_path: Path) -> N
     # Prove it at runtime, not just by grepping the template text: importing
     # the module must succeed (it's a normal, analyzable Python file) but
     # CALLING the entry point must raise -- never return a fake result.
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             sys.executable,
             "-c",
@@ -83,7 +83,7 @@ def test_scaffold_kernel_entry_point_raises_not_implemented(tmp_path: Path) -> N
 def test_scaffold_fixture_generator_main_raises_not_implemented(tmp_path: Path) -> None:
     written = scaffold.make_kernel_scaffold("kernel_c", tmp_path)
 
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [sys.executable, str(written["fixture"])],
         capture_output=True,
         text=True,
@@ -151,7 +151,7 @@ def test_make_kernel_scaffold_regenerating_a_scaffold_needs_no_force(tmp_path: P
 
 def test_cli_writes_scaffold_and_reports_paths(tmp_path: Path) -> None:
     module_path = Path(scaffold.__file__)
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [sys.executable, str(module_path), "kernel_d", "--out-dir", str(tmp_path)],
         capture_output=True,
         text=True,
@@ -165,7 +165,7 @@ def test_cli_writes_scaffold_and_reports_paths(tmp_path: Path) -> None:
 
 def test_cli_refuses_unsafe_name_with_nonzero_exit(tmp_path: Path) -> None:
     module_path = Path(scaffold.__file__)
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [sys.executable, str(module_path), "Not Safe", "--out-dir", str(tmp_path)],
         capture_output=True,
         text=True,

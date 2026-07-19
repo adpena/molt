@@ -48,6 +48,12 @@ import json
 import re
 import sys
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 try:
     from tools.hooks import _common
@@ -390,10 +396,9 @@ def _run_selftest() -> tuple[int, list[str]]:
 
 def _window_report(root: Path, n: int) -> int:
     """Report which of the last ``n`` commits WOULD fire, per leg (calibration)."""
-    import subprocess
 
     def _sh(args: list[str]) -> str:  # UTF-8 safe (M43) -- em-dash subjects/diffs
-        return subprocess.run(
+        return _COMMANDS.run(
             args,
             cwd=str(root),
             capture_output=True,

@@ -36,10 +36,16 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return _COMMANDS.run(
         ["git", *args], cwd=root, check=check, capture_output=True, text=True
     )
 
@@ -75,7 +81,7 @@ def _proof_plan_fresh(root: Path) -> tuple[bool, str]:
     generator = root / "tools" / "gen_proof_plan.py"
     if not generator.is_file():
         return True, ""
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [sys.executable, str(generator), "--check"],
         cwd=root,
         check=False,

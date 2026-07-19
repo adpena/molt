@@ -33,6 +33,12 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # --- UTF-8 backstop (M43) --------------------------------------------------
 # Reuse the landed helper if importable; otherwise degrade to a local copy so a
@@ -80,7 +86,7 @@ def repo_root(cwd: str | os.PathLike[str] | None = None) -> Path:
             return p
     if cwd:
         try:
-            out = subprocess.run(
+            out = _COMMANDS.run(
                 ["git", "rev-parse", "--show-toplevel"],
                 cwd=str(cwd),
                 capture_output=True,
@@ -275,7 +281,7 @@ def _git(root: Path, *args: str, timeout: float = 5.0) -> subprocess.CompletedPr
     # UTF-8 + replace (M43): commit subjects / diffs carry em-dashes and other
     # non-cp1252 bytes; the platform codec would abort an otherwise-fine window
     # read with UnicodeDecodeError on Windows. Decoding never raises here.
-    return subprocess.run(
+    return _COMMANDS.run(
         ["git", *args],
         cwd=str(root),
         capture_output=True,
@@ -339,7 +345,7 @@ def proof_queue_active_count(root: Path, timeout: float = 5.0) -> int | None:
     None as in-flight so it never nags on uncertainty).
     """
     try:
-        r = subprocess.run(
+        r = _COMMANDS.run(
             [sys.executable, "tools/proof_queue.py", "status"],
             cwd=str(root),
             capture_output=True,

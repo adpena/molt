@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import hashlib
 import io
@@ -16,6 +17,7 @@ import tomllib
 import uuid
 
 import pytest
+from tests.process_guard_common import start_owned_test_process
 
 from molt.llvm_toolchain import (
     llvm_bootstrap_command,
@@ -43,7 +45,7 @@ def _unique_publication_staging(destination: Path) -> Path:
     ],
 )
 def test_bootstrap_entry_paths_share_module_safe_authority(command: list[str]) -> None:
-    result = subprocess.run(
+    result = run_guarded_test_process(
         command,
         cwd=ROOT,
         capture_output=True,
@@ -995,7 +997,7 @@ bootstrap_llvm._publish_staged_prefix(staging, destination, validate=validate)
             }
         )
         processes.append(
-            subprocess.Popen(
+            start_owned_test_process(
                 [sys.executable, "-c", worker],
                 cwd=ROOT,
                 env=env,

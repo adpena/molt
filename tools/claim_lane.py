@@ -35,6 +35,12 @@ import datetime as _dt
 import subprocess
 import sys
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 CLAIMS_REL = "docs/agent/CLAIMS.md"
 STALE_HOURS = 4.0
@@ -56,7 +62,7 @@ ALL_STATUSES = LIVE_STATUSES | FREEING_STATUSES
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, check=check, capture_output=True, text=True)
+    return _COMMANDS.run(["git", *args], cwd=root, check=check, capture_output=True, text=True)
 
 
 def _repo_root() -> Path:
@@ -130,7 +136,7 @@ def _append_row_and_land(root: Path, lane: str, agent: str, status: str, note: s
     claims_path.write_text(text + row, encoding="utf-8")
     _git(root, "add", "--", CLAIMS_REL)
     _git(root, "commit", "-m", f"{status} {lane} ({agent})", "--", CLAIMS_REL)
-    land = subprocess.run([sys.executable, str(root / "tools" / "ff_land.py")],
+    land = _COMMANDS.run([sys.executable, str(root / "tools" / "ff_land.py")],
                           cwd=root, capture_output=True, text=True)
     print(land.stdout.strip())
     return land.returncode

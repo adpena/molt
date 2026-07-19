@@ -46,6 +46,7 @@ from molt.cli.config_resolution import (
     DEFAULT_STDLIB_PROFILE,
 )
 from molt.cli.cargo_execution import (
+    CargoExecutionResult,
     _build_slot,
     _cargo_build_env,
     _maybe_enable_sccache,
@@ -260,7 +261,7 @@ def _record_native_runtime_failure(
     cargo_stderr: str = "",
     returncode: int | None = None,
     timed_out: bool = False,
-    cargo_result: subprocess.CompletedProcess[object] | None = None,
+    cargo_result: CargoExecutionResult | None = None,
 ) -> bool:
     """Publish one bounded durable failure record and attach it to build state."""
     execution = (

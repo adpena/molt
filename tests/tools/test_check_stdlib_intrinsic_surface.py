@@ -2,9 +2,9 @@
 gate must FAIL CLOSED when a stdlib-required intrinsic is not registered."""
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 
@@ -23,7 +23,7 @@ def _load_gate():
 def test_green_on_real_tree_with_check_exits_0() -> None:
     # The gate must be GREEN on the shipped tree (decompositions preserve
     # registration) — else it can't be a tier-1 gate.
-    res = subprocess.run(
+    res = run_guarded_test_process(
         [sys.executable, str(GATE), "--check"], cwd=REPO_ROOT, capture_output=True, text=True
     )
     assert res.returncode == 0, res.stdout + res.stderr

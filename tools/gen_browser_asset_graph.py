@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -19,6 +18,12 @@ from molt.browser_asset_closure import (
     canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
 )
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +173,7 @@ def scan_sources(
         )
     if not SCANNER.is_file():
         raise RuntimeError(f"browser asset scanner is missing: {SCANNER}")
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [node, str(SCANNER)],
         input=_scanner_payload(sources),
         capture_output=True,

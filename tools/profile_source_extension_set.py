@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,10 +20,16 @@ from molt.scientific_stack_versions import (
     scientific_extension_set_root,
 )
 from tools.perf_calibration import run_and_measure
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _git_head(source: Path) -> str:
-    result = subprocess.run(
+    result = _COMMANDS.run(
         ("git", "-C", str(source), "rev-parse", "HEAD"),
         capture_output=True,
         text=True,

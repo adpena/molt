@@ -17,6 +17,7 @@ blocker.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import shutil
 import subprocess
@@ -144,11 +145,12 @@ def test_reserved_callable_surplus_args_reconciled_to_declared_arity() -> None:
     node = shutil.which("node")
     assert node is not None
     assert LOADER_BRIDGE.is_file(), f"missing host bridge: {LOADER_BRIDGE}"
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [node, "-e", _NODE_HARNESS, "--", str(LOADER_BRIDGE)],
         cwd=ROOT,
+        capture_output=False,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",

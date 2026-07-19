@@ -25,11 +25,11 @@ The battery proves, with injected-divergence teeth (fails-pre/passes-post):
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import json
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -55,7 +55,7 @@ def scenario_results(
 ) -> dict[str, dict[str, object]]:
     _require_uv()
     workdir = tmp_path_factory.mktemp("parity_microscope_scenarios")
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             "uv",
             "run",

@@ -348,6 +348,7 @@ jobs:
             proof-receipts/llvm.json
             proof-receipts/evidence/llvm-differential-truth.json
             target/**/.molt_state/build_failures/*.json
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: Summarize guarded command hotspots
