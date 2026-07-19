@@ -83,12 +83,26 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
     assert "dtolnay/rust-toolchain@" not in action
     assert "rustup toolchain install" in action
     assert "rustup default" in action
+    assert "components=()" in action
+    assert "targets=()" in action
+    assert 'if [[ -n "$RUST_COMPONENTS" ]]' in action
+    assert 'if [[ -n "$RUST_TARGETS" ]]' in action
+    assert "groups=()" in action
+    assert 'if [[ -n "$SYNC_GROUPS" ]]' in action
     assert "steps.inputs.outputs.rust-cache-token" in action
     assert "steps.inputs.outputs.cache-namespace" in action
     assert "sync-args" not in action
     assert "normalize-inputs.sh" in action
     assert 'run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"' in action
     assert "inputs.rust-components }}-${{ inputs.rust-targets" not in action
+
+
+def test_workflow_shells_do_not_select_artifacts_with_ls() -> None:
+    perf_demo = _read(".github/workflows/perf_demo.yml")
+    release = _read(".github/workflows/release.yml")
+    assert "latest=$(ls " not in perf_demo
+    assert "WHEEL=$(ls " not in release
+    assert 'set -- dist/molt-*.whl' in release
 
 
 def test_composite_action_shells_never_interpolate_inputs_directly() -> None:
