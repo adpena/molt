@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn wake_await_waiters_releases_graph_edge_refs() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let waiter_bits = molt_future_new(0, 0);
             let awaited_bits = molt_future_new(0, 0);

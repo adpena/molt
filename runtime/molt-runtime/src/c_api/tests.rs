@@ -1,7 +1,7 @@
 // NOTE: c_api tests share a single process-global RuntimeState.
 // The runtime is initialized once by the first test and reused.
-// Each test acquires `test_mutex_guard` to serialize access, preventing
-// concurrent GIL re-entry from corrupting the slab allocator.
+// Each test acquires `RuntimeTestTransaction` to isolate process-global state
+// and prevent concurrent GIL re-entry from corrupting the slab allocator.
 //
 // Run with: cargo test -p molt-runtime --lib -- c_api::tests --test-threads=1
 // Individual tests pass; full suite may hit stack overflow from
@@ -12,14 +12,16 @@ use crate::builtins::exceptions::molt_exception_class;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 struct CApiTestGuard {
-    _guard: std::sync::MutexGuard<'static, ()>,
+    _transaction: crate::test_support::RuntimeTestTransaction,
 }
 
 impl CApiTestGuard {
     fn new() -> Self {
-        let guard = crate::test_mutex_guard();
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
         let _ = molt_err_clear();
-        Self { _guard: guard }
+        Self {
+            _transaction: transaction,
+        }
     }
 }
 
@@ -6177,7 +6179,7 @@ fn memoryview_from_c_buffer_rejects_invalid_readonly_flag() {
 }
 #[test]
 fn nested_public_gil_release_preserves_outer_attachment() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(crate::c_api::molt_init(), 0);
     assert_eq!(crate::c_api::molt_gil_acquire(), 0);
     assert_eq!(crate::c_api::molt_gil_acquire(), 0);
@@ -6200,7 +6202,7 @@ fn nested_public_gil_release_preserves_outer_attachment() {
 
 #[test]
 fn public_gil_boundary_owns_only_attachment_when_gil_is_preheld() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(crate::c_api::molt_init(), 0);
     crate::with_gil_entry_nopanic!(_py, {
         assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
@@ -6214,7 +6216,7 @@ fn public_gil_boundary_owns_only_attachment_when_gil_is_preheld() {
 
 #[test]
 fn public_gil_boundary_does_not_steal_nested_molt_custody() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(crate::c_api::molt_init(), 0);
     crate::with_gil_entry_nopanic!(_py, {
         molt_cpython_abi::api::object::attach_runtime_execution_thread();

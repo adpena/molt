@@ -2998,7 +2998,7 @@ mod tests {
 
     #[test]
     fn attributes_runtime_state_is_owned_and_clearable() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             attributes_clear_runtime_state(_py, state);
@@ -3042,7 +3042,7 @@ mod tests {
 
     #[test]
     fn numeric_scalar_attrs_share_runtime_resolver() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let inline_int = MoltObject::from_int(42).bits();
             let inline_bool = MoltObject::from_bool(true).bits();
@@ -3064,7 +3064,7 @@ mod tests {
 
     #[test]
     fn hasattr_discards_owned_bound_method_result() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let dict_bits = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[])).bits();
             let name_bits = string_bits(_py, b"items");
@@ -3087,7 +3087,7 @@ mod tests {
 
     #[test]
     fn attr_ic_entry_owns_class_bits_through_replacement_and_clear() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             attributes_clear_runtime_state(_py, state);

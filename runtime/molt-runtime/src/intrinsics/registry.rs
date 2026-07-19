@@ -972,7 +972,7 @@ mod tests {
         ignore = "function pointer identity assertion via `as *const () as usize as u64` is not supported under Miri's pointer-provenance model: separate casts of the same fn-pointer expose distinct addresses, so the stored payload won't equal a freshly-cast comparator"
     )]
     fn register_intrinsics_module_exports_public_helpers() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         // Pending exceptions from prior parallel tests cause
         // `molt_load_intrinsic_runtime`'s wrapper to early-return None via
         // the GIL macro's exception fast-path; explicitly clear before
@@ -1055,7 +1055,7 @@ mod tests {
 
     #[test]
     fn register_intrinsics_module_repairs_existing_cache_entry() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let module_name_ptr = alloc_string(_py, b"_intrinsics");
@@ -1118,7 +1118,7 @@ mod tests {
         ignore = "molt_set_intrinsic_manifest stores a wasm linear-memory address represented as u64; native Miri strict provenance cannot model this wasm-only pointer contract"
     )]
     fn manifest_one_shot_guard() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         reset_manifest_publication_for_test();
 
         let malformed_len = u64::from(u32::MAX) + 1;
@@ -1153,7 +1153,7 @@ mod tests {
 
     #[test]
     fn empty_manifest_is_ready_and_distinct_from_unset() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         reset_manifest_publication_for_test();
         assert_eq!(manifest_snapshot(), None);
 
@@ -1171,7 +1171,7 @@ mod tests {
 
     #[test]
     fn manifest_payload_is_hidden_until_release_publication() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         reset_manifest_publication_for_test();
         let first_payload = Box::leak(Box::new([1_u8, 2, 3, 4]));
         let second_payload = Box::leak(Box::new([9_u8, 8]));
@@ -1246,7 +1246,7 @@ mod tests {
         ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
     )]
     fn app_resolver_used_when_registered() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         test_app_resolver_address().store(0, Ordering::SeqCst);
 
         let ret = molt_set_app_callable_resolver(crate::provenance::abi::expose_function_address(
@@ -1278,7 +1278,7 @@ mod tests {
         ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
     )]
     fn app_resolver_one_shot_guard() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         test_app_resolver_address().store(0, Ordering::SeqCst);
 
         let first = molt_set_app_callable_resolver(0x1000);

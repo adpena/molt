@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn cookie_pin_rejects_terminal_state_and_retains_live_state() {
-        let _lock = crate::test_mutex_guard();
+        let _lock = crate::test_support::RuntimeTestTransaction::new();
         let state_bits = crate::molt_weakcontainer_new(crate::MoltObject::from_int(1).bits());
         crate::with_gil_entry_nopanic!(_py, {
             let state_ptr = crate::obj_from_bits(state_bits)
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn container_cookie_unlinks_for_both_gc_clear_orders() {
-        let _lock = crate::test_mutex_guard();
+        let _lock = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let reference_type_bits = crate::builtins::classes::builtin_classes(_py).reference_type;
             let reference_type_ptr = crate::obj_from_bits(reference_type_bits)

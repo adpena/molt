@@ -3371,7 +3371,7 @@ mod tests {
 
     #[test]
     fn public_gil_release_drains_foreign_thread_call_cache_owners() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert_eq!(crate::c_api::molt_init(), 0);
         let (target_bits, target_address, before) = crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -3430,7 +3430,7 @@ mod tests {
     #[cfg(feature = "l7-attestation-probe")]
     #[test]
     fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,

@@ -1138,7 +1138,7 @@ mod tests {
 
     #[test]
     fn signal_runtime_state_retains_getsignal_and_clears_handlers() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = SignalRuntimeState::new();
             let ptr = alloc_string(_py, b"signal handler sentinel");
@@ -1164,7 +1164,7 @@ mod tests {
 
     #[test]
     fn signal_runtime_state_replacement_transfers_old_handler_ownership() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = SignalRuntimeState::new();
             let ptr = alloc_string(_py, b"replace handler sentinel");
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn signal_runtime_state_clear_resets_wakeup_and_pending_flags() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = SignalRuntimeState::new();
             assert_eq!(state.swap_wakeup_fd(9), -1);

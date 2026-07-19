@@ -1127,7 +1127,7 @@ mod code_object_ownership_tests {
 
     #[test]
     fn codeobj_from_filename_balances_temporary_name_reference() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let filename_ptr = alloc_string(_py, b"<codeobj-helper-test>");
             assert_eq!(unsafe { ref_count(filename_ptr) }, 1);
@@ -1149,7 +1149,7 @@ mod code_object_ownership_tests {
 
     #[test]
     fn alloc_code_obj_owns_and_releases_metadata_once() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let filename_ptr = alloc_string(_py, b"<constructor-test>");
             let name_ptr = alloc_string(_py, b"<constructor-test-name>");
@@ -1229,7 +1229,7 @@ mod code_object_ownership_tests {
 
     #[test]
     fn code_signature_metadata_is_owned_by_code_object() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let filename_ptr = alloc_string(_py, b"<signature-code-test>");
             let name_ptr = alloc_string(_py, b"<signature-code-test-name>");
@@ -1307,7 +1307,7 @@ mod code_object_ownership_tests {
 
     #[test]
     fn molt_function_get_code_returns_owned_reference() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = alloc_function_obj(_py, 0, 0);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();

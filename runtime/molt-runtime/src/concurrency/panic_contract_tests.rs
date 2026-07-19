@@ -45,15 +45,17 @@ const TAG_RUNTIME_ERROR: u64 = 7;
 /// Serialize against every other test that shares the process-global
 /// RuntimeState, and clear any stale pending exception on entry.
 struct ContractGuard {
-    _guard: std::sync::MutexGuard<'static, ()>,
+    _transaction: crate::test_support::RuntimeTestTransaction,
 }
 
 impl ContractGuard {
     fn new() -> Self {
-        let guard = crate::test_mutex_guard();
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
         molt_runtime_init();
         let _ = molt_exception_clear();
-        Self { _guard: guard }
+        Self {
+            _transaction: transaction,
+        }
     }
 }
 
@@ -147,7 +149,7 @@ fn python_level_error_is_catchable() {
 #[test]
 fn pending_exceptions_are_isolated_between_native_threads() {
     // This test exercises thread-local exception state and must remain safe
-    // under the default parallel harness. Do not hold `test_mutex_guard` while
+    // under the default parallel harness. Do not hold a runtime test transaction while
     // acquiring the GIL: other tests legitimately enter those authorities in
     // the opposite lifetime (GIL-protected work followed by serialized global
     // assertions), and nesting them here would create a harness-only AB/BA

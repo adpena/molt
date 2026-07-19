@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn g4_ensure_state_machine_transitions() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear();
@@ -1746,7 +1746,7 @@ mod tests {
 
     #[test]
     fn r0_static_extension_init_failure_unwinds_initializing() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear();
@@ -1791,7 +1791,7 @@ mod tests {
 
     #[test]
     fn g4_registry_blob_shape_is_validated() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         // Corrupt magic fails closed.
         let mut builder = BlobBuilder::new();
         builder.row("zz_shape", 0, None, None, MODULE_KIND_SOURCE, 0);
@@ -1860,7 +1860,7 @@ mod tests {
         use std::hint::black_box;
         use std::time::Instant;
 
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear();

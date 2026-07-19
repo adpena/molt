@@ -21,6 +21,7 @@ extension-loader = ["dep:libloading"]
 # explicit L7 verification. The C overlay witness remains an ABI-only probe.
 l7-attestation-core = []
 l7-test-probe = ["l7-attestation-core", "dep:molt-cpython-abi-test-support"]
+runtime-test-support = []
 
 [dependencies]
 molt-lang-obj-model = { path = "../molt-obj-model" }

@@ -267,6 +267,7 @@ libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["runtime-test-support"] }
 trybuild = { version = "1", features = ["diff"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
