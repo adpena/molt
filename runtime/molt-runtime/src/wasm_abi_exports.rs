@@ -279,29 +279,25 @@ pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
 pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
     let Ok(size) = usize::try_from(size) else {
         return crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                "scratch allocation exceeds the active address space",
-            )
+            crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     };
     let alloc_size = size.max(1);
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
         return crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation layout overflow")
+            crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     };
     if crate::resource::with_tracker(|tracker| tracker.on_allocate(alloc_size)).is_err() {
         return crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation denied")
+            crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     }
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
         crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
         return crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation failed")
+            crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     }
     crate::provenance::abi::expose_address(ptr)
@@ -331,6 +327,7 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
 #[cfg(test)]
 mod tests {
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use std::process::Command;
 
     struct TrackerReset;
 
@@ -342,6 +339,11 @@ mod tests {
 
     #[test]
     fn scratch_alloc_uses_resource_tracker_without_phantom_charge() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::raise_exception::<u64>(_py, "ValueError", "warm runtime");
+            crate::clear_exception(_py);
+        });
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_memory: Some(8),
             ..Default::default()
@@ -363,9 +365,44 @@ mod tests {
 
     #[test]
     fn scratch_alloc_rejects_impossible_layout_without_panicking() {
+        let _guard = crate::test_mutex_guard();
         let ptr = super::molt_scratch_alloc(u64::MAX);
         assert_eq!(ptr, 0);
         assert_eq!(crate::molt_exception_pending(), 1);
         let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn scratch_alloc_cold_resource_denial_is_null_and_nounwind() {
+        const CHILD: &str = "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(8),
+                ..Default::default()
+            })));
+            let denied = super::molt_scratch_alloc(16);
+            assert_eq!(denied, 0);
+            assert_eq!(crate::molt_exception_pending(), 1);
+            let _ = crate::molt_exception_clear();
+            assert_eq!(crate::molt_exception_pending(), 0);
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "wasm_abi_exports::tests::scratch_alloc_cold_resource_denial_is_null_and_nounwind",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("spawn isolated cold-runtime test");
+        assert!(
+            output.status.success(),
+            "cold raw-ABI failure crossed extern C or violated its null contract:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 }
