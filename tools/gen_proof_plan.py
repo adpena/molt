@@ -118,6 +118,12 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "commit, command, cell, execution partition, duration, peak RSS, cache "
         "disposition, and version-constrained toolchain identities validate.",
         "",
+        "Proof-family selection parents and GitHub admission edges are distinct "
+        "authorities. A family may depend on another family only when it consumes "
+        "that family's data or control result. Independent admissions depend only "
+        "on the changed-path classifier, so a selected sibling failure cannot mask "
+        "their execution; the Proof Plan Verdict remains the sole conjunction.",
+        "",
         "The canonical executor admits dependency-ready commands in manifest "
         "order, bounds global fanout at "
         f"{plan.executor_max_workers}, and enforces these per-resource limits:",
@@ -134,8 +140,8 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "timeout. The projection accounts for dependencies, the global worker "
         "ceiling, and per-resource capacity.",
         "",
-        "| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Inputs |",
-        "|---|---|---:|---|---:|---:|---:|---|---:|",
+        "| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |",
+        "|---|---|---:|---|---:|---:|---:|---|---|---|---:|",
     ]
     for family in plan.families:
         data = family.data
@@ -151,6 +157,9 @@ def _markdown_projection(plan: ProofPlan) -> str:
             f"{'yes' if data['required'] else 'no'} | `{data['executor']}` | "
             f"{data['timeout_minutes']} min | {projected_cell} | {headroom_cell} | "
             f"`{data['resource_class']}` | "
+            f"{', '.join(f'`{name}`' for name in data['dependencies']) or 'none'} | "
+            f"`{data['admission_job']}` needs "
+            f"{', '.join(f'`{name}`' for name in data['admission_needs']) or 'none'} | "
             f"{len(data['inputs'])} |"
         )
     lines.extend(

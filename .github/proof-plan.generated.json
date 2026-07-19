@@ -48,9 +48,12 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "ff4770825f6d1748df45c5137a3ee5b134f9fe8c35b68c62554b88ab6e12fc21",
+  "authority_sha256": "8565654ed81f0795a906f856148cb84d33559e6bbe8fb00b8fc0723728163932",
   "ci_families": [
     {
+      "admission_job": "docs-gates",
+      "admission_needs": [],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Repository-wide generated authority, architecture, drift, and policy proof.",
       "executor": "github-job",
@@ -70,9 +73,12 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
-      "dependencies": [
-        "rust"
+      "admission_job": "wasm-validation",
+      "admission_needs": [
+        "classify-changes"
       ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
       "description": "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof.",
       "executor": "github-job",
       "inputs": [
@@ -106,6 +112,11 @@
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
+      "admission_job": "python-static",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Python static analysis and generated-authority proof.",
       "executor": "github-job",
@@ -132,9 +143,12 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
-      "dependencies": [
-        "python_static"
+      "admission_job": "python-unit",
+      "admission_needs": [
+        "classify-changes"
       ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
       "description": "Pure Python unit and harness-contract proof.",
       "executor": "github-job",
       "inputs": [
@@ -159,10 +173,12 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
-      "dependencies": [
-        "python_unit",
-        "rust"
+      "admission_job": "native-integration",
+      "admission_needs": [
+        "classify-changes"
       ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
       "description": "Native compiler/linker integration smoke isolated from pure Python proof.",
       "executor": "github-job",
       "inputs": [
@@ -188,6 +204,11 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
+      "admission_job": "rust-build-unit-smoke",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Rust workspace build, target checks, test truth, and non-overlapping lint proof.",
       "executor": "github-job",
@@ -216,9 +237,12 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
-      "dependencies": [
-        "rust"
+      "admission_job": "llvm-backend",
+      "admission_needs": [
+        "classify-changes"
       ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
       "description": "LLVM, MLIR, and linker executable build/lowering/link/differential proof.",
       "executor": "github-job",
       "inputs": [
@@ -258,6 +282,11 @@
       "workflow": ".github/workflows/ci.yml"
     },
     {
+      "admission_job": "security-hardening",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Locked Python dependency vulnerability proof.",
       "executor": "github-job",
@@ -280,6 +309,11 @@
       "workflow": ".github/workflows/security_hardening.yml"
     },
     {
+      "admission_job": "security-hardening",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Locked Rust dependency policy and vulnerability proof.",
       "executor": "github-job",
@@ -303,6 +337,11 @@
       "workflow": ".github/workflows/security_hardening.yml"
     },
     {
+      "admission_job": "formal-verification",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Lean, Quint, Luau correspondence, deterministic IR, and formal-method proof.",
       "executor": "github-workflow",
@@ -329,6 +368,11 @@
       "workflow": ".github/workflows/formal.yml"
     },
     {
+      "admission_job": "platform-portability",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
       "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof.",
       "executor": "github-matrix",

@@ -166,8 +166,8 @@ jobs:
 
   wasm-validation:
     name: WASM Validation
-    needs: [classify-changes, rust-build-unit-smoke]
-    if: always() && needs.classify-changes.outputs.wasm == 'true' && (needs.rust-build-unit-smoke.result == 'success' || needs.rust-build-unit-smoke.result == 'skipped')
+    needs: classify-changes
+    if: needs.classify-changes.outputs.wasm == 'true'
     uses: ./.github/workflows/molt-wasm-ci.yml
 
   python-static:
@@ -205,8 +205,8 @@ jobs:
 
   python-unit:
     name: Python Unit Authority
-    needs: [classify-changes, python-static]
-    if: always() && needs.classify-changes.outputs.python_unit == 'true' && (needs.python-static.result == 'success' || needs.python-static.result == 'skipped')
+    needs: classify-changes
+    if: needs.classify-changes.outputs.python_unit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -231,8 +231,8 @@ jobs:
 
   native-integration:
     name: Native Integration Authority
-    needs: [classify-changes, python-unit, rust-build-unit-smoke]
-    if: always() && needs.classify-changes.outputs.native_integration == 'true' && (needs.python-unit.result == 'success' || needs.python-unit.result == 'skipped') && (needs.rust-build-unit-smoke.result == 'success' || needs.rust-build-unit-smoke.result == 'skipped')
+    needs: classify-changes
+    if: needs.classify-changes.outputs.native_integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
