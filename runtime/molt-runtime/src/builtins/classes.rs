@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn builtin_bootstrap_rollback_clears_self_edge_and_releases_each_owner_once() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"RollbackSelfType");
             assert!(!name_ptr.is_null());

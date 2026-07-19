@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn concurrent_runtime_state_is_owned_and_clearable() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             concurrent_clear_runtime_state(_py, state);

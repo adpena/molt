@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn clear_method_cache_clears_previously_omitted_slots() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_method_cache(_py, state);
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn clear_runtime_static_names_releases_every_manifest_slot() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_runtime_static_names(_py, state);

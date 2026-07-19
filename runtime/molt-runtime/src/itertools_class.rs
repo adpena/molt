@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn class_construction_publishes_generated_instance_shape() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let shape = ObjectShapeId::ItertoolsCount;
             let class_bits = alloc_itertools_class(py, "count", 24, shape);

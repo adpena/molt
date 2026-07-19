@@ -70,7 +70,7 @@ impl Drop for TrackerReset {
 
 #[test]
 fn failed_unpack_initializes_every_result_slot_to_none() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     let mut outputs = [u64::MAX, u64::MAX, u64::MAX];
     let result = unsafe {
         molt_unpack_sequence(
@@ -87,7 +87,7 @@ fn failed_unpack_initializes_every_result_slot_to_none() {
 
 #[test]
 fn preexisting_exception_still_initializes_every_result_slot() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let _: u64 = raise_exception(_py, "RuntimeError", "prior failure");
         let mut outputs = [u64::MAX, u64::MAX];
@@ -107,7 +107,7 @@ fn preexisting_exception_still_initializes_every_result_slot() {
 
 #[test]
 fn zero_target_unpack_validates_arity_without_output_memory() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let empty_ptr = crate::alloc_tuple(_py, &[]);
         let empty_bits = MoltObject::from_ptr(empty_ptr).bits();
@@ -129,7 +129,7 @@ fn zero_target_unpack_validates_arity_without_output_memory() {
 
 #[test]
 fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let source_ptr = crate::alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
         let source_bits = MoltObject::from_ptr(source_ptr).bits();
@@ -150,7 +150,7 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
 
 #[test]
 fn exact_builtin_unpack_is_allocation_free_after_source_construction() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let values = [
             MoltObject::from_int(11).bits(),
@@ -187,7 +187,7 @@ fn exact_builtin_unpack_is_allocation_free_after_source_construction() {
 
 #[test]
 fn exact_builtin_unpack_mints_and_releases_one_owner_per_heap_output() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let first_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         let second_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
@@ -224,7 +224,7 @@ fn exact_builtin_unpack_mints_and_releases_one_owner_per_heap_output() {
 
 #[test]
 fn generic_unpack_rolls_back_heap_outputs_when_iteration_raises() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let value_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         let value_ptr = obj_from_bits(value_bits).as_ptr().unwrap();
@@ -271,7 +271,7 @@ fn generic_unpack_rolls_back_heap_outputs_when_iteration_raises() {
 
 #[test]
 fn callable_iterator_exhaustion_clears_its_cached_heap_edge() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let value_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         let value_ptr = obj_from_bits(value_bits).as_ptr().unwrap();
@@ -311,7 +311,7 @@ fn callable_iterator_exhaustion_clears_its_cached_heap_edge() {
 
 #[test]
 fn callable_iterator_exception_clears_cache_before_reentry() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let value_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         let value_ptr = obj_from_bits(value_bits).as_ptr().unwrap();
@@ -379,7 +379,7 @@ fn callable_iterator_exception_clears_cache_before_reentry() {
 
 #[test]
 fn callable_iterator_teardown_clears_cache_after_early_exit() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let value_bits = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         let value_ptr = obj_from_bits(value_bits).as_ptr().unwrap();
@@ -414,7 +414,7 @@ fn callable_iterator_teardown_clears_cache_after_early_exit() {
 #[cfg(feature = "l7-attestation-probe")]
 #[test]
 fn exact_builtin_unpack_hot_path_performs_zero_allocator_calls() {
-    let _lock = crate::test_mutex_guard();
+    let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let values = [
             MoltObject::from_int(1).bits(),

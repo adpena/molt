@@ -723,7 +723,7 @@ mod stream_tests {
 
     #[test]
     fn stream_byte_budget_returns_pending_until_recv_releases_bytes() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
         let full = vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES];
         let one = [2u8; 1];

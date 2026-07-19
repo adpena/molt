@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn logging_bridge_interns_write_name_in_runtime_state() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"write";
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn logging_bridge_rejects_unknown_intern_name() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"flush";

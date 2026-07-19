@@ -9,6 +9,7 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
+    fn molt_runtime_exit(code_bits: u64) -> u64;
     fn molt_exception_clear() -> u64;
     fn molt_object_getattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64) -> u64;
     fn molt_object_setattr_bytes(
@@ -119,6 +120,13 @@ fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
     cmd.output().expect("spawn trace child")
 }
 
+fn finish_trace_child() -> ! {
+    unsafe {
+        let _ = molt_runtime_exit(0);
+    }
+    unreachable!("molt_runtime_exit must terminate the dedicated trace child")
+}
+
 #[test]
 fn trace_callargs_emits_builder_lifecycle_logs() {
     if std::env::var("MOLT_TRACE_CHILD").as_deref() == Ok("1") {
@@ -191,6 +199,7 @@ fn trace_callargs_child() {
     molt_runtime::molt_dec_ref_obj(args_bits);
     molt_runtime::molt_dec_ref_obj(append_bits);
     molt_runtime::molt_dec_ref_obj(list_bits);
+    finish_trace_child();
 }
 
 #[test]
@@ -213,6 +222,7 @@ fn trace_call_bind_ic_child() {
     }
     molt_runtime::molt_dec_ref_obj(append_bits);
     molt_runtime::molt_dec_ref_obj(list_bits);
+    finish_trace_child();
 }
 
 #[test]
@@ -226,4 +236,5 @@ fn trace_function_bind_meta_child() {
     let _ = unsafe { molt_object_call(func_bits, args_bits, none()) };
     molt_runtime::molt_dec_ref_obj(args_bits);
     molt_runtime::molt_dec_ref_obj(func_bits);
+    finish_trace_child();
 }

@@ -2062,7 +2062,7 @@ mod tests {
 
     #[test]
     fn function_allocator_does_not_eagerly_capture_globals() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_function_obj(
                 _py,
@@ -2082,7 +2082,7 @@ mod tests {
 
     #[test]
     fn closed_acyclic_capabilities_reject_heap_backedge_domains() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             assert!(acyclic_slot_edge(
                 HeapAcyclicSlot::RangeStart,
