@@ -1017,12 +1017,11 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
 pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
     crate::with_gil_entry_nopanic!(_py, {
         if module_def_ptr == 0 {
-            let _ = raise_exception::<u64>(
+            return crate::abi_return::fail::<crate::abi_return::NullHandle>(
                 _py,
                 "TypeError",
                 "module definition pointer must not be NULL",
             );
-            return 0;
         }
         c_api_module_state(_py)
             .state_registry

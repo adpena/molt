@@ -2110,8 +2110,7 @@ pub extern "C" fn PyErr_Clear() {
 /// `PyErr_NoMemory()` — set MemoryError and return NULL (0).
 pub extern "C" fn PyErr_NoMemory() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
-        0
+        crate::abi_return::fail_memory::<crate::abi_return::NullHandle>(_py)
     })
 }
 

@@ -230,6 +230,7 @@ pub(crate) use molt_runtime_platform::socket_constants;
 pub(crate) use molt_runtime_platform::utils;
 #[cfg(windows)]
 pub(crate) use molt_runtime_platform::windows_abi;
+mod abi_return;
 mod intrinsics;
 mod object;
 mod provenance;
@@ -532,13 +533,14 @@ pub(crate) use crate::builtins::exceptions::{
     molt_exception_kind, molt_exception_last, molt_exception_pending, molt_exception_set_last,
     molt_raise, molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
-    raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
-    sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_drop,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
+    raise_unsupported_inplace, record_exception, record_memory_error_without_allocation,
+    set_generator_raise, set_task_raise_active, sync_current_exception_pending,
+    task_exception_baseline_drop, task_exception_baseline_store, task_exception_baseline_take,
+    task_exception_depth_drop, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_drop, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
+    task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
+    task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
