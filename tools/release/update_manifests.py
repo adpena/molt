@@ -13,26 +13,31 @@ OUTPUT = ROOT / "packaging" / "out"
 
 
 def _load_manifest(path: Path) -> dict:
-    return json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "molt.release-manifest.v2":
+        raise ValueError("package-manager projections require release manifest v2")
+    return payload
 
 
 def _find(artifacts: list[dict], name: str, platform: str, arch: str) -> dict:
     for item in artifacts:
         if (
-            item["name"] == name
-            and item["platform"] == platform
-            and item["arch"] == arch
+            item.get("name") == name
+            and item.get("platform") == platform
+            and item.get("arch") == arch
         ):
             return item
     raise SystemExit(f"artifact not found: {name} {platform} {arch}")
 
 
 def _render(template_path: Path, out_path: Path, mapping: dict[str, str]) -> None:
-    content = template_path.read_text()
+    content = template_path.read_text(encoding="utf-8")
     for key, value in mapping.items():
         content = content.replace(f"{{{{{key}}}}}", value)
+    if "{{" in content or "}}" in content:
+        raise ValueError(f"unresolved package-manager template token: {template_path}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(content)
+    out_path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def _render_homebrew(artifacts: list[dict], version: str) -> None:
@@ -59,11 +64,14 @@ def _render_homebrew(artifacts: list[dict], version: str) -> None:
 
 def _render_scoop(artifacts: list[dict], version: str) -> None:
     for name in ("molt", "molt-worker"):
-        win = _find(artifacts, name, "windows", "x86_64")
+        win_x86 = _find(artifacts, name, "windows", "x86_64")
+        win_arm = _find(artifacts, name, "windows", "arm64")
         mapping = {
             "VERSION": version,
-            "WIN_URL": win["url"],
-            "WIN_SHA256": win["sha256"],
+            "WIN_X86_URL": win_x86["url"],
+            "WIN_X86_SHA256": win_x86["sha256"],
+            "WIN_ARM_URL": win_arm["url"],
+            "WIN_ARM_SHA256": win_arm["sha256"],
         }
         template = TEMPLATES / "scoop" / f"{name}.json"
         out = OUTPUT / "scoop" / f"{name}.json"
@@ -72,11 +80,14 @@ def _render_scoop(artifacts: list[dict], version: str) -> None:
 
 def _render_winget(artifacts: list[dict], version: str) -> None:
     for name, winget_name in (("molt", "molt"), ("molt-worker", "molt-worker")):
-        win = _find(artifacts, name, "windows", "x86_64")
+        win_x86 = _find(artifacts, name, "windows", "x86_64")
+        win_arm = _find(artifacts, name, "windows", "arm64")
         mapping = {
             "VERSION": version,
-            "WIN_URL": win["url"],
-            "WIN_SHA256": win["sha256"],
+            "WIN_X86_URL": win_x86["url"],
+            "WIN_X86_SHA256": win_x86["sha256"],
+            "WIN_ARM_URL": win_arm["url"],
+            "WIN_ARM_SHA256": win_arm["sha256"],
         }
         for suffix in (".yaml", ".installer.yaml", ".locale.en-US.yaml"):
             template = TEMPLATES / "winget" / f"{winget_name}{suffix}"

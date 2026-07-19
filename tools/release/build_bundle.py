@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""Build release bundles for Molt.
-
-Creates tar.gz (macOS/Linux) or zip (Windows) with a consistent layout.
-"""
+"""Build byte-reproducible Molt release bundles."""
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import gzip
+import os
+from pathlib import Path
 import shutil
-import stat
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+
 
 ROOT = Path(__file__).resolve().parents[2]
+MIN_ZIP_EPOCH = 315532800  # 1980-01-01, the earliest ZIP timestamp.
 
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8", newline="")
 
 
 def _make_unix_wrapper(path: Path) -> None:
@@ -41,14 +42,14 @@ if [ -z "$PYTHON_BIN" ]; then
   elif command -v python >/dev/null 2>&1; then
     PYTHON_BIN=python
   else
-    echo "molt: python3 not found" >&2
+    echo "molt: Python 3.12+ not found" >&2
     exit 1
   fi
 fi
 exec "$PYTHON_BIN" "$ROOT/lib/molt/bootstrap.py" "$@"
 """
     _write_text(path, script)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    path.chmod(0o755)
 
 
 def _make_windows_wrapper(root: Path) -> None:
@@ -63,7 +64,7 @@ def _make_windows_wrapper(root: Path) -> None:
         "  exit /b 1\r\n"
         ")\r\n"
         'if exist "%SystemRoot%\\py.exe" (\r\n'
-        '  py -3.12 "%BOOT%" %*\r\n'
+        '  py -3 "%BOOT%" %*\r\n'
         "  exit /b %ERRORLEVEL%\r\n"
         ")\r\n"
         'python "%BOOT%" %*\r\n'
@@ -77,7 +78,7 @@ def _make_windows_wrapper(root: Path) -> None:
         '$boot = Join-Path $root "lib" "molt" "bootstrap.py"\n'
         'if (-not (Test-Path $boot)) { throw "molt: bootstrap not found at $boot" }\n'
         "if (Get-Command py -ErrorAction SilentlyContinue) {\n"
-        "  py -3.12 $boot @args\n"
+        "  py -3 $boot @args\n"
         "} else {\n"
         "  python $boot @args\n"
         "}\n"
@@ -86,20 +87,15 @@ def _make_windows_wrapper(root: Path) -> None:
     _write_text(root / "bin" / "molt.ps1", ps1)
 
 
-def _bundle_root(name: str, version: str) -> Path:
-    return Path(f"{name}-{version}")
-
-
-def _copy_file(src: Path, dst: Path) -> None:
+def _copy_file(src: Path, dst: Path, *, executable: bool = False) -> None:
+    if not src.is_file():
+        raise ValueError(f"release input is not a file: {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    shutil.copyfile(src, dst)
+    dst.chmod(0o755 if executable else 0o644)
 
 
-def _bundle_molt(
-    root: Path,
-    wheel: Path,
-    worker_bin: Path | None,
-) -> None:
+def _bundle_molt(root: Path, wheel: Path, worker_bin: Path | None) -> None:
     _copy_file(
         ROOT / "packaging" / "bootstrap.py", root / "lib" / "molt" / "bootstrap.py"
     )
@@ -107,27 +103,112 @@ def _bundle_molt(
         ROOT / "packaging" / "INSTALL.md", root / "share" / "molt" / "INSTALL.md"
     )
     _copy_file(ROOT / "LICENSE", root / "share" / "molt" / "LICENSE")
-    wheels_dir = root / "share" / "molt" / "wheels"
-    wheels_dir.mkdir(parents=True, exist_ok=True)
-    _copy_file(wheel, wheels_dir / wheel.name)
+    _copy_file(wheel, root / "share" / "molt" / "wheels" / wheel.name)
     if worker_bin is not None:
-        _copy_file(worker_bin, root / "bin" / worker_bin.name)
+        _copy_file(worker_bin, root / "bin" / worker_bin.name, executable=True)
 
 
 def _bundle_worker(root: Path, worker_bin: Path) -> None:
-    _copy_file(worker_bin, root / "bin" / worker_bin.name)
+    _copy_file(worker_bin, root / "bin" / worker_bin.name, executable=True)
     _copy_file(ROOT / "LICENSE", root / "share" / "molt" / "LICENSE")
 
 
-def _archive_tar(root_dir: Path, out_path: Path) -> None:
-    with tarfile.open(out_path, "w:gz") as tar:
-        tar.add(root_dir, arcname=root_dir.name)
+def _normalized_mode(path: Path) -> int:
+    return 0o755 if path.is_dir() or path.parent.name == "bin" else 0o644
 
 
-def _archive_zip(root_dir: Path, out_path: Path) -> None:
-    with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for path in root_dir.rglob("*"):
-            zf.write(path, path.relative_to(root_dir.parent))
+def _archive_tar(root_dir: Path, out_path: Path, epoch: int) -> None:
+    with out_path.open("wb") as raw:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=epoch
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT
+            ) as tar:
+                for path in (root_dir, *sorted(root_dir.rglob("*"))):
+                    arcname = path.relative_to(root_dir.parent).as_posix()
+                    info = tar.gettarinfo(str(path), arcname)
+                    if not (info.isdir() or info.isfile()):
+                        raise ValueError(
+                            f"release bundles cannot contain special files: {path}"
+                        )
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = "root"
+                    info.gname = "root"
+                    info.mtime = epoch
+                    info.mode = _normalized_mode(path)
+                    if info.isfile():
+                        with path.open("rb") as handle:
+                            tar.addfile(info, handle)
+                    else:
+                        tar.addfile(info)
+
+
+def _archive_zip(root_dir: Path, out_path: Path, epoch: int) -> None:
+    timestamp = dt.datetime.fromtimestamp(max(epoch, MIN_ZIP_EPOCH), tz=dt.UTC)
+    date_time = (
+        timestamp.year,
+        timestamp.month,
+        timestamp.day,
+        timestamp.hour,
+        timestamp.minute,
+        timestamp.second,
+    )
+    with zipfile.ZipFile(
+        out_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        for path in sorted(root_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            arcname = path.relative_to(root_dir.parent).as_posix()
+            info = zipfile.ZipInfo(arcname, date_time=date_time)
+            info.create_system = 3
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (_normalized_mode(path) & 0xFFFF) << 16
+            archive.writestr(
+                info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED
+            )
+
+
+def build_bundle(
+    *,
+    version: str,
+    platform: str,
+    wheel: Path | None,
+    worker: Path | None,
+    kind: str,
+    output: Path,
+    source_date_epoch: int,
+) -> None:
+    if source_date_epoch <= 0:
+        raise ValueError("source date epoch must be positive")
+    if kind == "molt" and wheel is None:
+        raise ValueError("wheel is required for molt bundles")
+    if kind == "molt-worker" and worker is None:
+        raise ValueError("worker is required for molt-worker bundles")
+    if platform not in {"macos", "linux", "windows"}:
+        raise ValueError(f"unsupported release platform: {platform}")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root_dir = Path(temporary) / f"{kind}-{version}"
+        root_dir.mkdir(parents=True)
+        if kind == "molt":
+            assert wheel is not None
+            _bundle_molt(root_dir, wheel, worker)
+            if platform == "windows":
+                _make_windows_wrapper(root_dir)
+            else:
+                _make_unix_wrapper(root_dir / "bin" / "molt")
+        else:
+            assert worker is not None
+            _bundle_worker(root_dir, worker)
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if platform == "windows":
+            _archive_zip(root_dir, output, source_date_epoch)
+        else:
+            _archive_tar(root_dir, output, source_date_epoch)
 
 
 def main() -> None:
@@ -137,44 +218,25 @@ def main() -> None:
         "--platform", choices=["macos", "linux", "windows"], required=True
     )
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--wheel", required=False)
-    parser.add_argument("--worker", required=False)
+    parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--worker", type=Path)
     parser.add_argument("--kind", choices=["molt", "molt-worker"], default="molt")
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--source-date-epoch",
+        type=int,
+        default=int(os.environ.get("SOURCE_DATE_EPOCH", "0")),
+    )
     args = parser.parse_args()
-
-    if args.kind == "molt" and not args.wheel:
-        raise SystemExit("--wheel is required for molt bundles")
-    if args.kind == "molt-worker" and not args.worker:
-        raise SystemExit("--worker is required for molt-worker bundles")
-
-    wheel = Path(args.wheel) if args.wheel else None
-    worker_bin = Path(args.worker) if args.worker else None
-
-    bundle_name = args.kind
-    root_name = _bundle_root(bundle_name, args.version)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        root_dir = tmp_path / root_name
-        root_dir.mkdir(parents=True, exist_ok=True)
-
-        if args.kind == "molt":
-            _bundle_molt(root_dir, wheel, worker_bin)
-            if args.platform == "windows":
-                _make_windows_wrapper(root_dir)
-            else:
-                _make_unix_wrapper(root_dir / "bin" / "molt")
-        else:
-            _bundle_worker(root_dir, worker_bin)
-
-        out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if args.platform == "windows":
-            _archive_zip(root_dir, out_path)
-        else:
-            _archive_tar(root_dir, out_path)
+    build_bundle(
+        version=args.version,
+        platform=args.platform,
+        wheel=args.wheel,
+        worker=args.worker,
+        kind=args.kind,
+        output=args.output,
+        source_date_epoch=args.source_date_epoch,
+    )
 
 
 if __name__ == "__main__":

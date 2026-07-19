@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
       exit 1
       ;;
   esac
- done
+done
 
 uname_s=$(uname -s)
 uname_m=$(uname -m)
@@ -58,7 +58,7 @@ case "$uname_s" in
     echo "Unsupported OS: $uname_s" >&2
     exit 1
     ;;
- esac
+esac
 
 case "$uname_m" in
   x86_64|amd64)
@@ -74,7 +74,7 @@ case "$uname_m" in
     echo "Unsupported architecture: $uname_m" >&2
     exit 1
     ;;
- esac
+esac
 
 if [ -n "$VERSION" ]; then
   VERSION="${VERSION#v}"
@@ -90,25 +90,81 @@ if [ -z "$VERSION" ]; then
 fi
 
 asset="molt-${VERSION}-${platform}-${arch}.tar.gz"
-url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${VERSION}/${asset}"
+release_root="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/v${VERSION}"
 
 workdir=$(mktemp -d)
-trap 'rm -rf "$workdir"' EXIT
+stage="${MOLT_HOME}.new.$$"
+backup="${MOLT_HOME}.old.$$"
+cleanup() {
+  rm -rf -- "$workdir" "$stage"
+}
+trap cleanup EXIT HUP INT TERM
 
-curl -fsSL -o "$workdir/$asset" "$url"
+curl --fail --silent --show-error --location \
+  --retry 4 --retry-all-errors --connect-timeout 20 \
+  -o "$workdir/$asset" "$release_root/$asset"
+curl --fail --silent --show-error --location \
+  --retry 4 --retry-all-errors --connect-timeout 20 \
+  -o "$workdir/SHA256SUMS" "$release_root/SHA256SUMS"
 
-mkdir -p "$MOLT_HOME"
-
-tar -xzf "$workdir/$asset" -C "$workdir"
-extracted_dir=$(find "$workdir" -maxdepth 1 -type d -name "molt-${VERSION}*" | head -1)
-if [ -z "$extracted_dir" ]; then
-  echo "Failed to locate extracted bundle" >&2
+checksum_record=$(awk -v name="$asset" '
+  length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $2 == name {
+    count += 1
+    digest = $1
+  }
+  END { printf "%d:%s", count, digest }
+' "$workdir/SHA256SUMS")
+checksum_count=${checksum_record%%:*}
+expected=${checksum_record#*:}
+if [ "$checksum_count" -ne 1 ]; then
+  echo "SHA256SUMS must contain exactly one digest for $asset" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$workdir/$asset" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$workdir/$asset" | awk '{print $1}')
+else
+  echo "A SHA-256 tool is required (sha256sum or shasum)." >&2
+  exit 1
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "Release digest mismatch for $asset: expected $expected, got $actual" >&2
   exit 1
 fi
 
-rm -rf "$MOLT_HOME"
-mkdir -p "$MOLT_HOME"
-cp -R "$extracted_dir"/* "$MOLT_HOME"/
+archive_root="molt-${VERSION}"
+if ! tar -tzf "$workdir/$asset" | awk -v root="$archive_root" '
+  BEGIN { valid = 1; seen = 0 }
+  $0 == root || index($0, root "/") == 1 { seen = 1; next }
+  { valid = 0 }
+  END { exit !(valid && seen) }
+'; then
+  echo "Release archive must contain only the $archive_root root" >&2
+  exit 1
+fi
+tar -xzf "$workdir/$asset" -C "$workdir"
+extracted_dir="$workdir/$archive_root"
+if [ ! -d "$extracted_dir" ]; then
+  echo "Release archive is missing the $archive_root root" >&2
+  exit 1
+fi
+
+prefix_parent=$(dirname "$MOLT_HOME")
+mkdir -p "$prefix_parent"
+rm -rf -- "$stage" "$backup"
+mkdir "$stage"
+cp -R "$extracted_dir"/. "$stage"/
+if [ -e "$MOLT_HOME" ]; then
+  mv -- "$MOLT_HOME" "$backup"
+fi
+if ! mv -- "$stage" "$MOLT_HOME"; then
+  if [ -e "$backup" ]; then
+    mv -- "$backup" "$MOLT_HOME"
+  fi
+  exit 1
+fi
+rm -rf -- "$backup"
 
 bin_path="$MOLT_HOME/bin"
 if [ "$UPDATE_PATH" -eq 1 ]; then
@@ -146,4 +202,3 @@ fi
 
 echo "Molt installed to $MOLT_HOME"
 "$molt_bin" setup --strict
-echo "Run: molt setup"

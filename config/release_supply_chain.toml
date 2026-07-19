@@ -1,0 +1,62 @@
+schema = "molt.release-supply-chain.v1"
+
+[repository]
+owner = "adpena"
+name = "molt"
+
+[toolchain]
+python = "3.12"
+rust = "1.96.1"
+uv = "0.11.24"
+
+[[target]]
+id = "macos-arm64"
+runner = "macos-15"
+platform = "macos"
+arch = "arm64"
+archive = "tar.gz"
+
+[[target]]
+id = "macos-x86_64"
+runner = "macos-15-intel"
+platform = "macos"
+arch = "x86_64"
+archive = "tar.gz"
+
+[[target]]
+id = "linux-x86_64"
+runner = "ubuntu-24.04"
+platform = "linux"
+arch = "x86_64"
+archive = "tar.gz"
+
+[[target]]
+id = "linux-aarch64"
+runner = "ubuntu-24.04-arm"
+platform = "linux"
+arch = "aarch64"
+archive = "tar.gz"
+
+[[target]]
+id = "windows-x86_64"
+runner = "windows-2022"
+platform = "windows"
+arch = "x86_64"
+archive = "zip"
+
+[[target]]
+id = "windows-arm64"
+runner = "windows-11-arm"
+platform = "windows"
+arch = "arm64"
+archive = "zip"
+
+[downloads.elan]
+version = "4.2.3"
+
+[downloads.elan.targets.x86_64-unknown-linux-gnu]
+url = "https://github.com/leanprover/elan/releases/download/v4.2.3/elan-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2"
+size = 4984019
+archive = "tar.gz"
+member = "elan-init"

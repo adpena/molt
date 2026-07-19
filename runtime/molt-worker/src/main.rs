@@ -47,6 +47,17 @@ enum WorkerRuntime {
 }
 
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
+const USAGE: &str = "Usage: molt-worker [OPTIONS]\n\
+\n\
+Options:\n\
+  --exports PATH           JSON export manifest\n\
+  --compiled-exports PATH  Compiled export manifest\n\
+  --max-queue COUNT        Maximum queued requests\n\
+  --threads COUNT          Synchronous worker thread count\n\
+  --runtime MODE           Worker runtime: sync or async\n\
+  --stdio                  Serve the framed protocol over stdin/stdout (default)\n\
+  -h, --help               Print help\n\
+  -V, --version            Print version\n";
 
 #[derive(Deserialize)]
 struct ExportEntry {
@@ -2477,25 +2488,74 @@ fn main() -> io::Result<()> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--exports" => exports_path = args.next(),
-            "--compiled-exports" => compiled_exports = args.next().map(PathBuf::from),
+            "--exports" => {
+                exports_path = Some(args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--exports requires PATH")
+                })?);
+            }
+            "--compiled-exports" => {
+                compiled_exports = Some(PathBuf::from(args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--compiled-exports requires PATH",
+                    )
+                })?));
+            }
             "--max-queue" => {
-                if let Some(val) = args.next() {
-                    max_queue = val.parse().unwrap_or(64)
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--max-queue requires COUNT")
+                })?;
+                max_queue = value.parse().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --max-queue value: {value}"),
+                    )
+                })?;
+                if max_queue == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--max-queue must be greater than zero",
+                    ));
                 }
             }
             "--threads" => {
-                if let Some(val) = args.next() {
-                    threads = val.parse().ok();
+                let value = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--threads requires COUNT")
+                })?;
+                let count = value.parse::<usize>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid --threads value: {value}"),
+                    )
+                })?;
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--threads must be greater than zero",
+                    ));
                 }
+                threads = Some(count);
             }
             "--runtime" => {
-                if let Some(val) = args.next() {
-                    runtime = val;
-                }
+                runtime = args.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--runtime requires MODE")
+                })?;
             }
             "--stdio" => {}
-            _ => {}
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("molt-worker {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument: {arg}\n{USAGE}"),
+                ));
+            }
         }
     }
 

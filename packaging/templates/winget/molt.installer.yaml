@@ -3,8 +3,17 @@ PackageVersion: "{{VERSION}}"
 InstallerType: zip
 Installers:
   - Architecture: x64
-    InstallerUrl: "{{WIN_URL}}"
-    InstallerSha256: "{{WIN_SHA256}}"
+    InstallerUrl: "{{WIN_X86_URL}}"
+    InstallerSha256: "{{WIN_X86_SHA256}}"
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: bin\\molt.cmd
+        PortableCommandAlias: molt
+      - RelativeFilePath: bin\\molt-worker.exe
+        PortableCommandAlias: molt-worker
+  - Architecture: arm64
+    InstallerUrl: "{{WIN_ARM_URL}}"
+    InstallerSha256: "{{WIN_ARM_SHA256}}"
     NestedInstallerType: portable
     NestedInstallerFiles:
       - RelativeFilePath: bin\\molt.cmd
