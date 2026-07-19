@@ -42,6 +42,11 @@ def test_manifest_is_complete_and_single_authority() -> None:
     }
     assert all("metadata_mode" not in family.data for family in PLAN.families)
     assert all(family.data["required"] for family in PLAN.families)
+    assert all(family.data["dependencies"] == [] for family in PLAN.families)
+    assert all(
+        family.data["admission_workflow"] == ".github/workflows/ci.yml"
+        for family in PLAN.families
+    )
     assert all(cell.data["runner"] for cell in PLAN.matrix_cells)
     assert len(PLAN.local_rules) >= 30
     assert not (proof_plan.ROOT / "tools" / "molt_dev_gates.toml").exists()
@@ -109,7 +114,7 @@ def test_python_source_change_selects_split_proof_topology() -> None:
     assert classes["python_unit"] is True
     assert classes["native_integration"] is True
     assert classes["wasm"] is True
-    assert classes["rust"] is True
+    assert classes["rust"] is False
     assert classes["python_security"] is False
     assert classes["rust_security"] is False
     assert classes["formal"] is False
@@ -145,15 +150,14 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         assert _classes(path)["llvm"] is True, path
 
 
-def test_selected_family_closes_transitive_dependencies_with_reason() -> None:
+def test_selected_family_does_not_pull_unrelated_proof_families() -> None:
     selection = PLAN.select([".github/workflows/perf-gate.yml"])
     assert [family.name for family in selection.selected] == [
         "repository_policy",
-        "rust",
         "llvm",
     ]
     assert selection.reasons["llvm"] == (".github/workflows/perf-gate.yml",)
-    assert selection.reasons["rust"] == ("dependency:llvm",)
+    assert "rust" not in selection.reasons
 
 
 def test_dependency_cycles_are_rejected() -> None:
@@ -396,7 +400,7 @@ def test_lockfiles_select_security_and_build_classes() -> None:
     assert cargo["rust"] and cargo["llvm"] and cargo["rust_security"]
     assert not cargo["python_static"]
     assert uv["python_static"] and uv["python_unit"] and uv["python_security"]
-    assert uv["rust"] and not uv["rust_security"]
+    assert not uv["rust"] and not uv["rust_security"]
 
 
 def test_workflow_mechanics_select_only_owned_families() -> None:
@@ -442,7 +446,6 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
         "python_unit",
         "native_integration",
         "wasm",
-        "rust",
     }
 
 
@@ -519,6 +522,9 @@ def test_generated_matrix_records_selection_reason() -> None:
     by_name = {entry["name"]: entry for entry in topology}
     assert by_name["rust"]["selected_by"] == ["Cargo.lock"]
     assert by_name["rust"]["resource_class"] == "compiler-build-resource"
+    assert by_name["rust"]["dependencies"] == []
+    assert by_name["rust"]["admission_job"] == "rust-build-unit-smoke"
+    assert by_name["rust"]["admission_needs"] == ["classify-changes"]
     assert "rust.test.default-truth" in by_name["rust"]["command_ids"]
     assert "linux-x86_64-rust-wasi-dev" in by_name["rust"]["matrix_cells"]
     assert json.loads(outputs["matrix"]) == {"include": []}
@@ -1319,7 +1325,7 @@ def test_replay_quantifies_avoided_launches(monkeypatch) -> None:
         ),
     )
     replay = proof_plan.replay_recent_commits(PLAN, 2)
-    assert replay["families"]["python_static"]["selected"] == 2
-    assert replay["families"]["rust"]["selected"] == 2
+    assert replay["families"]["python_static"]["selected"] == 1
+    assert replay["families"]["rust"]["selected"] == 1
     assert replay["families"]["rust_security"]["selected"] == 0
     assert replay["families"]["rust_security"]["avoidable_percent"] == 100.0
