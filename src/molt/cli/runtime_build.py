@@ -50,6 +50,7 @@ from molt.cli.cargo_execution import (
     _cargo_build_env,
     _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
+    cargo_execution_evidence,
 )
 from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE, _resolve_cargo_profile_name
 from molt.cli.command_runtime import (
@@ -200,13 +201,52 @@ def _native_runtime_first_error(
             ]
 
     clean_stderr = strip_terminal_decoration(cargo_stderr)
-    lines = clean_stderr.splitlines()
-    for index, line in enumerate(lines):
-        if re.match(r"^\s*(?:error(?:\[[A-Z0-9]+\])?|fatal error):", line):
-            return "\n".join(lines[index : index + 10]).strip()[
-                :_NATIVE_RUNTIME_SUMMARY_LIMIT
-            ]
-    return fallback[:_NATIVE_RUNTIME_SUMMARY_LIMIT]
+    lines = [line.rstrip() for line in clean_stderr.splitlines() if line.strip()]
+    error_line = next(
+        (
+            line.strip()
+            for line in lines
+            if re.match(r"^\s*(?:error(?:\[[A-Z0-9]+\])?|fatal error):", line)
+        ),
+        None,
+    )
+    terminal_line = next(
+        (
+            line.strip()
+            for line in reversed(lines)
+            if re.search(
+                r"(?:process didn't exit successfully|signal:\s*(?:\d+\s*,\s*)?SIG|"
+                r"out of memory|memory allocation|LLVM ERROR|killed)",
+                line,
+                flags=re.IGNORECASE,
+            )
+        ),
+        None,
+    )
+    compact_terminal: str | None = None
+    if terminal_line is not None:
+        termination = re.search(
+            r"\((?:exit status|signal):[^)]*\)\s*$",
+            terminal_line,
+            flags=re.IGNORECASE,
+        )
+        if termination is not None:
+            compact_terminal = f"process termination: {termination.group(0)}"
+        elif len(terminal_line) > _NATIVE_RUNTIME_SUMMARY_LIMIT // 2:
+            compact_terminal = (
+                "terminal diagnostic tail: "
+                + terminal_line[-(_NATIVE_RUNTIME_SUMMARY_LIMIT // 2) :]
+            )
+        else:
+            compact_terminal = terminal_line
+    selected = "\n".join(
+        dict.fromkeys(
+            part
+            for part in (error_line, compact_terminal, fallback)
+            if isinstance(part, str) and part.strip()
+        )
+    )
+    return selected[:_NATIVE_RUNTIME_SUMMARY_LIMIT]
 
 
 def _record_native_runtime_failure(
@@ -220,8 +260,39 @@ def _record_native_runtime_failure(
     cargo_stderr: str = "",
     returncode: int | None = None,
     timed_out: bool = False,
+    cargo_result: subprocess.CompletedProcess[object] | None = None,
 ) -> bool:
     """Publish one bounded durable failure record and attach it to build state."""
+    execution = (
+        cargo_execution_evidence(cargo_result)
+        if cargo_result is not None
+        else {
+            "schema": "molt.cargo-execution.v1",
+            "attempt_count": 0,
+            "retry_reason": None,
+            "timed_out": timed_out,
+            "duration_seconds": None,
+            "peak_process_rss_bytes": None,
+            "peak_tree_rss_bytes": None,
+            "signal": None,
+            "attempts": [],
+        }
+    )
+    signal_value = execution.get("signal")
+    execution_signal = signal_value if isinstance(signal_value, dict) else None
+    duration_value = execution.get("duration_seconds")
+    execution_duration = (
+        float(duration_value) if isinstance(duration_value, (int, float)) else None
+    )
+    process_rss_value = execution.get("peak_process_rss_bytes")
+    execution_process_rss = (
+        int(process_rss_value) if isinstance(process_rss_value, int) else None
+    )
+    tree_rss_value = execution.get("peak_tree_rss_bytes")
+    execution_tree_rss = (
+        int(tree_rss_value) if isinstance(tree_rss_value, int) else None
+    )
+    execution_timed_out = timed_out or bool(execution.get("timed_out", False))
     evidence_path: Path | None = None
     try:
         evidence_path = (
@@ -232,14 +303,20 @@ def _record_native_runtime_failure(
         _atomic_write_json(
             evidence_path,
             {
-                "schema_version": 1,
+                "schema_version": 2,
+                "schema": "molt.native-runtime-build-failure.v2",
                 "kind": "molt_native_runtime_build_failure",
                 "stage": stage,
                 "summary": summary[:_NATIVE_RUNTIME_SUMMARY_LIMIT],
                 "command": list(command or ()),
                 "cwd": str(project_root),
                 "returncode": returncode,
-                "timed_out": timed_out,
+                "timed_out": execution_timed_out,
+                "signal": execution_signal,
+                "duration_seconds": execution_duration,
+                "peak_process_rss_bytes": execution_process_rss,
+                "peak_tree_rss_bytes": execution_tree_rss,
+                "cargo_execution": execution,
                 "cargo_stdout": _bounded_native_runtime_evidence_text(cargo_stdout),
                 "cargo_stderr": _bounded_native_runtime_evidence_text(cargo_stderr),
             },
@@ -254,7 +331,17 @@ def _record_native_runtime_failure(
             summary=summary[:_NATIVE_RUNTIME_SUMMARY_LIMIT],
             evidence_path=evidence_path,
             returncode=returncode,
-            timed_out=timed_out,
+            timed_out=execution_timed_out,
+            signal=execution_signal,
+            duration_seconds=execution_duration,
+            peak_process_rss_bytes=execution_process_rss,
+            peak_tree_rss_bytes=execution_tree_rss,
+            attempt_count=int(execution["attempt_count"]),
+            retry_reason=(
+                str(execution["retry_reason"])
+                if execution["retry_reason"] is not None
+                else None
+            ),
         )
     return False
 
@@ -634,6 +721,7 @@ def _refresh_native_link_manifest(
             cargo_stdout=result.stdout,
             cargo_stderr=result.stderr,
             returncode=result.returncode,
+            cargo_result=result,
         )
     cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
     if not _runtime_archive_bytes_match(runtime_lib, cargo_runtime_lib):
@@ -655,6 +743,7 @@ def _refresh_native_link_manifest(
             cargo_stdout=result.stdout,
             cargo_stderr=result.stderr,
             returncode=result.returncode,
+            cargo_result=result,
         )
     try:
         write_native_link_dependency_manifest(
@@ -681,6 +770,7 @@ def _refresh_native_link_manifest(
             cargo_stdout=result.stdout,
             cargo_stderr=result.stderr,
             returncode=result.returncode,
+            cargo_result=result,
         )
     return True
 
@@ -1022,6 +1112,7 @@ def _ensure_runtime_lib(
                 cargo_stdout=build.stdout,
                 cargo_stderr=build.stderr,
                 returncode=build.returncode,
+                cargo_result=build,
             )
         cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
         if cargo_runtime_lib != runtime_lib:
@@ -1043,6 +1134,7 @@ def _ensure_runtime_lib(
                     cargo_stdout=build.stdout,
                     cargo_stderr=build.stderr,
                     returncode=build.returncode,
+                    cargo_result=build,
                 )
             try:
                 _atomic_copy_file(cargo_runtime_lib, runtime_lib)
@@ -1063,6 +1155,7 @@ def _ensure_runtime_lib(
                     cargo_stdout=build.stdout,
                     cargo_stderr=build.stderr,
                     returncode=build.returncode,
+                    cargo_result=build,
                 )
         try:
             write_native_link_dependency_manifest(
@@ -1089,6 +1182,7 @@ def _ensure_runtime_lib(
                 cargo_stdout=build.stdout,
                 cargo_stderr=build.stderr,
                 returncode=build.returncode,
+                cargo_result=build,
             )
         if fingerprint is not None:
             try:
@@ -1595,42 +1689,15 @@ def _ensure_wasm_cpython_abi_staticlib(
         ]
         cargo_cmd = _cargo_cmd_with_json_artifact_messages(cmd)
         with _build_slot() as _slot:
-            build_raw = _run_subprocess_captured_to_tempfiles(
+            build = _run_cargo_with_sccache_retry(
                 cargo_cmd,
                 cwd=root,
                 env=env,
                 timeout=cargo_timeout,
+                json_output=json_output,
+                label="CPython ABI wasm build",
+                tempfile_runner=_run_subprocess_captured_to_tempfiles,
                 progress_label=None if json_output else "CPython ABI wasm build",
-            )
-        build = subprocess.CompletedProcess(
-            build_raw.args,
-            build_raw.returncode,
-            build_raw.stdout.decode("utf-8", errors="replace"),
-            build_raw.stderr.decode("utf-8", errors="replace"),
-        )
-        wrapper = env.get("RUSTC_WRAPPER", "")
-        if build.returncode != 0 and wrapper and Path(wrapper).name == "sccache":
-            retry_env = env.copy()
-            retry_env.pop("RUSTC_WRAPPER", None)
-            if not json_output:
-                print(
-                    "CPython ABI wasm build: sccache wrapper failure detected; "
-                    "retrying without sccache.",
-                    file=sys.stderr,
-                )
-            with _build_slot() as _slot:
-                build_raw = _run_subprocess_captured_to_tempfiles(
-                    cargo_cmd,
-                    cwd=root,
-                    env=retry_env,
-                    timeout=cargo_timeout,
-                    progress_label=None if json_output else "CPython ABI wasm build",
-                )
-            build = subprocess.CompletedProcess(
-                build_raw.args,
-                build_raw.returncode,
-                build_raw.stdout.decode("utf-8", errors="replace"),
-                build_raw.stderr.decode("utf-8", errors="replace"),
             )
         if build.returncode != 0:
             detail = (build.stderr or build.stdout or "").strip()
@@ -2044,41 +2111,15 @@ def _run_runtime_wasm_cargo_build(
     build_env["CARGO_TARGET_DIR"] = str(target_root)
     cargo_cmd = _cargo_cmd_with_json_artifact_messages(cmd)
     with _build_slot() as _slot:
-        build_raw = _run_subprocess_captured_to_tempfiles(
+        build = _run_cargo_with_sccache_retry(
             cargo_cmd,
             cwd=root,
             env=build_env,
             timeout=cargo_timeout,
+            json_output=json_output,
+            label="Runtime wasm build",
+            tempfile_runner=_run_subprocess_captured_to_tempfiles,
             progress_label=None if json_output else "Runtime wasm build",
-        )
-    build = subprocess.CompletedProcess(
-        build_raw.args,
-        build_raw.returncode,
-        build_raw.stdout.decode("utf-8", errors="replace"),
-        build_raw.stderr.decode("utf-8", errors="replace"),
-    )
-    wrapper = build_env.get("RUSTC_WRAPPER", "")
-    if build.returncode != 0 and wrapper and Path(wrapper).name == "sccache":
-        retry_env = build_env.copy()
-        retry_env.pop("RUSTC_WRAPPER", None)
-        if not json_output:
-            print(
-                "Runtime wasm build: sccache wrapper failure detected; retrying without sccache.",
-                file=sys.stderr,
-            )
-        with _build_slot() as _slot:
-            build_raw = _run_subprocess_captured_to_tempfiles(
-                cargo_cmd,
-                cwd=root,
-                env=retry_env,
-                timeout=cargo_timeout,
-                progress_label=None if json_output else "Runtime wasm build",
-            )
-        build = subprocess.CompletedProcess(
-            build_raw.args,
-            build_raw.returncode,
-            build_raw.stdout.decode("utf-8", errors="replace"),
-            build_raw.stderr.decode("utf-8", errors="replace"),
         )
     reported_artifact = _reported_runtime_artifact_from_cargo_stdout(
         build.stdout,

@@ -102,7 +102,10 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
     assert "steps.inputs.outputs.cache-namespace" in action
     assert "sync-args" not in action
     assert "normalize-inputs.sh" in action
-    assert 'run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"' in action
+    assert (
+        'run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"'
+        in action
+    )
     assert "inputs.rust-components }}-${{ inputs.rust-targets" not in action
 
 
@@ -111,7 +114,7 @@ def test_workflow_shells_do_not_select_artifacts_with_ls() -> None:
     release = _read(".github/workflows/release.yml")
     assert "latest=$(ls " not in perf_demo
     assert "WHEEL=$(ls " not in release
-    assert 'set -- dist/molt-*.whl' not in release
+    assert "set -- dist/molt-*.whl" not in release
     assert release.count("release_authority select-one") == 4
 
 
@@ -230,6 +233,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Setup canonical native linker SDK" in ci_text
     assert "proof-receipts/evidence/cargo-test-truth.json" in ci_text
     assert "proof-receipts/evidence/llvm-differential-truth.json" in ci_text
+    assert "target/**/.molt_state/build_failures/*.json" in ci_text
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "sudo apt-get install -y lld" not in ci_text
     assert "timeout_seconds" in proof_plan_text
