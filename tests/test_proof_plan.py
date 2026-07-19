@@ -629,6 +629,20 @@ def test_receipt_verdict_fails_selected_but_unexecuted_cells(tmp_path: Path) -> 
     assert errors == ["python.static.ty: required executable receipt is missing"]
 
 
+def test_cache_disposition_never_infers_restore_hit_from_directory_existence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    command = next(
+        command
+        for command in PLAN.commands
+        if str(command.data["cache_domain"]).startswith("cargo")
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    assert proof_plan._cache_disposition(command) == "unknown"
+
+
 def test_receipt_verdict_accepts_every_exact_selected_partition(tmp_path: Path) -> None:
     commands = [
         command for command in PLAN.commands if command.family == "python_static"

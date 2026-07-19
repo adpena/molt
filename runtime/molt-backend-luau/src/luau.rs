@@ -55,12 +55,89 @@ mod op_strings;
 mod op_tuples;
 mod op_values;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdentityProvenance {
+    Singleton(ScalarKind),
+    ValueScalar(ScalarKind),
+    Reference,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdentityLowering {
+    Constant(bool),
+    Direct,
+    Reject,
+}
+
+fn identity_provenance(plan: &ScalarRepresentationPlan, name: &str) -> IdentityProvenance {
+    match plan.name_scalar_kind(name) {
+        Some(kind @ (ScalarKind::Bool | ScalarKind::NoneValue)) => {
+            IdentityProvenance::Singleton(kind)
+        }
+        Some(kind @ (ScalarKind::Int | ScalarKind::Float | ScalarKind::Str)) => {
+            IdentityProvenance::ValueScalar(kind)
+        }
+        None if plan.name_container_kind(name).is_some() || plan.name_is_known_non_scalar(name) => {
+            IdentityProvenance::Reference
+        }
+        None => IdentityProvenance::Unknown,
+    }
+}
+
+/// Canonical Luau identity admission and lowering decision. Luau compares
+/// primitive numbers/strings by value and erases int/float provenance, so only
+/// explicit aliasing, singleton values, reference carriers, or statically
+/// disjoint provenance classes can implement Python identity exactly.
+fn identity_lowering(plan: &ScalarRepresentationPlan, lhs: &str, rhs: &str) -> IdentityLowering {
+    identity_lowering_for_provenance(
+        lhs == rhs,
+        identity_provenance(plan, lhs),
+        identity_provenance(plan, rhs),
+    )
+}
+
+/// Provenance-only identity decision shared by validation and emission. Keeping
+/// the SSA-alias override explicit makes this table directly comparable with
+/// the formal identity-admission model.
+fn identity_lowering_for_provenance(
+    same_ssa: bool,
+    lhs: IdentityProvenance,
+    rhs: IdentityProvenance,
+) -> IdentityLowering {
+    if same_ssa {
+        return IdentityLowering::Constant(true);
+    }
+    use IdentityProvenance::{Reference, Singleton, Unknown, ValueScalar};
+    match (lhs, rhs) {
+        (ValueScalar(lhs_kind), ValueScalar(rhs_kind)) if lhs_kind == rhs_kind => {
+            IdentityLowering::Reject
+        }
+        (ValueScalar(_), Unknown) | (Unknown, ValueScalar(_)) | (Unknown, Unknown) => {
+            IdentityLowering::Reject
+        }
+        (Singleton(lhs_kind), Singleton(rhs_kind)) if lhs_kind == rhs_kind => {
+            IdentityLowering::Direct
+        }
+        (Reference, Reference)
+        | (Reference, Unknown)
+        | (Unknown, Reference)
+        | (Singleton(_), Unknown)
+        | (Unknown, Singleton(_)) => IdentityLowering::Direct,
+        _ => IdentityLowering::Constant(false),
+    }
+}
+
 /// Transpiles Molt `SimpleIR` into Luau source text.
 pub struct LuauBackend {
     output: String,
     /// Current indentation level (number of tabs).
     indent: usize,
     uses_forward_decls: bool,
+    /// Raw IR function symbols in the active module. This distinguishes
+    /// user-defined names in the reserved `molt_` namespace from compiler
+    /// runtime references carried by call op metadata.
+    function_symbols: BTreeSet<String>,
     /// Variables that have been pre-declared at function scope and should use
     /// assignment (`var = val`) instead of `local var = val` in emit_op.
     hoisted_vars: BTreeSet<String>,
@@ -113,6 +190,7 @@ impl LuauBackend {
             output: String::with_capacity(8192),
             indent: 0,
             uses_forward_decls: false,
+            function_symbols: BTreeSet::new(),
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
             scalar_plan: ScalarRepresentationPlan::default(),
@@ -149,43 +227,73 @@ fn python_type_to_luau(hint: &str) -> &'static str {
     }
 }
 
-/// Sanitize a Molt IR identifier for Luau.
-/// Replaces `.` and `-` with `_`, and prefixes Luau keywords with `_m_`.
-fn sanitize_ident(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+const USER_SYMBOL_ESCAPE_PREFIX: &str = "_m_user_";
+const LABEL_SYMBOL_ESCAPE_PREFIX: &str = "_m_label_";
 
-    if cleaned.is_empty() {
-        return "_empty".to_string();
+#[derive(Clone, Copy)]
+enum LuauSymbolDomain {
+    UserValue,
+    StringLabel,
+}
+
+fn encode_symbol(name: &str, domain: LuauSymbolDomain) -> String {
+    let prefix = match domain {
+        LuauSymbolDomain::UserValue => USER_SYMBOL_ESCAPE_PREFIX,
+        LuauSymbolDomain::StringLabel => LABEL_SYMBOL_ESCAPE_PREFIX,
+    };
+    let mut encoded = String::with_capacity(prefix.len() + name.len() * 2);
+    encoded.push_str(prefix);
+    for byte in name.as_bytes() {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
     }
-    if is_luau_keyword(&cleaned) {
-        format!("_m_{cleaned}")
-    } else if cleaned.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("_{cleaned}")
+    encoded
+}
+
+/// Canonical, injective Molt IR symbol mapping for Luau. Ordinary valid names
+/// stay readable and allocation-minimal. Invalid spellings, Luau keywords, and
+/// compiler-reserved namespaces are encoded from their complete UTF-8 bytes,
+/// so punctuation and namespace collisions can never alias another IR symbol.
+fn sanitize_ident(name: &str) -> String {
+    let mut chars = name.chars();
+    let valid_start = chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic());
+    let valid_tail = chars.all(|c| c == '_' || c.is_ascii_alphanumeric());
+    if valid_start
+        && valid_tail
+        && !is_luau_keyword(name)
+        && !name.starts_with("molt_")
+        && !name.starts_with("__")
+        && !name.starts_with("_m_")
+    {
+        return name.to_string();
+    }
+    encode_symbol(name, LuauSymbolDomain::UserValue)
+}
+
+fn sanitize_string_label(label: &str) -> String {
+    encode_symbol(label, LuauSymbolDomain::StringLabel)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LuauFunctionSymbol<'a> {
+    CompilerEntrypoint,
+    User(&'a str),
+}
+
+fn classify_function_symbol(name: &str) -> LuauFunctionSymbol<'_> {
+    if name == "molt_main" {
+        LuauFunctionSymbol::CompilerEntrypoint
     } else {
-        cleaned
+        LuauFunctionSymbol::User(name)
     }
 }
 
-fn sanitize_label(label: &str) -> String {
-    label
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn emit_function_ident(name: &str) -> String {
+    match classify_function_symbol(name) {
+        LuauFunctionSymbol::CompilerEntrypoint => "molt_main".to_string(),
+        LuauFunctionSymbol::User(user_name) => sanitize_ident(user_name),
+    }
 }
 
 fn is_luau_keyword(word: &str) -> bool {

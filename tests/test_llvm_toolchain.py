@@ -1087,7 +1087,7 @@ def test_canonical_prefix_requires_exact_manifest_patch_release(
         )
 
 
-def test_canonical_prefix_rejects_extra_built_target_identity(
+def test_canonical_prefix_accepts_supported_target_superset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prefix = tmp_path / "llvm"
@@ -1099,13 +1099,14 @@ def test_canonical_prefix_rejects_extra_built_target_identity(
         lambda *_args, **_kwargs: SimpleNamespace(prefix=prefix),
     )
 
-    with pytest.raises(LlvmToolchainConfigError, match="target set must match exactly"):
-        verify_llvm_toolchain_prefix(
-            ROOT,
-            prefix,
-            version="22.1.8",
-            expected_targets=("X86", "WebAssembly"),
-        )
+    verification = verify_llvm_toolchain_prefix(
+        ROOT,
+        prefix,
+        version="22.1.8",
+        expected_targets=("X86", "WebAssembly"),
+    )
+
+    assert verification.targets == ("AArch64", "WebAssembly", "X86")
 
 
 def test_all_explicit_prefix_authorities_reject_retired_d_drive() -> None:

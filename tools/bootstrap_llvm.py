@@ -1512,15 +1512,17 @@ def main(argv: list[str] | None = None) -> int:
     if is_canonical:
         expected_projects = set(contract.required_projects)
         expected_build_type = canonical_llvm_build_type(ROOT)
+        missing_targets = sorted(required_targets.difference(target_set))
         if (
             project_set != expected_projects
-            or target_set != required_targets
+            or missing_targets
             or args.build_type != expected_build_type
         ):
             raise SystemExit(
                 "the canonical managed prefix requires the complete toolchain contract; "
                 f"projects expected={sorted(expected_projects)} found={sorted(project_set)}; "
-                f"targets expected={sorted(required_targets)} found={sorted(target_set)}; "
+                f"required targets={sorted(required_targets)} "
+                f"missing={missing_targets} found={sorted(target_set)}; "
                 f"build type expected={expected_build_type} found={args.build_type}"
             )
     env_var = _llvm_sys_prefix_env_var(args.version)

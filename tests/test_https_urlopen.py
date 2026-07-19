@@ -15,13 +15,13 @@ from __future__ import annotations
 import os
 import socket
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
+from tests import process_guard_common
 
 MOLT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
@@ -54,10 +54,12 @@ print(f"HAS_DOCTYPE={b'<!doctype html>' in body.lower() or b'<!DOCTYPE html>' in
 
 
 def _compile_and_run(source: str) -> str:
-    with tempfile.TemporaryDirectory() as tmp:
-        src_path = Path(tmp) / "https_demo.py"
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt-https-urlopen-"
+    ) as tmp:
+        src_path = tmp / "https_demo.py"
         src_path.write_text(source)
-        binary_path = Path(tmp) / "https_demo_molt"
+        binary_path = tmp / "https_demo_molt"
 
         env = development_artifact_env(
             MOLT_DIR,

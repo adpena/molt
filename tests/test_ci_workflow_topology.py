@@ -58,6 +58,7 @@ def test_setup_project_callers_use_declared_inputs() -> None:
 
 def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
     action = _read(".github/actions/setup-project/action.yml")
+    normalizer = _read(".github/actions/setup-project/normalize-inputs.sh")
     for token in (
         "inputs.cache-namespace",
         "inputs.rust-toolchain",
@@ -69,15 +70,42 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
         "config/llvm_toolchain_arches.toml",
     ):
         assert token in action
-    cargo_block = action.split("- name: Cache Cargo toolchain state", 1)[1].split(
+    cargo_block = action.split("- name: Cache Cargo source downloads", 1)[1].split(
         "- name: Cache Lean lake artifacts", 1
     )[0]
     assert "~/.cargo/registry" in cargo_block
     assert "~/.cargo/git" in cargo_block
     assert "\n          target\n" not in cargo_block
-    assert "cache-uv requires uv" in action
-    assert "sync-args requires uv" in action
-    assert "cache-cargo requires rust-toolchain" in action
+    assert "cache-uv requires uv" in normalizer
+    assert "sync requires uv" in normalizer
+    assert "cache-cargo requires rust-toolchain" in normalizer
+    assert "actionlint requires python" in normalizer
+    assert "dtolnay/rust-toolchain@" not in action
+    assert "rustup toolchain install" in action
+    assert "rustup default" in action
+    assert "steps.inputs.outputs.rust-cache-token" in action
+    assert "steps.inputs.outputs.cache-namespace" in action
+    assert "sync-args" not in action
+    assert "normalize-inputs.sh" in action
+    assert 'run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"' in action
+    assert "inputs.rust-components }}-${{ inputs.rust-targets" not in action
+
+
+def test_composite_action_shells_never_interpolate_inputs_directly() -> None:
+    actions_root = REPO_ROOT / ".github" / "actions"
+    checked = 0
+    for action_path in sorted(actions_root.glob("*/action.y*ml")):
+        payload = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+        for step in payload.get("runs", {}).get("steps", []):
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            checked += 1
+            assert re.search(r"\$\{\{\s*inputs\.", run) is None, (
+                action_path,
+                step.get("name"),
+            )
+    assert checked >= 5
 
 
 @pytest.mark.parametrize(
@@ -156,7 +184,9 @@ def test_ci_push_path_is_cheap_only() -> None:
         == 3
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
-    assert 'sync-args: "--frozen --group dev"' in ci_text
+    assert 'sync: "true"' in ci_text
+    assert 'sync-frozen: "true"' in ci_text
+    assert "sync-groups: dev" in ci_text
     proof_plan_text = _read("tools/proof_plan.toml")
     assert '"-m", "not slow"' in proof_plan_text
     assert "native.integration.bench-cli" in proof_plan_text
@@ -175,6 +205,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "tests/test_monty_conformance_runner.py" in proof_plan_text
     assert "Setup canonical native linker SDK" in ci_text
     assert "proof-receipts/evidence/cargo-test-truth.json" in ci_text
+    assert "proof-receipts/evidence/llvm-differential-truth.json" in ci_text
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "sudo apt-get install -y lld" not in ci_text
     assert "timeout_seconds" in proof_plan_text

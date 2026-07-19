@@ -890,6 +890,48 @@ def _command_profile_mode(env: Mapping[str, str]) -> str:
     return "incident"
 
 
+def _guard_repro_payload(
+    *,
+    command: Sequence[str],
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+    limits: HarnessMemoryLimits,
+    timeout: float | None,
+    prefix: str,
+    environ: Mapping[str, str] | None = None,
+    max_global_rss_kb: int | None = None,
+) -> dict[str, object]:
+    try:
+        payload = memory_guard.repro_context_payload(
+            command=command,
+            cwd=cwd,
+            environ=_effective_env(env) if environ is None else environ,
+            max_process_rss_kb=limits.max_process_rss_kb,
+            max_total_rss_kb=limits.max_total_rss_kb,
+            max_global_rss_kb=(
+                limits.max_global_rss_kb
+                if max_global_rss_kb is None
+                else max_global_rss_kb
+            ),
+            child_rlimit_kb=limits.current_child_rlimit_kb(env),
+            timeout_s=timeout,
+            poll_interval_s=limits.poll_interval,
+            summary_json=None,
+        )
+    except BaseException as error:
+        # Repro enrichment is secondary evidence. A platform snapshot failure
+        # must be recorded but can never replace the timeout/signal/RSS result
+        # that caused enrichment to run.
+        return {
+            "schema": "molt.guard-repro-error.v1",
+            "prefix": _normalize_prefix(prefix) or "MOLT",
+            "error_type": type(error).__name__,
+            "error": str(error)[:1000],
+        }
+    payload["prefix"] = _normalize_prefix(prefix) or "MOLT"
+    return payload
+
+
 def _guard_repro_message(
     *,
     command: Sequence[str],
@@ -899,19 +941,14 @@ def _guard_repro_message(
     timeout: float | None,
     prefix: str,
 ) -> str:
-    payload = memory_guard.repro_context_payload(
+    payload = _guard_repro_payload(
         command=command,
         cwd=cwd,
-        environ=_effective_env(env),
-        max_process_rss_kb=limits.max_process_rss_kb,
-        max_total_rss_kb=limits.max_total_rss_kb,
-        max_global_rss_kb=limits.max_global_rss_kb,
-        child_rlimit_kb=limits.current_child_rlimit_kb(env),
-        timeout_s=timeout,
-        poll_interval_s=limits.poll_interval,
-        summary_json=None,
+        env=env,
+        limits=limits,
+        timeout=timeout,
+        prefix=prefix,
     )
-    payload["prefix"] = _normalize_prefix(prefix) or "MOLT"
     return f"memory_guard: repro context: {memory_guard.repro_context_line(payload)}\n"
 
 
@@ -1003,21 +1040,20 @@ def _append_guarded_command_profile(
         "guard_signal": guard_signal_payload,
     }
     if status != "pass":
-        payload["repro"] = memory_guard.repro_context_payload(
+        payload["repro"] = _guard_repro_payload(
             command=command,
             cwd=cwd,
+            env=env,
+            limits=limits,
+            timeout=timeout_s,
+            prefix=prefix,
             environ=source,
-            max_process_rss_kb=limits.max_process_rss_kb,
-            max_total_rss_kb=limits.max_total_rss_kb,
             max_global_rss_kb=(
                 limit_at_violation.max_global_rss_kb
                 if limit_at_violation is not None
+                and limit_at_violation.max_global_rss_kb is not None
                 else limits.max_global_rss_kb
             ),
-            child_rlimit_kb=limits.current_child_rlimit_kb(env),
-            timeout_s=timeout_s,
-            poll_interval_s=limits.poll_interval,
-            summary_json=None,
         )
     github_context = _github_context_payload(source)
     if github_context is not None:

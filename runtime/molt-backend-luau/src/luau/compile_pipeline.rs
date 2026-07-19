@@ -8,6 +8,7 @@ impl LuauBackend {
         // Reset the fail-closed accumulator for this compilation so a reused
         // backend instance does not carry unsupported-op records across runs.
         self.unsupported_ops.clear();
+        self.function_symbols = ir.functions.iter().map(|func| func.name.clone()).collect();
         // Phase 1: Emit all function bodies to a temporary buffer so we can
         // scan which runtime helpers are actually referenced.
         let emit_funcs: Vec<&FunctionIR> = ir.functions.iter().collect();
@@ -24,7 +25,7 @@ impl LuauBackend {
                 self.uses_forward_decls = true;
                 self.emit_line("-- Forward declarations");
                 for func in &emit_funcs {
-                    let name = sanitize_ident(&func.name);
+                    let name = emit_function_ident(&func.name);
                     self.emit_line(&format!("local {name}"));
                 }
                 for name in &extra_forward_decls {
@@ -86,6 +87,8 @@ impl LuauBackend {
     /// otherwise silently emit syntactically valid but semantically incomplete
     /// Luau.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
+        validate_luau_function_symbol_contract(ir)?;
+        validate_luau_identity_contract(ir)?;
         molt_tir::target_admission::validate_target_contract(
             ir,
             "luau",
@@ -145,6 +148,7 @@ impl LuauBackend {
         self.output.push_str(
             "--!native\n--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n",
         );
+        self.output.push_str("local molt_rawequal = rawequal\n");
         self.output
             .push_str("local molt_func_attrs: {[any]: {[string]: any}} = setmetatable({}, {__mode = \"k\"})\n");
         self.output.push_str("local molt_func_self_attr = {}\nlocal function molt_func_attr_get(func: any, name: any): any\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then return nil end\n\tlocal value = rawget(attrs, name)\n\tif value == molt_func_self_attr then return func end\n\treturn value\nend\nlocal function molt_func_attr_set(func: any, name: any, value: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then attrs = {}; molt_func_attrs[func] = attrs end\n\trawset(attrs, name, if value == func then molt_func_self_attr else value)\n\treturn nil\nend\nlocal function molt_func_attr_del(func: any, name: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs ~= nil then rawset(attrs, name, nil) end\n\treturn nil\nend\n");
@@ -854,4 +858,49 @@ end
             ));
         }
     }
+}
+
+pub(super) fn validate_luau_function_symbol_contract(ir: &SimpleIR) -> Result<(), String> {
+    let mut entrypoints = 0usize;
+    for function in &ir.functions {
+        if classify_function_symbol(&function.name) != LuauFunctionSymbol::CompilerEntrypoint {
+            continue;
+        }
+        entrypoints += 1;
+        if !function.params.is_empty() {
+            return Err(
+                "luau target rejected before source generation: `molt_main` is the compiler ABI entrypoint and must have no parameters; user functions named `molt_main` must arrive through the frontend's qualified symbol authority"
+                    .to_string(),
+            );
+        }
+    }
+    if entrypoints > 1 {
+        return Err(
+            "luau target rejected before source generation: duplicate compiler ABI entrypoint `molt_main`"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn validate_luau_identity_contract(ir: &SimpleIR) -> Result<(), String> {
+    for function in &ir.functions {
+        let plan = ScalarRepresentationPlan::for_function_ir(function);
+        for (index, op) in function.ops.iter().enumerate() {
+            if !matches!(op.kind.as_str(), "is" | "is_not") {
+                continue;
+            }
+            let args = op.args.as_deref().unwrap_or(&[]);
+            if args.len() < 2 {
+                continue;
+            }
+            if identity_lowering(&plan, &args[0], &args[1]) == IdentityLowering::Reject {
+                return Err(format!(
+                    "luau target rejected before source generation: {}:op#{index} `{}`: identity needs alias/reference/singleton provenance or statically disjoint scalar kinds because Luau compares same-kind numbers and strings by value",
+                    function.name, op.kind,
+                ));
+            }
+        }
+    }
+    Ok(())
 }

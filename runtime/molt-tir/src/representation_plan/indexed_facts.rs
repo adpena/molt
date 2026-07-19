@@ -1234,6 +1234,7 @@ pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "list_new"
             | "lock_new"
             | "memoryview_new"
+            | "missing"
             | "module_new"
             | "object_new"
             | "promise_new"

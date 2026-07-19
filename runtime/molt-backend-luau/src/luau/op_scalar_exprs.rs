@@ -220,13 +220,13 @@ impl LuauBackend {
                     }
                 }
             }
-            "is" => {
+            "is" | "is_not" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out}: boolean = ({lhs} == {rhs})"));
+                    let identity =
+                        self.identity_comparison_expr(&args[0], &args[1], op.kind == "is_not");
+                    self.emit_line(&format!("local {out}: boolean = {identity}"));
                 }
             }
 

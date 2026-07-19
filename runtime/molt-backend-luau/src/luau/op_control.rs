@@ -7,7 +7,7 @@ impl LuauBackend {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("::label_{id}::"));
                 } else if let Some(ref s) = op.s_value {
-                    let label = sanitize_label(s);
+                    let label = sanitize_string_label(s);
                     self.emit_line(&format!("::{label}::"));
                 }
             }
@@ -15,7 +15,7 @@ impl LuauBackend {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("goto label_{id}"));
                 } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_label(target);
+                    let target = sanitize_string_label(target);
                     self.emit_line(&format!("goto {target}"));
                 }
             }
@@ -26,7 +26,7 @@ impl LuauBackend {
                     if let Some(id) = op.value {
                         self.emit_line(&format!("if {cond} then goto label_{id} end"));
                     } else if let Some(ref target) = op.s_value {
-                        let target = sanitize_label(target);
+                        let target = sanitize_string_label(target);
                         self.emit_line(&format!("if {cond} then goto {target} end"));
                     } else {
                         let cond_ident = sanitize_ident(cond_raw);
@@ -47,7 +47,7 @@ impl LuauBackend {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("if {cond} then goto label_{id} end"));
                 } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_label(target);
+                    let target = sanitize_string_label(target);
                     self.emit_line(&format!("if {cond} then goto {target} end"));
                 } else {
                     self.emit_line(&format!(
@@ -71,7 +71,7 @@ impl LuauBackend {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("if {not_cond} then goto label_{id} end"));
                 } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_label(target);
+                    let target = sanitize_string_label(target);
                     self.emit_line(&format!("if {not_cond} then goto {target} end"));
                 } else {
                     self.emit_line(&format!(

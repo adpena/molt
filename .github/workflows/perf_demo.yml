@@ -32,7 +32,9 @@ jobs:
           rust-toolchain: "1.96.1"
           cache-cargo: "true"
           cache-namespace: perf-demo
-          sync-args: "--frozen --dev"
+          sync: "true"
+          sync-frozen: "true"
+          sync-dev: "true"
       - name: Install k6
         run: |
           if ! command -v k6 >/dev/null 2>&1; then

@@ -1479,12 +1479,6 @@ def verify_llvm_toolchain_prefix(
             f"LLVM/MLIR prefix is missing required targets {missing_targets}; "
             f"built targets are {list(built_targets)}"
         )
-    if canonical_contract and set(built_targets) != required_targets:
-        raise LlvmToolchainConfigError(
-            "canonical LLVM/MLIR prefix target set must match exactly: "
-            f"expected={sorted(required_targets)} found={list(built_targets)}"
-        )
-
     suffix = ".exe" if os.name == "nt" else ""
     system = platform.system()
     host_linker = (
@@ -1824,11 +1818,11 @@ def write_llvm_toolchain_attestation(
                 "canonical LLVM project set must match exactly: "
                 f"expected={sorted(expected_projects)} found={sorted(projects)}"
             )
-        if set(verification.targets) != expected_targets:
+        missing_targets = sorted(expected_targets.difference(verification.targets))
+        if missing_targets:
             raise LlvmToolchainConfigError(
-                "canonical LLVM target set must match exactly: "
-                f"expected={sorted(expected_targets)} "
-                f"found={list(verification.targets)}"
+                "canonical LLVM target set is missing required targets: "
+                f"missing={missing_targets} found={list(verification.targets)}"
             )
         expected_build_type = canonical_llvm_build_type(root)
         if resolved_build_type != expected_build_type:
