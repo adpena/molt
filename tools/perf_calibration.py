@@ -323,6 +323,19 @@ def _sample_peak_rss(pid: int, handle=None) -> Optional[int]:
         return None
 
 
+def _kill_owned_process(proc: subprocess.Popen[bytes]) -> None:
+    """Close exactly one benchmark child through one custody authority."""
+
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            # The exact child exited between poll() and kill(); wait() still
+            # reaps its handle below.
+            pass
+    proc.wait()
+
+
 @dataclass
 class RunMeasurement:
     returncode: int
@@ -368,8 +381,7 @@ def run_and_measure(
             try:
                 on_spawn(proc.pid)
             except BaseException:
-                proc.kill()
-                proc.wait()
+                _kill_owned_process(proc)
                 raise
         handle = _win_open(proc.pid) if sys.platform == "win32" else None
         job = _win_create_job() if sys.platform == "win32" else None
@@ -398,14 +410,15 @@ def run_and_measure(
                 )
                 if rss:
                     peak_rss = max(peak_rss, rss)
-                committed = _win_job_peak(assigned_job) if assigned_job is not None else None
+                committed = (
+                    _win_job_peak(assigned_job) if assigned_job is not None else None
+                )
                 if committed:
                     peak_job_commit = max(peak_job_commit, committed)
                 if done:
                     break
                 if timeout is not None and (time.perf_counter() - t0) > timeout:
-                    proc.kill()
-                    proc.wait()
+                    _kill_owned_process(proc)
                     timed_out = True
                     break
             # Final direct sample may survive root exit on monotone OS fields;
@@ -417,7 +430,9 @@ def run_and_measure(
             )
             if rss:
                 peak_rss = max(peak_rss, rss)
-            committed = _win_job_peak(assigned_job) if assigned_job is not None else None
+            committed = (
+                _win_job_peak(assigned_job) if assigned_job is not None else None
+            )
             if committed:
                 peak_job_commit = max(peak_job_commit, committed)
         finally:

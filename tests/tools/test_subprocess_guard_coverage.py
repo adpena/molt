@@ -99,21 +99,80 @@ def test_unclassified_process_object_signal_fails(tmp_path: Path) -> None:
     ]
 
 
-def test_unclassified_shell_pkill_string_fails(tmp_path: Path) -> None:
+def test_non_executable_process_vocabulary_is_not_a_violation(tmp_path: Path) -> None:
     module = _load_audit_tool()
-    source = tmp_path / "bad_shell.py"
+    source = tmp_path / "documentation.py"
     source.write_text(
-        "def script():\n    return 'pkill -f molt-backend'\n",
+        '"""Never invoke taskkill or pkill -f molt-backend."""\n'
+        "FORBIDDEN = ('taskkill', 'pkill -f molt-backend')\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert audit.ok
+    assert audit.raw_calls == ()
+
+
+def test_os_system_and_popen_execution_sinks_fail(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "bad_os_shell.py"
+    source.write_text(
+        "import os\n"
+        "from os import popen as open_pipe\n\n"
+        "def launch():\n"
+        "    os.system('echo unsafe')\n"
+        "    open_pipe('echo unsafe')\n",
         encoding="utf-8",
     )
 
     audit = module.audit_paths([source], root=tmp_path, allowlist=())
 
     assert not audit.ok
-    assert len(audit.unexpected) == 1
-    assert audit.unexpected[0].path == "bad_shell.py"
-    assert audit.unexpected[0].qualname == "script"
-    assert audit.unexpected[0].method == "shell.kill"
+    assert [item.method for item in audit.unexpected] == [
+        "os.system",
+        "shell.exec",
+        "os.popen",
+        "shell.exec",
+    ]
+
+
+def test_shell_true_constant_flow_and_kill_sink_fail(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "bad_shell.py"
+    source.write_text(
+        "import subprocess\n\n"
+        "def launch():\n"
+        "    command = 'pkill -f molt-backend'\n"
+        "    use_shell = True\n"
+        "    return subprocess.run(command, shell=use_shell)\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert not audit.ok
+    assert [item.method for item in audit.unexpected] == [
+        "run",
+        "shell.exec",
+        "shell.kill",
+    ]
+
+
+def test_inner_parameter_shadows_outer_shell_constant(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "shadowed_shell.py"
+    source.write_text(
+        "import subprocess\n\n"
+        "USE_SHELL = True\n\n"
+        "def launch(USE_SHELL):\n"
+        "    return subprocess.run(['echo', 'safe'], shell=USE_SHELL)\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert [item.method for item in audit.unexpected] == ["run"]
 
 
 def test_unclassified_makefile_pkill_fails(tmp_path: Path) -> None:

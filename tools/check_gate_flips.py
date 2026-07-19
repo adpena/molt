@@ -9,8 +9,9 @@ reads the ``[[gate_flip]]`` registry in ``tools/proof_plan.toml`` and reports
 any gate whose ``strict_when`` is MET but is still ``state = "warn"``.
 
 ``strict_when`` machine tokens:
-  * ``live_count == 0`` / ``live_count <= N`` -- evaluated against ``count_cmd``
-    (a shell command whose integer stdout is the live violation count).
+  * ``live_count == 0`` / ``live_count <= N`` -- evaluated against a checked-in
+    ``count_detector`` identifier. Detector identifiers resolve to fixed argv;
+    repository data never becomes shell syntax.
   * ``landed_functional`` / ``always`` -- lifecycle markers for gates that land
     already-strict; nothing to flip.
   * anything else -- free text; reported as MANUAL REVIEW (never a hard fail).
@@ -25,6 +26,7 @@ Pure + stdlib-only; the flip-evaluation core (``evaluate_flip``) is unit-tested.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -36,6 +38,50 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "tools" / "proof_plan.toml"
 
 _COND_RE = re.compile(r"^live_count\s*(==|<=|<|>=|>)\s*(\d+)$")
+
+
+@dataclass(frozen=True, slots=True)
+class CountDetector:
+    script: str
+    args: tuple[str, ...]
+    json_path: tuple[str, ...] = ()
+
+    def argv(self, root: Path) -> list[str]:
+        return [sys.executable, str(root / self.script), *self.args]
+
+    def parse(self, stdout: str) -> int:
+        value: object = stdout.strip()
+        if self.json_path:
+            value = json.loads(stdout)
+            for key in self.json_path:
+                if not isinstance(value, dict) or key not in value:
+                    raise ValueError(
+                        f"detector JSON missing path {'.'.join(self.json_path)}"
+                    )
+                value = value[key]
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError(
+                f"detector count must be an integer, got {type(value).__name__}"
+            )
+        if isinstance(value, str):
+            value = value.strip()
+            if not value or not value.isdecimal():
+                raise ValueError(f"detector count must be an integer, got {value!r}")
+        count = int(value)
+        if count < 0:
+            raise ValueError(f"detector count must be non-negative, got {count}")
+        return count
+
+
+COUNT_DETECTORS: dict[str, CountDetector] = {
+    "findings_memo_lint": CountDetector("tools/findings_memo_lint.py", ("--count",)),
+    "memory_graph_integrity": CountDetector(
+        "tools/check_memory_graph.py", ("--count",)
+    ),
+    "claims_status_stale": CountDetector(
+        "tools/claims_status.py", ("--json",), ("counts", "stale")
+    ),
+}
 
 
 @dataclass
@@ -67,25 +113,30 @@ def _eval_condition(cond: str, live_count: int | None) -> bool | None:
     }[op]
 
 
-def _run_count_cmd(count_cmd: str, cwd: Path) -> int | None:
-    if not count_cmd:
+def _run_count_detector(detector_id: str, cwd: Path) -> int | None:
+    if not detector_id:
         return None
-    try:
-        r = subprocess.run(
-            count_cmd,
-            cwd=str(cwd),
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
+    detector = COUNT_DETECTORS.get(detector_id)
+    if detector is None:
+        known = ", ".join(sorted(COUNT_DETECTORS))
+        raise ValueError(
+            f"unknown count_detector {detector_id!r}; expected one of {known}"
         )
-        if r.returncode != 0:
-            return None
-        return int(r.stdout.strip())
-    except Exception:
-        return None
+    result = subprocess.run(
+        detector.argv(ROOT),
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"count_detector {detector_id!r} failed rc={result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+    return detector.parse(result.stdout)
 
 
 def evaluate_flip(entry: dict, *, live_count: int | None = None) -> FlipVerdict:
@@ -130,7 +181,12 @@ def load_flip_entries(config_path: Path) -> list[dict]:
 def audit(config_path: Path, cwd: Path) -> list[FlipVerdict]:
     verdicts: list[FlipVerdict] = []
     for entry in load_flip_entries(config_path):
-        live_count = _run_count_cmd(str(entry.get("count_cmd", "")), cwd)
+        if "count_cmd" in entry:
+            raise ValueError(
+                f"gate_flip {entry.get('name', '?')!r} uses removed count_cmd; "
+                "declare a checked-in count_detector identifier"
+            )
+        live_count = _run_count_detector(str(entry.get("count_detector", "")), cwd)
         verdicts.append(evaluate_flip(entry, live_count=live_count))
     return verdicts
 

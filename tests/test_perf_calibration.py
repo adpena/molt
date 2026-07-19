@@ -9,6 +9,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _MOD_PATH = Path(__file__).resolve().parents[1] / "tools" / "perf_calibration.py"
 _spec = importlib.util.spec_from_file_location("perf_calibration", _MOD_PATH)
 pc = importlib.util.module_from_spec(_spec)
@@ -65,6 +67,17 @@ def test_run_and_measure_timeout():
     )
     assert m.timed_out
     assert m.elapsed_s < 5  # killed well before the 10s sleep
+
+
+def test_run_and_measure_closes_child_when_spawn_observer_fails():
+    def reject_spawn(_pid: int) -> None:
+        raise RuntimeError("observer rejected child")
+
+    with pytest.raises(RuntimeError, match="observer rejected child"):
+        pc.run_and_measure(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            on_spawn=reject_spawn,
+        )
 
 
 def test_adaptive_samples_converges_on_stable_signal():
