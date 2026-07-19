@@ -111,7 +111,8 @@ def test_workflow_shells_do_not_select_artifacts_with_ls() -> None:
     release = _read(".github/workflows/release.yml")
     assert "latest=$(ls " not in perf_demo
     assert "WHEEL=$(ls " not in release
-    assert 'set -- dist/molt-*.whl' in release
+    assert 'set -- dist/molt-*.whl' not in release
+    assert release.count("release_authority select-one") == 4
 
 
 def test_composite_action_shells_never_interpolate_inputs_directly() -> None:
@@ -265,7 +266,9 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
         "--verify-selected '${{ needs.classify-changes.outputs.selected }}'" in ci_text
     )
     assert "--receipt-dir proof-receipts" in ci_text
-    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in ci_text
+    assert (
+        "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in ci_text
+    )
     assert "== 'success' && 1 || 0" not in ci_text
     assert ci_text.count("fetch-depth: 0") == 1
 
@@ -397,7 +400,10 @@ def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
 
 
 def test_github_workflows_pin_every_external_action_to_full_sha() -> None:
-    action_files = [*WORKFLOW_ROOT.glob("*.yml"), *REPO_ROOT.glob(".github/actions/*/action.yml")]
+    action_files = [
+        *WORKFLOW_ROOT.glob("*.yml"),
+        *REPO_ROOT.glob(".github/actions/*/action.yml"),
+    ]
     uses_pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
     sha_pattern = re.compile(r"^[^/@]+/[^/@]+@[0-9a-f]{40}$", re.IGNORECASE)
     found = 0
@@ -433,9 +439,9 @@ def test_executable_proof_workflows_pin_uv_tool_version() -> None:
         ".github/workflows/security_hardening.yml",
     ):
         text = _read(relative)
-        assert text.count("astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39") == text.count(
-            'version: "0.11.24"'
-        ), relative
+        assert text.count(
+            "astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39"
+        ) == text.count('version: "0.11.24"'), relative
 
 
 def test_executable_receipt_root_is_git_ignored() -> None:
@@ -591,9 +597,10 @@ def test_checkouts_drop_persisted_credentials_and_permissions_are_bounded() -> N
         assert "\npermissions:\n  contents: read\n" in text, workflow
 
     release = _read(".github/workflows/release.yml")
-    assert release.count("contents: write") == 2
-    assert release.count("id-token: write") == 2
-    assert release.count("attestations: write") == 2
+    assert release.count("contents: write") == 1
+    assert release.count("id-token: write") == 1
+    assert release.count("attestations: write") == 1
+    assert release.count("artifact-metadata: write") == 1
 
 
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
@@ -775,6 +782,8 @@ def test_lean_workflows_share_exact_provisioning_authority() -> None:
     assert 'cache-lean: "true"' in formal_workflow
     assert formal_workflow.count("uses: ./.github/actions/setup-lean") == 1
     assert "uses: ./.github/actions/setup-lean" not in nightly_workflow
+    assert "elan/master" not in setup_action
+    assert "tools.release.fetch_pinned_tool" in setup_action
     assert "elan-init.sh" not in formal_workflow
     assert "elan-init.sh" not in nightly_workflow
 
@@ -784,7 +793,9 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     nightly_workflow = _read(".github/workflows/nightly.yml")
 
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
+    assert (
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
+    )
     assert 'node-version: "24.16.0"' in formal_workflow
     assert "check-latest: true" not in setup_project
     assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
@@ -795,7 +806,10 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert "sha256sum --check" in formal_workflow
 
     assert 'npm install -g "$MOLT_QUINT_NPM_PACKAGE"' not in nightly_workflow
-    assert "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" not in nightly_workflow
+    assert (
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
+        not in nightly_workflow
+    )
     assert "node-version: '24.16.0'" not in nightly_workflow
     assert "Install Quint Rust evaluator" not in nightly_workflow
 
@@ -897,11 +911,11 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "          cargo install cargo-audit --locked" not in security_text
 
     assert (
-        '"$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- '
-        "cargo build -p molt-worker --release"
-    ) in release_text
-    assert '"$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \\' in (
-        release_text
+        release_text.count(
+            "python tools/guarded_exec.py --prefix MOLT_RELEASE -- \\\n"
+            "            cargo build --locked --profile release-output -p molt-worker"
+        )
+        == 2
     )
     assert "run: cargo build -p molt-worker --release" not in release_text
 
@@ -968,8 +982,12 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "push:" in release_text
     assert "tags:" in release_text
     assert "workflow_dispatch:" in release_text
-    assert "macos-14" in release_text
-    assert "ubuntu-24.04" in release_text
+    release_config = _read("config/release_supply_chain.toml")
+    assert "macos-15" in release_config
+    assert "ubuntu-24.04" in release_config
+    assert "windows-2022" in release_config
+    assert "windows-11-arm" in release_config
+    assert "fromJSON(needs.plan.outputs.matrix)" in release_text
     assert "schedule:" in perf_text
     assert "MOLT_SESSION_ID: perfscore-${{ matrix.backend }}" in perf_text
     assert (

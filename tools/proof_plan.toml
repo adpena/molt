@@ -1044,6 +1044,18 @@ argv = ["uv", "run", "python3", "tools/call_fact_coverage.py", "--check"]
 toolchains = ["python", "uv"]
 
 [[command]]
+id = "repository.release-supply-chain"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
 id = "repository.docs-tests"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"

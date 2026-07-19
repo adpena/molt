@@ -48,7 +48,7 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "cb97e3afb1f747ae3f9a8c06e6f82eb794ff5da4666c6f143803c60009e03478",
+  "authority_sha256": "87cec4923064b10df1f8da399496b04810da84f93dcc4f04f1126b33b6067406",
   "ci_families": [
     {
       "dependencies": [],
@@ -1431,6 +1431,33 @@
         "-m",
         "pytest",
         "-q",
+        "tests/tools/test_release_supply_chain.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.release-supply-chain",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
         "tests/test_update_status_blocks.py",
         "tests/test_bench_report.py",
         "tests/test_check_docs_architecture.py",
@@ -2654,7 +2681,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 3300,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2655
+          "repository-policy": 2730
         }
       },
       "rust": {

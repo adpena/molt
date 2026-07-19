@@ -135,6 +135,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.runtime-bridge-stubs` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
+| `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
 | `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 6 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 0 |
 | `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |

@@ -3,12 +3,23 @@
   "description": "Verified subset Python to native/WASM compiler",
   "homepage": "https://github.com/adpena/molt",
   "license": "Apache-2.0",
-  "url": "{{WIN_URL}}",
-  "hash": "{{WIN_SHA256}}",
+  "architecture": {
+    "64bit": {
+      "url": "{{WIN_X86_URL}}",
+      "hash": "{{WIN_X86_SHA256}}"
+    },
+    "arm64": {
+      "url": "{{WIN_ARM_URL}}",
+      "hash": "{{WIN_ARM_SHA256}}"
+    }
+  },
   "bin": ["bin\\molt.cmd"],
   "persist": ["share\\molt"],
   "checkver": "github",
   "autoupdate": {
-    "url": "https://github.com/adpena/molt/releases/download/v$version/molt-$version-windows-x86_64.zip"
+    "architecture": {
+      "64bit": {"url": "https://github.com/adpena/molt/releases/download/v$version/molt-$version-windows-x86_64.zip"},
+      "arm64": {"url": "https://github.com/adpena/molt/releases/download/v$version/molt-$version-windows-arm64.zip"}
+    }
   }
 }
