@@ -7,10 +7,9 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import cast
 
 import pytest
-from tools import harness_memory_guard
+from tests import process_guard_common
 
 _MIN_NODE_MAJOR = 18
 _NODE_BIN_CACHE: str | None = None
@@ -81,19 +80,6 @@ def _select_out_dir(default: Path, root: Path) -> Path:
     return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))
 
 
-def _read_timeout_seconds(env_name: str, default: float) -> float:
-    raw = os.environ.get(env_name, "").strip()
-    if not raw:
-        return default
-    try:
-        parsed = float(raw)
-    except ValueError:
-        return default
-    if parsed <= 0:
-        return default
-    return parsed
-
-
 def _run_wasm_test_process(
     args: Sequence[str],
     *,
@@ -104,7 +90,7 @@ def _run_wasm_test_process(
     text: bool = True,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    raw_result = harness_memory_guard.guarded_completed_process(
+    return process_guard_common.run_guarded_test_process(
         list(args),
         prefix="MOLT_WASM_TEST",
         cwd=cwd,
@@ -112,32 +98,9 @@ def _run_wasm_test_process(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+        default_timeout=120.0,
+        check=check,
     )
-    result = subprocess.CompletedProcess[str](
-        list(args),
-        raw_result.returncode,
-        stdout=cast(str, raw_result.stdout),
-        stderr=cast(str, raw_result.stderr),
-    )
-    if (
-        timeout is not None
-        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        and "memory_guard: timeout after" in (result.stderr or "")
-    ):
-        raise subprocess.TimeoutExpired(
-            list(args),
-            timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-    if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode,
-            list(args),
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-    return result
 
 
 def _parse_node_major(version_text: str) -> int | None:
@@ -330,20 +293,18 @@ def build_wasm_linked(
     ]
     if extra_args:
         args.extend(extra_args)
-    build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     try:
         build = _run_wasm_test_process(
             args,
             cwd=root,
             env=env,
-            timeout=build_timeout,
         )
     except subprocess.TimeoutExpired as exc:
         stderr = exc.stderr or ""
         stdout = exc.stdout or ""
         raise AssertionError(
             "WASM build timed out "
-            f"after {build_timeout:.1f}s for {src}; "
+            f"after {exc.timeout}s for {src}; "
             f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}\n"
             f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         ) from exc
@@ -374,19 +335,17 @@ def run_wasm_linked(
     if env_overrides:
         env.update(env_overrides)
     host_args = [host_bin, str(wasm_path)]
-    run_timeout = _read_timeout_seconds("MOLT_WASM_TEST_RUN_TIMEOUT_SEC", 120.0)
     try:
         return _run_wasm_test_process(
             host_args,
             cwd=root,
             env=env,
-            timeout=run_timeout,
         )
     except subprocess.TimeoutExpired as exc:
         stderr = exc.stderr or ""
         stdout = exc.stdout or ""
         raise AssertionError(
             "WASM execution timed out "
-            f"after {run_timeout:.1f}s for {wasm_path}\n"
+            f"after {exc.timeout}s for {wasm_path}\n"
             f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         ) from exc

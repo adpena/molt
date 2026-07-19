@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import harness_memory_guard  # noqa: E402
+from tests import process_guard_common  # noqa: E402
 
 
 def parse_expectation(filepath: Path) -> tuple[str, str]:
@@ -169,7 +169,7 @@ def adapt_file(src: Path, dst: Path) -> bool:
         # This handles edge cases like KeyError (uses repr of key) and other
         # exceptions where str(e) differs from the Raise= comment's message.
         try:
-            cp_result = harness_memory_guard.guarded_completed_process(
+            cp_result = process_guard_common.run_guarded_test_process(
                 [sys.executable, str(dst)],
                 prefix="MOLT_CONFORMANCE",
                 capture_output=True,
@@ -210,7 +210,7 @@ def adapt_file(src: Path, dst: Path) -> bool:
         dst.write_text(adapted)
         # Generate expected by running through CPython (same as raise handler)
         try:
-            cp_result = harness_memory_guard.guarded_completed_process(
+            cp_result = process_guard_common.run_guarded_test_process(
                 [sys.executable, str(dst)],
                 prefix="MOLT_CONFORMANCE",
                 capture_output=True,

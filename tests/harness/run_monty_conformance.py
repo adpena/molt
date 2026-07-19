@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tests import process_guard_common  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
 CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "monty_compat"
@@ -84,14 +86,15 @@ def run_test(
     if kind == "skip":
         return (None, expected)
 
-    result = harness_memory_guard.guarded_completed_process(
-        [*runner, str(filepath)],
-        prefix="MOLT_CONFORMANCE",
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+    try:
+        result = process_guard_common.run_guarded_test_process(
+            [*runner, str(filepath)],
+            prefix="MOLT_CONFORMANCE",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
         return (False, "timeout (10s)")
 
     if kind == "raise":

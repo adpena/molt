@@ -46,6 +46,7 @@ from molt.dx import (  # noqa: E402
 )
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt import python_interpreter  # noqa: E402
+from tests import process_guard_common  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 
@@ -116,7 +117,7 @@ def _metadata_probe_timeout_sec() -> float:
 
 def _run_metadata_probe(cmd: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
     try:
-        return harness_memory_guard.guarded_completed_process(
+        return process_guard_common.run_guarded_test_process(
             cmd,
             prefix="MOLT_DIFF",
             capture_output=True,

@@ -61,7 +61,6 @@ def pytest_configure(config):
             ],
             capture_output=True,
             text=True,
-            timeout=900,
             env=env,
             cwd=MOLT_DIR,
         )
