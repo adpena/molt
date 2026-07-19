@@ -45,8 +45,8 @@ Usage
     # also time an incremental ABI relink (evidences lever (b))
     python tools/witness_iter.py --measure-relink
 
-    # reserved final confirmation: full wasm witness with warm lowering cache (a)
-    python tools/witness_iter.py --wasm-confirm
+    # reserved final confirmation: typed command argv after --
+    python tools/witness_iter.py --wasm-confirm -- python tools/pact_witness_acceptance.py
 
 Exit code: 0 = PASS (reached the known-good frontier), non-zero = RED (regression
 or engine error). `--json` emits the machine-readable result on stdout.
@@ -65,6 +65,11 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ script execution
+    import harness_memory_guard  # type: ignore
 
 # ── Known-good frontier baselines (the committed authority) ───────────────────
 # Each entry encodes the EXPECTED far frontier a clean, all-fixes-landed tree
@@ -109,6 +114,48 @@ DEFAULT_BASELINES: dict[str, dict] = {
 DEFAULT_SYMBOL_SWEEP_MAX_GAP = 14
 
 WSL_DISTRO = os.environ.get("MOLT_WITNESS_WSL_DISTRO", "MoltCodonUbuntu")
+_EXECUTION_CONTEXT: harness_memory_guard.HarnessExecutionContext | None = None
+
+
+def _execution_context() -> harness_memory_guard.HarnessExecutionContext:
+    global _EXECUTION_CONTEXT
+    if _EXECUTION_CONTEXT is None:
+        _EXECUTION_CONTEXT = harness_memory_guard.HarnessExecutionContext.from_env(
+            "MOLT_WITNESS_ITER",
+            os.environ,
+            repo_root=repo_root(),
+        )
+    return _EXECUTION_CONTEXT
+
+
+def _run_child(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    capture_output: bool = True,
+    timeout: float | None = None,
+    check: bool = False,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    result = _execution_context().run(
+        command,
+        cwd=cwd,
+        env=env,
+        capture_output=capture_output,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            command,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
+
 
 # ── Machine-readable engine markers ───────────────────────────────────────────
 RE_GAP = re.compile(r"\bGAP=(\d+)\b")
@@ -182,36 +229,51 @@ def maybe_dispatch_to_wsl(argv: list[str]) -> "int | None":
     else:
         # Translate C:\Molt\... -> /mnt/c/Molt/... via wslpath.
         try:
-            target_repo = subprocess.check_output(
+            translated = _run_child(
                 ["wsl.exe", "-d", WSL_DISTRO, "-e", "wslpath", "-a", str(repo)],
-                text=True,
-                encoding="utf-8",
-            ).strip()
+                cwd=repo,
+                timeout=30,
+                check=True,
+            )
+            target_repo = (translated.stdout or "").strip()
         except Exception as exc:  # noqa: BLE001
             log(f"FATAL: could not translate repo path into WSL: {exc}")
             return 2
 
-    inner = argv + ["--in-wsl"]
-    inner_cmd = " ".join(_shq(a) for a in ["python3", "tools/witness_iter.py", *inner])
+    separator = argv.index("--") if "--" in argv else len(argv)
+    inner = [*argv[:separator], "--in-wsl", *argv[separator:]]
     # A per-distro isolated target dir off the Windows tree keeps builds fast and
     # avoids clobbering a native Windows target.
     fast_target = os.environ.get(
         "MOLT_WITNESS_WSL_TARGET", "/root/.molt-witness-target"
     )
     bash = (
-        f"cd {_shq(target_repo)} && "
-        f"export CARGO_TARGET_DIR={_shq(fast_target)} && "
-        f"export MOLT_STALE_ORPHAN_CLEANUP=0 MOLT_DISABLE_AUTO_JANITOR=1 && "
-        f"source /root/.cargo/env 2>/dev/null; {inner_cmd}"
+        'export CARGO_TARGET_DIR="$1"; '
+        "export MOLT_STALE_ORPHAN_CLEANUP=0 MOLT_DISABLE_AUTO_JANITOR=1; "
+        'source /root/.cargo/env 2>/dev/null; shift; exec "$@"'
     )
     log(f"== dispatching into WSL distro '{WSL_DISTRO}' (repo {target_repo}) ...")
-    proc = subprocess.run(["wsl.exe", "-d", WSL_DISTRO, "-e", "bash", "-lc", bash])
+    proc = _run_child(
+        [
+            "wsl.exe",
+            "-d",
+            WSL_DISTRO,
+            "--cd",
+            target_repo,
+            "-e",
+            "bash",
+            "-lc",
+            bash,
+            "molt-witness-iter",
+            fast_target,
+            "python3",
+            "tools/witness_iter.py",
+            *inner,
+        ],
+        cwd=repo,
+        capture_output=False,
+    )
     return proc.returncode
-
-
-def _shq(s: str) -> str:
-    """Minimal POSIX shell single-quote."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
 def repo_root() -> Path:
@@ -253,13 +315,11 @@ def run_native_drive(module: str, profile: str) -> tuple[Fingerprint, str, float
     env = _env_for_drive()
     env["MOLT_DISCOVERY_PROFILE"] = profile
     t0 = time.monotonic()
-    proc = subprocess.run(
+    proc = _run_child(
         ["bash", str(script), module],
-        cwd=str(repo),
+        cwd=repo,
         env=env,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
     )
     wall = time.monotonic() - t0
     out = (proc.stdout or "") + (proc.stderr or "")
@@ -357,7 +417,9 @@ def evaluate(fp: Fingerprint, baseline: dict) -> Verdict:
     for pat in baseline.get("forbidden", []):
         if re.search(pat, hay):
             ok = False
-            reasons.append(f"regression marker PRESENT (reverted-fix signature): /{pat}/")
+            reasons.append(
+                f"regression marker PRESENT (reverted-fix signature): /{pat}/"
+            )
 
     if ok:
         reasons.append(
@@ -392,9 +454,7 @@ def measure_incremental_relink(profile: str) -> float | None:
     if profile != "dev":
         cmd += ["--profile", profile]
     t0 = time.monotonic()
-    proc = subprocess.run(
-        cmd, cwd=str(build_dir), env=env, capture_output=True, text=True, encoding="utf-8"
-    )
+    proc = _run_child(cmd, cwd=build_dir, env=env, capture_output=True)
     wall = time.monotonic() - t0
     if proc.returncode != 0:
         log("   (measure-relink: relink build FAILED)")
@@ -412,13 +472,11 @@ def run_symbol_sweep(profile: str) -> tuple[int | None, str, float]:
     env = _env_for_drive()
     env["MOLT_DISCOVERY_PROFILE"] = profile
     t0 = time.monotonic()
-    proc = subprocess.run(
+    proc = _run_child(
         ["bash", str(script)],
-        cwd=str(repo),
+        cwd=repo,
         env=env,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
     )
     wall = time.monotonic() - t0
     out = (proc.stdout or "") + (proc.stderr or "")
@@ -430,17 +488,17 @@ def run_symbol_sweep(profile: str) -> tuple[int | None, str, float]:
 
 
 # ── Reserved final confirmation: full wasm witness with warm lowering cache ───
-def run_wasm_confirm() -> int:
+def run_wasm_confirm(witness_command: list[str]) -> int:
     """Run the full wasm witness for FINAL confirmation, with the warm
     frontend-lowering cache (a) wired + hit-rate attested.
 
     Heavy (~30 min). The inner native loop is the fast path; this is the reserved
-    ground-truth. Set MOLT_WITNESS_CMD to the witness build/run command; the
-    persistent shared lowering cache (MOLT_CACHE/module_lowering) makes a fresh
-    session reuse unchanged numpy modules instead of re-lowering them.
+    ground-truth. The command is typed argv supplied after ``--``; repository
+    data never becomes shell syntax. The persistent shared lowering cache
+    (MOLT_CACHE/module_lowering) makes a fresh session reuse unchanged numpy
+    modules instead of re-lowering them.
     """
     repo = repo_root()
-    witness_cmd = os.environ.get("MOLT_WITNESS_CMD")
     cache_root = os.environ.get(
         "MOLT_WITNESS_CACHE", str(repo / "target" / "witness-warm-cache")
     )
@@ -455,15 +513,13 @@ def run_wasm_confirm() -> int:
     env["MOLT_TRACE_LOWERING_CTX"] = ctx_log
     log(f"== wasm-confirm: warm lowering cache = {cache_root}")
     log(f"== wasm-confirm: lowering-ctx trace  = {ctx_log}")
-    if not witness_cmd:
-        log(
-            "== NOTE: set MOLT_WITNESS_CMD to your witness build/run command to "
-            "execute the full confirmation. The warm-cache env above is wired; "
-            "re-run with MOLT_WITNESS_CMD set."
-        )
-        return 0
-    log(f"== running witness: {witness_cmd}")
-    proc = subprocess.run(witness_cmd, cwd=str(repo), env=env, shell=True)
+    log(f"== running witness argv: {json.dumps(witness_command)}")
+    proc = _run_child(
+        witness_command,
+        cwd=repo,
+        env=env,
+        capture_output=False,
+    )
     _report_lowering_hit_rate(ctx_log)
     return proc.returncode
 
@@ -497,15 +553,23 @@ def print_summary(
     log("======================================================================")
     log(f"  FAST-WITNESS-ITER  —  module {fp.module}")
     log("======================================================================")
-    log(f"  symbol GAP        : {fp.symbol_gap}  (known-good {baseline.get('symbol_gap')})")
-    log(f"  PyInit outcome    : {'OK (module)' if fp.pyinit_ok else 'frontier (NULL/err)'}")
+    log(
+        f"  symbol GAP        : {fp.symbol_gap}  (known-good {baseline.get('symbol_gap')})"
+    )
+    log(
+        f"  PyInit outcome    : {'OK (module)' if fp.pyinit_ok else 'frontier (NULL/err)'}"
+    )
     log(f"  driver rc         : {fp.driver_rc}")
     log(f"  reached frontier  : {fp.reached_frontier}")
-    log(f"  inner-loop wall   : {wall:.2f} s   (vs ~1800 s full wasm witness "
-        f"=> ~{1800 / wall:.0f}x faster)")
+    log(
+        f"  inner-loop wall   : {wall:.2f} s   (vs ~1800 s full wasm witness "
+        f"=> ~{1800 / wall:.0f}x faster)"
+    )
     if relink is not None:
-        log(f"  incremental relink: {relink:.2f} s   (one ABI object -> cdylib; "
-            f"NOT a whole-runtime rebuild)")
+        log(
+            f"  incremental relink: {relink:.2f} s   (one ABI object -> cdylib; "
+            f"NOT a whole-runtime rebuild)"
+        )
     log("  ------------------------------------------------------------------")
     verdict_txt = "PASS" if verdict.passed else "RED"
     log(f"  VERDICT           : {verdict_txt}")
@@ -514,7 +578,7 @@ def print_summary(
     log("======================================================================")
 
 
-def main(argv: list[str]) -> int:
+def _main(argv: list[str]) -> int:
     rc = maybe_dispatch_to_wsl(argv)
     if rc is not None:
         return rc
@@ -523,41 +587,87 @@ def main(argv: list[str]) -> int:
         prog="witness_iter.py",
         description="FAST-WITNESS-ITER: seconds-per-frontier numpy-init inner loop.",
     )
-    ap.add_argument("--module", default="_multiarray_umath",
-                    help="extension module to drive (default: _multiarray_umath)")
-    ap.add_argument("--profile", default=os.environ.get("MOLT_DISCOVERY_PROFILE", "dev"),
-                    help="cargo profile for the harness (default: dev)")
-    ap.add_argument("--record", action="store_true",
-                    help="print the observed frontier signature to refresh the baseline")
-    ap.add_argument("--symbols", action="store_true",
-                    help="whole-witness static symbol sweep only (no PyInit)")
-    ap.add_argument("--measure-relink", action="store_true",
-                    help="also time an incremental ABI relink (evidences lever b)")
-    ap.add_argument("--wasm-confirm", action="store_true",
-                    help="reserved: run the full wasm witness with warm lowering cache")
-    ap.add_argument("--baseline", default=None,
-                    help="path to a JSON baseline overriding the committed defaults")
-    ap.add_argument("--json", action="store_true", help="emit machine-readable result JSON")
+    ap.add_argument(
+        "--module",
+        default="_multiarray_umath",
+        help="extension module to drive (default: _multiarray_umath)",
+    )
+    ap.add_argument(
+        "--profile",
+        default=os.environ.get("MOLT_DISCOVERY_PROFILE", "dev"),
+        help="cargo profile for the harness (default: dev)",
+    )
+    ap.add_argument(
+        "--record",
+        action="store_true",
+        help="print the observed frontier signature to refresh the baseline",
+    )
+    ap.add_argument(
+        "--symbols",
+        action="store_true",
+        help="whole-witness static symbol sweep only (no PyInit)",
+    )
+    ap.add_argument(
+        "--measure-relink",
+        action="store_true",
+        help="also time an incremental ABI relink (evidences lever b)",
+    )
+    ap.add_argument(
+        "--wasm-confirm",
+        action="store_true",
+        help="reserved: run typed command argv after -- with warm cache",
+    )
+    ap.add_argument(
+        "--baseline",
+        default=None,
+        help="path to a JSON baseline overriding the committed defaults",
+    )
+    ap.add_argument(
+        "--json", action="store_true", help="emit machine-readable result JSON"
+    )
     ap.add_argument("--in-wsl", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument(
+        "wasm_command",
+        nargs=argparse.REMAINDER,
+        metavar="COMMAND",
+        help="typed full-witness argv; valid only with --wasm-confirm after --",
+    )
     args = ap.parse_args(argv)
+    wasm_command = list(args.wasm_command)
+    if wasm_command[:1] == ["--"]:
+        wasm_command = wasm_command[1:]
+    if args.wasm_confirm and not wasm_command:
+        ap.error("--wasm-confirm requires command argv after --")
+    if wasm_command and not args.wasm_confirm:
+        ap.error("command argv after -- requires --wasm-confirm")
 
     if platform.system() == "Windows":
         log("FATAL: native Windows lacks dlopen/RTLD_GLOBAL; use WSL/Linux/macOS.")
         return 2
 
     if args.wasm_confirm:
-        return run_wasm_confirm()
+        return run_wasm_confirm(wasm_command)
 
     if args.symbols:
         agg, out, wall = run_symbol_sweep(args.profile)
         log(out)
         exp = DEFAULT_SYMBOL_SWEEP_MAX_GAP
         passed = agg is not None and agg <= exp
-        log(f"== aggregate symbol GAP = {agg} (known-good <= {exp}); "
-            f"{'PASS' if passed else 'RED'}  [{wall:.2f}s]")
+        log(
+            f"== aggregate symbol GAP = {agg} (known-good <= {exp}); "
+            f"{'PASS' if passed else 'RED'}  [{wall:.2f}s]"
+        )
         if args.json:
-            print(json.dumps({"aggregate_symbol_gap": agg, "max": exp,
-                              "passed": passed, "wall_s": wall}))
+            print(
+                json.dumps(
+                    {
+                        "aggregate_symbol_gap": agg,
+                        "max": exp,
+                        "passed": passed,
+                        "wall_s": wall,
+                    }
+                )
+            )
         return 0 if passed else 1
 
     # Inner native loop.
@@ -587,14 +697,31 @@ def main(argv: list[str]) -> int:
     verdict = evaluate(fp, baseline)
     print_summary(fp, verdict, wall, relink, baseline)
     if args.json:
-        print(json.dumps({
-            "module": args.module,
-            "fingerprint": asdict(fp),
-            "verdict": {"passed": verdict.passed, "reasons": verdict.reasons},
-            "inner_loop_wall_s": wall,
-            "incremental_relink_s": relink,
-        }))
+        print(
+            json.dumps(
+                {
+                    "module": args.module,
+                    "fingerprint": asdict(fp),
+                    "verdict": {"passed": verdict.passed, "reasons": verdict.reasons},
+                    "inner_loop_wall_s": wall,
+                    "incremental_relink_s": relink,
+                }
+            )
+        )
     return 0 if verdict.passed else 1
+
+
+def main(argv: list[str]) -> int:
+    context = _execution_context()
+    with harness_memory_guard.guarded_harness_scope(
+        prefix=context.prefix,
+        repo_root=context.repo_root,
+        artifact_root=context.artifact_root,
+        label="witness_iter",
+        env=context.env,
+        limits=context.limits,
+    ):
+        return _main(argv)
 
 
 if __name__ == "__main__":

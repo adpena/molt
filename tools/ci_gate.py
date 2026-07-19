@@ -542,7 +542,7 @@ def _build_checks() -> list[Check]:
             # backlog of such lines, and a fresh gate must not flip tier-1 red.
             # NAMED strict-flip condition lives in tools/proof_plan.toml
             # [[gate_flip]] registry (name="findings_memo_lint", strict_when =
-            # "live_count == 0", count_cmd = "findings_memo_lint.py --count"), read
+            # "live_count == 0", count_detector = "findings_memo_lint"), read
             # by check_gate_flips.py: burn the backlog to zero via
             # tools/findings_registry.py, then set state="strict" and swap this to
             # `findings_memo_lint.py --strict`. required=False + warn mode so it is

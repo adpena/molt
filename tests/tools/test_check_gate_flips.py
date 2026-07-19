@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -64,17 +66,44 @@ def _write_config(tmp_path, body):
     return p
 
 
-def test_main_check_fails_on_met_but_unflipped(tmp_path):
-    # count_cmd prints "0" -> live_count == 0 is MET while state is still warn.
+def test_main_check_fails_on_met_but_unflipped(tmp_path, monkeypatch):
+    detector = tmp_path / "count_zero.py"
+    detector.write_text("print(0)\n", encoding="utf-8")
+    monkeypatch.setitem(
+        cgf.COUNT_DETECTORS,
+        "test_zero",
+        cgf.CountDetector(str(detector), ()),
+    )
     body = (
         "[[gate_flip]]\n"
         'name = "leaky"\n'
         'state = "warn"\n'
         'strict_when = "live_count == 0"\n'
-        'count_cmd = "python -c \\"print(0)\\""\n'
+        'count_detector = "test_zero"\n'
     )
     cfg = _write_config(tmp_path, body)
     assert cgf.main(["--config", str(cfg), "--check"]) == 1
+
+
+def test_legacy_shell_count_command_is_rejected(tmp_path):
+    cfg = _write_config(
+        tmp_path,
+        "[[gate_flip]]\n"
+        'name = "legacy"\n'
+        'state = "warn"\n'
+        'strict_when = "live_count == 0"\n'
+        'count_cmd = "python -c \\"print(0)\\""\n',
+    )
+
+    assert cgf.main(["--config", str(cfg), "--check"]) == 2
+
+
+def test_json_detector_extracts_typed_non_negative_count():
+    detector = cgf.CountDetector("ignored.py", (), ("counts", "stale"))
+
+    assert detector.parse('{"counts": {"stale": 7}}') == 7
+    with pytest.raises(ValueError, match="must be an integer"):
+        detector.parse('{"counts": {"stale": 7.5}}')
 
 
 def test_main_check_passes_when_all_strict(tmp_path):

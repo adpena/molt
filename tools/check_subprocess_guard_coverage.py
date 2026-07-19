@@ -45,6 +45,7 @@ SUBPROCESS_METHODS = frozenset(
     }
 )
 OS_SIGNAL_METHODS = frozenset({"kill", "killpg"})
+OS_SHELL_METHODS = frozenset({"system", "popen"})
 PROCESS_OBJECT_SIGNAL_METHODS = frozenset({"kill", "terminate"})
 SHELL_KILL_PATTERNS = (
     "Stop-Process",
@@ -58,6 +59,7 @@ SHELL_KILL_PATTERNS = (
     "pkill -",
     "taskkill",
 )
+_UNRESOLVED_CONSTANT = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,9 +282,9 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/bootstrap_llvm.py",
-        "_verify_llvm_config",
+        "_tool_version",
         "run",
-        "bounded llvm-config version probe after explicit LLVM setup",
+        "single bounded version probe shared by LLVM tool verification",
     ),
     AllowedRawSubprocessUse(
         "tools/check_perf_freshness.py",
@@ -295,6 +297,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "check_idempotence",
         "run",
         "bounded generator idempotence child with explicit timeout and captured output",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_gate_flips.py",
+        "_run_count_detector",
+        "run",
+        "bounded checked-in detector argv; repository data cannot become shell syntax",
     ),
     AllowedRawSubprocessUse(
         "tools/check_rustfmt.py",
@@ -437,25 +445,25 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded oracle helper used by Pact witness tooling under explicit runner custody",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_queue.py",
+        "tools/proof_queue_pkg/state.py",
         "_git_snapshot.run_git",
         "run",
         "bounded git snapshot probe recorded with every proof-queue row",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_queue.py",
-        "_run_one",
+        "tools/proof_queue_pkg/custody.py",
+        "_launch_queued_command",
         "Popen",
         "proof queue custody boundary launching guarded proof commands with logs and contention keys",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_queue.py",
+        "tools/proof_queue_pkg/custody.py",
         "_launch_detached_runner",
         "Popen",
         "proof queue detached runner custody boundary records run id, command, and log path",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_queue.py",
+        "tools/proof_queue_pkg/custody.py",
         "_pid_alive",
         "os.kill",
         "bounded PID liveness probe for stale proof-queue row pruning",
@@ -502,6 +510,30 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run_guarded",
         "Popen",
         "lowest-level guarded subprocess implementation",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "run_guarded.terminate_direct_child_handle",
+        "process.terminate",
+        "memory guard graceful cleanup targets only its captured direct child handle",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "run_guarded.terminate_direct_child_handle",
+        "process.kill",
+        "memory guard escalation targets only the same captured direct child handle",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue_pkg/custody.py",
+        "_terminate_queue_owned_guard_process",
+        "process.terminate",
+        "proof queue graceful cancellation targets only its owned guard process",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue_pkg/custody.py",
+        "_terminate_queue_owned_guard_process",
+        "process.kill",
+        "proof queue escalation targets only the same owned guard process",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_custody.py",
@@ -589,10 +621,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/perf_calibration.py",
-        "run_and_measure",
+        "_kill_owned_process",
         "process.kill",
-        "calibration workload timeout cleanup kills only the owned benchmark "
-        "child spawned by the same function",
+        "single calibration cleanup authority kills only the exact benchmark "
+        "child handle passed by its spawning owner",
     ),
     AllowedRawSubprocessUse(
         "tools/perf_calibration.py",
@@ -606,13 +638,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "main",
         "run",
         "compatibility facade launches tools/memory_guard.py as the custody owner",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/check_subprocess_guard_coverage.py",
-        "<module>",
-        "shell.kill",
-        "static checker pattern vocabulary for shell kill detection",
-        expected_count=10,
     ),
     AllowedRawSubprocessUse(
         "tests/cli/test_backend_daemon_sequential.py",
@@ -683,19 +708,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "interactive wrangler live-worker probe force-closes its own child group",
     ),
     AllowedRawSubprocessUse(
-        "tests/tools/test_subprocess_guard_coverage.py",
-        "test_unclassified_shell_pkill_string_fails",
-        "shell.kill",
-        "static checker fixture that proves unclassified shell process-kill strings fail",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/tools/test_subprocess_guard_coverage.py",
-        "test_unclassified_makefile_pkill_fails",
-        "shell.kill",
-        "static checker fixture that proves unclassified Makefile process-kill "
-        "strings fail",
-    ),
-    AllowedRawSubprocessUse(
         "tests/cli/test_cli_import_collection.py",
         "test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
         "os.kill",
@@ -744,12 +756,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "Popen",
         "backend daemon start uses HarnessExecutionContext, process-group kwargs, "
         "and repo-sentinel startup custody",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli/setup_readiness.py",
-        "_llvm_config_matches_major",
-        "run",
-        "bounded llvm-config version probe for explicit toolchain validation",
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli/setup_readiness.py",
@@ -803,6 +809,7 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.direct_imports: dict[str, str] = {}
         self.direct_os_imports: dict[str, str] = {}
         self.stack: list[str] = []
+        self.constant_scopes: list[dict[str, object]] = [{}]
         self.calls: list[RawSubprocessCall] = []
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -820,13 +827,15 @@ class _SubprocessVisitor(ast.NodeVisitor):
                     self.direct_imports[alias.asname or alias.name] = alias.name
         if node.module == "os":
             for alias in node.names:
-                if alias.name in OS_SIGNAL_METHODS:
+                if alias.name in OS_SIGNAL_METHODS | OS_SHELL_METHODS:
                     self.direct_os_imports[alias.asname or alias.name] = alias.name
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.stack.append(node.name)
+        self.constant_scopes.append({})
         self.generic_visit(node)
+        self.constant_scopes.pop()
         self.stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -837,44 +846,122 @@ class _SubprocessVisitor(ast.NodeVisitor):
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.stack.append(node.name)
+        self.constant_scopes.append({})
+        arguments = [
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ]
+        if node.args.vararg is not None:
+            arguments.append(node.args.vararg)
+        if node.args.kwarg is not None:
+            arguments.append(node.args.kwarg)
+        for argument in arguments:
+            self.constant_scopes[-1][argument.arg] = _UNRESOLVED_CONSTANT
         self.generic_visit(node)
+        self.constant_scopes.pop()
         self.stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        value = self._constant_value(node.value)
+        for target in node.targets:
+            self._bind_constant(target, value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        value = None if node.value is None else self._constant_value(node.value)
+        self._bind_constant(node.target, value)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._bind_constant(node.target, None)
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         method = self._raw_call_method(node.func)
         if method is not None:
-            source = ast.get_source_segment(self.source_text, node)
-            if source is None:
-                source = f"{method}(...)"
-            self.calls.append(
-                RawSubprocessCall(
-                    path=self.path,
-                    line=node.lineno,
-                    qualname=".".join(self.stack) if self.stack else "<module>",
-                    method=method,
-                    source=" ".join(source.strip().split()),
-                )
-            )
+            self._record_call(node, method)
+        if self._is_shell_execution(node, method=method):
+            self._record_call(node, "shell.exec")
+        command = self._executed_constant_command(node, method=method)
+        if command is not None and any(
+            pattern in command for pattern in SHELL_KILL_PATTERNS
+        ):
+            self._record_call(node, "shell.kill")
         self.generic_visit(node)
 
-    def visit_Constant(self, node: ast.Constant) -> None:
-        if isinstance(node.value, str) and any(
-            pattern in node.value for pattern in SHELL_KILL_PATTERNS
-        ):
-            source = ast.get_source_segment(self.source_text, node) or repr(node.value)
-            self.calls.append(
-                RawSubprocessCall(
-                    path=self.path,
-                    line=node.lineno,
-                    qualname=".".join(self.stack) if self.stack else "<module>",
-                    method="shell.kill",
-                    source=" ".join(source.strip().split()),
-                )
+    def _record_call(self, node: ast.Call, method: str) -> None:
+        source = ast.get_source_segment(self.source_text, node)
+        if source is None:
+            source = f"{method}(...)"
+        self.calls.append(
+            RawSubprocessCall(
+                path=self.path,
+                line=node.lineno,
+                qualname=".".join(self.stack) if self.stack else "<module>",
+                method=method,
+                source=" ".join(source.strip().split()),
             )
-        self.generic_visit(node)
+        )
+
+    def _bind_constant(self, target: ast.expr, value: object | None) -> None:
+        if isinstance(target, (ast.List, ast.Tuple)):
+            for item in target.elts:
+                self._bind_constant(item, None)
+            return
+        if isinstance(target, ast.Starred):
+            self._bind_constant(target.value, None)
+            return
+        if isinstance(target, ast.Name):
+            self.constant_scopes[-1][target.id] = (
+                _UNRESOLVED_CONSTANT if value is None else value
+            )
+
+    def _constant_value(self, node: ast.expr) -> object | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bool)):
+            return node.value
+        if isinstance(node, ast.Name):
+            for scope in reversed(self.constant_scopes):
+                if node.id in scope:
+                    value = scope[node.id]
+                    return None if value is _UNRESOLVED_CONSTANT else value
+            return None
+        if isinstance(node, (ast.List, ast.Tuple)):
+            items = [self._constant_value(item) for item in node.elts]
+            if all(isinstance(item, str) for item in items):
+                return tuple(items)
+        return None
+
+    def _executed_constant_command(
+        self, node: ast.Call, *, method: str | None
+    ) -> str | None:
+        if method not in SUBPROCESS_METHODS | {"os.system", "os.popen"}:
+            return None
+        if not node.args:
+            return None
+        value = self._constant_value(node.args[0])
+        if isinstance(value, str):
+            return value
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+            return " ".join(value)
+        return None
+
+    def _is_shell_execution(self, node: ast.Call, *, method: str | None) -> bool:
+        if method in {"os.system", "os.popen"}:
+            return True
+        if method not in SUBPROCESS_METHODS:
+            return False
+        for keyword in node.keywords:
+            if keyword.arg != "shell":
+                continue
+            return self._constant_value(keyword.value) is True
+        return False
 
     def _raw_call_method(self, node: ast.expr) -> str | None:
         method = self._subprocess_method(node)
+        if method is not None:
+            return method
+        method = self._os_shell_method(node)
         if method is not None:
             return method
         method = self._os_signal_method(node)
@@ -905,6 +992,20 @@ class _SubprocessVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Name):
             method = self.direct_os_imports.get(node.id)
             if method is not None:
+                return f"os.{method}"
+        return None
+
+    def _os_shell_method(self, node: ast.expr) -> str | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.os_aliases
+            and node.attr in OS_SHELL_METHODS
+        ):
+            return f"os.{node.attr}"
+        if isinstance(node, ast.Name):
+            method = self.direct_os_imports.get(node.id)
+            if method in OS_SHELL_METHODS:
                 return f"os.{method}"
         return None
 
