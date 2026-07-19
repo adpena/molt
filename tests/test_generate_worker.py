@@ -1,7 +1,7 @@
+from tests.process_guard_common import run_guarded_test_process
 import json
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from molt._wasm_abi_generated import (
@@ -456,7 +456,7 @@ if (!plan.dispatchReservedRuntimeCallable || !plan.reservedRuntimeCallable.tramp
 """.lstrip(),
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", str(script)],
         cwd=root,
         text=True,
@@ -513,7 +513,7 @@ try {{
 """.lstrip(),
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", str(script)],
         cwd=root,
         text=True,

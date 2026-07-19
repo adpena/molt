@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from subprocess import SubprocessError, run as run_process
+from subprocess import SubprocessError
 import sys
 
 from molt.cli.project_roots import _find_molt_root
 from molt.dx import DxConfigError, development_artifact_env
+from molt import process_guard
 
 PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
 
@@ -55,7 +56,7 @@ def _main_worktree_venv(repo_root: Path) -> Path | None:
     if not (repo_root / ".git").exists():
         return None
     try:
-        proc = run_process(
+        proc = process_guard.run_completed_command(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root,
             capture_output=True,
@@ -139,7 +140,7 @@ def handle_queue_command(args: argparse.Namespace) -> int:
     except DxConfigError as exc:
         print(f"molt queue: {exc}", file=sys.stderr)
         return 2
-    result = run_process(
+    result = process_guard.run_completed_command(
         [sys.executable, str(proof_queue), *queue_args],
         cwd=repo_root,
         env=env,

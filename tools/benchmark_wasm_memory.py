@@ -7,8 +7,13 @@ import argparse
 import hashlib
 import json
 import statistics
-import subprocess
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +59,7 @@ process.stdout.write(JSON.stringify({
 
 
 def sample(artifact: Path, mode: str) -> dict[str, int | float | bool | None]:
-    completed = subprocess.run(
+    completed = _COMMANDS.run(
         [
             "node",
             "--expose-gc",
@@ -120,7 +125,7 @@ def main() -> int:
         "artifact": str(artifact),
         "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
         "artifact_bytes": artifact.stat().st_size,
-        "git_revision": subprocess.run(
+        "git_revision": _COMMANDS.run(
             ["git", "rev-parse", "HEAD"],
             check=True,
             capture_output=True,

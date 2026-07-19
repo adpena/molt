@@ -10,8 +10,8 @@ M05/M06/M12/M14/M17-M20/M23/M28/M33/M62/M63/M70.
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -156,7 +156,7 @@ def test_gate_fails_on_missing_mechanizes_anchor() -> None:
 
 def test_gate_cli_exit_codes() -> None:
     # PASS -> exit 0 on the real repo.
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(_REPO / "tools" / "check_subagent_contract.py")],
         capture_output=True, text=True, cwd=str(_REPO),
     )

@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +197,7 @@ def _rust_files(paths: list[Path]) -> list[Path]:
 def _default_rust_files() -> list[Path]:
     if (ROOT / ".git").exists():
         try:
-            result = subprocess.run(
+            result = _COMMANDS.run(
                 ["git", "-C", str(ROOT), "grep", "-l", 'extern "', "--", "*.rs"],
                 capture_output=True,
                 text=True,

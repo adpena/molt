@@ -18,12 +18,17 @@ import argparse
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 from generator_io import generated_file_matches, write_generated_text
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "runtime" / "heap_kinds.toml"
@@ -620,11 +625,13 @@ def _format_rust(source: str) -> str:
     rustfmt = shutil.which("rustfmt")
     if rustfmt is None:
         raise RuntimeError("rustfmt is required to generate heap-kind Rust authorities")
-    completed = subprocess.run(
+    completed = _COMMANDS.run(
         [rustfmt, "--edition", "2024", "--emit", "stdout"],
         cwd=ROOT,
         input=source,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

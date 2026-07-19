@@ -5,10 +5,15 @@ import datetime as dt
 import json
 import os
 import shlex
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 DEFAULT_EVENT_LOG = Path(".molt/state/advisory_events.jsonl")
 
@@ -72,7 +77,7 @@ def classify(
     )
     event = {"purpose": purpose, "schema": list(schema)}
     try:
-        result = subprocess.run(
+        result = _COMMANDS.run(
             shlex.split(resolved, posix=True),
             input=prompt,
             capture_output=True,

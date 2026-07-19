@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from tools import harness_memory_guard
 
@@ -238,7 +239,7 @@ def guarded_temporary_directory(
 def run_guarded_test_process(
     args: Sequence[str],
     *,
-    prefix: str,
+    prefix: str = "MOLT_PYTEST",
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
@@ -246,8 +247,24 @@ def run_guarded_test_process(
     capture_output: bool = True,
     text: bool = True,
     check: bool = False,
-    input: str | None = None,
+    input: str | bytes | None = None,
+    stdout: int | None = None,
+    stderr: int | None = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
 ) -> harness_memory_guard.GuardedCompletedProcess:
+    supported_streams = {None, subprocess.PIPE, subprocess.DEVNULL}
+    if stdout not in supported_streams:
+        raise ValueError("guarded test stdout must inherit, PIPE, or DEVNULL")
+    if stderr not in supported_streams | {subprocess.STDOUT}:
+        raise ValueError("guarded test stderr must inherit, PIPE, DEVNULL, or STDOUT")
+    if capture_output and (stdout is not None or stderr is not None):
+        raise ValueError("capture_output cannot be combined with stdout or stderr")
+    if stderr == subprocess.STDOUT:
+        raise ValueError(
+            "guarded test commands preserve stdout/stderr separately; use an "
+            "explicitly owned streaming process when interleaving is required"
+        )
     command = list(args)
     process_env = os.environ if env is None else env
     role = guarded_process_role(command)
@@ -258,6 +275,7 @@ def run_guarded_test_process(
         explicit=timeout,
         default=default_timeout,
     )
+    capture_streams = capture_output or stdout is not None or stderr is not None
     result = harness_memory_guard.guarded_completed_process(
         command,
         prefix=prefix,
@@ -265,10 +283,16 @@ def run_guarded_test_process(
         cwd=cwd,
         env=process_env,
         input=input,
-        capture_output=capture_output,
+        capture_output=capture_streams,
         text=text,
         timeout=resolved_timeout,
+        encoding=encoding,
+        errors=errors,
     )
+    if stderr == subprocess.DEVNULL:
+        result.stderr = None
+    if stdout == subprocess.DEVNULL:
+        result.stdout = None
     if (
         resolved_timeout is not None
         and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
@@ -290,3 +314,71 @@ def run_guarded_test_process(
             stderr=result.stderr,
         )
     return result
+
+
+def check_output_guarded_test_process(
+    args: Sequence[str],
+    **kwargs: object,
+) -> str | bytes:
+    """Return stdout from the canonical guarded test execution boundary."""
+
+    if "stdout" in kwargs:
+        raise ValueError("stdout is owned by check_output_guarded_test_process")
+    result = run_guarded_test_process(
+        args,
+        capture_output=False,
+        stdout=subprocess.PIPE,
+        check=True,
+        **kwargs,
+    )
+    assert result.stdout is not None
+    return result.stdout
+
+
+def start_owned_test_process(
+    args: Sequence[str],
+    *,
+    prefix: str = "MOLT_PYTEST",
+    cwd: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stdin: int | None = None,
+    stdout: int | None = None,
+    stderr: int | None = None,
+    text: bool = False,
+    encoding: str | None = None,
+    errors: str | None = None,
+    creationflags: int = 0,
+) -> subprocess.Popen[Any]:
+    """Start one caller-owned direct child with platform process-group custody."""
+
+    command = list(args)
+    run_env = harness_memory_guard.canonical_harness_env(env)
+    limits = harness_memory_guard.limits_from_env(prefix, run_env)
+    group_kwargs = harness_memory_guard.batch_process_group_kwargs(
+        limits,
+        env=run_env,
+    )
+    if creationflags:
+        group_kwargs["creationflags"] = int(group_kwargs.get("creationflags", 0)) | int(
+            creationflags
+        )
+    return subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=run_env,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        encoding=encoding,
+        errors=errors,
+        **group_kwargs,
+    )
+
+
+def close_owned_test_process(process: subprocess.Popen[Any]) -> None:
+    """Close exactly the process group created by start_owned_test_process."""
+
+    if process.poll() is None:
+        harness_memory_guard.force_close_process_group(process)
+    process.wait()

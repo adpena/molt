@@ -9,7 +9,6 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -19,6 +18,12 @@ import urllib.request
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "config" / "actionlint.toml"
@@ -111,8 +116,13 @@ def _valid(
         "executable_sha256": expected_executable,
     }:
         return False
-    result = subprocess.run(
-        [str(executable), "-version"], capture_output=True, text=True, check=False
+    result = _COMMANDS.run(
+        [str(executable), "-version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     lines = result.stdout.splitlines()
     return result.returncode == 0 and bool(lines) and lines[0] in {

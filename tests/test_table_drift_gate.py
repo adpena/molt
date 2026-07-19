@@ -21,6 +21,7 @@ Run:
 """
 
 from __future__ import annotations
+from tests.process_guard_common import check_output_guarded_test_process
 
 import importlib.util
 import subprocess
@@ -33,7 +34,7 @@ import pytest
 
 def _find_repo_root() -> Path:
     try:
-        out = subprocess.check_output(
+        out = check_output_guarded_test_process(
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.DEVNULL,
             text=True,

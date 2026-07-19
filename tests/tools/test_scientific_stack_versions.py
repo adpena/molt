@@ -1,7 +1,7 @@
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,22 +314,22 @@ def test_source_checkout_attestation_rejects_every_dirty_input(
 ) -> None:
     source = tmp_path / "scipy"
     source.mkdir()
-    subprocess.run(["git", "init", "-q", str(source)], check=True)
-    subprocess.run(
+    run_guarded_test_process(["git", "init", "-q", str(source)], check=True)
+    run_guarded_test_process(
         ["git", "-C", str(source), "config", "user.email", "molt@example.invalid"],
         check=True,
     )
-    subprocess.run(
+    run_guarded_test_process(
         ["git", "-C", str(source), "config", "user.name", "Molt Test"],
         check=True,
     )
     tracked = source / "scipy.c"
     tracked.write_text("int scipy(void) { return 1; }\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(source), "add", "scipy.c"], check=True)
-    subprocess.run(
+    run_guarded_test_process(["git", "-C", str(source), "add", "scipy.c"], check=True)
+    run_guarded_test_process(
         ["git", "-C", str(source), "commit", "-q", "-m", "source"], check=True
     )
-    head = subprocess.run(
+    head = run_guarded_test_process(
         ["git", "-C", str(source), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,

@@ -21,7 +21,6 @@ import os
 import re
 import secrets
 import statistics
-import subprocess
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -35,6 +34,12 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parent / "results" / "l7_numeric_attestation.schema.json"
@@ -570,7 +575,7 @@ def _load_schema() -> dict[str, Any]:
 def _parent_command(args: list[str]) -> bytes:
     env = dict(os.environ)
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    completed = subprocess.run(
+    completed = _COMMANDS.run(
         args,
         cwd=REPO_ROOT,
         env=env,

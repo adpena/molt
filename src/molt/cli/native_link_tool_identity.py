@@ -12,6 +12,7 @@ from molt.cli.llvm_wasi_tools import (
     llvm_tool_candidates,
 )
 from molt.cli.native_link_plan import NativeLinkPlan, NativeObjectFormat
+from molt import process_guard
 
 
 def _resolve_native_link_executable(
@@ -37,7 +38,7 @@ def _resolve_native_link_executable(
 
 def _system_linker_from_driver(driver: Path) -> Path | None:
     try:
-        result = subprocess.run(
+        result = process_guard.run_completed_command(
             [str(driver), "-print-prog-name=ld"],
             cwd=driver.parent,
             capture_output=True,
@@ -59,7 +60,7 @@ def _linker_from_driver_trace(plan: NativeLinkPlan, driver: Path) -> Path | None
     insert_at = 2 if driver.stem.lower() == "zig" and command[1:2] == ["cc"] else 1
     command.insert(insert_at, "-###")
     try:
-        result = subprocess.run(
+        result = process_guard.run_completed_command(
             command,
             cwd=driver.parent,
             capture_output=True,

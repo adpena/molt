@@ -42,6 +42,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # Windows consoles default to cp1252 and choke on non-ASCII; force UTF-8 so this
 # tool never dies on an encode error while relaying subprocess output (recurring
@@ -61,7 +67,7 @@ WASM_WITNESS_SECONDS = 1800  # ~30 min baseline the wasm witness cycle costs.
 def _cargo(args: list[str], capture: bool) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     cmd = ["cargo", *args]
-    return subprocess.run(
+    return _COMMANDS.run(
         cmd,
         cwd=REPO_ROOT,
         env=env,

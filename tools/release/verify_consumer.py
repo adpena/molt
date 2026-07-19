@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -16,6 +15,12 @@ import time
 import zipfile
 
 from .release_model import sha256_file, write_json
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
@@ -65,7 +70,7 @@ def _run(
     expected_output: str | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
-    result = subprocess.run(
+    result = _COMMANDS.run(
         argv,
         cwd=cwd,
         env=env,
@@ -155,7 +160,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             )
         )
         python = _venv_python(venv_root)
-        import_probe = subprocess.run(
+        import_probe = _COMMANDS.run(
             [str(python), "-c", "import molt"],
             cwd=root,
             env=clean_env,
@@ -233,7 +238,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
                 timeout=120,
             )
         )
-        removed_probe = subprocess.run(
+        removed_probe = _COMMANDS.run(
             [str(python), "-c", "import molt"],
             cwd=root,
             env=clean_env,

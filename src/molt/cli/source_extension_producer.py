@@ -104,6 +104,7 @@ from molt.scientific_stack_versions import (
     verify_cpython_abi_headers,
     verify_source_checkout,
 )
+from molt import process_guard
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -231,7 +232,7 @@ class _SourceSubmoduleIdentity:
 
 
 def _run_process(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return process_guard.run_completed_command(
         list(argv),
         cwd=cwd,
         capture_output=True,
@@ -558,7 +559,7 @@ def _run_locked_source_extension_producer(
         environment.python_executable.parent.resolve(),
         child_environment.get("PATH"),
     )
-    return subprocess.run(
+    return process_guard.run_completed_command(
         argv,
         cwd=_REPO_ROOT,
         env=child_environment,

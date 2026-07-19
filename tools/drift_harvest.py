@@ -56,6 +56,12 @@ for import_root in (REPO_ROOT, SRC_ROOT):
 from tools import lane_maturity  # noqa: E402
 from tools.import_file import load_module_from_path  # noqa: E402
 
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 def _worktree_canonical_molt_root(repo_root: Path) -> Path:
     """Load the invoking worktree's authority despite an older editable install."""
@@ -111,7 +117,7 @@ def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
 
 
 def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return _COMMANDS.run(
         ["git", *args],
         cwd=str(cwd or REPO_ROOT),
         capture_output=True,

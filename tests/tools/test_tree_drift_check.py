@@ -1,6 +1,7 @@
 """Teeth for tools/tree_drift_check.py: prove it flags stale/dirty trees LOUD."""
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import subprocess
 import sys
@@ -12,13 +13,13 @@ TOOL = Path(__file__).resolve().parents[2] / "tools" / "tree_drift_check.py"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
+    return run_guarded_test_process(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
 
 
 def _run_tool(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded_test_process(
         [sys.executable, str(TOOL), *args],
         cwd=repo,
         capture_output=True,

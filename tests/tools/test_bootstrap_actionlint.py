@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -7,6 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -52,9 +54,13 @@ def test_valid_rejects_tampered_executable(tmp_path: Path, monkeypatch) -> None:
         json.dumps(receipt), encoding="utf-8"
     )
     monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "v1.7.12\n", ""),
+        bootstrap,
+        "_COMMANDS",
+        SimpleNamespace(
+            run=lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], 0, "v1.7.12\n", ""
+            )
+        ),
     )
     executable_digest = hashlib.sha256(b"trusted").hexdigest()
     assert bootstrap._valid(
@@ -132,7 +138,7 @@ def test_kernel_lock_recovers_after_owner_process_exit(tmp_path: Path) -> None:
         "from tools.bootstrap_actionlint import _install_lock; "
         f"cm=_install_lock(Path({str(lock)!r})); cm.__enter__(); os._exit(0)"
     )
-    completed = subprocess.run([sys.executable, "-c", code], cwd=bootstrap.ROOT)
+    completed = run_guarded_test_process([sys.executable, "-c", code], cwd=bootstrap.ROOT)
     assert completed.returncode == 0
     with bootstrap._install_lock(lock, timeout=1):
         assert lock.exists()

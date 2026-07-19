@@ -30,6 +30,12 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # Files whose staleness silently MASKS the witness/E1 frontier: if the shared
 # checkout's version of any of these differs from origin/main, an acceptance run
@@ -51,7 +57,7 @@ DEFAULT_BEHIND_THRESHOLD = 1
 
 
 def _git(args: list[str], cwd: Path) -> str:
-    return subprocess.run(
+    return _COMMANDS.run(
         ["git", *args],
         cwd=cwd,
         check=True,
@@ -71,7 +77,7 @@ def _porcelain(root: Path) -> dict[str, str]:
     code, which may be a leading space for a worktree-only modification), so the
     output must NOT be stripped -- read it raw and split on newlines only.
     """
-    out = subprocess.run(
+    out = _COMMANDS.run(
         ["git", "status", "--porcelain"],
         cwd=root,
         check=True,

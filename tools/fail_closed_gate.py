@@ -96,12 +96,18 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"
@@ -665,7 +671,7 @@ def _git_grep_quarantine_text_files(root: Path) -> list[Path] | None:
         cmd.extend(["-e", token])
     cmd.append("--")
     cmd.extend(_QUARANTINE_SCAN_DIRS)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _COMMANDS.run(cmd, capture_output=True, text=True)
     if result.returncode == 1:
         return []
     if result.returncode != 0:

@@ -46,6 +46,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.fs_delete import delete_path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
@@ -182,7 +188,7 @@ def _autodetect_root() -> Path | None:
 def _registered_worktrees(root: Path) -> set[Path]:
     """Absolute paths of every git-registered worktree (always protected)."""
     try:
-        out = subprocess.run(
+        out = _COMMANDS.run(
             ["git", "-C", str(REPO_ROOT), "worktree", "list", "--porcelain"],
             capture_output=True,
             text=True,

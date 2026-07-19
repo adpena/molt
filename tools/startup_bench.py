@@ -12,7 +12,6 @@ import platform
 import re
 import shutil
 import statistics
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -29,6 +28,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 PROBES = {
     "hello": 'print("hello startup")\n',
@@ -66,7 +71,7 @@ def _measure(command: list[str], *, env: dict[str, str], samples: int, timeout: 
     records: list[dict[str, Any]] = []
     for index in range(samples):
         started = time.perf_counter_ns()
-        result = subprocess.run(
+        result = _COMMANDS.run(
             command,
             cwd=ROOT,
             env=env,

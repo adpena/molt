@@ -22,6 +22,7 @@ Two things are proved here:
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import json
 from pathlib import Path
@@ -53,7 +54,7 @@ def _uv_run(*args: str, cwd: Path, with_packages: list[str]) -> subprocess.Compl
         "python",
         *args,
     ]
-    return subprocess.run(
+    return run_guarded_test_process(
         cmd,
         cwd=cwd,
         capture_output=True,

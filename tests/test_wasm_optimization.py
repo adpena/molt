@@ -254,7 +254,7 @@ class TestWasmOptReduction:
             output.write_bytes(dummy.read_bytes())
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(mod, "_COMMANDS", SimpleNamespace(run=fake_run))
         result = mod.optimize(dummy, output_path=output, level="Oz", converge=False)
 
         assert result["ok"]
@@ -283,10 +283,12 @@ class TestWasmOptReduction:
             mod.harness_memory_guard, "guarded_completed_process", fake_guarded
         )
         monkeypatch.setattr(
-            mod.subprocess,
-            "run",
-            lambda cmd, **_kwargs: subprocess.CompletedProcess(
-                cmd, 0, "wasm-opt test", ""
+            mod,
+            "_COMMANDS",
+            SimpleNamespace(
+                run=lambda cmd, **_kwargs: subprocess.CompletedProcess(
+                    cmd, 0, "wasm-opt test", ""
+                )
             ),
         )
 
@@ -315,7 +317,7 @@ class TestWasmOptReduction:
             output_path.write_bytes(_exported_func_module("wrong"))
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(mod, "_COMMANDS", SimpleNamespace(run=fake_run))
 
         result = mod.optimize(
             input_wasm,

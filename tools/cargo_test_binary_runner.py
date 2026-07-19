@@ -10,9 +10,14 @@ cannot leak into sibling tests or hide later failures behind SIGABRT/ENOMEM.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 RESOURCE_TEST_TARGET = "resource_enforcement"
@@ -24,7 +29,7 @@ def is_resource_test_binary(executable: str) -> bool:
 
 
 def listed_tests(executable: str, inherited_args: list[str]) -> list[str]:
-    process = subprocess.run(
+    process = _COMMANDS.run(
         [executable, "--list", "--format", "terse", *inherited_args],
         check=False,
         capture_output=True,
@@ -53,7 +58,7 @@ def listed_tests(executable: str, inherited_args: list[str]) -> list[str]:
 def run_resource_tests(executable: str, inherited_args: list[str]) -> int:
     failed = False
     for identity in listed_tests(executable, inherited_args):
-        process = subprocess.run(
+        process = _COMMANDS.run(
             [
                 executable,
                 "--exact",
@@ -89,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"cargo-test-binary-runner: {exc}", file=sys.stderr)
             return 2
     try:
-        return subprocess.run(args, check=False).returncode
+        return _COMMANDS.run(args, check=False).returncode
     except OSError as exc:
         print(f"cargo-test-binary-runner: {exc}", file=sys.stderr)
         return 2

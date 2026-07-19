@@ -22,9 +22,9 @@ translation unit and asserts BOTH halves so the fix cannot silently rot:
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -53,7 +53,7 @@ def _require(tool: str | None, label: str) -> str:
 
 
 def _nm_symbols(nm: str, artifact: Path) -> list[str]:
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [nm, str(artifact)],
         capture_output=True,
         text=True,
@@ -88,7 +88,7 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     obj = tmp_path / "ld.o"
-    subprocess.run(
+    run_guarded_test_process(
         [
             clang,
             "--target=wasm32-wasip1",
@@ -107,7 +107,7 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     # BASELINE: the default libc.a alone must still contribute the abort stub,
     # otherwise this test is no longer guarding the real capability.
     baseline = tmp_path / "baseline.wasm"
-    subprocess.run(
+    run_guarded_test_process(
         [wasm_ld, "-r", "--whole-archive", str(obj), "--no-whole-archive",
          str(libc), "-o", str(baseline)],
         check=True,
@@ -124,7 +124,7 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     # objects) and add the binary128 builtins. Mirrors
     # _link_runtime_staticlib_to_reloc_wasm's archive ordering.
     fixed = tmp_path / "fixed.wasm"
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             wasm_ld,
             "-r",

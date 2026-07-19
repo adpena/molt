@@ -7,9 +7,9 @@ when the classifier rots. A classifier that only ever says LIVE certifies nothin
 """
 
 from __future__ import annotations
+from tests.process_guard_common import run_guarded_test_process
 
 import datetime as _dt
-import subprocess
 import sys
 from pathlib import Path
 
@@ -167,7 +167,7 @@ def test_selftest_fails_if_terminal_misclassified(monkeypatch) -> None:
 
 
 def test_cli_check_exit_code() -> None:
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(ROOT / "tools" / "claims_status.py"), "--check"],
         capture_output=True,
         text=True,
@@ -187,7 +187,7 @@ def test_cli_live_report_is_warn_only(tmp_path: Path) -> None:
         f"| STALE-LANE | ag | {_ts(99)} | CLAIMED | silent |\n",
         encoding="utf-8",
     )
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [
             sys.executable,
             str(ROOT / "tools" / "claims_status.py"),

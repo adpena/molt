@@ -28,10 +28,15 @@ wrapper is fail-open.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor  # type: ignore
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 try:
     from tools.hooks import _common
@@ -131,7 +136,7 @@ def _window_subjects(root: Path, start_head: str | None) -> str:
     if not start_head:
         return ""
     try:
-        r = subprocess.run(
+        r = _COMMANDS.run(
             ["git", "log", f"{start_head}..HEAD", "--format=%s"],
             cwd=str(root),
             capture_output=True,
