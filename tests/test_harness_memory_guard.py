@@ -1495,6 +1495,158 @@ def test_guarded_completed_process_reports_actionable_timeout(
     assert "MOLT_TEST_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC" in result.stderr
 
 
+def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
+    monkeypatch,
+) -> None:
+    def fake_run_guarded(command, **kwargs):
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            timed_out=True,
+            elapsed_s=7.0,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "repro_context_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            harness_memory_guard.memory_guard.ProcessSnapshotError("/proc changed")
+        ),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    text_result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+        timeout=7,
+    )
+    bytes_result = harness_memory_guard.guarded_completed_process_to_tempfiles(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+        timeout=7,
+    )
+
+    assert text_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    assert bytes_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    for stderr in (text_result.stderr, bytes_result.stderr.decode()):
+        assert "timeout; terminated the tracked process tree" in stderr
+        assert '"schema":"molt.guard-repro-error.v1"' in stderr
+        assert '"error_type":"ProcessSnapshotError"' in stderr
+
+
+def test_repro_payload_preserves_profile_effective_env_and_violation_limit(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_repro_context_payload(**kwargs):
+        captured.update(kwargs)
+        return {"schema": "molt.guard-repro-context.v1"}
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "repro_context_payload",
+        fake_repro_context_payload,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+    effective_env = {"MOLT_SESSION_ID": "effective-profile-session"}
+
+    payload = harness_memory_guard._guard_repro_payload(
+        command=[sys.executable, "-c", "pass"],
+        cwd=None,
+        env={"MOLT_SESSION_ID": "raw-env"},
+        limits=limits,
+        timeout=5,
+        prefix="MOLT_TEST",
+        environ=effective_env,
+        max_global_rss_kb=123_456,
+    )
+
+    assert payload["prefix"] == "MOLT_TEST"
+    assert captured["environ"] is effective_env
+    assert captured["max_global_rss_kb"] == 123_456
+
+
+def test_command_profile_routes_effective_env_and_violation_limit_to_repro(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_guard_repro_payload(**kwargs):
+        captured.update(kwargs)
+        return {"schema": "molt.guard-repro-context.v1"}
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_guard_repro_payload",
+        fake_guard_repro_payload,
+    )
+    profile_log = tmp_path / "guarded-commands.jsonl"
+    env = {
+        "MOLT_GUARD_PROFILE_LOG": str(profile_log),
+        "MOLT_SESSION_ID": "profile-effective-env",
+    }
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+    violation = harness_memory_guard.memory_guard.RssViolation(
+        pid=123,
+        rss_kb=4096,
+        command="python hungry.py",
+        scope="process_tree",
+    )
+    violation_limits = harness_memory_guard.memory_guard.ResolvedMemoryLimits(
+        max_process_rss_kb=2_000,
+        max_total_rss_kb=3_000,
+        max_global_rss_kb=123_456,
+    )
+
+    _path, error = harness_memory_guard._append_guarded_command_profile(
+        command=[sys.executable, "hungry.py"],
+        prefix="MOLT_TEST",
+        cwd=tmp_path,
+        env=env,
+        limits=limits,
+        returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+        elapsed_s=1.0,
+        timeout_s=5.0,
+        violation=violation,
+        timed_out=False,
+        limit_at_violation=violation_limits,
+        orphaned_process_groups=(),
+    )
+
+    assert error is None
+    assert captured["environ"]["MOLT_SESSION_ID"] == "profile-effective-env"
+    assert captured["max_global_rss_kb"] == 123_456
+
+
 def test_guarded_completed_process_reports_orphan_cleanup(
     monkeypatch,
 ) -> None:

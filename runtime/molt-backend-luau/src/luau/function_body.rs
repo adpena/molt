@@ -38,7 +38,7 @@ impl LuauBackend {
             .collect();
         let params = typed_params.join(", ");
 
-        let name = sanitize_ident(&func.name);
+        let name = emit_function_ident(&func.name);
         if self.uses_forward_decls {
             // Forward-declared assignment form — @native is not supported on
             // bare `name = function(` in Luau, so we skip the attribute here.

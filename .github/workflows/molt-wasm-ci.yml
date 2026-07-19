@@ -60,7 +60,8 @@ jobs:
           rust-targets: wasm32-wasip1
           cache-cargo: "true"
           cache-namespace: wasm-ci
-          sync-args: "--frozen"
+          sync: "true"
+          sync-frozen: "true"
 
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
@@ -83,7 +84,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
 
       - name: Upload WASM receipt
-        if: always()
+        if: always() && hashFiles('proof-receipts/wasm.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-wasm

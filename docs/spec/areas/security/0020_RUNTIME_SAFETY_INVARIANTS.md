@@ -87,5 +87,5 @@ Notes:
 - `--log-dir` defaults to `logs/` and can be disabled by passing `--log-dir=`.
 
 ## 9. Tooling Prerequisites
-- `cargo +nightly miri setup` must be run once per toolchain install.
+- `RUST_NIGHTLY=$(tr -d '\r\n' < config/rust_nightly_toolchain.txt); cargo "+$RUST_NIGHTLY" miri setup` must be run once per toolchain install.
 - `cargo install cargo-fuzz` is required for `tools/runtime_safety.py fuzz`.

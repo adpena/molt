@@ -31,7 +31,7 @@ inductive LuauBinOp where
   -- arithmetic
   | add | sub | mul | div | idiv | mod | pow
   -- comparison
-  | eq | ne | lt | le | gt | ge
+  | eq | ne | lt | le | gt | ge | rawequal | not_rawequal
   -- logical
   | land | lor
   -- bitwise (models bit32.band/bor/bxor/lshift/rshift library calls)
@@ -43,6 +43,7 @@ inductive LuauBinOp where
 /-- Luau unary operators. -/
 inductive LuauUnOp where
   | neg     -- arithmetic negation (-)
+  | pos     -- arithmetic identity (+)
   | lnot    -- logical negation (not)
   | len     -- length operator (#)
   | abs     -- absolute value (math.abs)

@@ -84,6 +84,9 @@ SCCP_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "SCCP.lean"
 # Rust sources
 CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
+LUAU_CORE_TESTS_RS = LUAU_BACKEND_SRC / "luau" / "tests" / "core.rs"
+LUAU_HELPERS_RS = LUAU_BACKEND_SRC / "luau" / "helpers.rs"
+LUAU_PIPELINE_RS = LUAU_BACKEND_SRC / "luau" / "compile_pipeline.rs"
 TIR_TYPES_RS = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "types.rs"
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
 LEAN_PASSES_DIR = LEAN_DIR / "MoltTIR" / "Passes"
@@ -612,6 +615,96 @@ def check_luau_operators() -> CategoryResult:
     return result
 
 
+def check_luau_identity_lowering() -> CategoryResult:
+    """Compare every kernel-checked Lean admission cell with the Rust table."""
+    result = CategoryResult(
+        "luau_identity",
+        "Luau identity admission and raw-identity primitive (Lean <-> Rust)",
+    )
+    lean_text = _read(EVAL_LEAN)
+    emit_text = _read(LUAU_EMIT_LEAN)
+    rust_tests = _read(LUAU_CORE_TESTS_RS)
+    rust_helpers = _read(LUAU_HELPERS_RS)
+    rust_pipeline = _read(LUAU_PIPELINE_RS)
+
+    lean_match = re.search(
+        r"theorem\s+identityLowering_complete_matrix\s*:.*?=\s*\[(?P<rhs>.*?)\]\s*:=\s*by\s*rfl",
+        lean_text,
+        re.DOTALL,
+    )
+    rust_match = re.search(
+        r"fn\s+identity_provenance_matrix_matches_the_formal_admission_table\s*\(\)\s*\{.*?"
+        r"let\s+expected\s*=\s*\[(?P<matrix>.*?)\];",
+        rust_tests,
+        re.DOTALL,
+    )
+    if lean_match is None or rust_match is None:
+        result.items.append(
+            CheckItem(
+                "matrix receipts",
+                False,
+                f"Lean receipt={lean_match is not None}, Rust receipt={rust_match is not None}",
+            )
+        )
+        return result
+
+    lean_cells = [
+        "direct" if token == "directRawEqual" else token.replace(" ", "_")
+        for token in re.findall(
+            r"\.(directRawEqual|reject|constant\s+false)", lean_match.group("rhs")
+        )
+    ]
+    rust_cells = [
+        {"Direct": "direct", "Reject": "reject", "Constant(false)": "constant_false"}[token]
+        for token in re.findall(
+            r"Direct|Reject|Constant\(false\)", rust_match.group("matrix")
+        )
+    ]
+    provenances = [
+        "singleton_bool",
+        "singleton_none",
+        "value_int",
+        "value_float",
+        "value_str",
+        "reference",
+        "unknown",
+    ]
+    result.metrics["lean_cells"] = len(lean_cells)
+    result.metrics["rust_cells"] = len(rust_cells)
+    for index in range(49):
+        lhs = provenances[index // 7]
+        rhs = provenances[index % 7]
+        lean_cell = lean_cells[index] if index < len(lean_cells) else "missing"
+        rust_cell = rust_cells[index] if index < len(rust_cells) else "missing"
+        result.items.append(
+            CheckItem(
+                f"{lhs} x {rhs}",
+                lean_cell == rust_cell and lean_cell != "missing",
+                f"Lean={lean_cell}, Rust={rust_cell}",
+            )
+        )
+
+    primitive_checks = {
+        "Lean same-SSA dominance theorem": "theorem identityLowering_sameSsa"
+        in lean_text,
+        "Rust same-SSA dominance matrix": "same-SSA identity must dominate provenance"
+        in rust_tests,
+        "Lean is -> rawequal": bool(re.search(r"\|\s*\.is\s*=>\s*\.rawequal", emit_text)),
+        "Lean is_not -> not_rawequal": bool(
+            re.search(r"\|\s*\.is_not\s*=>\s*\.not_rawequal", emit_text)
+        ),
+        "Rust Direct -> molt_rawequal": "format!(\"molt_rawequal({lhs}, {rhs})\")"
+        in rust_helpers,
+        "Rust captures trusted rawequal": "local molt_rawequal = rawequal"
+        in rust_pipeline,
+        "Rust Direct avoids equality metamethod": "let operator = if negated"
+        not in rust_helpers,
+    }
+    for name, passed in primitive_checks.items():
+        result.items.append(CheckItem(name, passed, "raw identity contract"))
+    return result
+
+
 #
 # Category 6: Evaluation rules
 #
@@ -946,6 +1039,7 @@ ALL_CATEGORIES: dict[str, callable] = {
     "types": check_type_system,
     "luau_builtins": check_luau_builtins,
     "luau_operators": check_luau_operators,
+    "luau_identity": check_luau_identity_lowering,
     "eval_rules": check_eval_rules,
     "sccp_lattice": check_sccp_lattice,
     "structural": check_structural_invariants,

@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 44 |
+| Hashed executable authority inputs | 1 | 46 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -78,8 +78,8 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
 | `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
 | `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
-| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 2 |
-| `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 2 |
+| `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `rustfmt` | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
 | `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |

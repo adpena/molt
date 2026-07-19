@@ -872,6 +872,14 @@ impl ScalarRepresentationPlan {
             .and_then(ScalarRepresentationFact::container_kind)
     }
 
+    /// True when producer authority proves the value is reference-like rather
+    /// than one of the scalar carriers. Backends whose physical numeric carrier
+    /// erases Python source-kind provenance use this to admit identity only when
+    /// raw target equality remains exact.
+    pub fn name_is_known_non_scalar(&self, name: &str) -> bool {
+        self.non_scalar_names.contains(name)
+    }
+
     pub fn op_container_kind(&self, op: &OpIR) -> Option<ContainerKind> {
         op.args
             .as_ref()

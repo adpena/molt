@@ -333,8 +333,7 @@ theorem nil_self_equality :
 
 /-- For every MoltTIR.Value in the Molt-supported subset,
     the Luau representation faithfully preserves observable identity:
-    valueToLuau followed by luauToValue recovers the original value
-    (up to int/float conflation). -/
+    valueToLuau followed by luauToValue recovers the original value. -/
 theorem value_roundtrip_int (n : Int) :
     luauToValue (valueToLuau (.int n)) = some (.int n) := by rfl
 
@@ -347,10 +346,8 @@ theorem value_roundtrip_str (s : String) :
 theorem value_roundtrip_none :
     luauToValue (valueToLuau .none) = some .none := by rfl
 
-/-- The only non-roundtripping case: float → number → int (lossy).
-    This is by design: Luau unifies int and float as number. -/
-theorem value_roundtrip_float_lossy (f : Int) :
-    luauToValue (valueToLuau (.float f)) = some (.int f) := by rfl
+theorem value_roundtrip_float (f : Int) :
+    luauToValue (valueToLuau (.float f)) = some (.float f) := by rfl
 
 -- ======================================================================
 -- Section 11: Table insertion correspondence

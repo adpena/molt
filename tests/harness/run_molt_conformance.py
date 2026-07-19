@@ -16,7 +16,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +42,7 @@ from molt.harness_conformance import (  # noqa: E402
 from run_monty_conformance import parse_expectation  # noqa: E402
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
+from tests import process_guard_common  # noqa: E402
 
 CORPUS_DIR = _HARNESS_DIR / "corpus" / "monty_compat"
 SMOKE_MANIFEST = CORPUS_DIR / "SMOKE.txt"
@@ -545,8 +545,9 @@ def main(argv: list[str] | None = None) -> int:
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     tmp_root = Path(env["TMPDIR"])
     tmp_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="molt_conform_", dir=tmp_root) as tmpdir:
-        tmp = Path(tmpdir)
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt_conform_", dir=tmp_root
+    ) as tmp:
 
         try:
             with harness_memory_guard.repo_process_sentinel(

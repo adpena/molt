@@ -164,35 +164,29 @@ def test_native_backend_inkwell_mapping_matches_arch_contract_exactly() -> None:
     assert actual == expected
 
 
-def test_native_backend_cranelift_mapping_matches_arch_contract_exactly() -> None:
+def test_native_backend_cranelift_features_cover_host_and_cross_isa_contract() -> None:
     contract = load_llvm_architecture_contract(ROOT)
     manifest = tomllib.loads(
         (ROOT / "runtime" / "molt-backend-native" / "Cargo.toml").read_text(
             encoding="utf-8"
         )
     )
-    actual: dict[str, str] = {}
-    for cfg_key, target_table in manifest["target"].items():
-        features = (
-            target_table.get("dependencies", {})
-            .get("cranelift-codegen", {})
-            .get("features", [])
-        )
-        backend_features = [
-            feature
-            for feature in features
-            if feature in {"x86", "arm64", "riscv64", "s390x"}
-        ]
-        if backend_features:
-            assert len(backend_features) == 1, cfg_key
-            actual[cfg_key] = backend_features[0]
-
-    expected = {
-        f"cfg({row.rust_cfg})": row.cranelift_feature
+    dependency = manifest["dependencies"]["cranelift-codegen"]
+    features = set(dependency["features"])
+    contract_features = {
+        row.cranelift_feature
         for row in contract.architectures
         if row.cranelift_feature is not None
     }
-    assert actual == expected
+    # Cross-compilation between the two shipped primary families is available
+    # on every host. `host-arch` admits the remaining contract hosts without
+    # duplicating architecture tables in this manifest.
+    assert features == {"arm64", "host-arch", "std", "unwind", "x86"}
+    assert {"arm64", "x86"} <= contract_features
+    assert all(
+        "cranelift-codegen" not in table.get("dependencies", {})
+        for table in manifest["target"].values()
+    )
 
 
 def test_native_backend_fails_closed_outside_cranelift_contract() -> None:
@@ -1078,15 +1072,14 @@ def test_development_paths_are_derived_from_explicit_noncanonical_prefix(
     ("option", "value"),
     (
         ("--projects", "clang;lld;mlir;bolt"),
-        ("--targets", f"{bootstrap_llvm._default_llvm_targets()};BPF"),
         ("--build-type", "Debug"),
     ),
 )
-def test_canonical_bootstrap_requires_exact_manifest_build_configuration(
+def test_canonical_bootstrap_requires_exact_projects_and_build_type(
     option: str, value: str
 ) -> None:
     with pytest.raises(
-        SystemExit, match="projects expected=.*targets expected=.*build type"
+        SystemExit, match="projects expected=.*required targets=.*build type"
     ):
         bootstrap_llvm.main([option, value])
 

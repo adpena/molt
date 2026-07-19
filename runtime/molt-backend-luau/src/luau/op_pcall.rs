@@ -12,7 +12,7 @@ impl LuauBackend {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("if not __ok_{pcall_id} then goto label_{id} end"));
                 } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_label(target);
+                    let target = sanitize_string_label(target);
                     self.emit_line(&format!("if not __ok_{pcall_id} then goto {target} end"));
                 }
             }

@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests import process_guard_common
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,8 +63,9 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
 
     tmp_root = _artifact_root() / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="tkinter-ttk-compile-", dir=tmp_root) as td:
-        workdir = Path(td)
+    with process_guard_common.guarded_temporary_directory(
+        prefix="tkinter-ttk-compile-", dir=tmp_root
+    ) as workdir:
         source = workdir / "tkinter_ttk_compile.py"
         output = workdir / "tkinter_ttk_compile_molt"
         source.write_text(

@@ -1,6 +1,19 @@
 use super::*;
 
 impl LuauBackend {
+    /// Resolve an IR invocation target without allowing user-defined `molt_`
+    /// symbols to alias compiler runtime helpers. Defined functions use the
+    /// user-symbol encoder; unresolved reserved names are compiler protocol.
+    pub(super) fn invocation_target_ident(&self, raw_name: &str) -> String {
+        if self.function_symbols.contains(raw_name) {
+            emit_function_ident(raw_name)
+        } else if raw_name.starts_with("molt_") {
+            raw_name.to_string()
+        } else {
+            sanitize_ident(raw_name)
+        }
+    }
+
     pub(super) fn out_var(&self, op: &OpIR) -> String {
         op.out
             .as_deref()
@@ -134,6 +147,34 @@ impl LuauBackend {
     pub(super) fn is_known_bool_value(&self, raw_name: &str) -> bool {
         matches!(raw_name, "true" | "false")
             || self.scalar_plan.name_scalar_kind(raw_name) == Some(ScalarKind::Bool)
+    }
+
+    /// Emit the Python scalar-identity subset without collapsing source kinds
+    /// into Luau's shared numeric carrier. Producer facts make cross-kind
+    /// identity a compile-time constant. Admitted dynamic cases use `rawequal`
+    /// so reference identity never invokes a user-defined `__eq` metamethod.
+    pub(super) fn identity_comparison_expr(
+        &self,
+        lhs_raw: &str,
+        rhs_raw: &str,
+        negated: bool,
+    ) -> String {
+        let lhs = sanitize_ident(lhs_raw);
+        let rhs = sanitize_ident(rhs_raw);
+        match identity_lowering(&self.scalar_plan, lhs_raw, rhs_raw) {
+            IdentityLowering::Constant(identity) => (identity != negated).to_string(),
+            IdentityLowering::Direct => {
+                let raw_identity = format!("molt_rawequal({lhs}, {rhs})");
+                if negated {
+                    format!("(not {raw_identity})")
+                } else {
+                    raw_identity
+                }
+            }
+            IdentityLowering::Reject => {
+                unreachable!("compile_checked validates identity provenance before emission")
+            }
+        }
     }
 
     pub(super) fn emit_line(&mut self, line: &str) {

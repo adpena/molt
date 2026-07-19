@@ -50,6 +50,11 @@ def test_run_miri_preserves_explicit_tmpdir(monkeypatch, tmp_path: Path) -> None
     runtime_safety.run_miri(None)
 
     assert captured["env"]["TMPDIR"] == str(tmp_path / "explicit-tmp")
+    assert captured["cmd"][:3] == [
+        "cargo",
+        f"+{runtime_safety.RUST_NIGHTLY}",
+        "miri",
+    ]
 
 
 def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:

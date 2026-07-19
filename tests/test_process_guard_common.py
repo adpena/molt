@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 from typing import Any
 
 from tests import process_guard_common
@@ -80,5 +81,29 @@ def test_run_guarded_test_process_preserves_timeout_semantics(monkeypatch) -> No
     except subprocess.TimeoutExpired as exc:
         assert exc.timeout == 5
         assert exc.stderr == "memory_guard: timeout after 5s\n"
+        receipt = json.loads(exc.__notes__[0])
+        assert receipt["schema"] == "molt.test-process-timeout.v1"
+        assert receipt["stderr_tail"] == "memory_guard: timeout after 5s\n"
+    else:  # pragma: no cover - assertion clarity
+        raise AssertionError("expected TimeoutExpired")
+
+
+def test_cleanup_failure_is_attached_without_replacing_primary() -> None:
+    primary = subprocess.TimeoutExpired(["compiler"], 5)
+
+    try:
+        with process_guard_common.preserve_primary_during_cleanup(
+            lambda: (_ for _ in ()).throw(NotADirectoryError("repro root changed")),
+            label="tmp/repro",
+        ):
+            raise primary
+    except subprocess.TimeoutExpired as exc:
+        assert exc is primary
+        receipt = json.loads(exc.__notes__[0])
+        assert receipt == {
+            "cleanup_error": "NotADirectoryError: repro root changed",
+            "label": "tmp/repro",
+            "schema": "molt.test-process-cleanup.v1",
+        }
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected TimeoutExpired")
