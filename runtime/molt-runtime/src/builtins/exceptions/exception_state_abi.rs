@@ -1,6 +1,9 @@
 use super::*;
 
 pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
+    if emergency_memory_error_pending_for_current() {
+        return MoltObject::none().bits();
+    }
     // Fast path: if neither the current-thread nor task pending flag is set,
     // there is no live exception — return None immediately.  This
     // keeps `exception_last` in sync with the inline `check_exception`
@@ -89,6 +92,9 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
+    if emergency_memory_error_pending_for_current() {
+        return MoltObject::none().bits();
+    }
     if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         if debug_exception_flow() {
             eprintln!("molt exc last_pending task=0x0 kind=none");

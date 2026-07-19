@@ -77,7 +77,7 @@ pub(crate) unsafe fn export(
             *out_ptr = std::ptr::null();
             *out_len = 0;
         }
-        let _ = raise_exception::<u64>(py, "MemoryError", "sequence snapshot allocation failed");
+        return crate::abi_return::fail_memory::<crate::abi_return::FailureStatus>(py);
     }
     exported
 }

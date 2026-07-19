@@ -251,8 +251,59 @@ pub(crate) fn raise_exception<T: ExceptionSentinel>(
     let ptr = alloc_exception(_py, kind, message);
     if !ptr.is_null() {
         record_exception_owned(_py, ptr);
+    } else {
+        // CPython keeps a preallocated MemoryError for precisely this case.
+        // Molt's heap exception representation cannot be constructed without
+        // allocation, so retain the same semantic fact in the canonical
+        // exception state without allocating or recursively bootstrapping the
+        // runtime. A later successful raise replaces this marker normally.
+        record_emergency_memory_error(_py);
     }
     T::exception_sentinel()
+}
+
+#[inline]
+fn emergency_memory_error_pending_for_current() -> bool {
+    THREAD_LAST_EXCEPTION.with(|state| state.emergency_memory_error_is_pending(current_task_ptr()))
+}
+
+#[inline]
+fn record_emergency_memory_error(_py: &PyToken<'_>) {
+    if emergency_memory_error_pending_for_current()
+        || current_task_key().map_or_else(
+            || thread_last_exception_raw_slot().is_some(),
+            |task_key| {
+                task_last_exceptions(_py)
+                    .lock()
+                    .unwrap()
+                    .contains_key(&task_key)
+            },
+        )
+    {
+        return;
+    }
+    THREAD_LAST_EXCEPTION.with(|state| state.set_emergency_memory_error(current_task_ptr()));
+    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+}
+
+/// Record MemoryError without touching the heap, runtime class bootstrap, or
+/// the resource tracker. Raw ABI allocation failures use this entrypoint
+/// because attempting to allocate their exception can recursively fail before
+/// the runtime is warm.
+#[inline]
+pub(crate) fn record_memory_error_without_allocation(_py: &PyToken<'_>) {
+    record_emergency_memory_error(_py);
+}
+
+#[inline]
+fn clear_emergency_memory_error_for_current() {
+    THREAD_LAST_EXCEPTION.with(|state| state.clear_emergency_memory_error(current_task_ptr()));
+}
+
+#[inline]
+fn clear_all_emergency_memory_error_state() {
+    let _ = THREAD_LAST_EXCEPTION
+        .try_with(state::ThreadExceptionState::clear_all_emergency_memory_error);
 }
 
 pub(crate) fn raise_unicode_decode_error<T: ExceptionSentinel>(
@@ -1132,7 +1183,8 @@ fn thread_last_exception_pending_slot() -> Option<PtrSlot> {
 fn thread_last_exception_take() -> Option<PtrSlot> {
     let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(std::ptr::null_mut()));
     if current_task_key().is_none() {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        CURRENT_EXCEPTION_PENDING
+            .with(|pending| pending.set(emergency_memory_error_pending_for_current()));
     }
     if ptr.is_null() {
         None
@@ -1143,6 +1195,7 @@ fn thread_last_exception_take() -> Option<PtrSlot> {
 
 #[inline]
 fn thread_last_exception_store_recorded(_py: &PyToken<'_>, ptr: *mut u8, reuse_existing_ref: bool) {
+    clear_emergency_memory_error_for_current();
     if !reuse_existing_ref {
         let bits = MoltObject::from_ptr(ptr).bits();
         inc_ref_bits(_py, bits);
@@ -1153,6 +1206,7 @@ fn thread_last_exception_store_recorded(_py: &PyToken<'_>, ptr: *mut u8, reuse_e
 
 #[inline]
 fn thread_last_exception_replace_borrowed(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    clear_emergency_memory_error_for_current();
     let old = THREAD_LAST_EXCEPTION.with(|slot| slot.get());
     if old == ptr {
         CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
@@ -1174,18 +1228,23 @@ pub(crate) fn thread_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64>
 /// Synchronize the inline pending byte whenever the scheduler changes the
 /// current execution context on this native thread.
 pub(crate) fn sync_current_exception_pending(_py: &PyToken<'_>, task_ptr: *mut u8) {
-    let pending = if task_ptr.is_null() {
-        thread_last_exception_raw_slot().is_some()
-    } else {
-        task_last_exceptions(_py)
-            .lock()
-            .unwrap()
-            .contains_key(&PtrSlot(task_ptr))
-    };
+    let pending = emergency_memory_error_pending_for_current()
+        || if task_ptr.is_null() {
+            thread_last_exception_raw_slot().is_some()
+        } else {
+            task_last_exceptions(_py)
+                .lock()
+                .unwrap()
+                .contains_key(&PtrSlot(task_ptr))
+        };
     CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(pending));
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
+    if emergency_memory_error_pending_for_current() {
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+        return true;
+    }
     if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         return false;
     }
@@ -1247,6 +1306,7 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
 
 pub(crate) fn clear_thread_exception_for_teardown(_py: &PyToken<'_>) {
     crate::gil_assert();
+    clear_all_emergency_memory_error_state();
     let ptr = THREAD_LAST_EXCEPTION
         .try_with(|slot| {
             let ptr = slot.replace(std::ptr::null_mut());
@@ -1823,6 +1883,7 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
 
 fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_caller_frame: bool) {
     crate::gil_assert();
+    clear_emergency_memory_error_for_current();
     // Stash the frame's col_offset at exception-raise time for caret annotations.
     FRAME_STACK.with(|stack| {
         let stack = stack.borrow();
@@ -2062,6 +2123,7 @@ pub(crate) fn record_exception_owned(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
     crate::gil_assert();
+    clear_emergency_memory_error_for_current();
     if let Some(task_key) = current_task_key() {
         let old_ptr = task_last_exceptions(_py).lock().unwrap().remove(&task_key);
         CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
