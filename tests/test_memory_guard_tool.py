@@ -4825,6 +4825,62 @@ def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
     memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
 
 
+def test_child_started_timestamp_read_preserves_single_close_authority() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"1234567890\n")
+    finally:
+        os.close(write_fd)
+
+    try:
+        assert memory_guard._read_child_started_at(read_fd) == 1.23456789
+        # The GuardedLaunch finalizer, not the read helper, owns the descriptor.
+        # Keeping it live also prevents its number from being reused and then
+        # spuriously closed by the finalizer (the Linux ABA failure seen in CI).
+        assert os.fstat(read_fd).st_ino >= 0
+    finally:
+        os.close(read_fd)
+
+
+def test_spawn_failure_preserves_single_started_fd_close_authority(
+    monkeypatch,
+) -> None:
+    started_fd = 123_456
+    close_calls: list[tuple[int | None, ...]] = []
+
+    def fail_spawn(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(
+        memory_guard,
+        "_guarded_launch",
+        lambda *_args, **_kwargs: memory_guard.GuardedLaunch(
+            command=["missing"],
+            env={},
+            started_read_fd=started_fd,
+        ),
+    )
+    monkeypatch.setattr(
+        memory_guard.subprocess,
+        "Popen",
+        fail_spawn,
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_close_fds",
+        lambda fds: close_calls.append(tuple(fds)),
+    )
+
+    with pytest.raises(OSError, match="spawn failed"):
+        memory_guard.run_guarded(
+            ["missing"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+        )
+
+    assert sum(call.count(started_fd) for call in close_calls) == 1
+
+
 def test_main_writes_summary_json(tmp_path) -> None:
     summary_path = tmp_path / "summary.json"
     rc = memory_guard.main(

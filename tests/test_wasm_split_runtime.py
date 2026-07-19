@@ -30,7 +30,7 @@ from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
-from tests.wasm_linked_runner import _read_timeout_seconds, _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -159,9 +159,7 @@ def test_build_split_uses_wasm_test_memory_guard(
     assert isinstance(env, dict)
     assert env.get("CARGO_BUILD_JOBS") != "1"
     assert "MOLT_WASM_DISABLE_SCCACHE" not in env
-    assert kwargs["timeout"] == _read_timeout_seconds(
-        "MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0
-    )
+    assert "timeout" not in kwargs
 
 
 def test_run_split_direct_uses_wasm_test_memory_guard(
@@ -298,12 +296,10 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "--out-dir",
         str(output_dir),
     ]
-    build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     return _run_wasm_test_process(
         cmd,
         env=env,
         cwd=ROOT,
-        timeout=build_timeout,
     )
 
 
@@ -878,7 +874,6 @@ def test_linked_host_export_attribute_error_does_not_return_none(
         ],
         cwd=ROOT,
         env=env,
-        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
@@ -936,7 +931,6 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
         ],
         cwd=ROOT,
         env=env,
-        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
@@ -997,7 +991,6 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
         ],
         cwd=ROOT,
         env=env,
-        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
@@ -1091,7 +1084,6 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
         ],
         cwd=ROOT,
         env=env,
-        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
@@ -1290,7 +1282,6 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
         ],
         cwd=ROOT,
         env=env,
-        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
 

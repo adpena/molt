@@ -18,18 +18,17 @@ import statistics
 import time
 from pathlib import Path
 
-TOOLS_ROOT = Path(__file__).resolve().parents[2] / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-import harness_memory_guard  # noqa: E402
+from tests import process_guard_common  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parents[2]  # molt/
 VERTIGO_ROOT = REPO_ROOT.parent / "vertigo"
 GENERATOR_PY = VERTIGO_ROOT / "site" / "world_engine" / "generator.py"
 DEFAULT_MOLT_BINARY = REPO_ROOT / "tmp" / "generator_molt"
@@ -60,24 +59,17 @@ def _parse_time_l(stderr: str) -> dict:
     return result
 
 
-def _run_timed_command(cmd: list[str]) -> harness_memory_guard.GuardedCompletedProcess:
-    timeout = harness_memory_guard.timeout_from_env(
-        "MOLT_BENCH",
-        explicit=None,
-        default=DEFAULT_RUN_TIMEOUT_SEC,
-    )
-    return harness_memory_guard.guarded_completed_process(
+def _run_timed_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return process_guard_common.run_guarded_test_process(
         cmd,
         prefix="MOLT_BENCH",
         capture_output=True,
         text=True,
-        timeout=timeout,
+        default_timeout=DEFAULT_RUN_TIMEOUT_SEC,
     )
 
 
 def _raise_failed_run(label: str, proc: subprocess.CompletedProcess[str]) -> None:
-    if proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
-        raise TimeoutError(f"{label} run timed out:\n{proc.stderr}")
     raise RuntimeError(f"{label} run failed:\n{proc.stderr}")
 
 

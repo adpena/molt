@@ -900,6 +900,7 @@ def _guard_repro_payload(
     prefix: str,
     environ: Mapping[str, str] | None = None,
     max_global_rss_kb: int | None = None,
+    operation_role: str | None = None,
 ) -> dict[str, object]:
     try:
         payload = memory_guard.repro_context_payload(
@@ -922,13 +923,18 @@ def _guard_repro_payload(
         # Repro enrichment is secondary evidence. A platform snapshot failure
         # must be recorded but can never replace the timeout/signal/RSS result
         # that caused enrichment to run.
-        return {
+        error_payload: dict[str, object] = {
             "schema": "molt.guard-repro-error.v1",
             "prefix": _normalize_prefix(prefix) or "MOLT",
             "error_type": type(error).__name__,
             "error": str(error)[:1000],
         }
+        if operation_role is not None:
+            error_payload["operation_role"] = operation_role
+        return error_payload
     payload["prefix"] = _normalize_prefix(prefix) or "MOLT"
+    if operation_role is not None:
+        payload["operation_role"] = operation_role
     return payload
 
 
@@ -940,6 +946,7 @@ def _guard_repro_message(
     limits: HarnessMemoryLimits,
     timeout: float | None,
     prefix: str,
+    operation_role: str | None = None,
 ) -> str:
     payload = _guard_repro_payload(
         command=command,
@@ -948,6 +955,7 @@ def _guard_repro_message(
         limits=limits,
         timeout=timeout,
         prefix=prefix,
+        operation_role=operation_role,
     )
     return f"memory_guard: repro context: {memory_guard.repro_context_line(payload)}\n"
 
@@ -974,6 +982,7 @@ def _append_guarded_command_profile(
     child_process: memory_guard.GuardedChildProcess | None = None,
     termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
     guard_signal: int | None = None,
+    operation_role: str | None = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
@@ -1039,6 +1048,8 @@ def _append_guarded_command_profile(
         "exit_signal": exit_signal,
         "guard_signal": guard_signal_payload,
     }
+    if operation_role is not None:
+        payload["operation_role"] = operation_role
     if status != "pass":
         payload["repro"] = _guard_repro_payload(
             command=command,
@@ -1047,6 +1058,7 @@ def _append_guarded_command_profile(
             limits=limits,
             timeout=timeout_s,
             prefix=prefix,
+            operation_role=operation_role,
             environ=source,
             max_global_rss_kb=(
                 limit_at_violation.max_global_rss_kb
@@ -1317,6 +1329,7 @@ def guarded_completed_process(
     progress_label: str | None = None,
     encoding: str = "utf-8",
     errors: str = "replace",
+    operation_role: str | None = None,
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
@@ -1336,7 +1349,8 @@ def guarded_completed_process(
         limits=resolved_limits,
     ):
         default_progress_label = (
-            f"memory_guard: {_normalize_prefix(prefix)} guarded command"
+            f"memory_guard: {_normalize_prefix(prefix)}"
+            f"{f' {operation_role}' if operation_role else ''} guarded command"
         )
         active_progress_label = (
             progress_label
@@ -1470,6 +1484,7 @@ def guarded_completed_process(
                 limits=resolved_limits,
                 timeout=timeout,
                 prefix=prefix,
+                operation_role=operation_role,
             ),
             text=text,
         )
@@ -1492,6 +1507,7 @@ def guarded_completed_process(
         child_process=guarded.child_process,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
+        operation_role=operation_role,
     )
     if profile_error:
         stderr = memory_guard._append_guard_message(stderr, profile_error, text=text)

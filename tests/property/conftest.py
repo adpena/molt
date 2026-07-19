@@ -18,7 +18,7 @@ import pytest
 from hypothesis import settings as hypothesis_settings
 
 from molt.dx import development_artifact_env
-from tools import harness_memory_guard
+from tests.process_guard_common import run_guarded_test_process
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
@@ -39,28 +39,19 @@ def _property_env(session_id: str) -> dict[str, str]:
 def _run_property_process(
     args: list[str],
     *,
-    timeout: float,
+    timeout: float | None = None,
     env: dict[str, str] | None = None,
+    capture_output: bool = True,
+    text: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = harness_memory_guard.guarded_completed_process(
+    return run_guarded_test_process(
         args,
         prefix="MOLT_PROPERTY",
         env=os.environ if env is None else env,
-        capture_output=True,
-        text=True,
+        capture_output=capture_output,
+        text=text,
         timeout=timeout,
     )
-    if (
-        result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        and "memory_guard: timeout after" in (result.stderr or "")
-    ):
-        raise subprocess.TimeoutExpired(
-            args,
-            timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +82,6 @@ def _molt_cli_available() -> bool:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
             env=env,
         )
         return result.returncode == 0
@@ -185,7 +175,6 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
             ],
             capture_output=True,
             text=True,
-            timeout=timeout,
             env=env,
         )
         if build_result.returncode != 0:

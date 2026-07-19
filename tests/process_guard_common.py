@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+from enum import Enum
 from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -13,6 +14,145 @@ from collections.abc import Callable, Iterator
 from tools import harness_memory_guard
 
 DEFAULT_TEST_PROCESS_TIMEOUT_SEC = 300.0
+DEFAULT_BUILD_PROCESS_TIMEOUT_SEC = 900.0
+
+
+class GuardedProcessRole(str, Enum):
+    """Orthogonal operation role for a suite-family process guard."""
+
+    BUILD = "build"
+    EXECUTION = "execution"
+
+
+_ALWAYS_BUILD_DRIVERS = frozenset(
+    {
+        "c++",
+        "cc",
+        "cl",
+        "clang",
+        "clang++",
+        "gcc",
+        "g++",
+        "ld",
+        "ld.lld",
+        "link",
+        "lld",
+        "lld-link",
+        "make",
+        "gmake",
+        "msbuild",
+        "ninja",
+        "rustc",
+        "wasm-ld",
+        "xcodebuild",
+    }
+)
+_BUILD_SUBCOMMAND_DRIVERS = frozenset(
+    {"cargo", "dotnet", "go", "molt", "npm", "pnpm", "swift", "yarn", "zig"}
+)
+_BUILD_FLAG_DRIVERS = frozenset({"cmake"})
+_METADATA_PROBE_FLAGS = frozenset(
+    {
+        "--help",
+        "--version",
+        "-V",
+        "-dumpmachine",
+        "-dumpversion",
+        "-h",
+        "-v",
+        "-vV",
+        "/?",
+        "/Bv",
+    }
+)
+
+
+def _compiler_command_is_metadata_probe(
+    executable: str, arguments: tuple[str, ...]
+) -> bool:
+    if not arguments:
+        return True
+    first = arguments[0]
+    if first in _METADATA_PROBE_FLAGS or first.startswith("-print-"):
+        return True
+    return executable == "rustc" and first == "--print" and len(arguments) <= 2
+
+
+def guarded_process_role(args: Sequence[str]) -> GuardedProcessRole:
+    """Classify build/compiler work independently of its test-suite family.
+
+    Classification happens on the realized command at the launch boundary, so
+    import aliases and commands assembled in variables cannot bypass it.
+    """
+
+    command = tuple(str(arg) for arg in args)
+    if not command:
+        return GuardedProcessRole.EXECUTION
+    executable = Path(command[0]).name.lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    arguments = command[1:]
+    if executable in _ALWAYS_BUILD_DRIVERS and not _compiler_command_is_metadata_probe(
+        executable, arguments
+    ):
+        return GuardedProcessRole.BUILD
+    if (
+        executable in _BUILD_SUBCOMMAND_DRIVERS
+        and len(command) >= 2
+        and command[1] == "build"
+    ):
+        return GuardedProcessRole.BUILD
+    if (
+        executable in _BUILD_FLAG_DRIVERS
+        and len(command) >= 2
+        and command[1] == "--build"
+    ):
+        return GuardedProcessRole.BUILD
+    if any(
+        current in {"molt", "molt.cli"} and following == "build"
+        for current, following in zip(command, command[1:], strict=False)
+    ):
+        return GuardedProcessRole.BUILD
+    return GuardedProcessRole.EXECUTION
+
+
+def _role_prefix(prefix: str, role: GuardedProcessRole) -> str:
+    return f"{prefix}_{role.value.upper()}"
+
+
+def _timeout_from_role_env(
+    prefix: str,
+    role: GuardedProcessRole,
+    env: Mapping[str, str],
+    *,
+    explicit: float | None,
+    default: float | None,
+) -> float | None:
+    if explicit is not None:
+        return explicit
+    role_default = (
+        DEFAULT_BUILD_PROCESS_TIMEOUT_SEC
+        if role is GuardedProcessRole.BUILD
+        else default
+    )
+    role_prefix = _role_prefix(prefix, role)
+    role_env = f"MOLT_{role.value.upper()}_TIMEOUT_SEC"
+    # Avoid the generic fallback inside timeout_from_env until the two
+    # compositional authorities have had precedence.
+    for name in (f"{role_prefix}_TIMEOUT_SEC", f"{prefix}_TIMEOUT_SEC", role_env):
+        raw = env.get(name)
+        if raw is None or not raw.strip():
+            continue
+        return harness_memory_guard.timeout_from_env(
+            role_prefix,
+            {f"{role_prefix}_TIMEOUT_SEC": raw},
+            default=role_default,
+        )
+    return harness_memory_guard.timeout_from_env(
+        role_prefix,
+        env,
+        default=role_default,
+    )
 
 
 def _diagnostic_value(result: object, name: str) -> object:
@@ -110,8 +250,10 @@ def run_guarded_test_process(
 ) -> harness_memory_guard.GuardedCompletedProcess:
     command = list(args)
     process_env = os.environ if env is None else env
-    resolved_timeout = harness_memory_guard.timeout_from_env(
+    role = guarded_process_role(command)
+    resolved_timeout = _timeout_from_role_env(
         prefix,
+        role,
         process_env,
         explicit=timeout,
         default=default_timeout,
@@ -119,6 +261,7 @@ def run_guarded_test_process(
     result = harness_memory_guard.guarded_completed_process(
         command,
         prefix=prefix,
+        operation_role=role.value,
         cwd=cwd,
         env=process_env,
         input=input,
