@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn call_builtin_prefers_generated_builtin_cache_over_intrinsic_alias() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             crate::builtins::functions::python_builtin_functions_clear_runtime_state(
                 _py,

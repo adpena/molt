@@ -1074,9 +1074,18 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     // SAFETY: `CORE_GIL_VT` is process-static and is the sole encoded GIL
     // acquire/release authority for every extracted runtime crate.
     unsafe { molt_runtime_core::set_gil_vtable(&CORE_GIL_VT) };
+    // Every embedding thread still establishes the runtime's TLS destructor
+    // boundary. Once Ready is published, however, initialization diagnostics,
+    // environment policy, and signal-handler setup are immutable process
+    // state: re-reading their environment variables allocated four times per
+    // otherwise no-op call and made the canonical test transaction pay that
+    // cost at every boundary.
+    touch_tls_guard();
+    if runtime_ready_ptr().is_some() {
+        return 1;
+    }
     trace_runtime_init("enter");
     super::metrics::init_profile_enabled_from_env();
-    touch_tls_guard();
     #[cfg(not(target_arch = "wasm32"))]
     ensure_debug_sigtrap_handler();
     if runtime_ready_ptr().is_some() {
@@ -1322,8 +1331,7 @@ pub(crate) fn clear_thread_runtime_state() {
 /// dangerous double-init / use-after-free during process exit.  Resetting
 /// them is only safe in a controlled test harness where:
 ///
-/// 1. `test_mutex_guard` ensures no concurrent runtime
-///    access.
+/// 1. `RuntimeTestTransaction` ensures no concurrent runtime access.
 /// 2. The previous runtime has been fully shut down via
 ///    `molt_runtime_shutdown()`.
 /// 3. The caller will immediately re-initialize via `molt_runtime_init()`.
@@ -1480,7 +1488,7 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn finalizing_unpublishes_before_atexit_reentry_and_racing_entrants() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }
@@ -1575,7 +1583,7 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn shutdown_refuses_while_a_foreign_runtime_attachment_is_live() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }
@@ -1620,7 +1628,7 @@ mod tests {
     #[cfg(feature = "l7-attestation-probe")]
     #[test]
     fn encoded_core_gil_entry_is_allocation_free_after_warmup() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert_eq!(molt_runtime_init(), 1);
 
         for _ in 0..64 {
@@ -1641,7 +1649,7 @@ mod tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn concurrent_init_waits_for_ready_publication() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }

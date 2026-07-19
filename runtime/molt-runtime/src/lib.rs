@@ -64,20 +64,6 @@ pub mod attestation_probe;
 #[global_allocator]
 static GLOBAL: attestation_probe::CountingMiMalloc = attestation_probe::CountingMiMalloc::new();
 
-/// Serialize tests that mutate process-global runtime state.
-///
-/// Keep the mutex itself function-local so every caller must use the same
-/// poison-recovering acquisition contract. A failed assertion remains the
-/// primary failure without turning the rest of the suite into `PoisonError`
-/// fallout.
-#[cfg(test)]
-pub(crate) fn test_mutex_guard() -> std::sync::MutexGuard<'static, ()> {
-    static PROCESS_GLOBAL_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    PROCESS_GLOBAL_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 #[cfg(test)]
 mod test_support;
 

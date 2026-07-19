@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn scratch_alloc_uses_resource_tracker_without_phantom_charge() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::raise_exception::<u64>(_py, "ValueError", "warm runtime");
             crate::clear_exception(_py);
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn scratch_alloc_rejects_impossible_layout_without_panicking() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let ptr = super::molt_scratch_alloc(u64::MAX);
         assert_eq!(ptr, 0);
         assert_eq!(crate::molt_exception_pending(), 1);

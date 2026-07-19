@@ -2413,7 +2413,7 @@ mod tests {
 
     #[test]
     fn exhausted_dict_items_iterator_releases_view_dict_and_last_pair() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let key = MoltObject::from_int(1).bits();
@@ -2470,7 +2470,7 @@ mod tests {
 
     #[test]
     fn cached_pair_reuse_updates_contains_refs_flag() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let mut cached = std::ptr::null_mut();

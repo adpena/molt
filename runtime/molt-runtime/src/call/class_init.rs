@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn class_instance_allocation_publishes_only_after_class_edge_initialization() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let class_bits = builtin_classes(_py).object;
             let class_ptr = obj_from_bits(class_bits)
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[test]
     fn tuple_subclass_constructor_copies_exact_tuple_without_retagging_source() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
             let name_ptr = alloc_string(_py, b"AuxTupleSubclass");
@@ -1347,7 +1347,7 @@ mod tests {
 
     #[test]
     fn builtin_exception_constructor_rejects_keywords_before_publication() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let class_bits = builtin_classes(_py).exception;
             let class_ptr = obj_from_bits(class_bits)

@@ -11,6 +11,9 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::os::raw::c_int;
+#[cfg(feature = "runtime-test-support")]
+use std::sync::Mutex;
+#[cfg(not(feature = "runtime-test-support"))]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -185,6 +188,9 @@ impl<const N: usize, const COUNTER_BITS: u32> PendingCallQueue<N, COUNTER_BITS> 
 
 static PENDING_CALLS: PendingCallQueue<PENDING_CALL_CAPACITY> = PendingCallQueue::new();
 static HANDLING_PENDING_CALLS: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "runtime-test-support")]
+static MAIN_THREAD: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+#[cfg(not(feature = "runtime-test-support"))]
 static MAIN_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
 static PENDING_CALL_ADMISSION: PendingCallAdmission = PendingCallAdmission::new();
 
@@ -290,12 +296,26 @@ impl Drop for PendingCallPublisher<'_> {
 /// Register the process main thread exactly once during runtime initialization.
 /// A later initializer cannot silently transfer pending-call execution custody.
 pub fn register_main_thread(owner: std::thread::ThreadId) -> bool {
-    let _ = MAIN_THREAD.set(owner);
-    let owns_main = MAIN_THREAD
-        .get()
-        .is_some_and(|registered| *registered == owner);
-    if !owns_main {
-        return false;
+    #[cfg(feature = "runtime-test-support")]
+    {
+        let mut registered = MAIN_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *registered {
+            Some(current) if current != owner => return false,
+            Some(_) => {}
+            None => *registered = Some(owner),
+        }
+    }
+    #[cfg(not(feature = "runtime-test-support"))]
+    {
+        let _ = MAIN_THREAD.set(owner);
+        if !MAIN_THREAD
+            .get()
+            .is_some_and(|registered| *registered == owner)
+        {
+            return false;
+        }
     }
     if PENDING_CALL_ADMISSION.is_accepting() {
         return true;
@@ -307,9 +327,19 @@ pub fn register_main_thread(owner: std::thread::ThreadId) -> bool {
 
 #[inline]
 fn current_thread_is_main() -> bool {
-    MAIN_THREAD
-        .get()
-        .is_some_and(|registered| *registered == std::thread::current().id())
+    #[cfg(feature = "runtime-test-support")]
+    {
+        MAIN_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|registered| registered == std::thread::current().id())
+    }
+    #[cfg(not(feature = "runtime-test-support"))]
+    {
+        MAIN_THREAD
+            .get()
+            .is_some_and(|registered| *registered == std::thread::current().id())
+    }
 }
 
 struct HandlingGuard<'a>(&'a AtomicBool);
@@ -413,6 +443,71 @@ fn discard_queue<const N: usize, const COUNTER_BITS: u32>(
 
 fn discard_pending_calls() -> usize {
     discard_queue(&PENDING_CALLS)
+}
+
+/// Exact process-global pending-call state borrowed by molt-runtime's unit-test
+/// transaction. Production artifacts never enable this feature.
+#[cfg(feature = "runtime-test-support")]
+pub struct PendingCallRuntimeTestSnapshot {
+    main_thread: Option<std::thread::ThreadId>,
+    admission_was_open: bool,
+}
+
+/// Isolate one runtime test from the process-static pending-call authority.
+///
+/// The queue must be empty at a test boundary. Admission is first closed and
+/// every producer is quiesced, making the owner swap and empty-queue proof one
+/// lifecycle transition instead of a test-order assumption.
+#[cfg(feature = "runtime-test-support")]
+pub fn begin_runtime_test_transaction(
+    owner: std::thread::ThreadId,
+) -> PendingCallRuntimeTestSnapshot {
+    let admission_was_open = PENDING_CALL_ADMISSION.is_accepting();
+    PENDING_CALL_ADMISSION.close_and_quiesce();
+    assert_eq!(
+        discard_pending_calls(),
+        0,
+        "pending-call queue leaked across a runtime test boundary"
+    );
+    assert!(
+        !HANDLING_PENDING_CALLS.swap(false, Ordering::AcqRel),
+        "pending-call handler remained active at a runtime test boundary"
+    );
+    let main_thread = MAIN_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(owner);
+    assert!(
+        PENDING_CALL_ADMISSION.reopen(),
+        "pending-call admission failed to open for runtime test"
+    );
+    PendingCallRuntimeTestSnapshot {
+        main_thread,
+        admission_was_open,
+    }
+}
+
+/// Restore the owner and admission state captured at test entry.
+#[cfg(feature = "runtime-test-support")]
+pub fn restore_runtime_test_transaction(snapshot: PendingCallRuntimeTestSnapshot) {
+    PENDING_CALL_ADMISSION.close_and_quiesce();
+    let leaked = discard_pending_calls();
+    HANDLING_PENDING_CALLS.store(false, Ordering::Release);
+    *MAIN_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.main_thread;
+    if snapshot.admission_was_open {
+        assert!(
+            PENDING_CALL_ADMISSION.reopen(),
+            "pending-call admission failed to restore after runtime test"
+        );
+    }
+    if !std::thread::panicking() {
+        assert_eq!(
+            leaked, 0,
+            "pending-call queue leaked out of a runtime test transaction"
+        );
+    }
 }
 
 #[inline]

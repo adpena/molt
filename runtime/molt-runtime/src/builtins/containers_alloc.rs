@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn dict_capacity_overflow_fails_closed_as_memory_error() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let bits = molt_dict_new(u64::MAX);
             assert!(obj_from_bits(bits).is_none());

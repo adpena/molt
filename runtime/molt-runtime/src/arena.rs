@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn arena_alloc_object_returns_nan_boxed_pointer() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let arena = molt_arena_new();
             let bits = molt_arena_alloc_object(arena, 16);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn arena_alloc_object_handles_null_arena() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         // Null arena must return MoltObject::none().bits() rather than panic.
         let bits = molt_arena_alloc_object(std::ptr::null_mut(), 16);
         assert_eq!(bits, MoltObject::none().bits());
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn arena_new_respects_resource_limit_without_aborting() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_memory: Some(SCOPE_ARENA_CHUNK_SIZE - 1),
             ..Default::default()
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn denied_arena_slow_chunk_does_not_poison_existing_chunk() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_memory: Some(SCOPE_ARENA_CHUNK_SIZE),
             ..Default::default()
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn arena_alloc_object_alignment_and_isolation() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let arena = molt_arena_new();
             let bits1 = molt_arena_alloc_object(arena, 32);

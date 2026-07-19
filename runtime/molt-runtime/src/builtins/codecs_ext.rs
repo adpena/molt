@@ -130,7 +130,7 @@ mod error_handler_tests {
 
     #[test]
     fn error_handler_registry_is_runtime_wide_and_owns_exactly_one_reference() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (handler_bits, handler_address, baseline) = crate::with_gil_entry_nopanic!(_py, {
             let handler_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,

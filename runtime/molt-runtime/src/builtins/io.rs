@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn cached_stdio_handles_are_runtime_owned_and_clearable() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             io_clear_runtime_state(_py, state);

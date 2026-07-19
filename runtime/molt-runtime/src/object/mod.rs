@@ -3777,7 +3777,7 @@ mod tests {
 
     #[test]
     fn finalizer_first_borrowed_abi_view_is_reconciled_and_retired() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
         with_builtin_object_finalizer_flag(|object_bits| {
             super::FINALIZER_WINDOW_TEST_HOOK
@@ -3797,7 +3797,7 @@ mod tests {
 
     #[test]
     fn finalizer_first_direct_c_view_roots_until_c_decref() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
         with_builtin_object_finalizer_flag(|object_bits| {
             super::FINALIZER_WINDOW_TEST_HOOK.with(|slot| slot.set(Some(publish_direct_abi_view)));
@@ -3867,7 +3867,7 @@ mod tests {
 
     #[test]
     fn denied_sidecar_allocation_rolls_back_object_charge() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let total = std::mem::size_of::<super::MoltHeader>();
             let plan = super::object_allocation_plan(total).expect("valid header-sized object");
@@ -3900,7 +3900,7 @@ mod tests {
 
     #[test]
     fn nonclass_state_never_impersonates_a_class_pointer() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"state-discriminator");
             assert!(!ptr.is_null());
@@ -3914,7 +3914,7 @@ mod tests {
 
     #[test]
     fn common_class_edge_stays_inline() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_with_aux(
                 _py,
@@ -3941,7 +3941,7 @@ mod tests {
 
     #[test]
     fn fresh_and_published_class_edges_balance_owned_and_borrowed_refs() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = crate::alloc_string(_py, b"AuxOwnershipClass");
             assert!(!name_ptr.is_null());
@@ -4031,7 +4031,7 @@ mod tests {
 
     #[test]
     fn bare_object_constructor_preselects_replaceable_owned_class_edge() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let obj_bits = crate::molt_object_new();
         let (class_bits, initial_class_rc) = crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = crate::obj_from_bits(obj_bits)
@@ -4105,7 +4105,7 @@ mod tests {
 
     #[test]
     fn common_state_stays_inline() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"inline-state");
             assert!(!ptr.is_null());
@@ -4119,7 +4119,7 @@ mod tests {
 
     #[test]
     fn denied_sidecar_upgrade_preserves_inline_state_and_representation() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"preserve-inline-state");
             assert!(!ptr.is_null());
@@ -4141,7 +4141,7 @@ mod tests {
 
     #[test]
     fn class_state_and_poll_share_one_stable_sidecar() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_with_aux(
                 _py,
@@ -4178,7 +4178,7 @@ mod tests {
 
     #[test]
     fn non_object_heap_kind_derives_finalizer_policy_from_common_class_edge() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let class_bits = crate::builtin_classes(_py).object;
             let class_ptr = crate::obj_from_bits(class_bits)
@@ -4225,7 +4225,7 @@ mod tests {
 
     #[test]
     fn oversized_allocation_uses_immutable_sidecar_size() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let total = super::SIZE_CLASS_TABLE
                 .last()

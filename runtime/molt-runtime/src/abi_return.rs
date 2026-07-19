@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn memory_failure_records_one_allocation_free_exception_domain() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             crate::clear_exception(py);
             assert_eq!(super::fail_memory::<NullHandle>(py), 0);
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn memory_failure_does_not_charge_the_resource_tracker() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_memory: Some(1),
             max_allocations: Some(1),
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn warm_runtime_raw_failures_never_return_boxed_object_sentinels() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _ = crate::raise_exception::<u64>(py, "ValueError", "warm runtime");
             crate::clear_exception(py);

@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn special_singletons_are_immortal_process_roots() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT);
             assert_immortal_singleton(_py, not_implemented_bits(_py), TYPE_ID_NOT_IMPLEMENTED);

@@ -229,6 +229,30 @@ impl GenerationStatsWords {
         self.uncollectable.store(0, AtomicOrdering::Relaxed);
         self.scanned.store(0, AtomicOrdering::Relaxed);
     }
+
+    #[cfg(test)]
+    fn restore(&self, snapshot: GenerationStats) {
+        self.collections
+            .store(snapshot.collections, AtomicOrdering::Relaxed);
+        self.collected
+            .store(snapshot.collected, AtomicOrdering::Relaxed);
+        self.uncollectable
+            .store(snapshot.uncollectable, AtomicOrdering::Relaxed);
+        self.scanned
+            .store(snapshot.scanned, AtomicOrdering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct GcRuntimeTestSnapshot {
+    enabled: u64,
+    pending: u64,
+    debug_flags: u64,
+    thresholds: [u64; NUM_GENERATIONS],
+    counts: [u64; NUM_GENERATIONS],
+    stats: [GenerationStats; NUM_GENERATIONS],
+    long_lived_total: u64,
+    long_lived_pending: u64,
 }
 
 /// Per-runtime GC scheduling and statistics authority. The tracked registry owns
@@ -337,6 +361,43 @@ impl GcRuntimeState {
     pub(crate) fn generation_stats(&self) -> [GenerationStats; NUM_GENERATIONS] {
         Self::assert_custody();
         std::array::from_fn(|index| self.stats[index].snapshot())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_test_snapshot(&self) -> GcRuntimeTestSnapshot {
+        Self::assert_custody();
+        GcRuntimeTestSnapshot {
+            enabled: self.enabled.load(AtomicOrdering::Relaxed),
+            pending: self.pending.load(AtomicOrdering::Relaxed),
+            debug_flags: self.debug_flags.load(AtomicOrdering::Relaxed),
+            thresholds: std::array::from_fn(|index| {
+                self.thresholds[index].load(AtomicOrdering::Relaxed)
+            }),
+            counts: std::array::from_fn(|index| self.counts[index].load(AtomicOrdering::Relaxed)),
+            stats: self.generation_stats(),
+            long_lived_total: self.long_lived_total.load(AtomicOrdering::Relaxed),
+            long_lived_pending: self.long_lived_pending.load(AtomicOrdering::Relaxed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_runtime_test_snapshot(&self, snapshot: &GcRuntimeTestSnapshot) {
+        Self::assert_custody();
+        self.enabled
+            .store(snapshot.enabled, AtomicOrdering::Relaxed);
+        self.pending
+            .store(snapshot.pending, AtomicOrdering::Relaxed);
+        self.debug_flags
+            .store(snapshot.debug_flags, AtomicOrdering::Relaxed);
+        for index in 0..NUM_GENERATIONS {
+            self.thresholds[index].store(snapshot.thresholds[index], AtomicOrdering::Relaxed);
+            self.counts[index].store(snapshot.counts[index], AtomicOrdering::Relaxed);
+            self.stats[index].restore(snapshot.stats[index]);
+        }
+        self.long_lived_total
+            .store(snapshot.long_lived_total, AtomicOrdering::Relaxed);
+        self.long_lived_pending
+            .store(snapshot.long_lived_pending, AtomicOrdering::Relaxed);
     }
 
     pub(crate) fn on_allocation(&self) {
@@ -2128,7 +2189,7 @@ mod tests {
     #[test]
     #[ignore = "release cyclic-GC workspace allocation/time probe"]
     fn repeated_reachable_collection_workspace_bench() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             const OBJECTS: usize = 4_096;
             const ROUNDS: usize = 101;
@@ -2169,7 +2230,7 @@ mod tests {
     #[test]
     #[ignore = "cycle-capable allocation/deallocation registry hot-path probe"]
     fn cycle_capable_registry_hot_path_bench() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             const OBJECTS: usize = 4_096;
             const ROUNDS: usize = 31;
@@ -2245,7 +2306,7 @@ mod tests {
     #[cfg(feature = "l7-attestation-probe")]
     #[test]
     fn repeated_reachable_collection_workspace_allocations() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let state = &crate::runtime_state(_py).gc;
             state.set_enabled(false);
@@ -2280,7 +2341,7 @@ mod tests {
 
     #[test]
     fn generation_control_matches_cpython_312_threshold_and_count_semantics() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let state = GcRuntimeState::new();
             assert!(state.enabled());
@@ -2316,7 +2377,7 @@ mod tests {
 
     #[test]
     fn young_collection_excludes_promoted_long_lived_objects() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let state = &crate::runtime_state(_py).gc;
             state.set_enabled(false);
@@ -2356,7 +2417,7 @@ mod tests {
 
     #[test]
     fn automatic_collection_is_deferred_to_the_runtime_safepoint() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let state = &crate::runtime_state(_py).gc;
             state.set_enabled(false);
@@ -2391,7 +2452,7 @@ mod tests {
     #[test]
     #[ignore = "generational GC long-lived/young scan and tail-latency probe"]
     fn generational_scan_reduction_bench() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             const LONG_LIVED: usize = 4_096;
             const YOUNG: usize = 64;
@@ -2497,7 +2558,7 @@ mod tests {
     #[cfg(feature = "free-threaded")]
     #[test]
     fn free_threaded_collection_rejects_known_cycle_before_mutation() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let left = alloc_list(_py, &[]);
             let right = alloc_list(_py, &[]);
@@ -2532,7 +2593,7 @@ mod tests {
 
     #[test]
     fn lifecycle_visit_is_side_effect_free_and_clear_is_idempotent() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let left = alloc_list(_py, &[]);
             let right = alloc_list(_py, &[]);
@@ -2572,7 +2633,7 @@ mod tests {
 
     #[test]
     fn dynamic_dict_and_tuple_tracking_matches_cpython_timing() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let empty_dict = alloc_dict_with_pairs(_py, &[]);
             assert!(!unsafe { gc_is_tracked(empty_dict) });
@@ -2623,7 +2684,7 @@ mod tests {
 
     #[test]
     fn exception_self_cycle_with_physical_abi_projection_is_collectible() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -2660,7 +2721,7 @@ mod tests {
 
     #[test]
     fn exception_landing_external_c_ref_roots_self_cycle_until_released() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
@@ -2702,11 +2763,11 @@ mod tests {
     /// tracked registry.
     #[test]
     fn collect_reclaims_unreachable_list_cycle() {
-        let _lock = crate::test_mutex_guard();
+        let _lock = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         // Force-enable the alloc/dealloc counters so DEALLOC_COUNT is a live signal
         // (otherwise `profile_hit` is a no-op and the deallocation is invisible to the
         // counter, though `gc_is_tracked` below remains an unconditional proof).
-        // SAFETY: single-threaded test serialized by `test_mutex_guard`.
+        // SAFETY: the runtime test transaction holds process-state custody.
         unsafe {
             std::env::set_var("MOLT_PROFILE", "1");
         }
@@ -2759,7 +2820,7 @@ mod tests {
 
     #[test]
     fn collect_reclaims_cross_shape_list_tuple_cycle() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let list = alloc_list(_py, &[]);
             let list_bits = MoltObject::from_ptr(list).bits();
@@ -2784,8 +2845,8 @@ mod tests {
     /// is a cycle, but `outer` keeps it alive.
     #[test]
     fn collect_spares_externally_reachable_cycle() {
-        let _lock = crate::test_mutex_guard();
-        // SAFETY: single-threaded test serialized by `test_mutex_guard`.
+        let _lock = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        // SAFETY: the runtime test transaction holds process-state custody.
         unsafe {
             std::env::set_var("MOLT_PROFILE", "1");
         }
@@ -2834,7 +2895,7 @@ mod tests {
 
     #[test]
     fn abi_view_hold_does_not_root_an_unreachable_cycle() {
-        let _lock = crate::test_mutex_guard();
+        let _lock = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_list(_py, &[]);
@@ -2855,7 +2916,7 @@ mod tests {
 
     #[test]
     fn direct_c_reference_roots_viewed_cycle_until_released() {
-        let _lock = crate::test_mutex_guard();
+        let _lock = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_list(_py, &[]);

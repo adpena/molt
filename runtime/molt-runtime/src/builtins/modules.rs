@@ -3242,7 +3242,7 @@ mod tests {
 
     #[test]
     fn modules_runtime_state_is_owned_and_clearable() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             let dispatch_bits =
@@ -3286,7 +3286,7 @@ mod tests {
 
     #[test]
     fn raw_module_allocation_seeds_public_name_metadata() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let name_ptr = alloc_string(_py, b"synthetic_runtime_module");
@@ -3324,7 +3324,7 @@ mod tests {
 
     #[test]
     fn module_get_global_resolves_lazy_builtin_without_builtins_cache() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins_name_ptr = alloc_string(_py, b"builtins");
             assert!(!builtins_name_ptr.is_null());
@@ -3425,7 +3425,7 @@ mod tests {
 
     #[test]
     fn module_get_global_respects_present_builtins_dict_miss() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins_name_ptr = alloc_string(_py, b"builtins");
             assert!(!builtins_name_ptr.is_null());
@@ -3465,7 +3465,7 @@ mod tests {
 
     #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"sys");
             assert!(!name_ptr.is_null());
@@ -3497,7 +3497,7 @@ mod tests {
 
     #[test]
     fn from_import_child_missing_clear_preserves_unrelated_pending_failure_in_handler() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             crate::builtins::exceptions::exception_stack_push();
             let raised_bits = raise_exception::<u64>(
@@ -3527,7 +3527,7 @@ mod tests {
 
     #[test]
     fn prepare_from_import_child_preserves_existing_package_attribute() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let module_name_ptr = alloc_string(_py, b"pkg");
@@ -3577,7 +3577,7 @@ mod tests {
 
     #[test]
     fn sys_module_cache_set_populates_bootstrap_metadata() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let name_ptr = alloc_string(_py, b"sys");

@@ -1001,7 +1001,7 @@ mod tests {
 
     #[test]
     fn normal_worker_releases_ic_tls_before_key_destruction() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (result, stages) = traced_worker(false);
         assert!(result.is_ok());
         assert_runtime_worker_released_ic_tls(&stages);
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn panicking_worker_does_not_double_panic_during_tls_cleanup() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (result, stages) = traced_worker(true);
 
         assert!(
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_worker_thread_state(_py);
         });
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn clear_special_cache_releases_function_descriptor_slots() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_special_cache(_py, state);
@@ -1067,7 +1067,7 @@ mod tests {
 
     #[test]
     fn clear_interned_names_releases_every_manifest_slot() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_interned_names(_py, state);

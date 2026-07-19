@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     let original = {
         let mut env = env_state()
             .lock()
@@ -38,47 +38,9 @@ fn platform_test_path(parts: &[&str]) -> String {
     path
 }
 
-// Each test gets a fresh runtime by resetting the one-shot shutdown flag
-// before re-initializing.  The `molt_runtime_reset_for_testing()` call is
-// `#[cfg(test)]`-gated and safe here because `test_mutex_guard` serializes access.
-fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = crate::test_mutex_guard();
-    let prior = std::env::var("MOLT_TRUSTED").ok();
-    unsafe {
-        std::env::set_var("MOLT_TRUSTED", "1");
-    }
-    // Tear down any existing runtime.
-    crate::with_gil_entry_nopanic!(_py, {
-        crate::state::runtime_state::molt_runtime_ensure_gil();
-        let _ = crate::state::runtime_state::molt_runtime_shutdown();
-    });
-    // Reset the one-shot flags so `molt_runtime_init` can allocate a fresh
-    // `RuntimeState`.  Without this, the `RUNTIME_SHUTDOWN_COMPLETE` flag
-    // set by the shutdown above would permanently prevent re-initialization
-    // for all subsequent tests in this process.
-    crate::state::runtime_state::molt_runtime_reset_for_testing();
-    let out = f();
-    crate::with_gil_entry_nopanic!(_py, {
-        crate::state::runtime_state::molt_runtime_ensure_gil();
-        let _ = crate::state::runtime_state::molt_runtime_shutdown();
-    });
-    // Reset again after the final shutdown so the next test (or any other
-    // test in the process) can initialize the runtime from scratch.
-    crate::state::runtime_state::molt_runtime_reset_for_testing();
-    match prior {
-        Some(value) => unsafe {
-            std::env::set_var("MOLT_TRUSTED", value);
-        },
-        None => unsafe {
-            std::env::remove_var("MOLT_TRUSTED");
-        },
-    }
-    out
-}
-
 #[test]
 fn importlib_system_module_authority_returns_and_releases_one_owner() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let name_ptr = alloc_string(_py, b"sys");
         assert!(!name_ptr.is_null());
@@ -201,7 +163,7 @@ fn clear_extension_metadata_validation_cache() {
 
 #[test]
 fn platform_constant_runtime_state_is_owned_and_clearable() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         platform_clear_runtime_state(_py, runtime_state(_py));
     });
@@ -233,7 +195,7 @@ fn platform_constant_runtime_state_is_owned_and_clearable() {
 
 #[test]
 fn platform_constant_cache_returns_owned_values() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
 
     crate::with_gil_entry_nopanic!(_py, {
         let state = runtime_state(_py);
@@ -286,7 +248,7 @@ fn assert_string_attr(
 
 #[test]
 fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
-    let _guard = crate::test_mutex_guard();
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
 
     crate::with_gil_entry_nopanic!(_py, {
         let spec_holder_name_bits = alloc_test_string_bits(_py, "spec-holder");
@@ -927,7 +889,7 @@ fn extension_manifest_cache_fingerprint_changes_when_sidecar_changes() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_spec_missing_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -962,7 +924,7 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_invalid_manifest_payload --ignored`"]
 fn extension_spec_boundary_rejects_invalid_manifest_payload() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_spec_invalid_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -996,7 +958,7 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_accepts_valid_manifest --ignored`"]
 fn extension_spec_boundary_accepts_valid_manifest() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_spec_valid_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1040,7 +1002,7 @@ fn extension_spec_boundary_accepts_valid_manifest() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_spec_boundary_rejects_manifest_module_mismatch() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_spec_module_mismatch");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1082,7 +1044,7 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_boundary_revalidates_cache_after_artifact_mutation --ignored`"]
 fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_spec_cache_revalidation");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1134,7 +1096,7 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_spec_object_boundary_enforces_missing_and_valid_manifest --ignored`"]
 fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         {
             let tmp = extension_boundary_temp_dir("molt_extension_spec_object_missing_manifest");
@@ -1215,7 +1177,7 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_loader_missing_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1244,7 +1206,7 @@ fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_invalid_manifest_payload --ignored`"]
 fn extension_loader_boundary_rejects_invalid_manifest_payload() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_loader_invalid_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1272,7 +1234,7 @@ fn extension_loader_boundary_rejects_invalid_manifest_payload() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_missing_manifest_sidecar --ignored`"]
 fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_exec_missing_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1301,7 +1263,7 @@ fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_invalid_manifest_metadata --ignored`"]
 fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_exec_invalid_manifest");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1329,7 +1291,7 @@ fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_loader_boundary_rejects_manifest_module_mismatch() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_loader_module_mismatch");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1364,7 +1326,7 @@ fn extension_loader_boundary_rejects_manifest_module_mismatch() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_exec_boundary_rejects_manifest_module_mismatch --ignored`"]
 fn extension_exec_boundary_rejects_manifest_module_mismatch() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_exec_module_mismatch");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1399,7 +1361,7 @@ fn extension_exec_boundary_rejects_manifest_module_mismatch() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_revalidates_cache_after_artifact_mutation --ignored`"]
 fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_loader_cache_revalidation");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1447,7 +1409,7 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and prevents runtime re-init in the same process; run in isolation with `cargo test -- extension_loader_boundary_records_cache_hits_and_misses --ignored`"]
 fn extension_loader_boundary_records_cache_hits_and_misses() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         clear_extension_metadata_validation_cache();
         let tmp = extension_boundary_temp_dir("molt_extension_loader_cache_hit_miss");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -1510,7 +1472,7 @@ fn extension_loader_boundary_records_cache_hits_and_misses() {
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module --ignored`"]
 fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         crate::with_gil_entry_nopanic!(_py, {
             let name_bits = alloc_test_string_bits(_py, "math");
             let module_bits = crate::molt_module_new(name_bits);
@@ -1558,7 +1520,7 @@ fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module(
 #[test]
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_clears_internal_dunder_path_placeholder --ignored`"]
 fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
-    with_trusted_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         crate::with_gil_entry_nopanic!(_py, {
             let name_bits = alloc_test_string_bits(_py, "math");
             let module_bits = crate::molt_module_new(name_bits);

@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn descriptor_cache_store_owns_released_heap_bits() {
-        let _guard = crate::test_mutex_guard();
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             clear_attr_tls_caches(_py);
 

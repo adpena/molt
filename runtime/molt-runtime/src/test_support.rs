@@ -7,13 +7,230 @@
 
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
-use std::sync::Once;
+use std::sync::{Mutex, MutexGuard, Once};
 
 thread_local! {
     static EXPECTED_PANIC_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 static INSTALL_EXPECTED_PANIC_HOOK: Once = Once::new();
+static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
+
+fn process_global_test_state() -> MutexGuard<'static, ()> {
+    PROCESS_GLOBAL_TEST_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct TrustedTestEnvironment(Option<std::ffi::OsString>);
+
+impl TrustedTestEnvironment {
+    fn enter() -> Self {
+        let prior = std::env::var_os("MOLT_TRUSTED");
+        unsafe { std::env::set_var("MOLT_TRUSTED", "1") };
+        Self(prior)
+    }
+}
+
+impl Drop for TrustedTestEnvironment {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => unsafe { std::env::set_var("MOLT_TRUSTED", value) },
+            None => unsafe { std::env::remove_var("MOLT_TRUSTED") },
+        }
+    }
+}
+
+struct PendingExceptionSnapshot {
+    c_error: Option<molt_cpython_abi::api::errors::OwnedCError>,
+    runtime_error_bits: Option<u64>,
+}
+
+impl PendingExceptionSnapshot {
+    fn detach() -> Self {
+        let c_error = molt_cpython_abi::api::errors::take_current_error();
+        let runtime_error_bits = crate::with_gil_entry_nopanic!(_py, {
+            if !crate::exception_pending(_py) {
+                None
+            } else {
+                let bits = crate::exception_last_bits_noinc(_py)
+                    .expect("pending runtime exception must have an owned instance");
+                crate::inc_ref_bits(_py, bits);
+                crate::clear_exception(_py);
+                Some(bits)
+            }
+        });
+        Self {
+            c_error,
+            runtime_error_bits,
+        }
+    }
+
+    fn restore(self) {
+        drop(molt_cpython_abi::api::errors::take_current_error());
+        crate::with_gil_entry_nopanic!(_py, {
+            crate::clear_exception(_py);
+            if let Some(bits) = self.runtime_error_bits {
+                let ptr = crate::obj_from_bits(bits)
+                    .as_ptr()
+                    .expect("snapshotted runtime exception must remain live");
+                crate::record_exception(_py, ptr);
+                crate::dec_ref_bits(_py, bits);
+            }
+        });
+        if let Some(error) = self.c_error {
+            molt_cpython_abi::api::errors::restore_current_error_exact(error);
+        }
+    }
+}
+
+/// One scoped authority for process-global runtime test state.
+///
+/// Construction explicitly initializes the runtime, installs the CPython ABI
+/// hooks through that production bootstrap, borrows pending-call main-thread
+/// custody for the current harness thread, and detaches both exception domains.
+/// Drop restores the exact borrowed state even after an expected test panic.
+pub(crate) struct RuntimeTestTransaction {
+    pending_calls: Option<molt_cpython_abi::api::pending_calls::PendingCallRuntimeTestSnapshot>,
+    pending_exceptions: Option<PendingExceptionSnapshot>,
+    gc: Option<crate::object::gc::GcRuntimeTestSnapshot>,
+    execution_attachments: usize,
+    _process_state: MutexGuard<'static, ()>,
+}
+
+impl RuntimeTestTransaction {
+    pub(crate) fn new() -> Self {
+        Self::enter(false)
+    }
+
+    pub(crate) fn with_gc_isolation() -> Self {
+        Self::enter(true)
+    }
+
+    /// Run one test against a freshly bootstrapped trusted runtime.
+    ///
+    /// Import-boundary tests need their environment frozen during cold
+    /// bootstrap, so they cannot enter the normal already-ready transaction.
+    /// This is the sole test authority for the shutdown/reset/reinitialize
+    /// lifecycle: it owns process-state custody, restores the environment, and
+    /// leaves the lifecycle reset even when the test body unwinds.
+    pub(crate) fn with_trusted_fresh_runtime<R>(f: impl FnOnce() -> R) -> R {
+        let _process_state = process_global_test_state();
+        let _trusted_environment = TrustedTestEnvironment::enter();
+
+        if crate::state::runtime_state::runtime_is_initialized() {
+            assert_eq!(
+                crate::state::runtime_state::molt_runtime_shutdown(),
+                1,
+                "fresh runtime transaction could not retire the prior runtime"
+            );
+        }
+        crate::state::runtime_state::molt_runtime_reset_for_testing();
+        assert_eq!(
+            crate::state::runtime_state::molt_runtime_init(),
+            1,
+            "fresh runtime transaction could not bootstrap"
+        );
+
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(f));
+        if crate::state::runtime_state::runtime_is_initialized() {
+            assert_eq!(
+                crate::state::runtime_state::molt_runtime_shutdown(),
+                1,
+                "fresh runtime transaction could not retire its runtime"
+            );
+        }
+        crate::state::runtime_state::molt_runtime_reset_for_testing();
+
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn enter(isolate_gc: bool) -> Self {
+        let process_state = process_global_test_state();
+        assert_eq!(
+            crate::state::runtime_state::molt_runtime_init(),
+            1,
+            "runtime test transaction requires successful production bootstrap"
+        );
+        let execution_attachments =
+            molt_cpython_abi::api::object::runtime_execution_attachment_count();
+        let pending_calls = crate::with_gil_entry_nopanic!(_py, {
+            molt_cpython_abi::api::pending_calls::begin_runtime_test_transaction(
+                std::thread::current().id(),
+            )
+        });
+        let pending_exceptions = PendingExceptionSnapshot::detach();
+        let gc = isolate_gc.then(|| {
+            crate::with_gil_entry_nopanic!(_py, {
+                let state = &crate::runtime_state(_py).gc;
+                let snapshot = state.runtime_test_snapshot();
+                let outcome = unsafe { crate::object::gc::collect_cycles(_py) };
+                assert!(
+                    matches!(
+                        outcome.status,
+                        crate::object::gc::GcCollectStatus::Completed
+                            | crate::object::gc::GcCollectStatus::ReentrantNoop
+                            | crate::object::gc::GcCollectStatus::UnsupportedConcurrency
+                    ),
+                    "runtime test GC baseline failed: {:?}",
+                    outcome.status
+                );
+                state.restore_runtime_test_snapshot(&snapshot);
+                snapshot
+            })
+        });
+        Self {
+            pending_calls: Some(pending_calls),
+            pending_exceptions: Some(pending_exceptions),
+            gc,
+            execution_attachments,
+            _process_state: process_state,
+        }
+    }
+}
+
+impl Drop for RuntimeTestTransaction {
+    fn drop(&mut self) {
+        if let Some(snapshot) = self.gc.take() {
+            crate::with_gil_entry_nopanic!(_py, {
+                let outcome = unsafe { crate::object::gc::collect_cycles(_py) };
+                if !std::thread::panicking() {
+                    assert!(
+                        matches!(
+                            outcome.status,
+                            crate::object::gc::GcCollectStatus::Completed
+                                | crate::object::gc::GcCollectStatus::ReentrantNoop
+                                | crate::object::gc::GcCollectStatus::UnsupportedConcurrency
+                        ),
+                        "runtime test GC cleanup failed: {:?}",
+                        outcome.status
+                    );
+                }
+                crate::runtime_state(_py)
+                    .gc
+                    .restore_runtime_test_snapshot(&snapshot);
+            });
+        }
+        if let Some(snapshot) = self.pending_exceptions.take() {
+            snapshot.restore();
+        }
+        if let Some(snapshot) = self.pending_calls.take() {
+            crate::with_gil_entry_nopanic!(_py, {
+                molt_cpython_abi::api::pending_calls::restore_runtime_test_transaction(snapshot);
+            });
+        }
+        if !std::thread::panicking() {
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                self.execution_attachments,
+                "runtime execution attachment leaked across test transaction"
+            );
+        }
+    }
+}
 
 fn install_expected_panic_hook() {
     INSTALL_EXPECTED_PANIC_HOOK.call_once(|| {
@@ -80,5 +297,36 @@ fn expected_panic_hook_is_thread_local_and_nestable() {
             panic!("second outer expected panic");
         })
         .is_err()
+    );
+}
+
+#[test]
+#[ignore = "runtime test transaction latency/allocation probe"]
+fn runtime_test_transaction_overhead_probe() {
+    const ITERATIONS: u32 = 4_096;
+    drop(RuntimeTestTransaction::new());
+    #[cfg(feature = "l7-attestation-probe")]
+    {
+        crate::attestation_probe::reset();
+        crate::attestation_probe::set_tracking(true);
+    }
+    let started = std::time::Instant::now();
+    for _ in 0..ITERATIONS {
+        drop(RuntimeTestTransaction::new());
+    }
+    let elapsed = started.elapsed();
+    #[cfg(feature = "l7-attestation-probe")]
+    {
+        crate::attestation_probe::set_tracking(false);
+        let allocation = crate::attestation_probe::snapshot();
+        assert_eq!(
+            allocation.allocations, 0,
+            "warm runtime test transactions must remain allocation-free"
+        );
+    }
+    println!(
+        "{{\"iterations\":{ITERATIONS},\"elapsed_ns\":{},\"ns_per_transaction\":{}}}",
+        elapsed.as_nanos(),
+        elapsed.as_nanos() / u128::from(ITERATIONS),
     );
 }
