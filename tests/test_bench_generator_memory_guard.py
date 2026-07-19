@@ -29,7 +29,7 @@ def test_generator_benchmark_uses_shared_memory_guard(monkeypatch) -> None:
         return subprocess.CompletedProcess(cmd, 0, stdout="Python 3.12.0\n", stderr="")
 
     monkeypatch.setattr(
-        module.harness_memory_guard,
+        module.process_guard_common.harness_memory_guard,
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
