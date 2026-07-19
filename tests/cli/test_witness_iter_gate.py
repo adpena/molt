@@ -18,6 +18,9 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 _RUNNER = Path(__file__).resolve().parents[2] / "tools" / "witness_iter.py"
 
@@ -147,3 +150,54 @@ def test_gate_is_two_sided_not_one_sided():
     _, good = _verdict(KNOWN_GOOD)
     _, bad = _verdict(REGRESSION_DATETIME)
     assert good.passed and not bad.passed
+
+
+def test_wasm_confirmation_accepts_only_typed_argv_after_separator(monkeypatch):
+    captured: list[str] = []
+    monkeypatch.setattr(WI, "maybe_dispatch_to_wsl", lambda _argv: None)
+    monkeypatch.setattr(WI.platform, "system", lambda: "Linux")
+
+    def fake_confirm(command: list[str]) -> int:
+        captured.extend(command)
+        return 17
+
+    monkeypatch.setattr(WI, "run_wasm_confirm", fake_confirm)
+
+    assert (
+        WI._main(["--wasm-confirm", "--", sys.executable, "-c", "print('typed argv')"])
+        == 17
+    )
+    assert captured == [sys.executable, "-c", "print('typed argv')"]
+
+
+def test_wasm_confirmation_refuses_missing_argv(monkeypatch):
+    monkeypatch.setattr(WI, "maybe_dispatch_to_wsl", lambda _argv: None)
+    monkeypatch.setattr(WI.platform, "system", lambda: "Linux")
+
+    with pytest.raises(SystemExit) as exc:
+        WI._main(["--wasm-confirm"])
+
+    assert exc.value.code == 2
+
+
+def test_wsl_boundary_keeps_dynamic_values_out_of_shell_program(monkeypatch):
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    marker = "; touch /tmp/not-executed"
+    monkeypatch.setattr(WI.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(WI.shutil, "which", lambda _name: "wsl.exe")
+    monkeypatch.delenv("MOLT_WITNESS_WSL_REPO", raising=False)
+
+    def fake_run(command: list[str], **kwargs: object):
+        calls.append((command, kwargs))
+        if "wslpath" in command:
+            return SimpleNamespace(returncode=0, stdout="/mnt/c/Molt/molt-src\n")
+        return SimpleNamespace(returncode=23, stdout="")
+
+    monkeypatch.setattr(WI, "_run_child", fake_run)
+
+    assert WI.maybe_dispatch_to_wsl(["--wasm-confirm", "--", marker]) == 23
+    launch = calls[1][0]
+    shell_program = launch[launch.index("-lc") + 1]
+    assert marker not in shell_program
+    assert launch[-1] == marker
+    assert launch.index("--in-wsl") < launch.index("--")

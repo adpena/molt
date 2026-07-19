@@ -2230,7 +2230,8 @@ gates = [
 # `state`       : "warn" | "strict"
 # `strict_when` : machine token (`live_count == 0`, `live_count <= N`,
 #                 `landed_functional`, `always`) or free text (-> manual review)
-# `count_cmd`   : optional shell command whose integer stdout is `live_count`
+# `count_detector`: optional checked-in detector ID producing `live_count`;
+#                   argv and output schema live in check_gate_flips.py
 # `rationale`   : why this state / flip condition
 #
 # The Wave-1 hooks land FUNCTIONAL (not warn-only): they are additive and
@@ -2273,7 +2274,7 @@ rationale = "check_gate_liveness must always fire on known-bad fixtures; a canar
 name = "findings_memo_lint"
 state = "warn"
 strict_when = "live_count == 0"
-count_cmd = "python3 tools/findings_memo_lint.py --count"
+count_detector = "findings_memo_lint"
 rationale = "APPARATUS A4 memo->registry lint (ci_gate check findings-memo-lint-warn). A docs/agent or memory line stating a measured finding with no finding_id reference is un-formalized prose that will rot. live_count is the current backlog; flip to strict once it reaches zero."
 
 # --- APPARATUS A10 memory-graph integrity (warn-only; A9 [[gate_flip]] entry) ---
@@ -2290,12 +2291,12 @@ rationale = "APPARATUS A4 memo->registry lint (ci_gate check findings-memo-lint-
 # vacuously met in CI and falsely flagged should-flip. Only the operator, looking
 # at the real corpus, can decide to tighten (swap the ci_gate check to
 # `check_memory_graph.py --strict`, which fails on unresolved M## while danglers
-# stay warn-only even then). count_cmd remains for the human-visible live_count.
+# stay warn-only even then). count_detector remains for the visible live count.
 [[gate_flip]]
 name = "memory_graph_integrity"
 state = "warn"
 strict_when = "manual: unresolved M## sustained at 0 on the live auto-memory corpus AND dangling-link triage reviewed (operator-box only; CI cannot see the corpus)"
-count_cmd = "python3 tools/check_memory_graph.py --count"
+count_detector = "memory_graph_integrity"
 rationale = "APPARATUS A10 memory-graph integrity (ci_gate check memory-graph-integrity, warn-only). Reports dangling [[wikilinks]] (ALLOWED) + unresolved MEMORY.md M## (index break). Free-text manual strict_when because CI cannot see the auto-memory corpus; flip is an operator decision made against the live corpus."
 
 # --- APPARATUS Wave 4 A11 claims/preflight/serializer (self-tests land strict) ---
@@ -2330,13 +2331,13 @@ rationale = "APPARATUS A11 (ci_gate check apparatus-commit-serializer-self-test)
 # CLAIMS.md 6 requires an OBJECTIVE-liveness check before any RECLAIM, which CI
 # cannot perform. strict_when is therefore a MANUAL-REVIEW free-text token (like
 # memory_graph_integrity), not a machine `live_count == 0`: the operator, seeing
-# the real worktrees/queue, decides any RECLAIM. count_cmd exposes the live stale
-# count for the human-visible report.
+# the real worktrees/queue, decides any RECLAIM. count_detector exposes the live
+# stale count for the human-visible report.
 [[gate_flip]]
 name = "claims_status_stale"
 state = "warn"
 strict_when = "manual: a stale CLAIMED lane is advisory only (CLAIMS.md 6 objective-liveness bar); CI cannot prove a silent worktree dead, so this never flips to a hard fail -- the operator drives any RECLAIM"
-count_cmd = "python3 tools/claims_status.py --json"
+count_detector = "claims_status_stale"
 rationale = "APPARATUS A11 claims-custody stale flag (ci_gate check apparatus-claims-status-warn, warn-only). Reports live/retired/stale counts so stale custody cannot silently block a lane, but staleness is never a hard failure: CLAIMS.md 6 needs objective-liveness evidence CI does not have. Free-text manual strict_when; the operator reclaims."
 
 [[gate_flip]]

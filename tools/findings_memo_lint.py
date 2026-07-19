@@ -25,7 +25,7 @@ whole tier-1 red. Default mode reports the backlog count and exits 0. ``--strict
 exits non-zero when the backlog is non-empty. The NAMED strict-flip condition is
 recorded in the ``tools/proof_plan.toml`` ``[[gate_flip]]`` registry
 (``name = "findings_memo_lint"``, ``strict_when = "live_count == 0"``,
-``count_cmd = "python3 tools/findings_memo_lint.py --count"``) and read by
+``count_detector = "findings_memo_lint"``) and read by
 ``tools/check_gate_flips.py``: once the backlog is burned to zero, set
 ``state = "strict"`` and flip the ci_gate check to ``--strict``.
 
@@ -268,8 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--count",
         action="store_true",
-        help="print ONLY the integer backlog to stdout (the [[gate_flip]] "
-        "count_cmd source that feeds live_count in check_gate_flips.py)",
+        help="print ONLY the integer backlog to stdout (the registered "
+        "[[gate_flip]] detector feeding check_gate_flips.py)",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backlog = len(violations)
     if args.count:
-        # Integer-only stdout for check_gate_flips.py count_cmd (live_count).
+        # Integer-only stdout for the registered check_gate_flips detector.
         print(backlog)
         return 0
 

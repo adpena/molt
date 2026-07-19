@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     report = analyze(memory_dir=Path(args.memory_dir) if args.memory_dir else None)
 
     if args.count:
-        # Integer-only stdout for the [[gate_flip]] count_cmd (live_count).
+        # Integer-only stdout for the registered [[gate_flip]] count detector.
         print(report["unresolved_mref_count"])
         return 0
     if args.json:
