@@ -584,6 +584,12 @@ class _NativeRuntimeBuildFailure:
     evidence_path: Path | None = None
     returncode: int | None = None
     timed_out: bool = False
+    signal: dict[str, object] | None = None
+    duration_seconds: float | None = None
+    peak_process_rss_bytes: int | None = None
+    peak_tree_rss_bytes: int | None = None
+    attempt_count: int = 0
+    retry_reason: str | None = None
 
     def json_payload(self) -> dict[str, object]:
         return {
@@ -594,6 +600,12 @@ class _NativeRuntimeBuildFailure:
             ),
             "returncode": self.returncode,
             "timed_out": self.timed_out,
+            "signal": self.signal,
+            "duration_seconds": self.duration_seconds,
+            "peak_process_rss_bytes": self.peak_process_rss_bytes,
+            "peak_tree_rss_bytes": self.peak_tree_rss_bytes,
+            "attempt_count": self.attempt_count,
+            "retry_reason": self.retry_reason,
         }
 
 

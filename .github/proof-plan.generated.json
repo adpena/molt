@@ -48,7 +48,7 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "d678c39b0e5ac113e9bd0ccaa9c36bec2e011c742445024b5ee54c642782ce28",
+  "authority_sha256": "d6edd183e6c895381c72a0ffc1fbdfe3f1ec92fef3483111332c84b0fb62482b",
   "ci_families": [
     {
       "dependencies": [],
