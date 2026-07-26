@@ -11,10 +11,12 @@ cannot be assigned is terminated while still suspended; a child that cannot be
 resumed is terminated through the job.  Win32 failures are surfaced with their
 error codes so callers can preserve precise incident evidence.
 """
+
 from __future__ import annotations
 
 import contextlib
 import ctypes
+from dataclasses import dataclass
 import subprocess
 import sys
 import time
@@ -39,6 +41,48 @@ _ERROR_MORE_DATA = 234
 
 class WinJobError(RuntimeError):
     """A Windows Job Object custody invariant could not be established."""
+
+
+@dataclass(frozen=True, slots=True)
+class WindowsJobAccounting:
+    """Kernel-maintained lifetime accounting for one exact Job Object."""
+
+    total_processes: int
+    active_processes: int
+    total_terminated_processes: int
+    peak_job_commit_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class WindowsSystemResources:
+    """Process/handle/commit pressure captured without spawning a subprocess."""
+
+    process_count: int | None
+    thread_count: int | None
+    system_handle_count: int | None
+    guard_handle_count: int | None
+    commit_total_bytes: int | None
+    commit_limit_bytes: int | None
+    commit_peak_bytes: int | None
+    physical_total_bytes: int | None
+    physical_available_bytes: int | None
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class WindowsJobCleanup:
+    """Proof that an exact Job Object was empty before custody was released."""
+
+    before: WindowsJobAccounting
+    after: WindowsJobAccounting
+    system_before: WindowsSystemResources
+    system_after: WindowsSystemResources
+    terminated_remaining_processes: bool
+    elapsed_s: float
+
+    @property
+    def completed(self) -> bool:
+        return self.after.active_processes == 0
 
 
 class _IO_COUNTERS(ctypes.Structure):
@@ -121,6 +165,25 @@ class _PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
     ]
 
 
+class _PERFORMANCE_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("CommitTotal", ctypes.c_size_t),
+        ("CommitLimit", ctypes.c_size_t),
+        ("CommitPeak", ctypes.c_size_t),
+        ("PhysicalTotal", ctypes.c_size_t),
+        ("PhysicalAvailable", ctypes.c_size_t),
+        ("SystemCache", ctypes.c_size_t),
+        ("KernelTotal", ctypes.c_size_t),
+        ("KernelPaged", ctypes.c_size_t),
+        ("KernelNonpaged", ctypes.c_size_t),
+        ("PageSize", ctypes.c_size_t),
+        ("HandleCount", wintypes.DWORD),
+        ("ProcessCount", wintypes.DWORD),
+        ("ThreadCount", wintypes.DWORD),
+    ]
+
+
 def suspended_creationflag() -> int:
     """Return ``CREATE_SUSPENDED`` on Windows and zero elsewhere."""
 
@@ -167,6 +230,13 @@ def _k32() -> Any:
     k32.ResumeThread.argtypes = [wintypes.HANDLE]
     k32.OpenProcess.restype = wintypes.HANDLE
     k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.GetCurrentProcess.argtypes = []
+    k32.GetProcessHandleCount.restype = wintypes.BOOL
+    k32.GetProcessHandleCount.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     return k32
 
 
@@ -177,6 +247,11 @@ def _psapi() -> Any:
     psapi.GetProcessMemoryInfo.argtypes = [
         wintypes.HANDLE,
         wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    psapi.GetPerformanceInfo.restype = wintypes.BOOL
+    psapi.GetPerformanceInfo.argtypes = [
+        ctypes.POINTER(_PERFORMANCE_INFORMATION),
         wintypes.DWORD,
     ]
     return psapi
@@ -250,9 +325,7 @@ def _resume_process_threads(pid: int) -> None:
                 try:
                     previous_count = k32.ResumeThread(thread)
                     if previous_count == 0xFFFFFFFF:
-                        raise _win32_error(
-                            f"ResumeThread(tid={entry.th32ThreadID})"
-                        )
+                        raise _win32_error(f"ResumeThread(tid={entry.th32ThreadID})")
                     resumed += 1
                 finally:
                     _close_handle(int(thread), operation="CloseHandle(thread)")
@@ -304,11 +377,9 @@ def terminate_job(job: int | None, *, exit_code: int = 1) -> None:
         raise _win32_error("TerminateJobObject")
 
 
-def active_process_count(job: int | None) -> int:
-    """Return the exact number of live processes still owned by ``job``."""
-
+def _basic_accounting_information(job: int | None) -> _BASIC_ACCOUNTING_INFORMATION:
     if not _WINDOWS:
-        return 0
+        return _BASIC_ACCOUNTING_INFORMATION()
     if not job:
         raise WinJobError("Windows job handle is required")
     info = _BASIC_ACCOUNTING_INFORMATION()
@@ -321,7 +392,13 @@ def active_process_count(job: int | None) -> int:
         ctypes.byref(returned),
     ):
         raise _win32_error("QueryInformationJobObject")
-    return int(info.ActiveProcesses)
+    return info
+
+
+def active_process_count(job: int | None) -> int:
+    """Return the exact number of live processes still owned by ``job``."""
+
+    return int(_basic_accounting_information(job).ActiveProcesses)
 
 
 def process_ids(job: int | None) -> tuple[int, ...]:
@@ -415,6 +492,79 @@ def peak_job_memory_bytes(job: int | None) -> int:
     return int(info.PeakJobMemoryUsed)
 
 
+def job_accounting(job: int | None) -> WindowsJobAccounting:
+    """Return lifetime process and peak-commit accounting for ``job``."""
+
+    info = _basic_accounting_information(job)
+    return WindowsJobAccounting(
+        total_processes=int(info.TotalProcesses),
+        active_processes=int(info.ActiveProcesses),
+        total_terminated_processes=int(info.TotalTerminatedProcesses),
+        peak_job_commit_bytes=peak_job_memory_bytes(job),
+    )
+
+
+def system_resources() -> WindowsSystemResources:
+    """Capture Windows system pressure without allocating child processes.
+
+    Resource telemetry must never weaken process custody.  Individual Win32
+    query failures are retained in ``errors`` while the independent fields
+    remain available.
+    """
+
+    if not _WINDOWS:
+        return WindowsSystemResources(
+            process_count=None,
+            thread_count=None,
+            system_handle_count=None,
+            guard_handle_count=None,
+            commit_total_bytes=None,
+            commit_limit_bytes=None,
+            commit_peak_bytes=None,
+            physical_total_bytes=None,
+            physical_available_bytes=None,
+        )
+    errors: list[str] = []
+    performance: _PERFORMANCE_INFORMATION | None = _PERFORMANCE_INFORMATION()
+    performance.cb = ctypes.sizeof(_PERFORMANCE_INFORMATION)
+    if not _psapi().GetPerformanceInfo(
+        ctypes.byref(performance),
+        performance.cb,
+    ):
+        errors.append(str(_win32_error("GetPerformanceInfo")))
+        performance = None
+    handle_count = wintypes.DWORD()
+    if not _k32().GetProcessHandleCount(
+        _k32().GetCurrentProcess(),
+        ctypes.byref(handle_count),
+    ):
+        errors.append(str(_win32_error("GetProcessHandleCount")))
+        guard_handle_count: int | None = None
+    else:
+        guard_handle_count = int(handle_count.value)
+    page_size = None if performance is None else int(performance.PageSize)
+
+    def _bytes(field: str) -> int | None:
+        if performance is None or page_size is None:
+            return None
+        return int(getattr(performance, field)) * page_size
+
+    return WindowsSystemResources(
+        process_count=(None if performance is None else int(performance.ProcessCount)),
+        thread_count=(None if performance is None else int(performance.ThreadCount)),
+        system_handle_count=(
+            None if performance is None else int(performance.HandleCount)
+        ),
+        guard_handle_count=guard_handle_count,
+        commit_total_bytes=_bytes("CommitTotal"),
+        commit_limit_bytes=_bytes("CommitLimit"),
+        commit_peak_bytes=_bytes("CommitPeak"),
+        physical_total_bytes=_bytes("PhysicalTotal"),
+        physical_available_bytes=_bytes("PhysicalAvailable"),
+        errors=tuple(errors),
+    )
+
+
 def wait_until_empty(
     job: int | None,
     *,
@@ -433,6 +583,48 @@ def wait_until_empty(
                 f"Windows job still owns {active} process(es) after {timeout:.3f}s"
             )
         time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+
+def complete_job_custody(
+    job: int | None,
+    *,
+    timeout: float,
+) -> WindowsJobCleanup | None:
+    """Make exact Job emptiness the completion boundary for guarded work.
+
+    A direct child can exit while grandchildren remain alive.  Closing a
+    ``KILL_ON_JOB_CLOSE`` handle only signals those descendants; it does not
+    wait for their DLLs, handles, and commit charge to be released.  This
+    primitive retains the sole exact-Job authority, terminates any remaining
+    members, and waits for kernel accounting to reach zero before the caller
+    may publish success or start the next process.
+    """
+
+    if not _WINDOWS:
+        return None
+    if not job:
+        raise WinJobError("Windows job handle is required")
+    started = time.monotonic()
+    system_before = system_resources()
+    before = job_accounting(job)
+    terminated_remaining = before.active_processes > 0
+    if terminated_remaining:
+        terminate_job(job)
+    wait_until_empty(job, timeout=timeout)
+    after = job_accounting(job)
+    if after.active_processes != 0:
+        raise WinJobError(
+            "Windows job completion returned with "
+            f"{after.active_processes} active process(es)"
+        )
+    return WindowsJobCleanup(
+        before=before,
+        after=after,
+        system_before=system_before,
+        system_after=system_resources(),
+        terminated_remaining_processes=terminated_remaining,
+        elapsed_s=max(0.0, time.monotonic() - started),
+    )
 
 
 def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> None:
@@ -471,8 +663,8 @@ def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> None:
 def close_job(job: int | None) -> None:
     """Close the sole job handle; live members are synchronously signalled."""
 
-    if not _WINDOWS:
+    if not _WINDOWS or job is None:
         return
-    if not job:
+    if job == 0:
         raise WinJobError("Windows job handle is required")
     _close_handle(job, operation="CloseHandle(job)")

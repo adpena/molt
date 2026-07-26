@@ -182,6 +182,14 @@ def main(argv: list[str] | None = None) -> int:
                 and getattr(peak_total, "rss_kb", None) is not None
                 else None
             ),
+            "peak_job_commit_bytes": getattr(
+                result,
+                "peak_job_commit_bytes",
+                None,
+            ),
+            "windows_job_cleanup": harness_memory_guard.memory_guard.windows_job_cleanup_payload(
+                getattr(result, "windows_job_cleanup", None)
+            ),
         }
         metrics_path = args.metrics_json.resolve()
         metrics_path.parent.mkdir(parents=True, exist_ok=True)

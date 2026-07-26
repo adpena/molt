@@ -61,3 +61,26 @@ def test_on_spawn_failure_reaps_the_owned_child_tree() -> None:
             break
         time.sleep(0.01)
     assert spawned[0] not in memory_guard.sample_processes()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("win"),
+    reason="exact Job Object completion is Windows-only",
+)
+def test_run_guarded_does_not_return_with_live_job_descendants(tmp_path) -> None:
+    pidfile = tmp_path / "grandchild.pid"
+    child = (
+        "import pathlib,subprocess,sys;"
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(gc.pid),encoding='utf-8')"
+    )
+
+    result = _run([sys.executable, "-c", child, str(pidfile)])
+
+    assert result.returncode == 0
+    assert pidfile.read_text(encoding="utf-8").strip()
+    assert result.windows_job_cleanup is not None
+    assert result.windows_job_cleanup.completed
+    assert result.windows_job_cleanup.terminated_remaining_processes
+    assert result.windows_job_cleanup.before.active_processes >= 1
+    assert result.windows_job_cleanup.after.active_processes == 0
