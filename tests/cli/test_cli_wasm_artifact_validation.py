@@ -1571,6 +1571,8 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
+    monkeypatch.setenv("MOLT_WASM_DISABLE_SCCACHE", "1")
     wasi_sysroot = tmp_path / "wasi-sysroot"
     monkeypatch.delenv("WASI_SYSROOT", raising=False)
     monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)

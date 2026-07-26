@@ -256,8 +256,6 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
             ["git", *args],
             cwd=tmp_path,
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             text=True,
         )
 
@@ -304,8 +302,6 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
             ["git", *args],
             cwd=tmp_path,
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             text=True,
         )
 

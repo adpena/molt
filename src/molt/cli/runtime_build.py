@@ -3097,8 +3097,9 @@ def _ensure_runtime_wasm(
         _configure_wasi_sysroot_env(env)
         _configure_wasm_long_double_env(env)
         # Deterministic proof builds default Cargo incremental off at the env
-        # boundary; an explicit operator-provided CARGO_INCREMENTAL remains
-        # authoritative for local incremental-debug sessions.
+        # boundary. An explicit operator-provided CARGO_INCREMENTAL remains
+        # authoritative for local direct-rustc sessions; the canonical Cargo
+        # environment still forces it off when sccache is active.
         # Enable sccache for WASM builds by default (same as native builds).
         # Set MOLT_WASM_DISABLE_SCCACHE=1 to opt out.
         if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":

@@ -37,6 +37,62 @@ def _completed(
     return result
 
 
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "sccache",
+        "/opt/cache/sccache",
+        r"C:\tools\sccache.exe",
+        '"C:\\Program Files\\sccache.exe"',
+    ],
+)
+def test_canonical_cargo_environment_forces_incremental_off_with_sccache(
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper: str,
+) -> None:
+    monkeypatch.setenv("RUSTC_WRAPPER", wrapper)
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_USE_EXTERNAL_ARTIFACTS", raising=False)
+
+    env = CARGO._cargo_build_env()
+
+    assert env["RUSTC_WRAPPER"] == wrapper
+    assert env["CARGO_INCREMENTAL"] == "0"
+
+
+@pytest.mark.parametrize("explicit", [None, "0", "1"])
+def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: str | None,
+) -> None:
+    monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
+    if explicit is None:
+        monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    else:
+        monkeypatch.setenv("CARGO_INCREMENTAL", explicit)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_USE_EXTERNAL_ARTIFACTS", raising=False)
+
+    env = CARGO._cargo_build_env()
+
+    assert env["CARGO_INCREMENTAL"] == ("1" if explicit is None else explicit)
+
+
+def test_existing_sccache_wrapper_is_normalized_before_nested_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = {"RUSTC_WRAPPER": r"C:\tools\sccache.exe", "CARGO_INCREMENTAL": "1"}
+
+    CARGO._maybe_enable_sccache(env)
+
+    assert env["CARGO_INCREMENTAL"] == "0"
+
+
 def test_real_rustc_failure_with_sccache_command_is_never_retry_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

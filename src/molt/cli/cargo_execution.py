@@ -301,8 +301,29 @@ def _sccache_server_responsive(sccache: str) -> bool:
         return False
 
 
+def _wrapper_is_sccache(wrapper: str) -> bool:
+    name = wrapper.strip().strip('"').replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name == "sccache" or name == "sccache.exe"
+
+
+def _apply_cargo_incremental_policy(env: dict[str, str]) -> None:
+    """Enforce the production Cargo wrapper/incremental invariant.
+
+    Cargo does not submit incremental compilation units to compiler wrappers.
+    An inherited explicit ``CARGO_INCREMENTAL=1`` therefore cannot override the
+    sccache contract.  Without sccache, preserve an explicit caller policy and
+    otherwise enable the normal warm-build default.
+    """
+
+    if _wrapper_is_sccache(env.get("RUSTC_WRAPPER", "")):
+        env["CARGO_INCREMENTAL"] = "0"
+    else:
+        env.setdefault("CARGO_INCREMENTAL", "1")
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if env.get("RUSTC_WRAPPER"):
+        _apply_cargo_incremental_policy(env)
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
@@ -337,10 +358,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env["RUSTC_WRAPPER"] = sccache
-    # sccache SKIPS incremental compilation units, so with sccache enabled we must
-    # turn incremental off (else the wrapper caches nothing). When sccache is OFF
-    # (the Windows default now), incremental stays ON — see _cargo_build_env.
-    env["CARGO_INCREMENTAL"] = "0"
+    _apply_cargo_incremental_policy(env)
     _sccache_diag(
         f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness."
     )
@@ -363,11 +381,10 @@ def _cargo_build_env() -> dict[str, str]:
     # skips incremental units), so the sccache-enable paths force it back to "0";
     # with sccache OFF (the Windows default) incremental is the ONLY compiler
     # cache we have and must be on, else every rebuild pays the full cold compile.
-    # An explicit operator-provided CARGO_INCREMENTAL always wins (setdefault).
-    if Path(env.get("RUSTC_WRAPPER", "") or "").name == "sccache":
-        env.setdefault("CARGO_INCREMENTAL", "0")
-    else:
-        env.setdefault("CARGO_INCREMENTAL", "1")
+    # Explicit incremental policy wins only when it is compatible with the
+    # active wrapper. The invariant is enforced here because every production
+    # nested Cargo build obtains its environment through this authority.
+    _apply_cargo_incremental_policy(env)
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
@@ -415,11 +432,6 @@ _SCCACHE_LAUNCH_FAILURE_RE = re.compile(
     r"(?im)^\s*error:\s*(?:could not|failed to)\s+(?:execute|spawn)\s+"
     r"(?:process\s+)?[^\r\n]*\bsccache(?:\.exe)?\b"
 )
-
-
-def _wrapper_is_sccache(wrapper: str) -> bool:
-    name = Path(wrapper).name.lower()
-    return name == "sccache" or name == "sccache.exe"
 
 
 def _sccache_wrapper_failure_reason(
