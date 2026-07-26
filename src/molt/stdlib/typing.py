@@ -183,7 +183,10 @@ def _type_repr(arg: object) -> str:
 
 
 def _format_args(args: tuple[object, ...]) -> str:
-    return ", ".join(_type_repr(arg) for arg in args)
+    # ``str.join`` must consume a concrete sequence here. Besides avoiding a
+    # generator frame for a formatter that necessarily consumes every item,
+    # this keeps native and WASM on the same direct iterable representation.
+    return ", ".join([_type_repr(arg) for arg in args])
 
 
 class _TypingBase:
