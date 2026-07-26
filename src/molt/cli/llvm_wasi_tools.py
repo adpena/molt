@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import functools
 import os
 from pathlib import Path
 import shlex
@@ -124,9 +125,10 @@ def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _source_checkout_roots() -> tuple[Path, ...]:
+@functools.lru_cache(maxsize=8)
+def _cached_source_checkout_roots(module_file: str) -> tuple[Path, ...]:
     """Return the loaded checkout and its Git common checkout, if worktree-backed."""
-    checkout = Path(__file__).resolve().parents[3]
+    checkout = Path(module_file).resolve().parents[3]
     roots = [checkout]
     git_marker = checkout / ".git"
     if git_marker.is_file():
@@ -153,6 +155,53 @@ def _source_checkout_roots() -> tuple[Path, ...]:
     return _dedupe_paths(roots)
 
 
+def _source_checkout_roots() -> tuple[Path, ...]:
+    return _cached_source_checkout_roots(os.path.abspath(__file__))
+
+
+def _directory_identity(path: Path) -> tuple[int, int, int, int, int]:
+    """Return a portable identity that changes when a search directory mutates.
+
+    A missing directory has an explicit identity; creating it therefore changes
+    the snapshot without probing every possible executable name on every plan
+    build.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (-1, 0, 0, 0, 0)
+    return (
+        0,
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _cached_managed_llvm_bin_directories(
+    roots: tuple[str, ...],
+    toolchain_directory_identities: tuple[tuple[int, int, int, int, int], ...],
+) -> tuple[Path, ...]:
+    del toolchain_directory_identities
+    candidates: list[Path] = []
+    for root_string in roots:
+        root = Path(root_string)
+        toolchains = root / "toolchains"
+        candidates.extend((root / "bin", toolchains / "wasi-sdk" / "bin"))
+        if toolchains.is_dir():
+            candidates.extend(
+                child / "bin"
+                for child in sorted(toolchains.iterdir(), reverse=True)
+                if child.is_dir()
+                and (
+                    child.name.startswith("llvm-") or child.name.startswith("wasi-sdk-")
+                )
+            )
+    return _dedupe_paths(candidates)
+
+
 def _managed_llvm_bin_directories(target_root: Path | None) -> tuple[Path, ...]:
     roots: list[Path] = []
     if target_root is not None:
@@ -162,21 +211,11 @@ def _managed_llvm_bin_directories(target_root: Path | None) -> tuple[Path, ...]:
         roots.append(Path(raw_target_root))
     roots.extend(checkout / "target" for checkout in _source_checkout_roots())
 
-    candidates: list[Path] = []
-    for root in _dedupe_paths(roots):
-        toolchains = root / "toolchains"
-        candidates.extend((root / "bin", toolchains / "wasi-sdk" / "bin"))
-        if toolchains.is_dir():
-            candidates.extend(
-                child / "bin"
-                for child in sorted(toolchains.iterdir(), reverse=True)
-                if child.is_dir()
-                and (
-                    child.name.startswith("llvm-")
-                    or child.name.startswith("wasi-sdk-")
-                )
-            )
-    return _dedupe_paths(candidates)
+    normalized_roots = tuple(map(os.fspath, _dedupe_search_directories(roots)))
+    identities = tuple(
+        _directory_identity(Path(root) / "toolchains") for root in normalized_roots
+    )
+    return _cached_managed_llvm_bin_directories(normalized_roots, identities)
 
 
 def _rust_llvm_bin_directories() -> tuple[Path, ...]:
@@ -218,6 +257,118 @@ def _directory_candidates(directory: Path, names: Sequence[str]) -> Iterable[Pat
                 yield candidate
 
 
+def _dedupe_search_directories(paths: Iterable[Path]) -> tuple[Path, ...]:
+    """Deduplicate caller search directories without filesystem probing.
+
+    Candidate results are still canonicalized by ``_dedupe_paths`` on a cache
+    miss.  Keeping cache-key construction free of ``Path.resolve`` prevents the
+    memoization layer from repeating the filesystem work it exists to remove.
+    """
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        absolute = Path(os.path.abspath(os.fspath(path.expanduser())))
+        key = os.path.normcase(os.fspath(absolute))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(absolute)
+    return tuple(result)
+
+
+@functools.lru_cache(maxsize=32)
+def _path_search_directories(path_value: str, cwd: str) -> tuple[Path, ...]:
+    """Return directories whose identity governs ``shutil.which`` results."""
+    directories: list[Path] = [Path(cwd)]
+    for raw in path_value.split(os.pathsep):
+        value = raw.strip().strip('"')
+        directories.append(Path(value) if value else Path(cwd))
+    return _dedupe_search_directories(directories)
+
+
+@functools.lru_cache(maxsize=256)
+def _observed_search_directories(
+    search_directories: tuple[str, ...], path_value: str, cwd: str
+) -> tuple[Path, ...]:
+    """Reuse normalized directory objects while their configuration is stable."""
+    return _dedupe_search_directories(
+        (
+            *map(Path, search_directories),
+            *_path_search_directories(path_value, cwd),
+        )
+    )
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_llvm_named_tool_candidates(
+    names: tuple[str, ...],
+    explicit_commands: tuple[tuple[str, ...], ...],
+    search_directories: tuple[str, ...],
+    directory_identities: tuple[tuple[int, int, int, int, int], ...],
+    target_root: str | None,
+    include_rust_toolchain: bool,
+    environment_target_root: str,
+    path_value: str,
+    path_extensions: str,
+    rust_environment: tuple[str, str, str],
+    cwd: str,
+    module_file: str,
+    which_identity: int,
+) -> tuple[Path, ...]:
+    """Resolve one immutable, filesystem-identified tool-search snapshot.
+
+    All configuration and directory identities that can select a different
+    ladder are part of the key. Selected paths are also existence-checked on
+    every hit by the public wrapper.
+    """
+    del (
+        directory_identities,
+        environment_target_root,
+        path_value,
+        path_extensions,
+        rust_environment,
+        cwd,
+        module_file,
+        which_identity,
+    )
+    del target_root, include_rust_toolchain
+    explicit_paths = (
+        path
+        for command in explicit_commands
+        if command and (path := Path(command[0])).is_file()
+    )
+    paths = list(explicit_paths)
+    for directory in map(Path, search_directories):
+        paths.extend(_directory_candidates(directory, names))
+    for name in names:
+        # PATH is in the cache key.  Calling with the ambient default preserves
+        # Python's exact platform-specific current-directory/PATHEXT semantics.
+        resolved = shutil.which(name)
+        if resolved is not None:
+            paths.append(Path(resolved))
+    return _dedupe_paths(paths)
+
+
+def clear_llvm_tool_candidate_cache() -> None:
+    """Invalidate process-local tool selection after an explicit tool mutation."""
+    _cached_source_checkout_roots.cache_clear()
+    _cached_managed_llvm_bin_directories.cache_clear()
+    _path_search_directories.cache_clear()
+    _observed_search_directories.cache_clear()
+    _cached_llvm_named_tool_candidates.cache_clear()
+
+
+def llvm_tool_candidate_cache_info() -> dict[str, int]:
+    """Expose bounded cache telemetry to profilers and contract tests."""
+    info = _cached_llvm_named_tool_candidates.cache_info()
+    return {
+        "hits": info.hits,
+        "misses": info.misses,
+        "maxsize": int(info.maxsize or 0),
+        "currsize": info.currsize,
+    }
+
+
 def llvm_tool_candidates(
     role: LlvmToolRole,
     *,
@@ -251,19 +402,57 @@ def llvm_named_tool_candidates(
     """
     if not names or any(not name for name in names):
         raise ValueError("at least one non-empty LLVM tool name is required")
-    explicit_paths = (Path(command[0]) for command in explicit_commands if command)
-    directories: list[Path] = list(sibling_directories)
+    normalized_explicit_commands = tuple(
+        tuple(command) for command in explicit_commands
+    )
+    search_directories: list[Path] = list(sibling_directories)
     if include_rust_toolchain:
-        directories.extend(_rust_llvm_bin_directories())
-    directories.extend(_managed_llvm_bin_directories(target_root))
-    paths: list[Path] = list(explicit_paths)
-    for directory in _dedupe_paths(directories):
-        paths.extend(_directory_candidates(directory, names))
-    for name in names:
-        resolved = shutil.which(name)
-        if resolved is not None:
-            paths.append(Path(resolved))
-    return _dedupe_paths(paths)
+        search_directories.extend(_rust_llvm_bin_directories())
+    search_directories.extend(_managed_llvm_bin_directories(target_root))
+    normalized_search_directories = tuple(
+        map(os.fspath, _dedupe_search_directories(search_directories))
+    )
+    normalized_target_root = (
+        os.fspath(Path(os.path.abspath(os.fspath(target_root.expanduser()))))
+        if target_root is not None
+        else None
+    )
+    path_value = os.environ.get("PATH", os.defpath)
+    path_extensions = os.environ.get("PATHEXT", "")
+    cwd = os.path.normcase(os.path.abspath(os.curdir))
+    observed_directories = _observed_search_directories(
+        normalized_search_directories, path_value, cwd
+    )
+    directory_identities = tuple(
+        _directory_identity(path) for path in observed_directories
+    )
+    key = (
+        tuple(names),
+        normalized_explicit_commands,
+        normalized_search_directories,
+        directory_identities,
+        normalized_target_root,
+        include_rust_toolchain,
+        os.environ.get("MOLT_TARGET_ROOT", "").strip(),
+        path_value,
+        path_extensions,
+        (
+            os.environ.get("RUSTUP_TOOLCHAIN", ""),
+            os.environ.get("RUSTUP_HOME", ""),
+            os.environ.get("CARGO_HOME", ""),
+        ),
+        cwd,
+        os.path.abspath(__file__),
+        id(shutil.which),
+    )
+    result = _cached_llvm_named_tool_candidates(*key)
+    if all(path.is_file() for path in result):
+        return result
+
+    # A direct selected-path check is the fail-closed backstop for filesystems
+    # whose directory timestamp granularity cannot expose a rapid removal.
+    clear_llvm_tool_candidate_cache()
+    return _cached_llvm_named_tool_candidates(*key)
 
 
 def _tool_version(path: Path) -> str | None:
