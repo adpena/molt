@@ -8,7 +8,6 @@ import functools
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -38,9 +37,8 @@ from molt.cli.external_link_providers import (  # noqa: E402
     WASM_LIBC_LINK_IMPORT_CLASS,
     wasm_external_link_provider_symbols,
 )
-from molt.cli.runtime_wasm_validation import (  # noqa: E402
-    _runtime_wasm_integrity_pin_paths,
-)
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.runtime_wasm_generation import read_runtime_wasm_generation  # noqa: E402
 from molt.cli.wasm_link_cache import (  # noqa: E402
     WasmLinkCacheEntry,
     _default_wasm_link_cache,
@@ -63,6 +61,10 @@ from molt._wasm_abi_generated import (  # noqa: E402
 )
 from molt.wasm_artifact import (  # noqa: E402
     WasmSplitRuntimeCallableLayout,
+    WASM_EXTERN_KIND_GLOBAL,
+    WASM_VALUE_TYPE_I32,
+    parse_wasm_defined_globals,
+    parse_wasm_exports,
     read_wasm_split_runtime_callable_layout,
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
@@ -308,74 +310,47 @@ def _default_output_path() -> Path:
     return _default_dist_artifact_path("output_linked.wasm")
 
 
-_RUNTIME_INTEGRITY_PAIR_ATTEMPTS = 8
-_RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC = 0.05
+def _verify_runtime_generation(
+    *,
+    reloc: Path,
+    shared: Path,
+    generation_manifest: Path,
+    expected_identity: Path,
+) -> None:
+    """Verify both runtime members against caller-produced trusted identity."""
 
-
-def _read_runtime_integrity_pins(path: Path) -> dict[Path, str]:
-    """Read every keyed integrity pin published next to ``path``.
-
-    Pins are keyed by the runtime build's fingerprint meta digest
-    (``<artifact>.<meta_digest>.sha256``) â€” one slot per resolved
-    profile/feature identity â€” so like builds verify against like pins and
-    different-profile builds never contend for a single pinned hash.
-    """
-    pins: dict[Path, str] = {}
-    for sidecar in _runtime_wasm_integrity_pin_paths(path):
-        try:
-            raw = sidecar.read_text(encoding="utf-8").strip()
-        except FileNotFoundError:
-            continue
-        match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
-        if match is None:
-            raise SystemExit(f"Runtime integrity sidecar is malformed: {sidecar}")
-        pins[sidecar] = match.group(1).lower()
-    return pins
-
-
-def _verify_runtime_integrity(path: Path) -> None:
-    """Verify SHA-256 integrity of the runtime binary against keyed pins.
-
-    Raises ``SystemExit`` when no keyed integrity pin exists or the artifact
-    hash matches none of the published pins.
-    """
-    # Reject path-traversal components before reading the file.
-    for part in path.parts:
-        if part == "..":
-            raise SystemExit(f"Runtime path contains '..' traversal component: {path}")
-
-    pins: dict[Path, str] = {}
-    digest = ""
-    for attempt in range(_RUNTIME_INTEGRITY_PAIR_ATTEMPTS):
-        data = path.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        pins = _read_runtime_integrity_pins(path)
-        if digest in pins.values():
-            return
-        if attempt + 1 < _RUNTIME_INTEGRITY_PAIR_ATTEMPTS:
-            time.sleep(_RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC)
-
-    if pins:
-        pin_lines = "".join(
-            f"  pinned SHA-256 ({sidecar.name}): {expected}\n"
-            for sidecar, expected in sorted(pins.items())
-        )
-        raise SystemExit(
-            f"Runtime integrity check failed for {path}\n"
-            f"  source: keyed integrity sidecars in {path.parent}\n"
-            f"{pin_lines}"
-            f"  actual SHA-256: {digest}\n"
-        )
-    raise SystemExit(
-        "Runtime integrity check failed for "
-        f"{path}\n  no keyed integrity sidecar "
-        f"({path.name}.<fingerprint-meta-digest>.sha256) was found in "
-        f"{path.parent}\n"
-        f"  actual SHA-256: {digest}\n"
-        "  publish the matching keyed .sha256 sidecar (the molt runtime build "
-        "writes it); unkeyed single-slot sidecars and hardcoded runtime hash "
-        "pins are not supported."
+    for path in (reloc, shared, generation_manifest, expected_identity):
+        if ".." in path.parts:
+            raise SystemExit(f"Runtime custody path contains '..': {path}")
+    try:
+        payload = json.loads(expected_identity.read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema") != "molt.runtime-wasm-expected-pair.v1"
+        ):
+            raise ValueError("expected pair schema is invalid")
+        shared_identity = RuntimeBuildIdentity.from_dict(payload.get("shared"))
+        reloc_identity = RuntimeBuildIdentity.from_dict(payload.get("reloc"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise SystemExit(f"Trusted runtime pair identity is invalid: {exc}") from exc
+    generation = read_runtime_wasm_generation(
+        generation_manifest,
+        expected_shared_identity=shared_identity,
+        expected_reloc_identity=reloc_identity,
     )
+    if generation is None:
+        raise SystemExit(
+            "Runtime generation does not match the trusted caller identity: "
+            f"{generation_manifest}"
+        )
+    if (
+        reloc.resolve(strict=False) != generation.reloc.resolve(strict=False)
+        or shared.resolve(strict=False) != generation.shared.resolve(strict=False)
+    ):
+        raise SystemExit(
+            "Runtime link inputs are not the immutable members selected by "
+            f"{generation_manifest}"
+        )
 
 
 def _read_wasm_bytes_with_retry(
@@ -1141,8 +1116,7 @@ def _defined_global_i32_inits(runtime_data: bytes) -> list[int | None]:
 
 
 def _runtime_exported_data_symbol_addresses(runtime_data: bytes) -> dict[str, int]:
-    """Map data-symbol name -> linear-memory address from the runtime's
-    exported address globals.
+    """Map canonical data-symbol name -> runtime linear-memory address.
 
     wasm-ld exports a *defined data symbol* (requested via
     ``--export[-if-defined]``) as an immutable ``i32`` global whose init value
@@ -1150,28 +1124,61 @@ def _runtime_exported_data_symbol_addresses(runtime_data: bytes) -> dict[str, in
     the deploy runtime is the authoritative source for the runtime's canonical
     singleton/type/exception addresses â€” the split app links against imported
     memory and shares those addresses at run time.
+
+    Published runtimes may expose the address global under either its canonical
+    link name (``PyType_Type``) or its split-runtime export name
+    (``molt_PyType_Type``). Normalize the complete generated CPython-ABI data
+    family here, once, so alias-object construction and post-link GOT retargeting
+    cannot drift into competing name authorities. If both spellings are present
+    they must identify the same address; disagreement is corruption, not a
+    precedence choice.
     """
-    imported_globals = _count_imported_globals(runtime_data)
-    defined_inits = _defined_global_i32_inits(runtime_data)
+    cpython_data_symbols = frozenset(wasm_cpython_abi_data_symbol_names())
+    globals_by_index = {
+        global_.index: global_ for global_ in parse_wasm_defined_globals(runtime_data)
+    }
     addresses: dict[str, int] = {}
-    for section_id, payload in _parse_sections(runtime_data):
-        if section_id != 7:  # export section
+    for export in parse_wasm_exports(runtime_data):
+        canonical = wasm_split_runtime_import_name_for_export(export.name)
+        if canonical not in cpython_data_symbols:
+            canonical = export.name
+        if canonical not in cpython_data_symbols:
             continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _read_string(payload, offset)
-            kind = payload[offset]
-            offset += 1
-            index, offset = _read_varuint(payload, offset)
-            if kind != 0x03:  # not a global export
-                continue
-            defined_index = index - imported_globals
-            if 0 <= defined_index < len(defined_inits):
-                value = defined_inits[defined_index]
-                if value is not None:
-                    addresses[name] = value
-        break
+        if export.kind != WASM_EXTERN_KIND_GLOBAL:
+            raise ValueError(
+                "runtime CPython-ABI data symbol must be exported as a global: "
+                f"{export.name} has wasm export kind {export.kind}"
+            )
+        global_ = globals_by_index.get(export.index)
+        if global_ is None:
+            raise ValueError(
+                "runtime CPython-ABI data symbol must reference a defined global: "
+                f"{export.name} references global index {export.index}"
+            )
+        if global_.value_type != WASM_VALUE_TYPE_I32:
+            raise ValueError(
+                "runtime CPython-ABI data symbol address global must have i32 type: "
+                f"{export.name} has value type 0x{global_.value_type:02x}"
+            )
+        if global_.mutable:
+            raise ValueError(
+                "runtime CPython-ABI data symbol address global must be immutable: "
+                f"{export.name}"
+            )
+        if global_.initializer_opcode != 0x41 or global_.i32_const is None:
+            raise ValueError(
+                "runtime CPython-ABI data symbol address global must use a direct "
+                f"i32.const initializer: {export.name}"
+            )
+        value = global_.i32_const
+        previous = addresses.get(canonical)
+        if previous is not None and previous != value:
+            raise ValueError(
+                "runtime exports conflicting addresses for canonical "
+                f"CPython-ABI data symbol {canonical}: "
+                f"{previous} != {value} (export {export.name})"
+            )
+        addresses[canonical] = value
     return addresses
 
 
@@ -4904,6 +4911,9 @@ def main() -> int:
         description="Attempt to link Molt output/runtime into a single WASM module.",
     )
     parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
+    parser.add_argument("--runtime-shared", type=Path, required=True)
+    parser.add_argument("--runtime-generation", type=Path, required=True)
+    parser.add_argument("--runtime-expected-identity", type=Path, required=True)
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
@@ -4966,7 +4976,12 @@ def main() -> int:
     if not runtime.exists():
         print(f"Runtime wasm not found: {runtime}", file=sys.stderr)
         return 1
-    _verify_runtime_integrity(runtime)
+    _verify_runtime_generation(
+        reloc=runtime,
+        shared=args.runtime_shared,
+        generation_manifest=args.runtime_generation,
+        expected_identity=args.runtime_expected_identity,
+    )
     if not output.exists():
         print(f"Output wasm not found: {output}", file=sys.stderr)
         return 1

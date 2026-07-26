@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import os
 import subprocess
@@ -28,6 +29,14 @@ FILE_HASHING = importlib.import_module("molt.cli.file_hashing")
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_NATIVE_STATICLIBS_NOTE = "note: native-static-libs: -lc\n"
+
+
+def _source_fingerprint(hash_value: str) -> dict[str, object]:
+    return {
+        **SOURCE_FINGERPRINT,
+        "hash": hashlib.sha256(hash_value.encode("utf-8")).hexdigest(),
+    }
 
 
 def _stub_backend_binary_ensure(monkeypatch, tmp_path: Path) -> Path:
@@ -185,53 +194,46 @@ def test_wasm_runtime_feature_plan_requires_gpu_authority() -> None:
 
 
 def test_runtime_source_paths_follow_runtime_feature_closure() -> None:
-    RUNTIME_FINGERPRINTS._runtime_source_paths_cached.cache_clear()
-
     micro_paths = {
         path.relative_to(ROOT).as_posix()
-        for path in RUNTIME_FINGERPRINTS._runtime_source_paths(
+        for path in RUNTIME_FINGERPRINTS.runtime_source_paths(
             ROOT,
             runtime_features=("stdlib_micro", "no-default-features"),
         )
     }
     full_paths = {
         path.relative_to(ROOT).as_posix()
-        for path in RUNTIME_FINGERPRINTS._runtime_source_paths(
+        for path in RUNTIME_FINGERPRINTS.runtime_source_paths(
             ROOT,
             runtime_features=("stdlib_full", "default-features"),
         )
     }
 
     common_paths = {
-        "runtime/molt-runtime/src",
-        "runtime/molt-runtime/Cargo.toml",
-        "runtime/molt-runtime/build.rs",
-        "runtime/molt-cpython-abi/src",
-        "runtime/molt-cpython-abi/shims",
-        "runtime/molt-cpython-abi/Cargo.toml",
-        "runtime/molt-obj-model/src",
-        "runtime/molt-obj-model/Cargo.toml",
-        "runtime/molt-runtime-core/src",
-        "runtime/molt-runtime-core/Cargo.toml",
-        "runtime/molt-runtime-vfs/src",
-        "runtime/molt-runtime-vfs/Cargo.toml",
+        "runtime/molt-runtime",
+        "runtime/molt-cpython-abi",
+        "runtime/molt-obj-model",
+        "runtime/molt-runtime-core",
+        "runtime/molt-runtime-vfs",
         "runtime/build_support",
         "runtime/Cargo.toml",
         "runtime/Cargo.lock",
         "Cargo.toml",
         "Cargo.lock",
+        "LICENSE",
+        "third_party/cpython/Modules/_decimal/libmpdec",
     }
     assert common_paths.issubset(micro_paths)
     assert common_paths.issubset(full_paths)
-    assert "runtime/molt-runtime-logging/src" in micro_paths
-    assert "runtime/molt-runtime-collections/src" in micro_paths
-    assert "runtime/molt-runtime-asyncio/src" in micro_paths
-    assert "runtime/molt-runtime-stringprep/src" not in micro_paths
-    assert "runtime/molt-runtime-http/src" not in micro_paths
-    assert "runtime/molt-runtime-tk/src" not in micro_paths
-    assert "runtime/molt-runtime-stringprep/src" in full_paths
-    assert "runtime/molt-runtime-http/src" in full_paths
-    assert "runtime/molt-runtime-tk/src" in full_paths
+    assert "runtime/molt-runtime-logging" in micro_paths
+    assert "runtime/molt-runtime-collections" in micro_paths
+    assert "runtime/molt-runtime-asyncio" in micro_paths
+    assert "runtime/molt-runtime-stringprep" not in micro_paths
+    assert "runtime/molt-runtime-http" not in micro_paths
+    assert "runtime/molt-runtime-tk" not in micro_paths
+    assert "runtime/molt-runtime-stringprep" in full_paths
+    assert "runtime/molt-runtime-http" in full_paths
+    assert "runtime/molt-runtime-tk" in full_paths
 
 
 def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
@@ -251,11 +253,9 @@ def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
 
 
 def test_runtime_source_paths_follow_child_feature_activation() -> None:
-    RUNTIME_FINGERPRINTS._runtime_source_paths_cached.cache_clear()
-
     paths = {
         path.relative_to(ROOT).as_posix()
-        for path in RUNTIME_FINGERPRINTS._runtime_source_paths(
+        for path in RUNTIME_FINGERPRINTS.runtime_source_paths(
             ROOT,
             runtime_features=(
                 "stdlib_micro",
@@ -265,8 +265,7 @@ def test_runtime_source_paths_follow_child_feature_activation() -> None:
         )
     }
 
-    assert "runtime/molt-runtime-tk/src" in paths
-    assert "runtime/molt-runtime-tk/Cargo.toml" in paths
+    assert "runtime/molt-runtime-tk" in paths
 
 
 def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
@@ -428,7 +427,7 @@ def test_runtime_fingerprint_changes_with_runtime_features(
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _project_root, **_kwargs: [source],
         raising=True,
     )
@@ -461,7 +460,7 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _project_root, **_kwargs: [source],
         raising=True,
     )
@@ -506,19 +505,30 @@ def test_runtime_fingerprint_reuses_clean_source_state_without_metadata_scan(
     source.write_text("pub fn marker() {}\n")
     source_state = {
         "schema_version": 1,
-        "kind": "git-clean-head",
-        "head": "abc123",
+        "kind": "git-clean-pathspec",
+        "pathspec_count": 1,
+        "pathspec_digest": "abc123",
+        "tracked_digest": "def456",
+        "tracked_entry_count": 1,
     }
+    pathspec_calls: list[tuple[str, ...]] = []
+
+    def clean_pathspec_state(
+        _project_root: Path, path_keys: tuple[str, ...]
+    ) -> dict[str, str | int]:
+        pathspec_calls.append(path_keys)
+        return dict(source_state)
+
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _project_root, **_kwargs: [source],
         raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_compiler_clean_source_state",
-        lambda _project_root: dict(source_state),
+        "_compiler_clean_pathspec_source_state",
+        clean_pathspec_state,
         raising=True,
     )
     monkeypatch.setattr(
@@ -534,6 +544,7 @@ def test_runtime_fingerprint_reuses_clean_source_state_without_metadata_scan(
     )
     assert baseline is not None
     assert baseline["source_state"] == source_state
+    assert pathspec_calls == [(str(source),)]
 
     def fail_metadata_scan(*_args, **_kwargs):
         raise AssertionError("clean source state should skip metadata scan")
@@ -553,6 +564,7 @@ def test_runtime_fingerprint_reuses_clean_source_state_without_metadata_scan(
         stored_fingerprint=baseline,
     )
     assert reused == baseline
+    assert pathspec_calls == [(str(source),), (str(source),)]
 
 
 def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
@@ -562,7 +574,7 @@ def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _project_root, **_kwargs: [source],
         raising=True,
     )
@@ -793,7 +805,7 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
         "_runtime_fingerprint",
         lambda project_root, **kwargs: (
             captured_features.append(tuple(kwargs["runtime_features"]))
-            or {"hash": "ok", "rustc": "rustc-test"}
+            or _source_fingerprint("ok")
         ),
         raising=True,
     )
@@ -806,7 +818,7 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_read_runtime_fingerprint",
-        lambda path: {"hash": "ok"},
+        lambda path: _source_fingerprint("ok"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -970,7 +982,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        lambda *args, **kwargs: _source_fingerprint("new"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -982,7 +994,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_read_runtime_fingerprint",
-        lambda path: {"hash": "stale", "rustc": "rustc-test"},
+        lambda path: _source_fingerprint("stale"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -1027,7 +1039,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(static_archive_bytes(b"full"))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
@@ -1081,7 +1093,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
 
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _root, **_kwargs: [],
         raising=True,
     )
@@ -1118,7 +1130,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
         )
         scratch.parent.mkdir(parents=True, exist_ok=True)
         scratch.write_bytes(static_archive_bytes(profile.encode("utf-8")))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
@@ -1575,13 +1587,13 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
 
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _root, **_kwargs: [source],
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        lambda *args, **kwargs: _source_fingerprint("new"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -1641,7 +1653,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(static_archive_bytes(b"rebuilt"))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
@@ -1956,7 +1968,7 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        lambda *args, **kwargs: _source_fingerprint("new"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -2001,7 +2013,7 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(static_archive_bytes(b"runtime"))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
@@ -2037,7 +2049,7 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        lambda *args, **kwargs: _source_fingerprint("new"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -2095,7 +2107,7 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(static_archive_bytes(b"runtime"))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
@@ -2196,30 +2208,22 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
     source = tmp_path / "runtime_source.rs"
     source.write_text("pub fn marker() {}\n")
     stale_fingerprint = {
+        **_source_fingerprint("stale"),
         "version": 2,
-        "hash": "stale",
-        "rustc": "rustc-test",
-        "inputs_digest": "digest",
-        "meta_digest": "stale-meta",
     }
     seen_cmds: list[list[str]] = []
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _project_root, **_kwargs: [source],
         raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {
-            "hash": "new",
-            "rustc": "rustc-test",
-            "inputs_digest": "digest",
-            "meta_digest": "new-meta",
-        },
+        lambda *args, **kwargs: _source_fingerprint("new"),
         raising=True,
     )
     monkeypatch.setattr(
@@ -2264,7 +2268,7 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(static_archive_bytes(b"fake-staticlib"))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", _NATIVE_STATICLIBS_NOTE)
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True

@@ -631,8 +631,14 @@ class _NativeRuntimeBuildFailure:
 @dataclass
 class _RuntimeArtifactState:
     runtime_lib: Path | None = None
+    # Fixed names are private build coordinates. Internal consumers use the
+    # immutable members selected by runtime_wasm_generation.
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
+    runtime_wasm_generation: Path | None = None
+    runtime_wasm_selected: Path | None = None
+    runtime_reloc_wasm_selected: Path | None = None
+    runtime_wasm_expected_identity: Path | None = None
     extra_runtime_features: tuple[str, ...] = ()
     native_link_source_fingerprint: dict[str, object] | None = None
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
@@ -1772,10 +1778,6 @@ class _PreparedBackendRuntimeContext:
     runtime_state: _RuntimeArtifactState
     backend_bin: Path
     runtime_lib: Path | None
-    runtime_wasm: Path | None
-    runtime_reloc_wasm: Path | None
-    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool]
-    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool]
     ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool]
     cache_setup: _BackendCacheSetup
     cache_hit: bool

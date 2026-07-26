@@ -64,7 +64,6 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import (
-    _ensure_runtime_wasm_artifact,
     _ensure_runtime_wasm_both,
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
@@ -282,56 +281,13 @@ def _prepare_backend_runtime_context(
             return native_runtime_exports
         return frozenset(required_exports) | native_runtime_exports
 
-    def ensure_runtime_wasm_shared(
-        required_exports: set[str] | frozenset[str] | None = None,
-    ) -> bool:
-        required_exports = runtime_export_requirements(required_exports)
-        return _ensure_runtime_wasm_artifact(
-            runtime_state,
-            reloc=False,
-            json_output=json_output,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-            simd_enabled=not is_wasm_freestanding,
-            freestanding=is_wasm_freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=required_exports,
-        )
-
-    def ensure_runtime_wasm_reloc(
-        required_exports: set[str] | frozenset[str] | None = None,
-    ) -> bool:
-        required_exports = runtime_export_requirements(required_exports)
-        return _ensure_runtime_wasm_artifact(
-            runtime_state,
-            reloc=True,
-            json_output=json_output,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-            simd_enabled=not is_wasm_freestanding,
-            freestanding=is_wasm_freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=required_exports,
-        )
-
     def ensure_runtime_wasm_both(
         required_exports: set[str] | frozenset[str] | None = None,
     ) -> bool:
-        # V1 dual-compile burn-down (doctrine 74): ensure the shared cdylib and
-        # the reloc staticlib from ONE combined cargo compile with the app's
-        # required_exports, instead of two separate per-artifact ensures that
-        # each recompile the crate when required_exports gates out cdylib reuse.
-        # The combined helper still finalises each artifact via the UNCHANGED
-        # per-artifact reuse path (export materialization + missing-export
-        # validators) and honours the MOLT_RUNTIME_WASM_SINGLE_COMPILE authority
-        # internally, transparently degrading to the sequential dual-compile on
-        # any combined-build failure.
+        # The pair authority selects the exact staticlib+cdylib producer once,
+        # validates both finalizers, and commits one immutable generation. It
+        # fails closed rather than falling back to per-member compilation or
+        # publication.
         required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_both(
             runtime_state,
@@ -366,10 +322,6 @@ def _prepare_backend_runtime_context(
         runtime_state=runtime_state,
         backend_bin=prepared_backend_setup.backend_bin,
         runtime_lib=runtime_state.runtime_lib,
-        runtime_wasm=runtime_state.runtime_wasm,
-        runtime_reloc_wasm=runtime_state.runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
-        ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
         ensure_runtime_wasm_both=ensure_runtime_wasm_both,
         cache_setup=prepared_backend_setup.cache_setup,
         cache_hit=prepared_backend_setup.cache_hit,
@@ -401,8 +353,6 @@ def _prepare_backend_dispatch(
     phase_starts: dict[str, float],
     json_output: bool,
     backend_daemon_config_digest: str | None,
-    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
     resolved_modules: set[str] | frozenset[str] | None,
     ir: Mapping[str, Any],
@@ -431,8 +381,8 @@ def _prepare_backend_dispatch(
     if profile in ("release-size", "wasm-release"):
         os.environ.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
     reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
-    runtime_wasm = runtime_state.runtime_wasm
-    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    runtime_wasm = runtime_state.runtime_wasm_selected
+    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
     if is_wasm and backend_env is not None:
         layout_probe_path: Path | None = None
         if split_runtime:
@@ -443,37 +393,38 @@ def _prepare_backend_dispatch(
             # for file existence here admitted a fingerprint-stale shared
             # runtime and the old reloc-first path forced a second full runtime
             # compile after final app imports became known.
-            runtime_ready = (
-                ensure_runtime_wasm_both(None)
-                if reloc_requested and linked
-                else ensure_runtime_wasm_shared(None)
-            )
-            if not runtime_ready:
+            if not ensure_runtime_wasm_both(None):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
                     command="build",
                 )
-            if runtime_wasm is not None and runtime_wasm.exists():
+            runtime_wasm = runtime_state.runtime_wasm_selected
+            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
+            if runtime_wasm is not None and runtime_wasm.is_file():
                 layout_probe_path = runtime_wasm
-        elif reloc_requested and linked and runtime_reloc_wasm is not None:
-            if not ensure_runtime_wasm_reloc(None):
+        elif reloc_requested and linked:
+            if not ensure_runtime_wasm_both(None):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
                     command="build",
                 )
-            if runtime_reloc_wasm.exists():
+            runtime_wasm = runtime_state.runtime_wasm_selected
+            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
+            if runtime_reloc_wasm is not None and runtime_reloc_wasm.is_file():
                 layout_probe_path = runtime_reloc_wasm
         if "MOLT_WASM_DATA_BASE" not in backend_env:
             if layout_probe_path is None and not split_runtime:
-                if not ensure_runtime_wasm_shared(None):
+                if not ensure_runtime_wasm_both(None):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
                         command="build",
                     )
-                if runtime_wasm is not None and runtime_wasm.exists():
+                runtime_wasm = runtime_state.runtime_wasm_selected
+                runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
+                if runtime_wasm is not None and runtime_wasm.is_file():
                     layout_probe_path = runtime_wasm
         if (
             "MOLT_WASM_DATA_BASE" not in backend_env
@@ -512,15 +463,16 @@ def _prepare_backend_dispatch(
         if (
             linked
             and not split_runtime
-            and runtime_wasm is not None
-            and not runtime_wasm.exists()
+            and runtime_wasm is None
         ):
-            if not ensure_runtime_wasm_shared(None):
+            if not ensure_runtime_wasm_both(None):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
                     command="build",
                 )
+            runtime_wasm = runtime_state.runtime_wasm_selected
+            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
         if not split_runtime and "MOLT_WASM_TABLE_BASE" not in backend_env:
             table_probe_path = layout_probe_path or runtime_wasm
             if table_probe_path is not None and table_probe_path.exists():
@@ -531,7 +483,7 @@ def _prepare_backend_dispatch(
                     warnings.append(
                         "Failed to read runtime table size; using default table base."
                     )
-        if not split_runtime and runtime_wasm is not None and runtime_wasm.exists():
+        if not split_runtime and runtime_wasm is not None and runtime_wasm.is_file():
             runtime_table_min = _read_wasm_table_min(runtime_wasm)
             if runtime_table_min is not None:
                 raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
@@ -544,7 +496,7 @@ def _prepare_backend_dispatch(
                 if current_table_base is None or current_table_base < runtime_table_min:
                     backend_env["MOLT_WASM_TABLE_BASE"] = str(runtime_table_min)
         if split_runtime:
-            if runtime_wasm is None or not runtime_wasm.exists():
+            if runtime_wasm is None or not runtime_wasm.is_file():
                 return None, _fail(
                     "Split-runtime layout requires the current executable shared runtime",
                     json_output,
@@ -1140,8 +1092,6 @@ def _prepare_backend_compile(
     backend_daemon_config_digest: str | None,
     entry_module: str,
     resolved_modules: frozenset[str],
-    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
@@ -1220,8 +1170,6 @@ def _prepare_backend_compile(
                     phase_starts=phase_starts,
                     json_output=json_output,
                     backend_daemon_config_digest=backend_daemon_config_digest,
-                    ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
-                    ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                     ensure_runtime_wasm_both=ensure_runtime_wasm_both,
                     resolved_modules=resolved_modules,
                     ir=ir,

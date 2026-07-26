@@ -15,7 +15,6 @@ Hazard -> proving test(s):
                                 test_cleanup_refuses_dirty_tracked
                                 test_cleanup_allows_clean_pushed
                                 test_cleanup_force_requires_matching_sha
-                                test_cleanup_ignore_set_allows_wasm_sha
   4 partial WIP salvage         test_secure_wip_captures_staged_and_unstaged
                                 test_secure_wip_honors_ignore_set
                                 test_secure_wip_excludes_untracked_by_default
@@ -65,9 +64,8 @@ from molt_dev_common import _run_fast_captured_command  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
-KEYED_PIN_DIGEST = "0123456789abcdef" * 4
-KEYED_RUNTIME_PIN = f"wasm/molt_runtime.wasm.{KEYED_PIN_DIGEST}.sha256"
-NON_KEYED_RUNTIME_PIN = "wasm/molt_runtime.wasm.release-fast.sha256"
+RUNTIME_GENERATION_MANIFEST = "wasm/molt_runtime.generation.json"
+CUSTOM_IGNORED_PATH = "tmp/operator-scratch.txt"
 
 
 def _load_driver():
@@ -518,34 +516,16 @@ def test_molt_dev_default_ignore_globs_use_dirty_tree_policy_authority(drv):
     assert drv.DEFAULT_IGNORE_GLOBS is dirty_tree_policy.DEFAULT_DIRTY_TREE_IGNORE_GLOBS
 
 
-def test_cleanup_ignore_set_allows_wasm_sha(drv, origin_and_clone, tmp_path):
-    # A change confined to the wasm sha256 ignore set must NOT block cleanup.
+def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_path):
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_wasm")
-    sha_file = wt / KEYED_RUNTIME_PIN
-    sha_file.parent.mkdir(parents=True, exist_ok=True)
-    sha_file.write_text("deadbeef\n", encoding="utf-8")
-    _git(wt, "add", "--", KEYED_RUNTIME_PIN)
-    # Staged change to an IGNORED path only -> cleanup still allowed.
+    generation = wt / RUNTIME_GENERATION_MANIFEST
+    generation.parent.mkdir(parents=True, exist_ok=True)
+    generation.write_text("{}\n", encoding="utf-8")
+    _git(wt, "add", "--", RUNTIME_GENERATION_MANIFEST)
     rc = drv._cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_OK
-    assert not wt.exists()
-
-
-def test_cleanup_refuses_non_keyed_wasm_sha_label(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_wasm_label")
-    sha_file = wt / NON_KEYED_RUNTIME_PIN
-    sha_file.parent.mkdir(parents=True, exist_ok=True)
-    sha_file.write_text("cafef00d\n", encoding="utf-8")
-    _git(wt, "add", "--", NON_KEYED_RUNTIME_PIN)
-
-    rc = drv._cleanup_worktree(
-        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
-    )
-
     assert rc == drv.EXIT_FAIL
     assert wt.exists()
 
@@ -636,27 +616,27 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
     git = drv.Git(work)
     # A real tracked edit ...
     (work / "README.md").write_text("seed\nedit\n", encoding="utf-8")
-    # ... plus a churn to an IGNORED wasm sha file that must be left behind.
-    sha = work / KEYED_RUNTIME_PIN
-    sha.parent.mkdir(parents=True, exist_ok=True)
-    sha.write_text("cafef00d\n", encoding="utf-8")
-    _git(work, "add", "--", KEYED_RUNTIME_PIN)
+    # ... plus explicitly operator-ignored scratch state that must be left behind.
+    scratch = work / CUSTOM_IGNORED_PATH
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text("scratch\n", encoding="utf-8")
+    _git(work, "add", "--", CUSTOM_IGNORED_PATH)
 
     ns = _ns(
         drv,
         repo=str(work),
         dry_run=False,
         message="salvage",
-        ignore=None,
+        ignore=(CUSTOM_IGNORED_PATH,),
         include_untracked=False,
     )
     assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
     files = set(_git(work, "show", "--name-only", "--format=", "HEAD").stdout.split())
     assert "README.md" in files
-    assert KEYED_RUNTIME_PIN not in files  # excluded
+    assert CUSTOM_IGNORED_PATH not in files  # excluded
     # The ignored file is still pending (not swept into the recovery commit).
     remaining = {p for _xy, p in git.status_porcelain()}
-    assert KEYED_RUNTIME_PIN in remaining
+    assert CUSTOM_IGNORED_PATH in remaining
 
 
 def test_secure_wip_excludes_untracked_by_default(drv, origin_and_clone):

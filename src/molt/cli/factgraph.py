@@ -296,8 +296,6 @@ def emit_pipeline_fact_graph(
             phase_starts=build_preamble.phase_starts,
             json_output=json_output,
             backend_daemon_config_digest=build_preamble.backend_daemon_config_digest,
-            ensure_runtime_wasm_shared=runtime_context.ensure_runtime_wasm_shared,
-            ensure_runtime_wasm_reloc=runtime_context.ensure_runtime_wasm_reloc,
             ensure_runtime_wasm_both=runtime_context.ensure_runtime_wasm_both,
             resolved_modules=resolved_modules,
             ir=ir,

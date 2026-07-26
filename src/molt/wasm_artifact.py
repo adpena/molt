@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import mmap
+import os
 from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence
+import uuid
 
 from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
@@ -42,6 +45,13 @@ _VALUE_TYPE_NAMES = {
     0x6F: "externref",
 }
 
+WASM_EXTERN_KIND_FUNCTION = 0
+WASM_EXTERN_KIND_TABLE = 1
+WASM_EXTERN_KIND_MEMORY = 2
+WASM_EXTERN_KIND_GLOBAL = 3
+WASM_EXTERN_KIND_TAG = 4
+WASM_VALUE_TYPE_I32 = 0x7F
+
 
 def wasm_section_name(section_id: int) -> str:
     return WASM_SECTION_NAMES.get(section_id, f"unknown({section_id})")
@@ -77,6 +87,8 @@ class WasmImport:
     kind: int
     type_index: int | None = None
     minimum: int | None = None
+    value_type: int | None = None
+    mutable: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -90,12 +102,40 @@ class WasmExport:
 
 
 @dataclass(frozen=True)
+class WasmGlobal:
+    """One defined WebAssembly global with its absolute global index.
+
+    ``i32_const`` is populated only for the canonical address-bearing shape:
+    an immutable or mutable i32 global initialized directly by ``i32.const``.
+    Consumers must still check ``value_type`` and ``mutable`` before treating
+    the value as a published linear-memory address.
+    """
+
+    index: int
+    value_type: int
+    mutable: bool
+    initializer_opcode: int
+    i32_const: int | None
+    i32_const_canonical: bool
+
+
+@dataclass(frozen=True)
 class WasmCodeMetrics:
     defined_function_count: int
     code_section_size: int
 
     def to_tuple(self) -> tuple[int, int]:
         return self.defined_function_count, self.code_section_size
+
+
+@dataclass(frozen=True)
+class WasmPublicationTransformMetrics:
+    changed: bool
+    input_bytes: int
+    output_bytes: int
+    scanned_bytes: int
+    written_bytes: int
+    max_buffer_bytes: int
 
 
 @dataclass(frozen=True)
@@ -348,7 +388,20 @@ def _read_wasm_import_description(
     if kind == 3:
         if cursor + 2 > len(payload):
             raise ValueError("Unexpected EOF while reading global type")
-        return WasmImport(module, name, kind), cursor + 2
+        value_type = payload[cursor]
+        mutable = payload[cursor + 1]
+        if mutable not in (0, 1):
+            raise ValueError(f"Invalid wasm global mutability {mutable}")
+        return (
+            WasmImport(
+                module,
+                name,
+                kind,
+                value_type=value_type,
+                mutable=bool(mutable),
+            ),
+            cursor + 2,
+        )
     if kind == 4:
         if cursor >= len(payload):
             raise ValueError("Unexpected EOF while reading tag attribute")
@@ -398,6 +451,103 @@ def read_wasm_imports(
 ) -> list[WasmImport]:
     try:
         return parse_wasm_imports(path.read_bytes(), on_error=on_error)
+    except OSError:
+        if on_error == "ignore":
+            return []
+        raise
+
+
+def _read_wasm_global_initializer(
+    data: bytes, offset: int
+) -> tuple[int, int | None, bool, int]:
+    """Read one MVP/reference-types constant initializer without evaluating it."""
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading wasm global initializer")
+    opcode = data[offset]
+    offset += 1
+    i32_const: int | None = None
+    i32_const_canonical = False
+    if opcode == 0x41:  # i32.const
+        immediate_start = offset
+        i32_const, offset = _read_wasm_varint(data, offset, 32)
+        i32_const_canonical = data[immediate_start:offset] == _encode_wasm_varint(
+            i32_const, 32
+        )
+    elif opcode == 0x42:  # i64.const
+        _, offset = _read_wasm_varint(data, offset, 64)
+    elif opcode == 0x43:  # f32.const
+        offset += 4
+    elif opcode == 0x44:  # f64.const
+        offset += 8
+    elif opcode == 0x23:  # global.get
+        _, offset = _read_wasm_varuint(data, offset)
+    elif opcode == 0xD0:  # ref.null
+        _, offset = _read_wasm_varint(data, offset, 33)
+    elif opcode == 0xD2:  # ref.func
+        _, offset = _read_wasm_varuint(data, offset)
+    else:
+        raise ValueError(f"Unsupported wasm global initializer opcode 0x{opcode:02x}")
+    if offset > len(data) or offset >= len(data) or data[offset] != 0x0B:
+        raise ValueError("Malformed wasm global initializer")
+    return opcode, i32_const, i32_const_canonical, offset + 1
+
+
+def _iter_wasm_defined_globals(
+    sections: Sequence[tuple[int, bytes]],
+) -> list[WasmGlobal]:
+    imported_globals = sum(
+        wasm_import.kind == WASM_EXTERN_KIND_GLOBAL
+        for wasm_import in _iter_wasm_imports(sections)
+    )
+    globals_: list[WasmGlobal] = []
+    for section_id, payload in sections:
+        if section_id != 6:
+            continue
+        cursor = 0
+        count, cursor = _read_wasm_varuint(payload, cursor)
+        for defined_index in range(count):
+            if cursor + 2 > len(payload):
+                raise ValueError("Unexpected EOF while reading wasm global type")
+            value_type = payload[cursor]
+            mutable_raw = payload[cursor + 1]
+            cursor += 2
+            if mutable_raw not in (0, 1):
+                raise ValueError(f"Invalid wasm global mutability {mutable_raw}")
+            opcode, i32_const, i32_const_canonical, cursor = (
+                _read_wasm_global_initializer(payload, cursor)
+            )
+            globals_.append(
+                WasmGlobal(
+                    index=imported_globals + defined_index,
+                    value_type=value_type,
+                    mutable=bool(mutable_raw),
+                    initializer_opcode=opcode,
+                    i32_const=i32_const,
+                    i32_const_canonical=i32_const_canonical,
+                )
+            )
+        if cursor != len(payload):
+            raise ValueError("Trailing wasm global bytes")
+        break
+    return globals_
+
+
+def parse_wasm_defined_globals(
+    data: bytes, *, on_error: Literal["raise", "ignore"] = "raise"
+) -> list[WasmGlobal]:
+    try:
+        return _iter_wasm_defined_globals(_parse_wasm_sections(data))
+    except (UnicodeDecodeError, ValueError, IndexError):
+        if on_error == "ignore":
+            return []
+        raise
+
+
+def read_wasm_defined_globals(
+    path: Path, *, on_error: Literal["raise", "ignore"] = "raise"
+) -> list[WasmGlobal]:
+    try:
+        return parse_wasm_defined_globals(path.read_bytes(), on_error=on_error)
     except OSError:
         if on_error == "ignore":
             return []
@@ -548,9 +698,13 @@ def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
 
 
 def _collect_wasm_export_names(path: Path) -> set[str]:
-    return {
-        export.name for export in read_wasm_function_exports(path, on_error="ignore")
-    }
+    try:
+        return {
+            export.name
+            for export in _iter_wasm_exports(_parse_wasm_file_sections(path))
+        }
+    except (OSError, UnicodeDecodeError, ValueError, IndexError):
+        return set()
 
 
 def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
@@ -590,6 +744,24 @@ def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
     if shift < bits and (byte & 0x40):
         result |= -1 << shift
     return result, offset
+
+
+def _encode_wasm_varint(value: int, bits: int) -> bytes:
+    minimum = -(1 << (bits - 1))
+    maximum = (1 << (bits - 1)) - 1
+    if not minimum <= value <= maximum:
+        raise ValueError(f"signed {bits}-bit integer is out of range")
+    encoded = bytearray()
+    remaining = value
+    while True:
+        byte = remaining & 0x7F
+        remaining >>= 7
+        done = (remaining == 0 and byte & 0x40 == 0) or (
+            remaining == -1 and byte & 0x40 != 0
+        )
+        encoded.append(byte if done else byte | 0x80)
+        if done:
+            return bytes(encoded)
 
 
 def _read_wasm_const_expr_i32(data: bytes, offset: int) -> tuple[int, int]:
@@ -1256,6 +1428,181 @@ def rename_wasm_export_names(
     if not modified:
         return None
     return _build_wasm_sections(rewritten_sections)
+
+
+def _renamed_wasm_export_payload(
+    payload: bytes | mmap.mmap,
+    offset: int,
+    end: int,
+    rename_map: Mapping[str, str],
+) -> tuple[bytes | None, bool]:
+    cursor = offset
+    count, cursor = _read_wasm_varuint(payload, cursor)
+    exports: list[WasmExport] = []
+    modified = False
+    for _ in range(count):
+        name_length, cursor = _read_wasm_varuint(payload, cursor)
+        name_end = cursor + name_length
+        if name_end > end:
+            raise ValueError("Unexpected EOF while reading export name")
+        name = bytes(payload[cursor:name_end]).decode("utf-8")
+        cursor = name_end
+        if cursor >= end:
+            raise ValueError("Unexpected EOF while reading export")
+        kind = payload[cursor]
+        cursor += 1
+        index, cursor = _read_wasm_varuint(payload, cursor)
+        renamed = rename_map.get(name, name)
+        modified |= renamed != name
+        exports.append(WasmExport(renamed, kind, index))
+    if cursor != end:
+        raise ValueError("Trailing wasm export bytes")
+    deduped: list[WasmExport] = []
+    seen: dict[str, tuple[int, int]] = {}
+    for export in exports:
+        identity = (export.kind, export.index)
+        previous = seen.get(export.name)
+        if previous is not None:
+            if previous != identity:
+                raise ValueError(
+                    f"WASM export rename collision for {export.name!r}: "
+                    f"{previous!r} vs {identity!r}"
+                )
+            modified = True
+            continue
+        seen[export.name] = identity
+        deduped.append(export)
+    if not modified:
+        return None, False
+    rebuilt = bytearray(_write_wasm_varuint(len(deduped)))
+    for export in deduped:
+        rebuilt.extend(_write_wasm_string(export.name))
+        rebuilt.append(export.kind)
+        rebuilt.extend(_write_wasm_varuint(export.index))
+    return bytes(rebuilt), True
+
+
+def transform_wasm_publication_file(
+    path: Path,
+    *,
+    rename_map: Mapping[str, str],
+    final_artifact: bool,
+    preserve_debug: bool,
+) -> WasmPublicationTransformMetrics:
+    """Rewrite exports/custom sections with bounded memory and one output pass."""
+
+    from molt.cli.atomic_io import _durable_replace
+
+    staged = path.with_name(f".{path.name}.{uuid.uuid4().hex}.publication")
+    try:
+        with (
+            path.open("rb") as source,
+            mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as mapped,
+        ):
+            before = os.fstat(source.fileno())
+            if (
+                len(mapped) < len(WASM_HEADER)
+                or mapped[: len(WASM_HEADER)] != WASM_HEADER
+            ):
+                raise ValueError("Invalid wasm binary")
+            actions: list[tuple[int, int, bytes | None, bool]] = []
+            changed = False
+            max_buffer = 0
+            cursor = len(WASM_HEADER)
+            while cursor < len(mapped):
+                section_start = cursor
+                section_id = mapped[cursor]
+                cursor += 1
+                section_size, payload_start = _read_wasm_varuint(mapped, cursor)
+                payload_end = payload_start + section_size
+                if payload_end > len(mapped):
+                    raise ValueError("Invalid wasm section length")
+                replacement: bytes | None = None
+                keep = True
+                if section_id == 0:
+                    name_size, name_start = _read_wasm_varuint(mapped, payload_start)
+                    name_end = name_start + name_size
+                    if name_end > payload_end:
+                        raise ValueError("Invalid wasm custom section name")
+                    name = bytes(mapped[name_start:name_end]).decode("utf-8")
+                    keep = not (
+                        (
+                            final_artifact
+                            and is_wasm_final_artifact_forbidden_custom_section(name)
+                        )
+                        or (not preserve_debug and is_wasm_debug_custom_section(name))
+                    )
+                    changed |= not keep
+                elif section_id == 7 and rename_map:
+                    replacement, renamed = _renamed_wasm_export_payload(
+                        mapped, payload_start, payload_end, rename_map
+                    )
+                    changed |= renamed
+                    if replacement is not None:
+                        max_buffer = max(max_buffer, len(replacement))
+                actions.append((section_start, payload_end, replacement, keep))
+                cursor = payload_end
+            if not changed:
+                after = os.fstat(source.fileno())
+                if (
+                    before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or before.st_ctime_ns != after.st_ctime_ns
+                ):
+                    raise ValueError("runtime wasm mutated during publication scan")
+                return WasmPublicationTransformMetrics(
+                    changed=False,
+                    input_bytes=before.st_size,
+                    output_bytes=before.st_size,
+                    scanned_bytes=before.st_size,
+                    written_bytes=0,
+                    max_buffer_bytes=max_buffer,
+                )
+
+            output_size = len(WASM_HEADER)
+            with staged.open("xb") as output:
+                output.write(WASM_HEADER)
+                for section_start, section_end, replacement, keep in actions:
+                    if not keep:
+                        continue
+                    if replacement is not None:
+                        section_id = mapped[section_start]
+                        header = bytes([section_id]) + _write_wasm_varuint(
+                            len(replacement)
+                        )
+                        output.write(header)
+                        output.write(replacement)
+                        output_size += len(header) + len(replacement)
+                        continue
+                    for start in range(section_start, section_end, 8 * 1024 * 1024):
+                        chunk_end = min(section_end, start + 8 * 1024 * 1024)
+                        view = memoryview(mapped)[start:chunk_end]
+                        try:
+                            output.write(view)
+                        finally:
+                            view.release()
+                        output_size += chunk_end - start
+                output.flush()
+                staged_stat = os.fstat(output.fileno())
+            after = os.fstat(source.fileno())
+            if (
+                before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or staged_stat.st_size != output_size
+            ):
+                raise ValueError("runtime wasm mutated during publication transform")
+        _durable_replace(staged, path)
+        return WasmPublicationTransformMetrics(
+            changed=True,
+            input_bytes=before.st_size,
+            output_bytes=output_size,
+            scanned_bytes=before.st_size,
+            written_bytes=output_size,
+            max_buffer_bytes=max_buffer,
+        )
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def read_wasm_exports(

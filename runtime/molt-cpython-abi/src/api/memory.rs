@@ -37,6 +37,7 @@ pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut c_void, new_size: usize) -> *mu
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut c_void) {
+    crate::api::typeobj::unregister_type_address(ptr.addr());
     unsafe { crate::platform::c_free(ptr) };
 }
 

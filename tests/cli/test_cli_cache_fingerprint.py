@@ -64,7 +64,7 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         lambda root, backend_features: [source],
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_runtime_source_paths", lambda root, **_kwargs: []
+        CACHE_FINGERPRINTS, "runtime_source_paths", lambda root, **_kwargs: []
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
     monkeypatch.setattr(
@@ -136,7 +136,7 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
         backend_source_paths,
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths
+        CACHE_FINGERPRINTS, "runtime_source_paths", runtime_source_paths
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
@@ -168,7 +168,7 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
         lambda source_root, backend_features: [backend_source],
     )
     monkeypatch.setattr(
-        CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths
+        CACHE_FINGERPRINTS, "runtime_source_paths", runtime_source_paths
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
@@ -364,7 +364,7 @@ def test_backend_source_paths_cache_tracks_manifest_dependency_edits(
         path.relative_to(root).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
     }
-    assert "runtime/molt-backend-wasm/src" not in before
+    assert "runtime/molt-backend-wasm" not in before
 
     _write_backend_identity_fixture(root, include_wasm=True)
 
@@ -372,7 +372,7 @@ def test_backend_source_paths_cache_tracks_manifest_dependency_edits(
         path.relative_to(root).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
     }
-    assert "runtime/molt-backend-wasm/src" in after
+    assert "runtime/molt-backend-wasm" in after
 
 
 def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_process(

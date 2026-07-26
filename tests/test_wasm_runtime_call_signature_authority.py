@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -50,7 +50,10 @@ def test_node_runner_requires_binary_callable_table_signatures() -> None:
         "return callWithWasmSignature(fn, directSignature, args.slice(1));"
     ) in source
     assert "requireWasmCallableTable(wasmBuffer, 'output wasm')" in source
-    assert "verifyCallableTableEntries(outputCallableTable, table, 'output wasm')" in source
+    assert (
+        "verifyCallableTableEntries(outputCallableTable, table, 'output wasm')"
+        in source
+    )
     assert "appDirectFn" not in source
     assert "runtimeDirectFn" not in source
     assert "outputExportSignatures" not in source
@@ -176,7 +179,13 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         WASM_IMPORT_SIGNATURES,
         WASM_RUNTIME_IMPORT_EXPORT_NAMES,
     )
+    from molt.cli.runtime_build import _build_state_root
+    from molt.cli.runtime_build_identity import RuntimeBuildIdentity
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
+    from molt.cli.runtime_wasm_generation import (
+        read_runtime_wasm_generation,
+        runtime_wasm_generation_path,
+    )
     from molt.dx import development_artifact_env
     from wasm_abi_gen.manifest import load_manifest
 
@@ -191,29 +200,47 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         "molt_runtime.wasm",
         runtime_env,
     )
-    if not runtime_artifact.exists():
+    generation_manifest = runtime_wasm_generation_path(runtime_artifact)
+    if not generation_manifest.exists():
         pytest.skip(
-            f"{runtime_artifact} is a generated build artifact; build the WASM "
-            "runtime before running the compiled export-signature gate"
+            f"{generation_manifest} is a generated build artifact; build the "
+            "WASM runtime pair before running the compiled export-signature gate"
         )
-    from molt.cli.runtime_wasm_validation import _runtime_wasm_integrity_pin_paths
-
-    runtime_pins = _runtime_wasm_integrity_pin_paths(runtime_artifact)
-    if not runtime_pins:
+    expected_dir = _build_state_root(ROOT) / "runtime_wasm_generations"
+    expected_paths = sorted(expected_dir.glob("*.expected.json"))
+    if not expected_paths:
         pytest.skip(
-            f"no keyed integrity sidecar exists for {runtime_artifact}; build "
-            "the WASM runtime before running the compiled export-signature gate"
+            f"{runtime_artifact} has no trusted expected pair identity; build the "
+            "WASM runtime pair before running the compiled export-signature gate"
         )
-    pinned_shas = {
-        pin.read_text(encoding="utf-8").strip() for pin in runtime_pins
-    }
-    actual_sha = hashlib.sha256(runtime_artifact.read_bytes()).hexdigest()
-    assert actual_sha in pinned_shas, (
-        f"{runtime_artifact} matches none of its keyed integrity sidecars "
-        f"({[pin.name for pin in runtime_pins]}); rebuild runtime artifacts "
-        "before trusting compiled export signatures"
+    matching_expected: list[Path] = []
+    selected_runtime = None
+    for expected_path in expected_paths:
+        try:
+            expected = json.loads(expected_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(expected, dict)
+                or expected.get("schema") != "molt.runtime-wasm-expected-pair.v1"
+            ):
+                continue
+            shared_identity = RuntimeBuildIdentity.from_dict(expected.get("shared"))
+            reloc_identity = RuntimeBuildIdentity.from_dict(expected.get("reloc"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        generation = read_runtime_wasm_generation(
+            generation_manifest,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
+        )
+        if generation is not None:
+            matching_expected.append(expected_path)
+            selected_runtime = generation.shared
+    assert matching_expected, (
+        f"{runtime_artifact} matches no trusted shared+reloc generation identity; "
+        "rebuild runtime artifacts before trusting compiled export signatures"
     )
-    runtime_signatures = _parse_wasm_export_signatures(runtime_artifact)
+    assert selected_runtime is not None
+    runtime_signatures = _parse_wasm_export_signatures(selected_runtime)
     assert len(runtime_signatures) > 1000, (
         "runtime export signature parse collapsed; the gate would pass vacuously"
     )
