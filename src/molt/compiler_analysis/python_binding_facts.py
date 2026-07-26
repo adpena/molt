@@ -11,9 +11,10 @@ import ast
 from dataclasses import dataclass
 from enum import IntFlag
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Mapping, TypeAlias
+from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
 
 from molt.compiler_analysis.python_effects_generated import EffectMask
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleImportFlow
@@ -61,6 +62,7 @@ class PythonIdentity(IntFlag):
 
 
 IdentityMask: TypeAlias = int
+PythonImportCallKind: TypeAlias = Literal["import_module", "dunder_import"]
 NO_IDENTITIES: Final[IdentityMask] = 0
 OTHER_IDENTITY: Final[IdentityMask] = int(PythonIdentity.OTHER)
 UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
@@ -139,13 +141,7 @@ class PythonNodeKey:
 
     @classmethod
     def from_node(cls, node: ast.AST) -> PythonNodeKey:
-        return cls(
-            int(getattr(node, "lineno", 0)),
-            int(getattr(node, "col_offset", 0)),
-            int(getattr(node, "end_lineno", getattr(node, "lineno", 0))),
-            int(getattr(node, "end_col_offset", getattr(node, "col_offset", 0))),
-            type(node).__name__,
-        )
+        return cls(*python_node_source_key(node))
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +169,21 @@ class PythonCallSiteFact:
     def callee_may_be(self, identity: PythonIdentity) -> bool:
         return identity_fact_may_be(self.callee_identities, identity)
 
+    def possible_import_call_kinds(self) -> tuple[PythonImportCallKind, ...]:
+        kinds: list[PythonImportCallKind] = []
+        if self.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+            kinds.append("import_module")
+        if self.callee_may_be(PythonIdentity.BUILTINS_IMPORT):
+            kinds.append("dunder_import")
+        return tuple(kinds)
+
+    def exact_import_call_kind(self) -> PythonImportCallKind | None:
+        if self.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+            return "import_module"
+        if self.callee_is(PythonIdentity.BUILTINS_IMPORT):
+            return "dunder_import"
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class PythonScopeFact:
@@ -184,6 +195,18 @@ class PythonScopeFact:
     global_names: tuple[str, ...]
     nonlocal_names: tuple[str, ...]
     binding_slots: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PythonBindingTelemetry:
+    binding_lookups: int
+    join_calls: int
+    join_node_visits: int
+    join_shared_subtrees_skipped: int
+    join_chunk_merges: int
+    structural_diff_cache_entries: int
+    structural_diff_node_visits: int
+    structural_diff_shared_subtrees_skipped: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +225,7 @@ class PythonBindingIndex:
     calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
     state_count: int
+    telemetry: PythonBindingTelemetry
     slot_names: tuple[str, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _call_lookup: Mapping[PythonNodeKey, PythonCallSiteFact]
@@ -222,6 +246,7 @@ class PythonBindingIndex:
         calls: tuple[PythonCallSiteFact, ...],
         scopes: tuple[PythonScopeFact, ...],
         state_count: int,
+        telemetry: PythonBindingTelemetry,
         slot_names: tuple[str, ...],
     ) -> PythonBindingIndex:
         return cls(
@@ -237,6 +262,7 @@ class PythonBindingIndex:
             calls=calls,
             scopes=scopes,
             state_count=state_count,
+            telemetry=telemetry,
             slot_names=slot_names,
             _expression_lookup=MappingProxyType({fact.node: fact for fact in expressions}),
             _call_lookup=MappingProxyType({fact.node: fact for fact in calls}),
@@ -267,9 +293,11 @@ __all__ = [
     "NO_IDENTITIES",
     "OTHER_IDENTITY",
     "PythonBindingIndex",
+    "PythonBindingTelemetry",
     "PythonCallSiteFact",
     "PythonExpressionFact",
     "PythonIdentity",
+    "PythonImportCallKind",
     "PythonMember",
     "PythonNodeKey",
     "PythonParameterRef",

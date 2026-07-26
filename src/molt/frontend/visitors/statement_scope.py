@@ -578,50 +578,19 @@ class StatementScopeVisitorMixin(_MixinBase):
         return None
 
     def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
-        if self.current_func_name != "molt_main":
-            raise FrontendRejection(
-                Diagnostic.TYPE_FORM,
-                "Type aliases are only supported at module scope",
-            )
         if not isinstance(node.name, ast.Name):
             raise FrontendRejection(
                 Diagnostic.TYPE_FORM, "Unsupported type alias target"
             )
-        # Eagerly load typing._molt_type_alias before evaluating the alias
-        # value.  This forces the typing module to be initialized prior to
-        # any annotation expression evaluation, ensuring consistent runtime
-        # state regardless of whether type_params trigger an earlier load.
-        alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
-        type_param_vals, type_param_map = self._emit_type_params_values(
-            node.type_params
-        )
-        prev_type_params = self.annotation_type_params
-        if type_param_map:
-            merged = dict(prev_type_params)
-            merged.update(type_param_map)
-            self.annotation_type_params = merged
-        try:
-            alias_value = self._emit_annotation_value(
-                node.value, stringize=self.future_annotations
-            )
-        finally:
-            self.annotation_type_params = prev_type_params
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[node.name.id], result=name_val))
-        params_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=type_param_vals, result=params_tuple))
-        alias_val = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[alias_fn, name_val, alias_value, params_tuple],
-                result=alias_val,
-            )
-        )
+        alias_val = self._emit_type_alias_value(node)
         self.locals[node.name.id] = alias_val
+        if self._class_body_depth > 0:
+            return None
         if self.current_func_name == "molt_main":
             self.globals[node.name.id] = alias_val
             self._emit_module_attr_set(node.name.id, alias_val)
+        else:
+            self._store_local_value(node.name.id, alias_val)
         return None
 
     def visit_Import(self, node: ast.Import) -> None:

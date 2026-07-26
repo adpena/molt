@@ -8,7 +8,7 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -501,7 +501,11 @@ class TypeAnnotationMixin(_MixinBase):
         return items
 
     def _emit_type_params_values(
-        self, type_params: Sequence[ast.AST | ast.type_param] | None
+        self,
+        type_params: Sequence[ast.AST | ast.type_param] | None,
+        *,
+        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
+        module_override: str | None = None,
     ) -> tuple[list[MoltValue], dict[str, MoltValue]]:
         if not type_params:
             return [], {}
@@ -512,15 +516,22 @@ class TypeAnnotationMixin(_MixinBase):
             if isinstance(param, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
                 name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[param.name], result=name_val))
-                call_args: list[MoltValue] = [type_param_func, name_val]
-                default_expr = getattr(param, "default_value", None)
-                if default_expr is not None:
-                    default_val = self._emit_annotation_value(
-                        default_expr, stringize=self.future_annotations
+                kind_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(
+                        kind="CONST_STR",
+                        args=[type(param).__name__],
+                        result=kind_val,
                     )
-                    call_args.append(default_val)
+                )
                 res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="CALL_FUNC", args=call_args, result=res))
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[type_param_func, name_val, kind_val],
+                        result=res,
+                    )
+                )
                 values.append(res)
                 mapping[param.name] = res
                 continue
@@ -528,7 +539,147 @@ class TypeAnnotationMixin(_MixinBase):
                 Diagnostic.TYPE_FORM,
                 f"Unsupported type parameter: {type(param).__name__}",
             )
+        evaluator_setter = self._emit_module_attr_get_on(
+            "typing", "_molt_type_param_set_evaluators"
+        )
+        previous_type_params = self.annotation_type_params
+        merged = dict(previous_type_params)
+        merged.update(mapping)
+        self.annotation_type_params = merged
+        try:
+            for param, value in zip(type_params, values):
+                bound_expr = getattr(param, "bound", None)
+                default_expr = getattr(param, "default_value", None)
+                if default_expr is not None and self.target_python < (3, 13):
+                    raise FrontendRejection(
+                        Diagnostic.TYPE_FORM,
+                        "Type parameter defaults require target Python 3.13+",
+                    )
+                if bound_expr is None and default_expr is None:
+                    continue
+                bound_evaluator: MoltValue | None = None
+                constraints_evaluator: MoltValue | None = None
+                default_evaluator: MoltValue | None = None
+                if isinstance(bound_expr, ast.Tuple):
+                    expression = (
+                        expression_rewriter(bound_expr)
+                        if expression_rewriter is not None
+                        else bound_expr
+                    )
+                    constraints_evaluator = self._emit_lazy_type_value_evaluator(
+                        expression,
+                        key="__constraints__",
+                        module_override=module_override,
+                    )
+                elif isinstance(bound_expr, ast.expr):
+                    expression = (
+                        expression_rewriter(bound_expr)
+                        if expression_rewriter is not None
+                        else bound_expr
+                    )
+                    bound_evaluator = self._emit_lazy_type_value_evaluator(
+                        expression,
+                        key="__bound__",
+                        module_override=module_override,
+                    )
+                if isinstance(default_expr, ast.expr):
+                    expression = (
+                        expression_rewriter(default_expr)
+                        if expression_rewriter is not None
+                        else default_expr
+                    )
+                    default_evaluator = self._emit_lazy_type_value_evaluator(
+                        expression,
+                        key="__default__",
+                        module_override=module_override,
+                    )
+                evaluators: list[MoltValue] = []
+                for evaluator in (
+                    bound_evaluator,
+                    constraints_evaluator,
+                    default_evaluator,
+                ):
+                    if evaluator is not None:
+                        evaluators.append(evaluator)
+                        continue
+                    none_value = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_value))
+                    evaluators.append(none_value)
+                configured = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[evaluator_setter, value, *evaluators],
+                        result=configured,
+                    )
+                )
+        finally:
+            self.annotation_type_params = previous_type_params
         return values, mapping
+
+    def _emit_lazy_type_value_evaluator(
+        self,
+        expression: ast.expr,
+        *,
+        key: str,
+        module_override: str | None = None,
+    ) -> MoltValue:
+        return self._emit_annotate_function_obj(
+            items=[(key, expression, 0)],
+            exec_map_name=None,
+            stringize=False,
+            module_override=module_override,
+        )
+
+    def _emit_type_alias_value(
+        self,
+        node: ast.TypeAlias,
+        *,
+        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
+        module_override: str | None = None,
+    ) -> MoltValue:
+        if not isinstance(node.name, ast.Name):
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM, "Unsupported type alias target"
+            )
+        alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
+        type_param_values, type_param_map = self._emit_type_params_values(
+            node.type_params,
+            expression_rewriter=expression_rewriter,
+            module_override=module_override,
+        )
+        expression = (
+            expression_rewriter(node.value)
+            if expression_rewriter is not None
+            else node.value
+        )
+        previous_type_params = self.annotation_type_params
+        merged = dict(previous_type_params)
+        merged.update(type_param_map)
+        self.annotation_type_params = merged
+        try:
+            evaluator = self._emit_lazy_type_value_evaluator(
+                expression,
+                key="__value__",
+                module_override=module_override,
+            )
+        finally:
+            self.annotation_type_params = previous_type_params
+        name_value = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[node.name.id], result=name_value))
+        params_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(
+            MoltOp(kind="TUPLE_NEW", args=type_param_values, result=params_tuple)
+        )
+        alias_value = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[alias_fn, name_value, evaluator, params_tuple],
+                result=alias_value,
+            )
+        )
+        return alias_value
 
     def _emit_attach_type_params(
         self, owner: MoltValue, type_params: list[MoltValue]

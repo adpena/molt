@@ -381,6 +381,8 @@ let nextLockId = 1;
 let nextRLockId = 1;
 const lockStates = new Map();
 const rlockStates = new Map();
+let threadStackSize = 0;
+const mainThreadIdent = 1;
 let sysVersionInfo = null;
 let sysVersionStr = null;
 let heapPtr = 1 << 20;
@@ -14731,19 +14733,52 @@ BASE_IMPORTS = """\
     const entry = rlockStates.get(id);
     return boxBool(!!(entry && entry.locked));
   },
+  rlock_is_owned: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    return boxBool(!!(entry && entry.locked));
+  },
+  rlock_release_save: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    if (!entry || entry.count === 0) return boxInt(0);
+    const count = entry.count;
+    entry.count = 0;
+    entry.locked = false;
+    return boxInt(count);
+  },
+  rlock_acquire_restore: (handle, countBits) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    if (!entry) return boxNone();
+    entry.count = Number(unboxInt(countBits));
+    entry.locked = entry.count > 0;
+    return boxNone();
+  },
   rlock_drop: (handle) => {
     const id = Number(unboxInt(handle));
     rlockStates.delete(id);
     return boxNone();
   },
-  thread_spawn: (_payload) => boxInt(0),
+  thread_spawn: (_payload) => { throw new Error('threads are unavailable in wasm'); },
+  thread_spawn_shared: (_token, _function, _args, _kwargs) => {
+    throw new Error('threads are unavailable in wasm');
+  },
   thread_join: (_handle, _timeout) => boxNone(),
   thread_is_alive: (_handle) => boxBool(false),
   thread_ident: (_handle) => boxNone(),
   thread_native_id: (_handle) => boxNone(),
-  thread_current_ident: () => boxNone(),
-  thread_current_native_id: () => boxNone(),
+  thread_current_ident: () => boxInt(mainThreadIdent),
+  thread_current_native_id: () => boxInt(mainThreadIdent),
+  thread_registry_active_count: () => boxInt(mainThreadIdent),
+  thread_stack_size_get: () => boxInt(threadStackSize),
+  thread_stack_size_set: (sizeBits) => {
+    const previous = threadStackSize;
+    threadStackSize = Number(unboxInt(sizeBits));
+    return boxInt(previous);
+  },
   thread_drop: (_handle) => boxNone(),
+  signal_raise_signal: (_signum) => boxNone(),
 """
 
 IMPORT_HELPERS = """\

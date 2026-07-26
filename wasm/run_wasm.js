@@ -4820,8 +4820,11 @@ const runtimeExportImportSignature = (runtimeExport) => {
 
 const runtimeExportNameForImport = (importName) => {
   const exportName = runtimeImportExportNames[importName] || null;
-  return typeof exportName === 'string' && exportName.length > 0
-    ? exportName
+  if (typeof exportName === 'string' && exportName.length > 0) {
+    return exportName;
+  }
+  return Object.prototype.hasOwnProperty.call(runtimeExportSignatures, importName)
+    ? importName
     : null;
 };
 

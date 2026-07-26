@@ -74,13 +74,31 @@ impl MoltThreadHandle {
     }
 
     fn mark_started(&self, ident: u64, native_id: u64) {
+        let _guard = self.wait_lock.lock().unwrap();
         self.ident.store(ident, AtomicOrdering::Release);
         self.native_id.store(native_id, AtomicOrdering::Release);
+        self.condvar.notify_all();
     }
 
     fn mark_done(&self) {
+        let _guard = self.wait_lock.lock().unwrap();
         self.done.store(true, AtomicOrdering::Release);
         self.condvar.notify_all();
+    }
+
+    fn wait_started(&self) -> bool {
+        if self.ident.load(AtomicOrdering::Acquire) != 0 {
+            return true;
+        }
+        let guard = self.wait_lock.lock().unwrap();
+        let _guard = self
+            .condvar
+            .wait_while(guard, |_| {
+                self.ident.load(AtomicOrdering::Acquire) == 0
+                    && !self.done.load(AtomicOrdering::Acquire)
+            })
+            .unwrap();
+        self.ident.load(AtomicOrdering::Acquire) != 0
     }
 
     fn wait(&self, timeout: Option<Duration>) -> bool {
@@ -88,15 +106,18 @@ impl MoltThreadHandle {
             return true;
         }
         let guard = self.wait_lock.lock().unwrap();
-        if self.done.load(AtomicOrdering::Acquire) {
-            return true;
-        }
         match timeout {
             Some(wait) => {
-                let (_guard, _) = self.condvar.wait_timeout(guard, wait).unwrap();
+                let (_guard, _) = self
+                    .condvar
+                    .wait_timeout_while(guard, wait, |_| !self.done.load(AtomicOrdering::Acquire))
+                    .unwrap();
             }
             None => {
-                let _guard = self.condvar.wait(guard).unwrap();
+                let _guard = self
+                    .condvar
+                    .wait_while(guard, |_| !self.done.load(AtomicOrdering::Acquire))
+                    .unwrap();
             }
         }
         self.done.load(AtomicOrdering::Acquire)
@@ -680,6 +701,9 @@ pub unsafe extern "C" fn molt_thread_ident(handle_bits: u64) -> u64 {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
+        if !handle.wait_started() {
+            return MoltObject::none().bits();
+        }
         let ident = handle.ident.load(AtomicOrdering::Acquire);
         if ident == 0 {
             MoltObject::none().bits()
@@ -698,6 +722,9 @@ pub unsafe extern "C" fn molt_thread_native_id(handle_bits: u64) -> u64 {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
+        if !handle.wait_started() {
+            return MoltObject::none().bits();
+        }
         let ident = handle.native_id.load(AtomicOrdering::Acquire);
         if ident == 0 {
             MoltObject::none().bits()
@@ -1057,9 +1084,12 @@ pub extern "C" fn molt_thread_registry_current() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
+const WASM_MAIN_THREAD_IDENT: i64 = 1;
+
+#[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_registry_active_count() -> u64 {
-    MoltObject::from_int(1).bits()
+    MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1118,15 +1148,15 @@ pub extern "C" fn molt_thread_native_id(_handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_current_ident() -> u64 {
-    // WASM is single-threaded; return 1 (the main thread ident convention).
-    // CPython always returns a non-zero integer for the main thread.
-    MoltObject::from_int(1).bits()
+    MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_current_native_id() -> u64 {
-    MoltObject::from_int(0).bits()
+    // WASM has no OS TID, but CPython's API contract is a stable non-zero int.
+    // Use the same single-thread identity authority as get_ident().
+    MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
