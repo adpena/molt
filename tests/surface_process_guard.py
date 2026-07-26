@@ -6,8 +6,6 @@ from pathlib import Path
 from tools import harness_memory_guard
 from tests import process_guard_common
 
-DEFAULT_SURFACE_TEST_TIMEOUT_SEC = process_guard_common.DEFAULT_TEST_PROCESS_TIMEOUT_SEC
-
 
 def run_surface_test_process(
     args: Sequence[str],
@@ -26,7 +24,6 @@ def run_surface_test_process(
         cwd=cwd,
         env=env,
         timeout=timeout,
-        default_timeout=DEFAULT_SURFACE_TEST_TIMEOUT_SEC,
         capture_output=capture_output,
         text=text,
         check=check,

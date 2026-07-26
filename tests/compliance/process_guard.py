@@ -6,8 +6,6 @@ from pathlib import Path
 from tools import harness_memory_guard
 from tests import process_guard_common
 
-DEFAULT_COMPLIANCE_TIMEOUT_SEC = process_guard_common.DEFAULT_TEST_PROCESS_TIMEOUT_SEC
-
 
 def run_compliance_process(
     args: Sequence[str],
@@ -25,7 +23,6 @@ def run_compliance_process(
         cwd=cwd,
         env=env,
         timeout=timeout,
-        default_timeout=DEFAULT_COMPLIANCE_TIMEOUT_SEC,
         capture_output=capture_output,
         text=text,
         check=check,

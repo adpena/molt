@@ -13,9 +13,10 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from tools import harness_memory_guard
-
-DEFAULT_TEST_PROCESS_TIMEOUT_SEC = 300.0
-DEFAULT_BUILD_PROCESS_TIMEOUT_SEC = 900.0
+from molt.cargo_execution_policy import (
+    default_nested_process_timeout_seconds,
+    enforce_owning_proof_timeout,
+)
 
 
 class GuardedProcessRole(str, Enum):
@@ -132,9 +133,9 @@ def _timeout_from_role_env(
     if explicit is not None:
         return explicit
     role_default = (
-        DEFAULT_BUILD_PROCESS_TIMEOUT_SEC
-        if role is GuardedProcessRole.BUILD
-        else default
+        default
+        if default is not None
+        else default_nested_process_timeout_seconds(role.value)
     )
     role_prefix = _role_prefix(prefix, role)
     role_env = f"MOLT_{role.value.upper()}_TIMEOUT_SEC"
@@ -144,16 +145,16 @@ def _timeout_from_role_env(
         raw = env.get(name)
         if raw is None or not raw.strip():
             continue
-        return harness_memory_guard.timeout_from_env(
+        selected = harness_memory_guard.timeout_from_env(
             role_prefix,
             {f"{role_prefix}_TIMEOUT_SEC": raw},
             default=role_default,
         )
-    return harness_memory_guard.timeout_from_env(
-        role_prefix,
-        env,
-        default=role_default,
+        return enforce_owning_proof_timeout(env, selected)
+    selected = harness_memory_guard.timeout_from_env(
+        role_prefix, env, default=role_default
     )
+    return enforce_owning_proof_timeout(env, selected)
 
 
 def _diagnostic_value(result: object, name: str) -> object:
@@ -243,7 +244,7 @@ def run_guarded_test_process(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
-    default_timeout: float | None = DEFAULT_TEST_PROCESS_TIMEOUT_SEC,
+    default_timeout: float | None = None,
     capture_output: bool = True,
     text: bool = True,
     check: bool = False,
