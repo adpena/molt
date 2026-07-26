@@ -3386,6 +3386,51 @@ def _callable_entry_export_name(slot: int) -> str:
     return f"{WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME}.entry.{slot}"
 
 
+def _callable_app_end(layout: CallableTableLayout) -> int:
+    layout.validate()
+    return layout.finalized_app_base + layout.app_entry_count
+
+
+def _linked_callable_occupied_end(
+    raw_entries: object,
+    layout: CallableTableLayout,
+) -> int:
+    """Validate post-link ownership and return the final occupied boundary.
+
+    The compiler's fixed/app slots are already embedded in code as table
+    immediates.  wasm-ld may add relocatable runtime/native entries, but those
+    entries must start after the compiler-owned app region; moving
+    ``finalized_app_base`` after the link would change only metadata and element
+    publication, leaving every existing callsite bound to the old slots.
+    """
+
+    if not isinstance(raw_entries, list):
+        raise ValueError("linked WASM facts omitted callable-table entries")
+    slots: list[int] = []
+    for entry in raw_entries:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 4
+            or not isinstance(entry[0], int)
+            or isinstance(entry[0], bool)
+            or entry[0] < 0
+            or entry[0] > 0xFFFF_FFFF
+        ):
+            raise ValueError(
+                "linked WASM facts contain an invalid callable-table entry"
+            )
+        slots.append(entry[0])
+
+    app_end = _callable_app_end(layout)
+    for slot in slots:
+        if slot < app_end:
+            raise ValueError(
+                "linked WASM relocatable entries overlap the pre-link callable "
+                f"region: slot={slot}, region=[0,{app_end})"
+            )
+    return max((slot + 1 for slot in slots), default=app_end)
+
+
 def _write_varsint32(value: int) -> bytes:
     if value < -(1 << 31) or value >= 1 << 31:
         raise ValueError("callable-table fixed prefix base must fit i32")
@@ -3889,11 +3934,10 @@ def _run_wasm_ld_with_custodied_inputs(
         output_callable_layout is not None
         and output_callable_layout.fixed_prefix_len > 0
     ):
-        fixed_prefix_end = (
-            output_callable_layout.fixed_prefix_base
-            + output_callable_layout.fixed_prefix_len
+        cmd.insert(
+            cmd.index("--import-table") + 1,
+            f"--table-base={_callable_app_end(output_callable_layout)}",
         )
-        cmd.insert(cmd.index("--import-table") + 1, f"--table-base={fixed_prefix_end}")
     # Force-export symbols that were rewritten but missing from the
     # non-relocatable runtime â€” they exist in the relocatable runtime
     # and wasm-ld needs to know to keep them in the linked output.
@@ -3923,6 +3967,7 @@ def _run_wasm_ld_with_custodied_inputs(
 
     split_linked_app_path: Path | None = None
     split_app_cmd: list[str] | None = None
+    split_app_required_table_min: int | None = None
     split_app_got_runtime_addresses: dict[str, int] = {}
     if split_runtime:
         split_native_inputs = native_link_inputs
@@ -3973,7 +4018,7 @@ def _run_wasm_ld_with_custodied_inputs(
             return 1
         assert output_callable_layout is not None
         assert split_callable_layout is not None
-        split_app_table_base = split_callable_layout.finalized_app_base
+        split_app_table_base = _callable_app_end(split_callable_layout)
         split_app_prefix = [
             f"--allow-undefined-file={split_native_allowlist}"
             if part.startswith("--allow-undefined-file=")
@@ -4049,31 +4094,13 @@ def _run_wasm_ld_with_custodied_inputs(
             try:
                 raw_linked_facts = facts_provider(linked_bytes)
                 raw_callable_entries = raw_linked_facts.get("callable_table_entries")
-                if not isinstance(raw_callable_entries, list):
-                    raise ValueError("linked WASM facts omitted callable-table entries")
-                raw_occupied_end = max(
-                    (
-                        int(entry[0]) + 1
-                        for entry in raw_callable_entries
-                        if isinstance(entry, list)
-                        and len(entry) == 4
-                        and isinstance(entry[0], int)
-                    ),
-                    default=output_callable_layout.finalized_app_base,
+                _linked_callable_occupied_end(
+                    raw_callable_entries,
+                    output_callable_layout,
                 )
-                monolithic_callable_layout = CallableTableLayout(
-                    output_callable_layout.fixed_prefix_base,
-                    output_callable_layout.fixed_prefix_len,
-                    max(
-                        output_callable_layout.finalized_app_base,
-                        raw_occupied_end,
-                    ),
-                    output_callable_layout.app_entry_count,
-                )
-                monolithic_callable_layout.validate()
                 linked_bytes = _install_callable_table_layout(
                     linked_bytes,
-                    monolithic_callable_layout,
+                    output_callable_layout,
                     entry_symbol_names=callable_entry_symbol_names_by_slot,
                 )
             except ValueError as exc:
@@ -4331,34 +4358,15 @@ def _run_wasm_ld_with_custodied_inputs(
                 try:
                     raw_split_facts = facts_provider(rewritten_data)
                     raw_split_entries = raw_split_facts.get("callable_table_entries")
-                    if not isinstance(raw_split_entries, list):
-                        raise ValueError(
-                            "split-app WASM facts omitted callable-table entries"
-                        )
-                    raw_split_occupied_end = max(
-                        (
-                            int(entry[0]) + 1
-                            for entry in raw_split_entries
-                            if isinstance(entry, list)
-                            and len(entry) == 4
-                            and isinstance(entry[0], int)
-                        ),
-                        default=split_callable_layout.finalized_app_base,
+                    split_app_required_table_min = _linked_callable_occupied_end(
+                        raw_split_entries,
+                        split_callable_layout,
                     )
-                    split_callable_layout = CallableTableLayout(
-                        split_callable_layout.fixed_prefix_base,
-                        split_callable_layout.fixed_prefix_len,
-                        max(
-                            split_callable_layout.finalized_app_base,
-                            raw_split_occupied_end,
-                        ),
-                        split_callable_layout.app_entry_count,
-                    )
-                    split_callable_layout.validate()
                     rewritten_data = _install_callable_table_layout(
                         rewritten_data,
                         split_callable_layout,
                         entry_symbol_names=callable_entry_symbol_names_by_slot,
+                        include_fixed_prefix=False,
                         override_reserved_direct=False,
                     )
                 except ValueError as exc:
@@ -4450,14 +4458,11 @@ def _run_wasm_ld_with_custodied_inputs(
                 facts_provider=facts_provider,
             )
             assert split_callable_layout is not None
-            required_split_app_table_min = (
-                split_callable_layout.finalized_app_base
-                + split_callable_layout.app_entry_count
-            )
+            assert split_app_required_table_min is not None
             try:
                 updated = _rewrite_table_import_min(
                     optimized_app,
-                    required_split_app_table_min,
+                    split_app_required_table_min,
                 )
             except ValueError as exc:
                 print(

@@ -46,6 +46,18 @@ class AliasOwner:
 print("class alias", AliasOwner.Member.__value__)
 
 
+class ConditionalAliasOwner:
+    if True:
+        type Member[T] = tuple[T, T]
+
+
+print(
+    "class control alias",
+    ConditionalAliasOwner.Member[int],
+    ConditionalAliasOwner.Member[int].__parameters__,
+)
+
+
 def local_alias_value():
     type LocalAlias = LaterLocal
     LaterLocal = float

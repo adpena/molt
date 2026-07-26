@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 
 import molt.cli as cli
@@ -76,3 +77,13 @@ def test_cli_module_import_scanner_authority_is_single_home() -> None:
     for marker in _MODULE_IMPORT_SCANNER_DEFINITIONS:
         assert marker not in module_graph_source
         assert marker not in cli_source
+
+
+def test_default_argument_dunder_import_helper_is_in_static_closure() -> None:
+    tree = ast.parse(
+        "def load(name, importer=__import__):\n"
+        "    return importer(name)\n"
+        "load('pkg.leaf')\n"
+    )
+
+    assert "pkg.leaf" in module_import_scanner._collect_imports(tree)

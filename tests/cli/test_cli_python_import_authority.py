@@ -144,26 +144,28 @@ def test_package_none_falls_back_to_valid_module_spec_parent() -> None:
 
 
 def test_source_order_uses_state_at_each_import(tmp_path: Path) -> None:
-    source = (
-        "from .a import x\n"
-        "__package__ = 'other.pkg'\n"
-        "from .b import y\n"
-    )
+    source = "from .a import x\n__package__ = 'other.pkg'\nfrom .b import y\n"
     expected = {"pkg.a", "pkg.a.x", "other.pkg.b", "other.pkg.b.y"}
     tree = ast.parse(source)
-    assert set(
-        module_import_scanner._collect_imports(
-            tree, module_name="pkg.entry", is_package=False
+    assert (
+        set(
+            module_import_scanner._collect_imports(
+                tree, module_name="pkg.entry", is_package=False
+            )
         )
-    ) == expected
+        == expected
+    )
     path = tmp_path / "pkg" / "entry.py"
     path.parent.mkdir()
     path.write_text(source, encoding="utf-8")
-    assert local_import_targets(
-        path,
-        LocalPythonModuleResolver((tmp_path,)),
-        PythonImportPolicy(False, True, True),
-    ) == expected
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+        == expected
+    )
 
 
 def test_module_level_policy_skips_deferred_bodies_without_hiding_module_imports(
@@ -171,9 +173,7 @@ def test_module_level_policy_skips_deferred_bodies_without_hiding_module_imports
 ) -> None:
     path = tmp_path / "entry.py"
     path.write_text(
-        "import package.eager\n"
-        "def deferred():\n"
-        "    import package.lazy\n",
+        "import package.eager\ndef deferred():\n    import package.lazy\n",
         encoding="utf-8",
     )
     resolver = LocalPythonModuleResolver((tmp_path,))
@@ -219,9 +219,7 @@ def test_mixed_static_and_error_paths_are_not_erased() -> None:
     )
     plan = plan_static_import_request(
         StaticImportRequest.statement("child", level=1),
-        tuple(
-            context.with_state(state) for state in flow.states_for(request_node)
-        ),
+        tuple(context.with_state(state) for state in flow.states_for(request_node)),
     )
     assert plan.modules == ("left.child",)
     assert plan.errors == ("invalid_package",)
@@ -275,6 +273,39 @@ def test_class_global_metadata_write_updates_module_import_state() -> None:
     ) == {"other.pkg.child", "other.pkg.child.value"}
 
 
+def test_try_star_handler_participates_in_import_state_flow() -> None:
+    source = (
+        "try:\n"
+        "    raise ExceptionGroup('group', [ValueError()])\n"
+        "except* ValueError:\n"
+        "    __package__ = 'other.pkg'\n"
+        "from .child import value\n"
+    )
+    imports = set(
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+    )
+
+    assert {"other.pkg.child", "other.pkg.child.value"} <= imports
+
+
+def test_match_mapping_rest_capture_invalidates_import_metadata() -> None:
+    source = (
+        "class Scope:\n"
+        "    global __package__\n"
+        "    match {'key': 'value'}:\n"
+        "        case {**__package__}:\n"
+        "            pass\n"
+        "from .child import value\n"
+    )
+
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+
+
 @pytest.mark.parametrize(
     "execution",
     (
@@ -309,7 +340,12 @@ def test_intrinsic_lookup_cannot_mutate_escaped_module_metadata() -> None:
         module_import_scanner._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
-    ) == {"_intrinsics", "_intrinsics.require_intrinsic", "pkg.child", "pkg.child.value"}
+    ) == {
+        "_intrinsics",
+        "_intrinsics.require_intrinsic",
+        "pkg.child",
+        "pkg.child.value",
+    }
 
 
 def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
@@ -325,7 +361,9 @@ def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
         )
 
 
-def test_deferred_relative_import_without_module_name_uses_runtime_transaction() -> None:
+def test_deferred_relative_import_without_module_name_uses_runtime_transaction() -> (
+    None
+):
     generator = SimpleTIRGenerator(
         source_path="pkg/module.py",
         module_name="pkg.module",
@@ -350,9 +388,7 @@ def test_import_flow_is_cached_and_state_growth_is_bounded() -> None:
     tree = ast.parse(source)
     context = ModuleImportContext("pkg.entry", False)
     flow = analyze_module_import_flow(tree, context)
-    request = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-    )
+    request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
     assert len(flow.states_for(request)) <= 64
     assert analyze_module_import_flow(tree, context) is flow
 
@@ -414,9 +450,7 @@ def test_import_flow_cache_publishes_transitively_immutable_facts() -> None:
 def test_dynamic_import_closure_uses_canonical_binding_facts(tmp_path: Path) -> None:
     cases = {
         "assigned": (
-            "import importlib\n"
-            "load = importlib.import_module\n"
-            "load('pkg.assigned')\n",
+            "import importlib\nload = importlib.import_module\nload('pkg.assigned')\n",
             "pkg.assigned",
         ),
         "module_after_definition": (
@@ -466,15 +500,12 @@ def test_dynamic_import_closure_uses_canonical_binding_facts(tmp_path: Path) -> 
         "    load('pkg.not_an_import')\n",
         encoding="utf-8",
     )
-    assert "pkg.not_an_import" not in local_import_targets(
-        shadowed, resolver, policy
-    )
+    assert "pkg.not_an_import" not in local_import_targets(shadowed, resolver, policy)
 
 
 def test_type_alias_dynamic_imports_are_lazy_full_graph_edges() -> None:
     source = (
-        "type Alias = load('pkg.lazy')\n"
-        "from importlib import import_module as load\n"
+        "type Alias = load('pkg.lazy')\nfrom importlib import import_module as load\n"
     )
     tree = ast.parse(source)
     full = set(
@@ -529,11 +560,7 @@ def test_python_execution_effects_never_leave_a_stale_static_anchor(
 
 
 def test_deferred_function_graph_unions_call_time_module_states() -> None:
-    source = (
-        "def load():\n"
-        "    from .child import value\n"
-        "__package__ = 'other.pkg'\n"
-    )
+    source = "def load():\n    from .child import value\n__package__ = 'other.pkg'\n"
     assert set(
         module_import_scanner._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
@@ -557,8 +584,7 @@ def test_modulespec_signature_and_parent_are_cpython_valid() -> None:
     ) == StaticMetadataValue.known("a.b")
     assert (
         parse_module_spec_parent(
-            ast.parse("ModuleSpec('a.b', None, None, True)", mode="eval").body
-            ,
+            ast.parse("ModuleSpec('a.b', None, None, True)", mode="eval").body,
             {"ModuleSpec"},
         )
         == INVALID_VALUE
@@ -614,9 +640,7 @@ def test_dunder_globals_dict_unpack_respects_order_and_unknown_overwrite() -> No
     assert state is not None
     assert state.package == StaticMetadataValue.known("b")
 
-    unknown_overlay = ast.parse(
-        "{'__package__': 'a', **dynamic}", mode="eval"
-    ).body
+    unknown_overlay = ast.parse("{'__package__': 'a', **dynamic}", mode="eval").body
     state = dunder_globals_state_from_expression(unknown_overlay, context)
     assert state is not None
     assert state.package.kind == "unknown"
@@ -624,18 +648,20 @@ def test_dunder_globals_dict_unpack_respects_order_and_unknown_overwrite() -> No
 
 def test_absolute_import_module_ignores_dynamic_package(tmp_path: Path) -> None:
     source = (
-        "from importlib import import_module\n"
-        "import_module('pkg.child', object())\n"
+        "from importlib import import_module\nimport_module('pkg.child', object())\n"
     )
     path = tmp_path / "entry.py"
     path.write_text(source, encoding="utf-8")
     expected = {"importlib", "importlib.import_module", "pkg.child"}
     assert set(module_import_scanner._collect_imports(ast.parse(source))) == expected
-    assert local_import_targets(
-        path,
-        LocalPythonModuleResolver((tmp_path,)),
-        PythonImportPolicy(False, True, True),
-    ) == expected
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+        == expected
+    )
 
 
 def test_stdlib_and_extension_support_share_package_resolution(tmp_path: Path) -> None:
@@ -690,9 +716,7 @@ def test_loader_state_is_explicit_not_an_unset_override() -> None:
 
 def test_script_and_module_execution_have_distinct_loader_metadata() -> None:
     script = loader_module_import_state(
-        ModuleImportContext(
-            "__main__", False, execution_kind="script"
-        )
+        ModuleImportContext("__main__", False, execution_kind="script")
     )
     assert script.package == NONE_VALUE
     assert script.spec_parent == NONE_VALUE

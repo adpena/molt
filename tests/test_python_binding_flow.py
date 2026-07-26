@@ -53,9 +53,7 @@ def test_synthetic_node_key_cache_retains_identity_against_id_reuse() -> None:
 
 def test_persistent_binding_tree_grows_and_joins_across_radix_boundaries() -> None:
     pool = python_binding_flow._StatePool()
-    chunks_per_fixed_depth = 1 << (
-        python_binding_flow._BINDING_TREE_SHIFT * 3
-    )
+    chunks_per_fixed_depth = 1 << (python_binding_flow._BINDING_TREE_SHIFT * 3)
     chunk_size = python_binding_flow._BINDING_CHUNK_SIZE
     below = (chunks_per_fixed_depth - 1) * chunk_size
     boundary = chunks_per_fixed_depth * chunk_size
@@ -97,17 +95,14 @@ def test_binding_history_diff_visits_only_changed_trie_branches() -> None:
 def _identity_on_line(source: str, line: int, identity: PythonIdentity) -> bool:
     index = analyze_python_source_bindings(source)
     return any(
-        fact.node.lineno == line
-        and identity_fact_is_exact(fact.identities, identity)
+        fact.node.lineno == line and identity_fact_is_exact(fact.identities, identity)
         for fact in index.expressions
     )
 
 
 def test_alias_chain_preserves_exact_import_module_identity() -> None:
     call = _last_call(
-        "import importlib as loader\n"
-        "load = loader.import_module\n"
-        "load('pkg.leaf')\n"
+        "import importlib as loader\nload = loader.import_module\nload('pkg.leaf')\n"
     )
     assert call.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert not call.callee_identities & OTHER_IDENTITY
@@ -173,9 +168,7 @@ def test_find_spec_member_rebinding_invalidates_all_aliases() -> None:
         "util.find_spec('pkg.leaf')\n"
     )
     assert call.callee_identities == OTHER_IDENTITY
-    assert call.definitely_invalidated_members_after & int(
-        PythonMember.UTIL_FIND_SPEC
-    )
+    assert call.definitely_invalidated_members_after & int(PythonMember.UTIL_FIND_SPEC)
 
 
 def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
@@ -183,11 +176,7 @@ def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
         "from _intrinsics import require_intrinsic as require\n"
         "require('molt_demo', globals())\n"
     )
-    call = next(
-        fact
-        for fact in index.calls
-        if fact.node.col_offset == 0
-    )
+    call = next(fact for fact in index.calls if fact.node.col_offset == 0)
     assert call.callee_is(PythonIdentity.INTRINSICS_REQUIRE)
 
 
@@ -205,9 +194,7 @@ def test_control_flow_join_retains_both_canonical_and_shadowed_identity(
     conditional: str,
 ) -> None:
     call = _last_call(
-        "import importlib\n"
-        f"{conditional}"
-        "importlib.import_module('pkg.leaf')\n"
+        f"import importlib\n{conditional}importlib.import_module('pkg.leaf')\n"
     )
     assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert call.callee_identities & OTHER_IDENTITY
@@ -366,7 +353,9 @@ def test_globals_module_and_frame_capabilities_share_exact_identities() -> None:
     assert _identity_on_line(source, 9, PythonIdentity.CURRENT_GLOBALS)
 
 
-def test_setattr_and_exec_invalidate_import_identity_without_losing_possibility() -> None:
+def test_setattr_and_exec_invalidate_import_identity_without_losing_possibility() -> (
+    None
+):
     setattr_call = _last_call(
         "import importlib\n"
         "setattr(importlib, 'import_module', replacement)\n"
@@ -375,9 +364,7 @@ def test_setattr_and_exec_invalidate_import_identity_without_losing_possibility(
     assert setattr_call.callee_identities == OTHER_IDENTITY
 
     exec_call = _last_call(
-        "import importlib\n"
-        "exec(source)\n"
-        "importlib.import_module('pkg.leaf')\n"
+        "import importlib\nexec(source)\nimportlib.import_module('pkg.leaf')\n"
     )
     assert exec_call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert exec_call.callee_identities & OTHER_IDENTITY
@@ -396,25 +383,18 @@ def test_setattr_and_exec_invalidate_import_identity_without_losing_possibility(
 )
 def test_global_and_frame_reflection_taints_exposed_bindings(mutation: str) -> None:
     call = _last_call(
-        "import importlib\n"
-        f"{mutation}"
-        "importlib.import_module('pkg.leaf')\n"
+        f"import importlib\n{mutation}importlib.import_module('pkg.leaf')\n"
     )
     assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert call.callee_identities & OTHER_IDENTITY
 
 
 def test_builtins_import_alias_and_member_mutation_share_one_authority() -> None:
-    exact = _last_call(
-        "from builtins import __import__ as load\n"
-        "load('pkg.leaf')\n"
-    )
+    exact = _last_call("from builtins import __import__ as load\nload('pkg.leaf')\n")
     assert exact.callee_is(PythonIdentity.BUILTINS_IMPORT)
 
     mutated = _last_call(
-        "import builtins\n"
-        "builtins.__import__ = replacement\n"
-        "__import__('pkg.leaf')\n"
+        "import builtins\nbuiltins.__import__ = replacement\n__import__('pkg.leaf')\n"
     )
     assert mutated.callee_identities == OTHER_IDENTITY
 
@@ -444,8 +424,7 @@ def test_reference_release_callbacks_poison_exposed_global_bindings() -> None:
 
 def test_import_calls_fail_preserves_import_state_capability() -> None:
     call = _last_call(
-        "from importlib import import_module\n"
-        "import_module('pkg.leaf')\n"
+        "from importlib import import_module\nimport_module('pkg.leaf')\n"
     )
     assert not effect_mask_satisfies_capability(
         call.effects, PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS
@@ -516,11 +495,11 @@ def test_binding_cache_evicts_fifo_in_constant_time_authority() -> None:
     assert calls == Counter(a=2, b=1, c=1)
 
 
-def test_loop_fixpoint_does_not_conflate_identical_storage_with_tainted_binding() -> None:
+def test_loop_fixpoint_does_not_conflate_identical_storage_with_tainted_binding() -> (
+    None
+):
     states = python_binding_flow._StatePool()
-    exact = states.set_binding(
-        0, 0, int(PythonIdentity.IMPORTLIB_MODULE)
-    )
+    exact = states.set_binding(0, 0, int(PythonIdentity.IMPORTLIB_MODULE))
     tainted = states.taint_slots(exact, 1)
     loop_header = states.join(exact, tainted)
 
@@ -627,6 +606,45 @@ def test_reparse_query_uses_stable_source_keys_not_ast_identity() -> None:
         callee_fact.identities,
         PythonIdentity.IMPORTLIB_IMPORT_MODULE,
     )
+
+
+def test_ast_cache_identity_includes_spans_used_by_fact_lookup() -> None:
+    source = "import importlib\nimportlib.import_module('pkg.leaf')\n"
+    shifted_source = "\n    \n" + source
+    tree = ast.parse(source)
+    shifted_tree = ast.parse(shifted_source)
+
+    assert python_binding_flow.python_ast_digest(
+        tree
+    ) != python_binding_flow.python_ast_digest(shifted_tree)
+    index = python_binding_flow.analyze_python_bindings(
+        tree, source_digest=python_binding_flow.python_ast_digest(tree)
+    )
+    shifted_index = python_binding_flow.analyze_python_bindings(
+        shifted_tree,
+        source_digest=python_binding_flow.python_ast_digest(shifted_tree),
+    )
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    shifted_call = next(
+        node for node in ast.walk(shifted_tree) if isinstance(node, ast.Call)
+    )
+
+    assert index is not shifted_index
+    assert index.call_fact(call) is not None
+    assert shifted_index.call_fact(shifted_call) is not None
+    assert index.call_fact(shifted_call) is None
+
+
+def test_default_parameter_retains_possible_dunder_import_identity() -> None:
+    source = (
+        "def load(name, importer=__import__):\n"
+        "    return importer(name)\n"
+        "load('pkg.leaf')\n"
+    )
+    index = analyze_python_source_bindings(source)
+    importer_call = next(fact for fact in index.calls if fact.node.lineno == 2)
+
+    assert importer_call.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
 
 
 @pytest.mark.parametrize(

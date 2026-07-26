@@ -110,6 +110,8 @@ class _ClassNsScope:
     ns: "MoltValue | None"
     attr_values: dict[str, MoltValue]
     names: set[str]
+    class_name: str
+    module_name: str
 
 
 @dataclass(frozen=True)
