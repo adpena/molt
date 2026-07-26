@@ -52,6 +52,20 @@ def _guard_termination_report(
     )
 
 
+def _patch_guard_popen_without_windows_job(
+    monkeypatch: pytest.MonkeyPatch,
+    popen_factory: object,
+) -> None:
+    """Keep synthetic Popen tests isolated from real kernel Job handles."""
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", popen_factory)
+    monkeypatch.setattr(
+        memory_guard._win_job,
+        "create_kill_on_close_job",
+        lambda: None,
+    )
+
+
 def test_termination_report_validator_rejects_fake_drift() -> None:
     with pytest.raises(TypeError, match="must return GuardTerminationReport"):
         memory_guard._validated_termination_report(
@@ -1866,7 +1880,7 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
             watched_pids=tuple(sorted(watched)) if isinstance(watched, set) else (),
         )
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
+    _patch_guard_popen_without_windows_job(monkeypatch, fake_popen)
     monkeypatch.setattr(
         memory_guard, "terminate_watched_processes", recording_terminate
     )
@@ -1949,7 +1963,7 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
             watched_pids=tuple(sorted(watched)) if isinstance(watched, set) else (),
         )
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
+    _patch_guard_popen_without_windows_job(monkeypatch, fake_popen)
     monkeypatch.setattr(
         memory_guard, "terminate_watched_processes", recording_terminate
     )
@@ -1996,7 +2010,9 @@ def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
             raise AssertionError("a telemetry timeout must not kill the child")
 
     process = FakePopen()
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
 
     def timed_out_sampler() -> Mapping[int, memory_guard.ProcessSample]:
         raise memory_guard.WindowsProcessSnapshotTimeout("snapshot deadline")
@@ -2041,7 +2057,9 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
             return self.returncode
 
     process = FakePopen()
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
     sample_calls = 0
 
     def sampler() -> Mapping[int, memory_guard.ProcessSample]:
@@ -2116,7 +2134,9 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
         process.returncode = -15
         return _guard_termination_report(reason="sampler_failure", root_pid=root)
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
     monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         memory_guard,
@@ -2193,7 +2213,9 @@ def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
             return {root_pid: root_sample}
         raise RuntimeError("persistent snapshot failure")
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
     monkeypatch.setattr(
         memory_guard,
         "terminate_watched_processes",
@@ -2306,7 +2328,9 @@ def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
             ),
         )
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     with pytest.raises(RuntimeError, match="post-loop snapshot failure"):
@@ -2398,7 +2422,9 @@ def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
             ),
         )
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    _patch_guard_popen_without_windows_job(
+        monkeypatch, lambda *_a, **_kw: process
+    )
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     result = memory_guard.run_guarded(
@@ -3120,7 +3146,7 @@ def test_run_guarded_observes_child_exit_before_timeout_race(
             return self.returncode
 
     monkeypatch.setattr(memory_guard.os, "name", "nt", raising=False)
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", FakePopen)
+    _patch_guard_popen_without_windows_job(monkeypatch, FakePopen)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "pass"],
@@ -3168,7 +3194,7 @@ def test_run_command_feeds_stdin_under_guard() -> None:
     assert result.stdout == "GUARDED STDIN\n"
 
 
-def test_run_command_elapsed_excludes_guard_child_runner_startup() -> None:
+def test_run_command_elapsed_tracks_the_direct_guarded_command() -> None:
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(0.03); print('ok')"],
         max_rss_kb=1_000_000,
@@ -3300,7 +3326,7 @@ def test_run_command_timeout_teardown_uses_bounded_wait(
         def kill(self) -> None:
             pass
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", FakeProc)
+    _patch_guard_popen_without_windows_job(monkeypatch, FakeProc)
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
 
     result = memory_guard.run_guarded(
@@ -4714,29 +4740,6 @@ def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> N
     assert isinstance(child_env, dict)
     assert memory_guard.INTERNAL_COMMAND_ENV not in child_env
     assert memory_guard.INTERNAL_WORKER_ENV not in child_env
-    assert memory_guard.INTERNAL_CHILD_RUNNER_ENV not in child_env
-    assert memory_guard.INTERNAL_CHILD_COMMAND_ENV not in child_env
-    assert memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV not in child_env
-
-
-def test_child_runner_env_wraps_command_without_leaking_guard_keys() -> None:
-    command = [sys.executable, "-c", "print('child')"]
-    env = memory_guard._child_runner_env(
-        {
-            "KEEP": "1",
-            memory_guard.INTERNAL_WORKER_ENV: "1",
-            memory_guard.INTERNAL_COMMAND_ENV: json.dumps(["hidden"]),
-        },
-        command,
-        child_rlimit_kb=12345,
-    )
-
-    assert env[memory_guard.INTERNAL_CHILD_RUNNER_ENV] == "1"
-    assert json.loads(env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
-    assert env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
-    assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV not in env
-    child_env = memory_guard._child_env_without_internal_keys(env)
-    assert child_env == {"KEEP": "1"}
 
 
 def test_resolve_relative_executable_leaves_absolute_and_bare_names() -> None:
@@ -4822,17 +4825,10 @@ def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
         assert launch.started_read_fd is not None
         assert launch.pass_fds == launch.close_fds
     else:
-        assert launch.command == [
-            sys.executable,
-            str(Path(memory_guard.__file__).resolve()),
-        ]
-        launch_env = launch.env
-        assert launch_env is not None
-        assert (
-            json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
-        )
-        assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
-        assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV not in launch_env
+        assert launch.command == command
+        assert launch.env == {"KEEP": "1"}
+        assert launch.pass_fds == ()
+        assert launch.close_fds == ()
         assert launch.started_read_fd is None
     memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
 
