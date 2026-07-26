@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -10,10 +9,13 @@ from typing import Any, Mapping, cast
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.diagnostic_text import strip_terminal_decoration
-from molt.cli.file_hashing import _sha256_file
+from molt.cli.static_archive_identity import (
+    StaticArchiveIdentityError,
+    artifact_content_identity,
+)
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _KIND = "molt_native_link_dependencies"
 _FINGERPRINT_FIELDS = frozenset({"hash", "inputs_digest", "meta_digest", "rustc"})
 _NATIVE_STATIC_LIBS_PREFIX = "native-static-libs:"
@@ -84,46 +86,13 @@ def _linked_path_value(raw: str) -> str:
     return path
 
 
-def _artifact_stat_identity(
-    stat_result: os.stat_result,
-) -> tuple[int, int, int, int, int]:
-    return (
-        stat_result.st_size,
-        stat_result.st_mtime_ns,
-        stat_result.st_ctime_ns,
-        stat_result.st_dev,
-        stat_result.st_ino,
-    )
-
-
-@functools.lru_cache(maxsize=256)
-def _artifact_digest_for_identity(
-    resolved_path: str, identity: tuple[int, int, int, int, int]
-) -> str:
-    path = Path(resolved_path)
-    digest = _sha256_file(path)
-    if _artifact_stat_identity(path.stat()) != identity:
-        raise NativeLinkDependencyManifestError(
-            f"runtime archive changed while hashing: {path}"
-        )
-    return digest
-
-
 def _runtime_identity(runtime_lib: Path) -> dict[str, object]:
     try:
-        resolved = runtime_lib.resolve(strict=True)
-        before_identity = _artifact_stat_identity(resolved.stat())
-    except OSError as exc:
+        return artifact_content_identity(runtime_lib)
+    except StaticArchiveIdentityError as exc:
         raise NativeLinkDependencyManifestError(
             f"cannot identify runtime archive {runtime_lib}: {exc}"
         ) from exc
-    digest = _artifact_digest_for_identity(os.fspath(resolved), before_identity)
-    after_identity = _artifact_stat_identity(resolved.stat())
-    if before_identity != after_identity:
-        raise NativeLinkDependencyManifestError(
-            f"runtime archive changed while hashing: {resolved}"
-        )
-    return {"size_bytes": after_identity[0], "sha256": digest}
 
 
 def _validated_source_fingerprint(value: object) -> dict[str, str | None]:
@@ -451,7 +420,11 @@ def _read_native_link_dependency_manifest(
     runtime = manifest.get("runtime")
     source = manifest.get("source")
     cargo = manifest.get("cargo")
-    if not isinstance(runtime, dict) or set(runtime) != {"size_bytes", "sha256"}:
+    runtime_shapes = (
+        {"schema", "semantic_sha256", "member_count", "content_size_bytes"},
+        {"schema", "sha256", "size_bytes"},
+    )
+    if not isinstance(runtime, dict) or set(runtime) not in runtime_shapes:
         raise NativeLinkDependencyManifestError(f"invalid runtime identity: {path}")
     if not isinstance(cargo, dict) or set(cargo) != {
         "profile",

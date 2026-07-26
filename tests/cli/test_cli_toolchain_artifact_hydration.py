@@ -13,9 +13,11 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from molt.cli.static_archive_identity import artifact_content_identity
+from tests.cli.native_link_test_support import static_archive_bytes
 import pytest
 
-_FAKE_STATICLIB = b"!<arch>\nfake-staticlib"
+_FAKE_STATICLIB = static_archive_bytes(b"fake-staticlib")
 
 # Any 64-hex value is a valid runtime integrity-pin key; the real key is the
 # runtime fingerprint meta digest (resolved profile/feature identity).
@@ -396,7 +398,9 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         # but its artifact identity must attest the exact Cargo-reported path.
         stored = cli._read_runtime_fingerprint(primary_fp)
         assert stored["artifact_identity"]["path"] == str(reported)
-        assert stored["artifact_sha256"] == cli._sha256_file(reported)
+        assert stored["artifact_content_identity"] == artifact_content_identity(
+            reported
+        )
 
 
 def test_ensure_backend_binary_hydrates_from_canonical_target(
@@ -483,9 +487,9 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_runtime.write_bytes(_FAKE_STATICLIB)
 
     fingerprint = {
-        "hash": "abc",
+        "hash": "ab" * 32,
         "rustc": "rustc",
-        "inputs_digest": "inputs",
+        "inputs_digest": "cd" * 32,
         "meta_digest": _TEST_RUNTIME_META_DIGEST,
     }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
@@ -551,12 +555,12 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     canonical_runtime = canonical_target / "dev-fast" / "libmolt_runtime.a"
     isolated_runtime = isolated_target / "dev-fast" / "libmolt_runtime.a"
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_bytes(_FAKE_STATICLIB + b"stale")
+    canonical_runtime.write_bytes(static_archive_bytes(b"stale"))
 
     fingerprint = {
-        "hash": "abc",
+        "hash": "ab" * 32,
         "rustc": "rustc",
-        "inputs_digest": "inputs",
+        "inputs_digest": "cd" * 32,
         "meta_digest": _TEST_RUNTIME_META_DIGEST,
     }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
@@ -570,7 +574,7 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     cli._write_runtime_fingerprint(
         canonical_fp, fingerprint, artifact=canonical_runtime
     )
-    canonical_runtime.write_bytes(_FAKE_STATICLIB + b"mutated")
+    canonical_runtime.write_bytes(static_archive_bytes(b"mutated"))
     cargo_runs: list[list[str]] = []
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
@@ -596,7 +600,20 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
         )
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
         scratch_lib.write_bytes(_FAKE_STATICLIB)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "reason": "compiler-message",
+                    "message": {
+                        "message": "native-static-libs: ",
+                        "level": "note",
+                    },
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo)
 
@@ -975,10 +992,13 @@ def test_ensure_runtime_wasm_uses_reported_hashed_artifact_not_stale_primary(
         cargo_profile="dev-fast",
         target_label="wasm32-wasip1",
     )
-    assert cli._read_runtime_fingerprint(reported_fp)["artifact_sha256"] == (
-        cli._sha256_file(reported)
+    assert cli._read_runtime_fingerprint(reported_fp)[
+        "artifact_content_identity"
+    ] == artifact_content_identity(reported)
+    assert (
+        cli._read_runtime_fingerprint(primary_fp).get("artifact_content_identity")
+        is None
     )
-    assert cli._read_runtime_fingerprint(primary_fp).get("artifact_sha256") is None
 
     runtime_wasm.unlink()
     cargo_calls.clear()
@@ -1017,8 +1037,8 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
     runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
     primary.parent.mkdir(parents=True, exist_ok=True)
     reported.parent.mkdir(parents=True, exist_ok=True)
-    primary.write_bytes(_FAKE_STATICLIB + b"stale-primary")
-    reported.write_bytes(_FAKE_STATICLIB + b"reported-hashed")
+    primary.write_bytes(static_archive_bytes(b"stale-primary"))
+    reported.write_bytes(static_archive_bytes(b"reported-hashed"))
 
     fingerprint = {
         "hash": "abc",
@@ -1100,10 +1120,13 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
         cargo_profile="release-fast",
         target_label="wasm32-wasip1",
     )
-    assert cli._read_runtime_fingerprint(reported_fp)["artifact_sha256"] == (
-        cli._sha256_file(reported)
+    assert cli._read_runtime_fingerprint(reported_fp)[
+        "artifact_content_identity"
+    ] == artifact_content_identity(reported)
+    assert (
+        cli._read_runtime_fingerprint(primary_fp).get("artifact_content_identity")
+        is None
     )
-    assert cli._read_runtime_fingerprint(primary_fp).get("artifact_sha256") is None
 
     runtime_reloc.unlink()
     cargo_calls.clear()

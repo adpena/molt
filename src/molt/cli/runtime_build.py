@@ -64,7 +64,6 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.diagnostic_text import strip_terminal_decoration
-from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
     native_link_dependency_manifest_path,
@@ -93,6 +92,10 @@ from molt.cli.runtime_paths import (
     _runtime_cargo_scratch_lib_path,
     _runtime_lib_path,
     _runtime_wasm_artifact_path,
+)
+from molt.cli.static_archive_identity import (
+    StaticArchiveIdentityError,
+    artifact_content_identity,
 )
 from molt.cli.runtime_wasm_cache import (
     _build_reuse_compatible_enabled,
@@ -679,12 +682,10 @@ def _native_link_source_fingerprint(
     return projected
 
 
-def _runtime_archive_bytes_match(left: Path, right: Path) -> bool:
+def _runtime_archives_semantically_match(left: Path, right: Path) -> bool:
     try:
-        return left.stat().st_size == right.stat().st_size and _sha256_file(
-            left
-        ) == _sha256_file(right)
-    except OSError:
+        return artifact_content_identity(left) == artifact_content_identity(right)
+    except (OSError, StaticArchiveIdentityError):
         return False
 
 
@@ -746,7 +747,7 @@ def _refresh_native_link_manifest(
             cargo_result=result,
         )
     cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
-    if not _runtime_archive_bytes_match(runtime_lib, cargo_runtime_lib):
+    if not _runtime_archives_semantically_match(runtime_lib, cargo_runtime_lib):
         if not json_output:
             print(
                 "Runtime native-link manifest refresh produced an archive that "
@@ -759,7 +760,7 @@ def _refresh_native_link_manifest(
             stage="native-link-manifest-refresh",
             summary=(
                 "Cargo refreshed the native-link manifest but changed the selected "
-                "runtime archive bytes"
+                "runtime archive members"
             ),
             command=cmd,
             cargo_stdout=result.stdout,

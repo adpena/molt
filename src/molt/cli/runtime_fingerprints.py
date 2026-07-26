@@ -13,9 +13,12 @@ from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_vers
 from molt.cli.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
-    _sha256_file,
 )
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.cli.static_archive_identity import (
+    StaticArchiveIdentityError,
+    artifact_content_identity,
+)
 from molt.wasm_artifact import is_valid_wasm_binary
 
 
@@ -92,7 +95,7 @@ def _write_runtime_fingerprint(
     artifact: Path | None = None,
 ) -> None:
     payload = {
-        "version": 2,
+        "version": 3,
         "hash": fingerprint.get("hash"),
         "rustc": fingerprint.get("rustc"),
         "inputs_digest": fingerprint.get("inputs_digest"),
@@ -102,7 +105,7 @@ def _write_runtime_fingerprint(
     if isinstance(source_state, dict):
         payload["source_state"] = source_state
     if artifact is not None:
-        payload["artifact_sha256"] = _sha256_file(artifact)
+        payload["artifact_content_identity"] = artifact_content_identity(artifact)
         artifact_identity = _runtime_artifact_identity(artifact)
         if artifact_identity is not None:
             payload["artifact_identity"] = artifact_identity
@@ -132,9 +135,7 @@ def _refresh_runtime_fingerprint_metadata(
 
 
 _RUNTIME_FACADE_CRATE = Path("runtime/molt-runtime")
-_RUNTIME_SOURCE_FEATURE_MARKERS = frozenset(
-    {"default-features", "no-default-features"}
-)
+_RUNTIME_SOURCE_FEATURE_MARKERS = frozenset({"default-features", "no-default-features"})
 
 
 def _stored_fingerprint_matches_source_metadata(
@@ -366,8 +367,8 @@ def _runtime_artifact_fingerprint_matches(
         return True
     if stored_fingerprint is None:
         return False
-    artifact_digest = stored_fingerprint.get("artifact_sha256")
-    if not isinstance(artifact_digest, str) or not artifact_digest:
+    stored_content_identity = stored_fingerprint.get("artifact_content_identity")
+    if not isinstance(stored_content_identity, dict):
         return False
     artifact_identity = stored_fingerprint.get("artifact_identity")
     if isinstance(artifact_identity, dict) and (
@@ -375,8 +376,8 @@ def _runtime_artifact_fingerprint_matches(
     ):
         return True
     try:
-        return _sha256_file(artifact) == artifact_digest
-    except OSError:
+        return artifact_content_identity(artifact) == stored_content_identity
+    except (OSError, StaticArchiveIdentityError):
         return False
 
 
