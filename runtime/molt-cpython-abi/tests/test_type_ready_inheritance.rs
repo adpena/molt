@@ -18,10 +18,11 @@
 mod support;
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
+use molt_cpython_abi::hooks::{BorrowedHandleResult, DictOp, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
-use std::os::raw::{c_char, c_int};
+use std::ffi::c_void;
+use std::os::raw::{c_char, c_int, c_ulong};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -85,6 +86,22 @@ unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHan
     }
 }
 
+unsafe extern "C" fn fake_dict_len(dict_bits: u64) -> usize {
+    dicts()
+        .as_ref()
+        .and_then(|all| all.get(&dict_bits))
+        .map_or(0, HashMap::len)
+}
+
+unsafe extern "C" fn fake_dict_op(op: u32, dict_bits: u64) -> u64 {
+    if op == DictOp::Clear as u32
+        && let Some(dict) = dicts().as_mut().and_then(|all| all.get_mut(&dict_bits))
+    {
+        dict.clear();
+    }
+    0
+}
+
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     let bytes = if data.is_null() {
         Vec::new()
@@ -144,6 +161,8 @@ fn init() -> MutexGuard<'static, ()> {
     hooks.alloc_dict = fake_alloc_dict;
     hooks.dict_set = fake_dict_set;
     hooks.dict_get = fake_dict_get;
+    hooks.dict_len = fake_dict_len;
+    hooks.dict_op = fake_dict_op;
     hooks.alloc_str = fake_alloc_str;
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
@@ -576,6 +595,248 @@ fn ready_preserves_explicit_tp_free() {
         molt_cpython_abi::api::memory::PyMem_Free as FreeFn as usize,
         "an explicit tp_free must not be overwritten by the default"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (3b) type.tp_is_gc — the canonical metatype GC predicate.
+//
+// numpy's `dtypemeta_is_gc` reads `PyType_Type.tp_is_gc` directly and invokes
+// it as an indirect function pointer.  CPython 3.12's `type_is_gc` returns the
+// candidate type object's HEAPTYPE bit.  A NULL canonical slot is not an
+// optional feature in this path: wasm dispatches table entry zero and traps.
+// ---------------------------------------------------------------------------
+
+type IsGcFn = unsafe extern "C" fn(*mut PyObject) -> c_int;
+
+fn is_gc_addr(f: Option<IsGcFn>) -> usize {
+    f.map(|g| g as IsGcFn as usize).unwrap_or(0)
+}
+
+#[test]
+fn type_is_gc_matches_cpython_heaptype_predicate() {
+    let _guard = init();
+    let type_type = &raw mut PyType_Type;
+    let is_gc = unsafe { (*type_type).tp_is_gc }
+        .expect("PyType_Type.tp_is_gc must publish a callable table entry");
+
+    let mut static_type: PyTypeObject = unsafe { std::mem::zeroed() };
+    static_type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC;
+    assert_eq!(
+        unsafe { is_gc((&mut static_type as *mut PyTypeObject).cast()) },
+        0,
+        "HAVE_GC alone does not make a static type object GC-tracked"
+    );
+
+    let mut heap_type: PyTypeObject = unsafe { std::mem::zeroed() };
+    heap_type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE;
+    assert_eq!(
+        unsafe { is_gc((&mut heap_type as *mut PyTypeObject).cast()) },
+        Py_TPFLAGS_HEAPTYPE as c_int,
+        "CPython type_is_gc returns the HEAPTYPE bit without normalization"
+    );
+    assert_eq!(unsafe { is_gc(ptr::null_mut()) }, 0);
+}
+
+#[test]
+fn metatype_inherits_canonical_type_is_gc_callable() {
+    let _guard = init();
+    let type_type = &raw mut PyType_Type;
+    let canonical = unsafe { (*type_type).tp_is_gc };
+    assert_ne!(
+        is_gc_addr(canonical),
+        0,
+        "PyType_Type.tp_is_gc must never encode the null wasm table slot"
+    );
+
+    let mut meta: PyTypeObject = unsafe { std::mem::zeroed() };
+    meta.tp_name = c"numpy._DTypeMeta".as_ptr();
+    meta.tp_basicsize = std::mem::size_of::<PyTypeObject>() as Py_ssize_t;
+    meta.tp_base = type_type;
+    assert_eq!(unsafe { ready(&mut meta) }, 0);
+    assert_eq!(
+        is_gc_addr(meta.tp_is_gc),
+        is_gc_addr(canonical),
+        "a metatype based on PyType_Type must inherit the canonical tp_is_gc callable"
+    );
+    assert_eq!(meta.tp_traverse.map(|f| f as usize), unsafe {
+        (*type_type).tp_traverse.map(|f| f as usize)
+    });
+    assert_eq!(meta.tp_clear.map(|f| f as usize), unsafe {
+        (*type_type).tp_clear.map(|f| f as usize)
+    });
+}
+
+unsafe extern "C" fn collect_type_reference(op: *mut PyObject, arg: *mut c_void) -> c_int {
+    let visited = unsafe { &mut *arg.cast::<Vec<usize>>() };
+    visited.push(op as usize);
+    0
+}
+
+#[test]
+fn type_traverse_visits_exact_heap_type_ownership_family() {
+    let _guard = init();
+    let mut heap: PyHeapTypeObject = unsafe { std::mem::zeroed() };
+    heap.ht_type.tp_flags = Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
+    let mut references: [PyObject; 6] = unsafe { std::mem::zeroed() };
+    let mut acyclic_heap_references: [PyObject; 4] = unsafe { std::mem::zeroed() };
+    heap.ht_type.tp_dict = &raw mut references[0];
+    heap.ht_type.tp_cache = &raw mut references[1];
+    heap.ht_type.tp_mro = &raw mut references[2];
+    heap.ht_type.tp_bases = &raw mut references[3];
+    heap.ht_type.tp_base = (&raw mut references[4]).cast::<PyTypeObject>();
+    heap.ht_module = &raw mut references[5];
+    heap.ht_name = &raw mut acyclic_heap_references[0];
+    heap.ht_slots = &raw mut acyclic_heap_references[1];
+    heap.ht_qualname = &raw mut acyclic_heap_references[2];
+    heap._spec_cache.getitem = &raw mut acyclic_heap_references[3];
+    let mut visited: Vec<usize> = Vec::new();
+    let traverse = unsafe { PyType_Type.tp_traverse }.expect("type_traverse installed");
+    assert_eq!(
+        unsafe {
+            traverse(
+                (&raw mut heap.ht_type).cast(),
+                collect_type_reference as *mut c_void,
+                (&raw mut visited).cast(),
+            )
+        },
+        0
+    );
+    assert_eq!(
+        visited,
+        references
+            .iter_mut()
+            .map(|reference| reference as *mut PyObject as usize)
+            .collect::<Vec<_>>()
+    );
+    for reference in &mut acyclic_heap_references {
+        assert!(
+            !visited.contains(&(reference as *mut PyObject as usize)),
+            "CPython 3.12 does not visit acyclic name/slots/qualname strings or the non-owning specialization cache"
+        );
+    }
+}
+
+#[test]
+fn type_clear_breaks_heap_type_mro_and_module_cycles() {
+    let _guard = init();
+    let mut heap: PyHeapTypeObject = unsafe { std::mem::zeroed() };
+    heap.ht_type.tp_flags = Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_VALID_VERSION_TAG;
+    heap.ht_type.tp_version_tag = 77;
+    let mut mro: PyObject = unsafe { std::mem::zeroed() };
+    let mut module: PyObject = unsafe { std::mem::zeroed() };
+    let mut retained: [PyObject; 6] = unsafe { std::mem::zeroed() };
+    mro.ob_refcnt = 2;
+    module.ob_refcnt = 2;
+    heap.ht_type.tp_mro = &raw mut mro;
+    heap.ht_module = &raw mut module;
+    heap.ht_name = &raw mut retained[0];
+    heap.ht_slots = &raw mut retained[1];
+    heap.ht_qualname = &raw mut retained[2];
+    heap.ht_type.tp_cache = &raw mut retained[3];
+    heap.ht_type.tp_bases = &raw mut retained[4];
+    heap.ht_type.tp_base = (&raw mut retained[5]).cast::<PyTypeObject>();
+    heap._spec_cache.getitem = &raw mut retained[0];
+    let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
+    assert!(!dict.is_null());
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                dict,
+                c"owned".as_ptr(),
+                (&raw mut Py_None).cast(),
+            )
+        },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_Size(dict) },
+        1
+    );
+    heap.ht_type.tp_dict = dict;
+    let clear = unsafe { PyType_Type.tp_clear }.expect("type_clear installed");
+    assert_eq!(unsafe { clear((&raw mut heap.ht_type).cast()) }, 0);
+    assert!(heap.ht_type.tp_mro.is_null());
+    assert!(heap.ht_module.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_Size(dict) },
+        0
+    );
+    assert_eq!(heap.ht_type.tp_dict, dict);
+    assert_eq!(heap.ht_name, &raw mut retained[0]);
+    assert_eq!(heap.ht_slots, &raw mut retained[1]);
+    assert_eq!(heap.ht_qualname, &raw mut retained[2]);
+    assert_eq!(heap.ht_type.tp_cache, &raw mut retained[3]);
+    assert_eq!(heap.ht_type.tp_bases, &raw mut retained[4]);
+    assert_eq!(heap.ht_type.tp_base, (&raw mut retained[5]).cast());
+    assert!(heap._spec_cache.getitem.is_null());
+    assert_eq!(heap.ht_type.tp_version_tag, 0);
+    assert_eq!(heap.ht_type.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+    assert_eq!(mro.ob_refcnt, 1);
+    assert_eq!(module.ob_refcnt, 1);
+}
+
+static WATCH_CALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static WATCH_CHILD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CHILD_INVALID_BEFORE_BASE_CALLBACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "C" fn type_watch_callback(type_: *mut PyObject) -> c_int {
+    WATCH_CALLBACKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let child = WATCH_CHILD.load(std::sync::atomic::Ordering::SeqCst) as *mut PyTypeObject;
+    if !child.is_null()
+        && unsafe { (*child).tp_flags } & Py_TPFLAGS_VALID_VERSION_TAG == 0
+        && unsafe { (*type_.cast::<PyTypeObject>()).tp_flags } & Py_TPFLAGS_VALID_VERSION_TAG != 0
+    {
+        CHILD_INVALID_BEFORE_BASE_CALLBACK.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    0
+}
+
+#[test]
+fn type_modified_recurses_subclasses_and_notifies_312_watchers() {
+    let _guard = init();
+    WATCH_CALLBACKS.store(0, std::sync::atomic::Ordering::SeqCst);
+    CHILD_INVALID_BEFORE_BASE_CALLBACK.store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut base: PyHeapTypeObject = unsafe { std::mem::zeroed() };
+    let mut child: PyHeapTypeObject = unsafe { std::mem::zeroed() };
+    for (index, heap) in [&mut base, &mut child].into_iter().enumerate() {
+        heap.ht_type.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        heap.ht_type.tp_flags =
+            Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_READY | Py_TPFLAGS_VALID_VERSION_TAG;
+        heap.ht_type.tp_version_tag = 100 + index as c_ulong;
+        heap._spec_cache.getitem = (&raw mut heap.ht_type).cast();
+    }
+    child.ht_type.tp_base = &raw mut base.ht_type;
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&raw mut child.ht_type) },
+        0
+    );
+    WATCH_CHILD.store(
+        (&raw mut child.ht_type) as usize,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let watcher =
+        unsafe { molt_cpython_abi::api::typeobj::PyType_AddWatcher(Some(type_watch_callback)) };
+    assert!(watcher >= 0);
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::typeobj::PyType_Watch(watcher, (&raw mut base.ht_type).cast())
+        },
+        0
+    );
+    unsafe { molt_cpython_abi::api::typeobj::PyType_Modified(&raw mut base.ht_type) };
+    assert_eq!(WATCH_CALLBACKS.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(CHILD_INVALID_BEFORE_BASE_CALLBACK.load(std::sync::atomic::Ordering::SeqCst));
+    for heap in [&base, &child] {
+        assert_eq!(heap.ht_type.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+        assert_eq!(heap.ht_type.tp_version_tag, 0);
+        assert!(heap._spec_cache.getitem.is_null());
+    }
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::typeobj::PyType_ClearWatcher(watcher) },
+        0
+    );
+    WATCH_CHILD.store(0, std::sync::atomic::Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

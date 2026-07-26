@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Any, cast
 
-from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.capability_spec import _dedupe_preserve_order
-from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
+from molt.cli.compiler_metadata import (
+    _compiler_clean_pathspec_source_state,
+    _rustc_version,
+)
 from molt.cli.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
@@ -23,6 +24,7 @@ from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
 )
+from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.wasm_artifact import is_valid_wasm_binary
 
 
@@ -138,10 +140,6 @@ def _refresh_runtime_fingerprint_metadata(
     _write_cached_json_object(path, payload)
 
 
-_RUNTIME_FACADE_CRATE = Path("runtime/molt-runtime")
-_RUNTIME_SOURCE_FEATURE_MARKERS = frozenset({"default-features", "no-default-features"})
-
-
 def _stored_fingerprint_matches_source_metadata(
     stored_fingerprint: dict[str, Any] | None,
     *,
@@ -213,14 +211,19 @@ def _runtime_fingerprint(
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
+    rustc_info = _rustc_version()
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
-    meta += "build-schema:runtime-feature-profile-v4\n"
+    meta += "build-schema:runtime-source-config-toolchain-v4\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
     meta += f"artifacts:{artifact_selection.source_identity}\n"
+    meta += f"rustc:{rustc_info}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    rustc_info = _rustc_version()
-    source_state = _compiler_clean_source_state(project_root)
+    source_paths = runtime_source_paths(project_root, runtime_features=feature_list)
+    source_state = _compiler_clean_pathspec_source_state(
+        project_root,
+        tuple(os.fspath(path) for path in source_paths),
+    )
     if _stored_fingerprint_matches_clean_source_state(
         stored_fingerprint,
         source_state=source_state,
@@ -235,7 +238,6 @@ def _runtime_fingerprint(
             "meta_digest": meta_digest,
             "source_state": source_state,
         }
-    source_paths = _runtime_source_paths(project_root, runtime_features=feature_list)
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
@@ -266,70 +268,6 @@ def _runtime_fingerprint(
         "meta_digest": meta_digest,
         "source_state": source_state,
     }
-
-
-def _runtime_manifest_cache_stamp(project_root: Path) -> str:
-    runtime_root = project_root / "runtime"
-    manifests = [
-        project_root / "Cargo.toml",
-        project_root / "Cargo.lock",
-        runtime_root / "Cargo.toml",
-        runtime_root / "Cargo.lock",
-    ]
-    manifests.extend(sorted(runtime_root.glob("*/Cargo.toml")))
-    metadata = _hash_source_tree_metadata(manifests, project_root)
-    return metadata[0] if metadata is not None else "metadata-unavailable"
-
-
-def _runtime_source_features(runtime_features: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                feature
-                for feature in runtime_features
-                if feature and feature not in _RUNTIME_SOURCE_FEATURE_MARKERS
-            }
-        )
-    )
-
-
-@functools.lru_cache(maxsize=256)
-def _runtime_source_paths_cached(
-    project_root_str: str,
-    runtime_features: tuple[str, ...],
-    manifest_cache_stamp: str,
-) -> tuple[Path, ...]:
-    del manifest_cache_stamp
-    project_root = Path(project_root_str)
-    return tuple(
-        _cargo_crate_source_closure(
-            project_root=project_root,
-            crate_root=project_root / _RUNTIME_FACADE_CRATE,
-            crate_features=runtime_features,
-            extra_source_paths=(
-                project_root / "Cargo.toml",
-                project_root / "Cargo.lock",
-                project_root / "runtime/Cargo.toml",
-                project_root / "runtime/Cargo.lock",
-                project_root / "runtime/build_support",
-                project_root / "runtime/molt-cpython-abi/shims",
-            ),
-        )
-    )
-
-
-def _runtime_source_paths(
-    project_root: Path,
-    runtime_features: tuple[str, ...] = (),
-) -> list[Path]:
-    normalized_features = _runtime_source_features(runtime_features)
-    return list(
-        _runtime_source_paths_cached(
-            os.fspath(project_root),
-            normalized_features,
-            _runtime_manifest_cache_stamp(project_root),
-        )
-    )
 
 
 def _artifact_needs_rebuild(

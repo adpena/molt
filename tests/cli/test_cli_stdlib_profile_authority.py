@@ -190,7 +190,6 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         runtime_build._ensure_runtime_lib_ready,
         runtime_build._ensure_native_runtime_lib_ready_before_link,
         runtime_build._ensure_runtime_lib,
-        runtime_build._ensure_runtime_wasm_artifact,
         runtime_build._ensure_runtime_wasm,
         runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen,
     ]

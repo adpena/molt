@@ -171,7 +171,7 @@ def _run_capture(
 
 
 def _iteration_mode() -> bool:
-    """Frontier-iteration lane: fast runtime profile + lattice reuse.
+    """Frontier-iteration lane: fast, exact runtime generation identity.
 
     Set ``MOLT_WITNESS_ITERATION=1`` for import/frontier debugging cycles.
     A run in this mode is loudly stamped and its PASS is NOT acceptance
@@ -338,7 +338,7 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
 def _build_wasm(build_dir: Path) -> Path:
     env = _build_env()
     if _iteration_mode():
-        # Frontier-iteration lane (doctrine 74 law 3 + doc 75 lever #1): the
+        # Frontier-iteration lane: the
         # ship profile's fat-LTO/cgu=1 runtime codegen neither ships nor
         # changes a deterministic import/frontier outcome, so iteration cycles
         # use the landed fast knobs. `setdefault` keeps an operator pin
@@ -346,7 +346,6 @@ def _build_wasm(build_dir: Path) -> Path:
         # the result is stamped non-acceptance below and cannot count as the
         # exit-criteria PASS (M05).
         env.setdefault("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
-        env.setdefault("MOLT_BUILD_REUSE_COMPATIBLE", "1")
     # Diagnostics-only (no build-output change): attribute the hidden
     # frontend-lowering + runtime-wasm-rebuild wall and capture the
     # cross-session lowering-cache hit_rate on the witness path. Absolute file

@@ -63,6 +63,7 @@ from molt.cli.models import (
     _ExternalNativeCapiSymbol,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
+    _FrontendWorkerResourceDecision,
     _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.target_python import TargetPythonVersion
@@ -82,6 +83,7 @@ cli_module_graph = importlib.import_module("molt.cli.module_graph")
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
+ATOMIC_IO = importlib.import_module("molt.cli.atomic_io")
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 BACKEND_IR = importlib.import_module("molt.cli.backend_ir")
@@ -469,7 +471,7 @@ def test_write_importer_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     importer_path = tmp_path / f"{cli_module_import_scanner.IMPORTER_MODULE_NAME}.py"
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -478,7 +480,7 @@ def test_write_importer_module_avoids_rewriting_identical_content(
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     cli._write_importer_module(tmp_path)
     cli._write_importer_module(tmp_path)
@@ -3574,7 +3576,7 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expected_path = tmp_path / "namespace_demo_pkg.py"
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_destinations: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -3583,7 +3585,7 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
             replaced_destinations.append(destination)
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
@@ -9913,6 +9915,9 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
     )
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND, "llvm_linker_candidates", lambda *_args, **_kwargs: ()
+    )
 
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -9986,13 +9991,15 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
-    def fake_candidates(*names: str, **_kwargs: object) -> tuple[Path, ...]:
-        return (Path("/usr/bin/ld.lld"),) if "ld.lld" in names else ()
-
     monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", str(clang))
     monkeypatch.setattr(
-        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", fake_candidates
+        NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_args, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND,
+        "llvm_linker_candidates",
+        lambda *_args, **_kwargs: (Path("/usr/bin/ld.lld"),),
     )
 
     link_plan = cli._build_native_link_plan(
@@ -11996,7 +12003,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = LOCKFILES._lock_check_cache_path(tmp_path, "uv")
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_sources: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -12004,7 +12011,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     inputs = {"uv.lock": {"size": 1, "mtime_ns": 2}}
     LOCKFILES._write_lock_check_cache(tmp_path, "uv", inputs)
@@ -12330,48 +12337,28 @@ def test_backend_source_paths_are_feature_aware() -> None:
     }
 
     common = {
-        "runtime/molt-backend/src",
-        "runtime/molt-backend/Cargo.toml",
-        "runtime/molt-backend/build.rs",
-        "runtime/molt-ir/src",
-        "runtime/molt-ir/Cargo.toml",
-        "runtime/molt-ir/build.rs",
-        "runtime/molt-passes/src",
-        "runtime/molt-passes/Cargo.toml",
-        "runtime/molt-passes/build.rs",
-        "runtime/molt-tir/src",
-        "runtime/molt-tir/Cargo.toml",
-        "runtime/molt-tir/build.rs",
+        "runtime/molt-backend",
+        "runtime/molt-ir",
+        "runtime/molt-passes",
+        "runtime/molt-tir",
         "Cargo.toml",
         "Cargo.lock",
     }
     codegen_abi = {
-        "runtime/molt-codegen-abi/src",
-        "runtime/molt-codegen-abi/Cargo.toml",
-        "runtime/molt-codegen-abi/build.rs",
+        "runtime/molt-codegen-abi",
     }
     native_leaf = {
-        "runtime/molt-backend-native/src",
-        "runtime/molt-backend-native/Cargo.toml",
-        "runtime/molt-backend-native/build.rs",
+        "runtime/molt-backend-native",
     }
     wasm_leaf = {
-        "runtime/molt-backend-wasm/src",
-        "runtime/molt-backend-wasm/Cargo.toml",
-        "runtime/molt-backend-wasm/build.rs",
-        "runtime/molt-wasm-facts/src",
-        "runtime/molt-wasm-facts/Cargo.toml",
-        "runtime/molt-wasm-facts/build.rs",
+        "runtime/molt-backend-wasm",
+        "runtime/molt-wasm-facts",
     }
     rust_leaf = {
-        "runtime/molt-backend-rust/src",
-        "runtime/molt-backend-rust/Cargo.toml",
-        "runtime/molt-backend-rust/build.rs",
+        "runtime/molt-backend-rust",
     }
     luau_leaf = {
-        "runtime/molt-backend-luau/src",
-        "runtime/molt-backend-luau/Cargo.toml",
-        "runtime/molt-backend-luau/build.rs",
+        "runtime/molt-backend-luau",
     }
 
     assert native_paths == common | native_leaf | codegen_abi
@@ -12379,8 +12366,8 @@ def test_backend_source_paths_are_feature_aware() -> None:
     assert rust_paths == common | rust_leaf
     assert luau_paths == common | luau_leaf
     assert llvm_paths == common | native_leaf | codegen_abi
-    assert "runtime/molt-backend-wasm/src" not in native_paths
-    assert "runtime/molt-backend-native/src" not in wasm_paths
+    assert "runtime/molt-backend-wasm" not in native_paths
+    assert "runtime/molt-backend-native" not in wasm_paths
 
 
 def test_backend_bin_path_is_cached(
@@ -16731,8 +16718,13 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
 def test_resolve_frontend_parallel_module_workers_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cli_frontend_parallel,
+        "_memory_bounded_worker_count_from_samples",
+        lambda **_kwargs: 6,
+    )
     monkeypatch.delenv("MOLT_FRONTEND_PARALLEL_MODULES", raising=False)
-    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 0
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 6
 
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 0
@@ -16741,7 +16733,7 @@ def test_resolve_frontend_parallel_module_workers_from_env(
     assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 3
 
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "auto")
-    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() >= 2
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 6
 
 
 def test_module_dependency_layers_preserve_topological_determinism() -> None:
@@ -19001,7 +18993,7 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     assert captured == [frozenset({"json", "socket"})]
 
 
-def test_prepare_backend_runtime_context_closes_native_exports_for_every_wasm_kind(
+def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -19035,21 +19027,6 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_every_wasm_ki
     )
     captured: list[tuple[str, frozenset[str], frozenset[str], frozenset[str]]] = []
 
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_ensure_runtime_wasm_artifact",
-        lambda runtime_state, *, reloc, **kwargs: (
-            captured.append(
-                (
-                    "reloc" if reloc else "shared",
-                    frozenset(cast(set[str], kwargs["resolved_modules"])),
-                    frozenset(cast(set[str], kwargs["required_link_features"])),
-                    frozenset(cast(set[str], kwargs["required_exports"])),
-                )
-            )
-            or True
-        ),
-    )
     monkeypatch.setattr(
         cli_backend_compile,
         "_ensure_runtime_wasm_both",
@@ -19087,22 +19064,8 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_every_wasm_ki
 
     assert failure is None
     assert runtime_context is not None
-    assert runtime_context.ensure_runtime_wasm_shared({"molt_add"}) is True
-    assert runtime_context.ensure_runtime_wasm_reloc() is True
     assert runtime_context.ensure_runtime_wasm_both({"molt_sub"}) is True
     assert captured == [
-        (
-            "shared",
-            frozenset({"asyncio", "ssl"}),
-            frozenset({"molt_gpu_primitives"}),
-            frozenset({"molt_add", "PyTuple_New"}),
-        ),
-        (
-            "reloc",
-            frozenset({"asyncio", "ssl"}),
-            frozenset({"molt_gpu_primitives"}),
-            frozenset({"PyTuple_New"}),
-        ),
         (
             "both",
             frozenset({"asyncio", "ssl"}),
@@ -19275,21 +19238,18 @@ def test_prepare_backend_dispatch_ensures_both_and_uses_shared_runtime_layout(
         ),
     )
 
-    def ensure_shared(required=None):
-        calls.append(("shared", frozenset(required) if required else None))
-        return True
-
-    def ensure_reloc(required=None):
-        calls.append(("reloc", frozenset(required) if required else None))
-        runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
-        return True
-
     def ensure_both(required=None):
         calls.append(("both", frozenset(required) if required else None))
         runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
         runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
+        runtime_state.runtime_wasm_selected = runtime_wasm
+        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
         return True
 
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+    )
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -19298,10 +19258,7 @@ def test_prepare_backend_dispatch_ensures_both_and_uses_shared_runtime_layout(
         linked=True,
         deterministic=False,
         profile="dev",
-        runtime_state=cli._RuntimeArtifactState(
-            runtime_wasm=runtime_wasm,
-            runtime_reloc_wasm=runtime_reloc_wasm,
-        ),
+        runtime_state=runtime_state,
         runtime_cargo_profile="dev-fast",
         cargo_timeout=1.0,
         molt_root=tmp_path,
@@ -19311,8 +19268,6 @@ def test_prepare_backend_dispatch_ensures_both_and_uses_shared_runtime_layout(
         phase_starts={},
         json_output=True,
         backend_daemon_config_digest=None,
-        ensure_runtime_wasm_shared=ensure_shared,
-        ensure_runtime_wasm_reloc=ensure_reloc,
         ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
@@ -19360,19 +19315,17 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         lambda path: 3074 if path == runtime_reloc_wasm else 3867,
     )
 
-    def ensure_shared(required=None):
-        calls.append(("shared", frozenset(required) if required else None))
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-        return True
-
-    def ensure_reloc(required=None):
-        calls.append(("reloc", frozenset(required) if required else None))
-        return True
-
     def ensure_both(required=None):
         calls.append(("both", frozenset(required) if required else None))
+        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+        runtime_state.runtime_wasm_selected = runtime_wasm
+        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
         return True
 
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+    )
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -19381,10 +19334,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         linked=True,
         deterministic=False,
         profile="dev",
-        runtime_state=cli._RuntimeArtifactState(
-            runtime_wasm=runtime_wasm,
-            runtime_reloc_wasm=runtime_reloc_wasm,
-        ),
+        runtime_state=runtime_state,
         runtime_cargo_profile="dev-fast",
         cargo_timeout=1.0,
         molt_root=tmp_path,
@@ -19394,8 +19344,6 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         phase_starts={},
         json_output=True,
         backend_daemon_config_digest=None,
-        ensure_runtime_wasm_shared=ensure_shared,
-        ensure_runtime_wasm_reloc=ensure_reloc,
         ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
@@ -19404,7 +19352,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
 
     assert err is None
     assert prepared is not None
-    assert ("shared", None) in calls
+    assert calls == [("both", None)]
     assert prepared.backend_env is not None
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "3867"
 
@@ -19450,21 +19398,18 @@ def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layou
         ),
     )
 
-    def ensure_shared(required=None):
-        calls.append(("shared", frozenset(required) if required else None))
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-        return True
-
-    def ensure_reloc(required=None):
-        calls.append(("reloc", frozenset(required) if required else None))
-        return True
-
     def ensure_both(required=None):
         calls.append(("both", frozenset(required) if required else None))
         runtime_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-shared")
         runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0fresh-reloc")
+        runtime_state.runtime_wasm_selected = runtime_wasm
+        runtime_state.runtime_reloc_wasm_selected = runtime_reloc_wasm
         return True
 
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+    )
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -19473,10 +19418,7 @@ def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layou
         linked=True,
         deterministic=False,
         profile="dev",
-        runtime_state=cli._RuntimeArtifactState(
-            runtime_wasm=runtime_wasm,
-            runtime_reloc_wasm=runtime_reloc_wasm,
-        ),
+        runtime_state=runtime_state,
         runtime_cargo_profile="dev-fast",
         cargo_timeout=1.0,
         molt_root=tmp_path,
@@ -19486,8 +19428,6 @@ def test_prepare_backend_dispatch_refreshes_existing_shared_runtime_before_layou
         phase_starts={},
         json_output=True,
         backend_daemon_config_digest=None,
-        ensure_runtime_wasm_shared=ensure_shared,
-        ensure_runtime_wasm_reloc=ensure_reloc,
         ensure_runtime_wasm_both=ensure_both,
         resolved_modules=frozenset(),
         ir={"functions": []},
@@ -19511,7 +19451,11 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-    stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
+    stored_fingerprint = {
+        "artifact_content_identity": RUNTIME_FINGERPRINTS.artifact_content_identity(
+            runtime_wasm
+        )
+    }
     verification_calls: list[tuple[frozenset[str], str]] = []
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
@@ -19661,7 +19605,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
         / "molt_runtime-test.wasm"
     )
     built_src.parent.mkdir(parents=True, exist_ok=True)
-    built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
+    built_src.write_bytes(b"\0asm\x01\0\0\0")
     captured_env: dict[str, str] = {}
 
     monkeypatch.setattr(
@@ -19676,6 +19620,21 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
         cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(
+        RUNTIME_BUILD.wasm_toolchain,
+        "rust_target_libdir",
+        lambda _target: tmp_path / "rust-target-libdir",
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: cli_wasm_toolchain.WasmLinkerIdentity(
+            path=tmp_path / "wasm-ld.exe",
+            version="22.1.0",
+            wasi_sdk_llvm_version="22.1.0",
+            sha256="ab" * 32,
+        ),
+    )
 
     def fake_runtime_build(**kwargs):
         captured_env.update(kwargs["env"])
@@ -19775,6 +19734,23 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
         destination.write_bytes((canonical_wasm_root / asset).read_bytes())
 
 
+def _prepared_runtime_pair_state(
+    shared: Path, reloc: Path
+) -> cli._RuntimeArtifactState:
+    manifest = shared.with_name("molt_runtime.generation.json")
+    expected_identity = shared.with_name("runtime-pair.expected.json")
+    manifest.write_text("{}\n", encoding="utf-8")
+    expected_identity.write_text("{}\n", encoding="utf-8")
+    return cli._RuntimeArtifactState(
+        runtime_wasm=shared,
+        runtime_reloc_wasm=reloc,
+        runtime_wasm_generation=manifest,
+        runtime_wasm_selected=shared,
+        runtime_reloc_wasm_selected=reloc,
+        runtime_wasm_expected_identity=expected_identity,
+    )
+
+
 def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -19797,6 +19773,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     monkeypatch.setattr(
         cli_non_native_output, "_validate_wasm_structural", lambda path: None
     )
+    runtime_state = _prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm)
 
     common_kwargs = {
         "is_rust_transpile": False,
@@ -19808,10 +19785,8 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "linked_output_path": linked_wasm,
         "output_artifact": output_wasm,
         "json_output": True,
-        "runtime_wasm": runtime_wasm,
-        "runtime_reloc_wasm": runtime_reloc_wasm,
-        "ensure_runtime_wasm_shared": lambda *_args, **_kwargs: True,
-        "ensure_runtime_wasm_reloc": lambda required=None: True,
+        "runtime_state": runtime_state,
+        "ensure_runtime_wasm_both": lambda required=None: True,
         "runtime_cargo_profile": "dev-fast",
         "molt_root": tmp_path,
         "split_runtime": False,
@@ -19826,14 +19801,20 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert first is not None
     assert len(link_calls) == 1
     first_cmd = link_calls[0]
-    assert first_cmd[:6] == [
+    assert first_cmd[:4] == [
         sys.executable,
         str(wasm_link),
         "--runtime",
         str(runtime_reloc_wasm),
-        "--input",
-        str(output_wasm),
     ]
+    assert first_cmd[first_cmd.index("--runtime-shared") + 1] == str(runtime_wasm)
+    assert first_cmd[first_cmd.index("--runtime-generation") + 1] == str(
+        runtime_state.runtime_wasm_generation
+    )
+    assert first_cmd[first_cmd.index("--runtime-expected-identity") + 1] == str(
+        runtime_state.runtime_wasm_expected_identity
+    )
+    assert first_cmd[first_cmd.index("--input") + 1] == str(output_wasm)
     linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
     assert linked_output_arg.parent == linked_wasm.parent
     assert linked_output_arg.name.startswith(f".{linked_wasm.name}.")
@@ -19869,7 +19850,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     vfs_support = tmp_path / "wasm" / "molt_vfs_browser.js"
     vfs_support.parent.mkdir(parents=True, exist_ok=True)
     vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
-    shared_required: list[frozenset[str]] = []
+    pair_required: list[frozenset[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch)
 
@@ -19895,12 +19876,10 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: (
-            shared_required.append(frozenset(required or set())) or True
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: (
+            pair_required.append(frozenset(required or set())) or True
         ),
-        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
@@ -19911,9 +19890,9 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     assert err is None
     assert prepared is not None
     # The production code now forwards the required runtime exports
-    # (discovered by _collect_wasm_module_import_names) to the shared
-    # runtime ensure callback so the runtime build includes them.
-    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
+    # (discovered by _collect_wasm_module_import_names) to the atomic pair
+    # authority so both members are built from the same closed export set.
+    assert pair_required == [frozenset({"alloc", "molt_fast_list_append"})]
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
@@ -19972,7 +19951,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
             ),
         )
     )
-    shared_required: list[frozenset[str]] = []
+    pair_required: list[frozenset[str]] = []
     link_calls: list[list[str]] = []
     link_fingerprint_inputs: list[Path] = []
 
@@ -20040,12 +20019,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: (
-            shared_required.append(frozenset(required or set())) or True
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: (
+            pair_required.append(frozenset(required or set())) or True
         ),
-        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -20056,7 +20033,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     assert err is None
     assert prepared is not None
-    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
+    assert pair_required == [frozenset({"alloc", "molt_fast_list_append"})]
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
     assert link_cmd[link_cmd.index("--deploy-runtime") + 1] == str(runtime_wasm)
@@ -20230,10 +20207,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
         ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
@@ -20395,8 +20369,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         )
     )
     link_calls: list[list[str]] = []
-    reloc_required: list[set[str]] = []
-    shared_required: list[set[str]] = []
+    pair_required: list[set[str]] = []
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
@@ -20433,13 +20406,9 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: (
-            shared_required.append(set(required or ())) or True
-        ),
-        ensure_runtime_wasm_reloc=lambda required=None: (
-            reloc_required.append(set(required or ())) or True
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: (
+            pair_required.append(set(required or ())) or True
         ),
         runtime_cargo_profile="release-fast",
         molt_root=tmp_path,
@@ -20464,8 +20433,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert libcxx_provider in native_inputs
     assert libcxxabi_provider in native_inputs
     assert libunwind_provider in native_inputs
-    assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
-    assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
+    assert pair_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
         path for path in native_inputs if "external_static_packages" in path.parts
     ]
@@ -20551,8 +20519,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         )
     )
     link_calls: list[list[str]] = []
-    reloc_required: list[set[str]] = []
-    shared_required: list[set[str]] = []
+    pair_required: list[set[str]] = []
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
@@ -20583,13 +20550,9 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: (
-            shared_required.append(set(required or ())) or True
-        ),
-        ensure_runtime_wasm_reloc=lambda required=None: (
-            reloc_required.append(set(required or ())) or True
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: (
+            pair_required.append(set(required or ())) or True
         ),
         runtime_cargo_profile="release-fast",
         molt_root=tmp_path,
@@ -20612,8 +20575,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
-    assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
-    assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
+    assert pair_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
         path for path in native_inputs if "external_static_packages" in path.parts
     ]
@@ -20844,10 +20806,8 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=False,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -20929,10 +20889,8 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         linked_output_path=linked_wasm,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_wasm,
-        runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_state=_prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm),
+        ensure_runtime_wasm_both=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -20944,7 +20902,47 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     assert prepared is not None
 
 
-def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
+def _install_generated_runtime_export_signatures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def generated_signatures(
+        _path: Path, *, export_names: set[str]
+    ) -> dict[str, dict[str, object]]:
+        signatures: dict[str, dict[str, object]] = {}
+        for name in export_names:
+            canonical_name = (
+                RUNTIME_WASM_VALIDATION.wasm_split_runtime_import_name_for_export(name)
+                or RUNTIME_WASM_VALIDATION.wasm_runtime_import_name(name)
+                or name
+            )
+            expected = (
+                RUNTIME_WASM_VALIDATION.WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES.get(
+                    canonical_name
+                )
+            )
+            if expected is None:
+                generated = RUNTIME_WASM_VALIDATION.wasm_import_signature(canonical_name)
+                if generated is None:
+                    continue
+                params, results = generated
+                expected = {
+                    "params": list(params),
+                    "result": "nil" if not results else ", ".join(results),
+                }
+            signatures[name] = expected
+        return signatures
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_VALIDATION,
+        "_wasm_export_function_signatures",
+        generated_signatures,
+    )
+
+
+def test_runtime_wasm_exports_satisfy_required_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_generated_runtime_export_signatures(monkeypatch)
     wasm = tmp_path / "runtime.wasm"
     payload = bytearray()
     payload.extend(b"\x02")  # export count
@@ -20968,7 +20966,9 @@ def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
 
 def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _install_generated_runtime_export_signatures(monkeypatch)
     def _encode_varuint(value: int) -> bytes:
         out = bytearray()
         while True:
@@ -21343,6 +21343,15 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             stdlib_min_cost_scale=0.0,
             enabled=False,
             reason="disabled",
+            worker_resources=_FrontendWorkerResourceDecision(
+                workers=0,
+                selection_source="test_disabled",
+                requested_workers=0,
+                cpu_count=1,
+                total_memory_bytes=None,
+                available_memory_bytes=None,
+                memory_ceiling=0,
+            ),
         ),
         frontend_parallel_layers=[],
         frontend_parallel_worker_timings=[],
@@ -21482,10 +21491,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
                 runtime_state=kwargs["prepared_backend_setup"].runtime_state,
                 backend_bin=kwargs["prepared_backend_setup"].backend_bin,
                 runtime_lib=runtime_lib,
-                runtime_wasm=None,
-                runtime_reloc_wasm=None,
-                ensure_runtime_wasm_shared=lambda required=None: True,
-                ensure_runtime_wasm_reloc=lambda required=None: True,
                 ensure_runtime_wasm_both=lambda required=None: True,
                 cache_setup=kwargs["prepared_backend_setup"].cache_setup,
                 cache_hit=False,
@@ -21614,8 +21619,6 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         phase_starts={},
         json_output=True,
         backend_daemon_config_digest=None,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
         ensure_runtime_wasm_both=lambda required=None: True,
         resolved_modules=frozenset(),
         ir={"functions": []},
@@ -23328,7 +23331,9 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
 
     rc = cli_commands._deploy(
         "cloudflare",
@@ -26779,7 +26784,7 @@ def test_atomic_write_text_failure_preserves_existing_destination(
         del src, dst
         raise OSError("simulated atomic replace failure")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated atomic replace failure"):
         cli._atomic_write_text(cache_path, '{"version":1}\n')
@@ -26799,7 +26804,7 @@ def test_atomic_write_bytes_failure_preserves_existing_destination(
         del src, dst
         raise OSError("simulated atomic replace failure")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated atomic replace failure"):
         cli._atomic_write_bytes(artifact_path, b"new")
@@ -26811,7 +26816,7 @@ def test_atomic_write_bytes_failure_preserves_existing_destination(
 def test_publication_sidecar_writers_use_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_paths: list[tuple[Path, Path]] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -26820,7 +26825,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
         replaced_paths.append((src_path, dst_path))
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     wasm_path = tmp_path / "wasm" / "app.wasm"
     wasm_path.parent.mkdir(parents=True)
@@ -26884,7 +26889,7 @@ def test_persisted_json_and_sync_writers_use_atomic_temp_siblings(
     artifact_path = tmp_path / "cache" / "artifact.o"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_bytes(b"artifact")
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_paths: list[tuple[Path, Path]] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -26895,7 +26900,7 @@ def test_persisted_json_and_sync_writers_use_atomic_temp_siblings(
         replaced_paths.append((src_path, dst_path))
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     cli._write_cached_json_object(cache_path, {"version": 1, "hash": "abc"})
     cli._write_artifact_sync_payload(sync_path, {"version": 1, "source_key": "abc"})
@@ -26918,7 +26923,7 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache_path = tmp_path / "cache" / "source.json"
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
     replaced_sources: list[Path] = []
 
     def record_replace(src: object, dst: object) -> None:
@@ -26926,7 +26931,7 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "a"})
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "b"})
@@ -26985,14 +26990,14 @@ def test_write_cached_artifact_uses_unique_atomic_temp_sibling(
 ) -> None:
     cache_path = tmp_path / "vendor" / "artifact.whl"
     replaced_sources: list[Path] = []
-    original_replace = os.replace
+    original_replace = ATOMIC_IO._durable_replace
 
     def record_replace(src: object, dst: object) -> None:
         assert Path(dst) == cache_path
         replaced_sources.append(Path(src))
         original_replace(src, dst)
 
-    monkeypatch.setattr(os, "replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO, "_durable_replace", record_replace)
 
     cli._write_cached_artifact(cache_path, b"first")
     cli._write_cached_artifact(cache_path, b"second")

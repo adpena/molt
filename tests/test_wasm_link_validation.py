@@ -1,4 +1,3 @@
-import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -408,7 +407,10 @@ def test_find_wasm_ld_uses_attested_toolchain_authority(
     )
 
     assert wasm_link._find_wasm_ld() == str(identity.path)
-    assert "version=22.1.7 wasi-sdk-llvm=22.1.0" in capsys.readouterr().err
+    diagnostic = capsys.readouterr().err
+    assert "version=22.1.7" in diagnostic
+    assert "sha256=unattested" in diagnostic
+    assert "wasi-sdk-llvm=22.1.0" in diagnostic
 
 
 def _write_wasm_ld_output(cmd: list[str], data: bytes) -> Path | None:
@@ -488,150 +490,7 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     )
 
 
-# Integrity pins are keyed by the runtime fingerprint meta digest (one slot
-# per resolved profile/feature identity); any 64-hex value is a valid key.
-_PIN_KEY_A = "ab" * 32
-_PIN_KEY_B = "cd" * 32
-
-
-def _write_keyed_pin(runtime: Path, digest: str, key: str = _PIN_KEY_A) -> Path:
-    pin = runtime.with_name(f"{runtime.name}.{key}.sha256")
-    pin.write_text(digest + "\n", encoding="utf-8")
-    return pin
-
-
-def test_verify_runtime_integrity_accepts_matching_sidecar_hash(tmp_path: Path) -> None:
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    _write_keyed_pin(runtime, hashlib.sha256(runtime.read_bytes()).hexdigest())
-
-    wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_accepts_pin_of_another_build_identity(
-    tmp_path: Path,
-) -> None:
-    """Different-profile pins coexist; the artifact must match its own pin."""
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    _write_keyed_pin(runtime, "0" * 64, key=_PIN_KEY_A)
-    _write_keyed_pin(
-        runtime,
-        hashlib.sha256(runtime.read_bytes()).hexdigest(),
-        key=_PIN_KEY_B,
-    )
-
-    wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
-    pin = runtime.with_name(f"{runtime.name}.{_PIN_KEY_A}.sha256")
-    reads: list[Path] = []
-
-    def read_pins(path: Path) -> dict[Path, str]:
-        reads.append(path)
-        return {pin: "0" * 64} if len(reads) == 1 else {pin: digest}
-
-    monkeypatch.setattr(
-        wasm_link,
-        "_RUNTIME_INTEGRITY_PAIR_ATTEMPTS",
-        2,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        wasm_link,
-        "_read_runtime_integrity_pins",
-        read_pins,
-        raising=True,
-    )
-    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
-
-    wasm_link._verify_runtime_integrity(runtime)
-
-    assert reads == [runtime, runtime]
-
-
-def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    _write_keyed_pin(runtime, "0" * 64)
-    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
-
-    with pytest.raises(SystemExit, match="sidecar"):
-        wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_env_cannot_bypass_mismatched_sidecar_hash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    _write_keyed_pin(runtime, "0" * 64)
-    monkeypatch.setenv("MOLT_SKIP_RUNTIME_VERIFY", "1")
-    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
-
-    with pytest.raises(SystemExit, match="sidecar"):
-        wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_rejects_missing_sidecar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = tmp_path / "custom_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
-
-    with pytest.raises(SystemExit, match="publish the matching keyed .sha256 sidecar"):
-        wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_accepts_writer_published_pin(tmp_path: Path) -> None:
-    """Round trip: the CLI writer's keyed pin satisfies the linker check and
-    deterministically supersedes every stale contract for the same filename."""
-    from molt.cli.runtime_wasm_validation import _write_runtime_wasm_integrity_sidecar
-
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    legacy = runtime.with_name(f"{runtime.name}.sha256")
-    legacy.write_text("0" * 64 + "\n", encoding="utf-8")
-    stale_keyed = runtime.with_name(f"{runtime.name}.{'b' * 64}.sha256")
-    stale_keyed.write_text("0" * 64 + "\n", encoding="utf-8")
-
-    _write_runtime_wasm_integrity_sidecar(runtime, integrity_key=_PIN_KEY_A)
-
-    assert not legacy.exists()
-    assert not stale_keyed.exists()
-    assert list(tmp_path.glob(f"{runtime.name}.*.sha256")) == [
-        runtime.with_name(f"{runtime.name}.{_PIN_KEY_A}.sha256")
-    ]
-    wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_verify_runtime_integrity_rejects_retired_single_slot_sidecar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An unkeyed `<artifact>.sha256` pin is dead; even a matching hash fails."""
-    runtime = tmp_path / "molt_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    legacy = runtime.with_name(f"{runtime.name}.sha256")
-    legacy.write_text(
-        hashlib.sha256(runtime.read_bytes()).hexdigest() + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
-
-    with pytest.raises(SystemExit, match="no keyed integrity sidecar"):
-        wasm_link._verify_runtime_integrity(runtime)
-
-
-def test_runtime_integrity_has_no_hardcoded_hash_authority() -> None:
+def test_runtime_generation_has_no_hardcoded_hash_authority() -> None:
     root = Path(__file__).resolve().parents[1]
     assert not hasattr(wasm_link, "RUNTIME_EXPECTED_HASHES")
     assert not (root / "tools" / "update_runtime_hash.py").exists()
@@ -6088,6 +5947,13 @@ def _build_data_address_export_runtime(addresses: dict[str, int]) -> bytes:
     names = list(addresses)
     sections: list[tuple[int, bytes]] = []
 
+    # Address-bearing exports are valid only when they point inside a declared
+    # linear memory.  Model the wasm-ld runtime shape instead of relying on a
+    # parser-only synthetic module with no memory authority.
+    highest_address = max(addresses.values(), default=0)
+    memory_pages = max(1, highest_address // 0x10000 + 1)
+    sections.append((5, write_varuint(1) + b"\x00" + write_varuint(memory_pages)))
+
     global_payload = bytearray()
     global_payload.extend(write_varuint(len(names)))
     for name in names:
@@ -6107,6 +5973,26 @@ def _build_data_address_export_runtime(addresses: dict[str, int]) -> bytes:
     sections.append((7, bytes(export_payload)))
 
     return wasm_link._build_sections(sections)
+
+
+def _build_single_data_export_shape(
+    name: str,
+    *,
+    value_type: int = 0x7F,
+    mutable: int = 0,
+    initializer: bytes | None = None,
+    export_kind: int = 0x03,
+) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    initializer = initializer or (b"\x41" + write_varuint(0x2E0000) + b"\x0b")
+    global_payload = write_varuint(1) + bytes((value_type, mutable)) + initializer
+    export_payload = (
+        write_varuint(1)
+        + wasm_link._write_string(name)
+        + bytes((export_kind,))
+        + write_varuint(0)
+    )
+    return wasm_link._build_sections([(6, global_payload), (7, export_payload)])
 
 
 def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -> bytes:
@@ -6219,14 +6105,121 @@ def _alias_segment_addresses(alias_bytes: bytes) -> dict[int, int]:
 
 def test_runtime_exported_data_symbol_addresses_reads_global_exports() -> None:
     runtime = _build_data_address_export_runtime(
-        {"Py_None": 0x2E1688, "Py_False": 0x2E1680, "PyExc_ValueError": 0x2E1500}
+        {
+            "Py_None": 0x2E1688,
+            "_Py_FalseStruct": 0x2E1680,
+            "PyExc_ValueError": 0x2E1500,
+        }
     )
     addresses = wasm_link._runtime_exported_data_symbol_addresses(runtime)
     assert addresses == {
         "Py_None": 0x2E1688,
-        "Py_False": 0x2E1680,
+        "_Py_FalseStruct": 0x2E1680,
         "PyExc_ValueError": 0x2E1500,
     }
+
+
+def test_runtime_exported_data_symbol_addresses_normalizes_full_split_family() -> None:
+    canonical_symbols = wasm_link.wasm_cpython_abi_data_symbol_names()
+    assert "PyType_Type" in canonical_symbols
+    expected = {
+        name: 0x200000 + index * 8 for index, name in enumerate(canonical_symbols)
+    }
+    split_exports: dict[str, int] = {}
+    for name, address in expected.items():
+        split_name = wasm_link.wasm_split_runtime_export_name_for_import(name)
+        assert split_name is not None, name
+        split_exports[split_name] = address
+
+    runtime = _build_data_address_export_runtime(split_exports)
+    assert wasm_link._runtime_exported_data_symbol_addresses(runtime) == expected
+
+
+def test_runtime_exported_data_symbol_addresses_rejects_alias_drift() -> None:
+    runtime = _build_data_address_export_runtime(
+        {"PyType_Type": 0x2E0000, "molt_PyType_Type": 0x2F0000}
+    )
+    with pytest.raises(ValueError, match="conflicting addresses.*PyType_Type"):
+        wasm_link._runtime_exported_data_symbol_addresses(runtime)
+
+
+def test_runtime_export_validation_counts_data_address_globals(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.runtime_wasm_validation import (
+        _runtime_wasm_missing_exports,
+        _split_runtime_wasm_missing_exports,
+    )
+
+    canonical = tmp_path / "runtime-reloc.wasm"
+    canonical.write_bytes(_build_data_address_export_runtime({"PyType_Type": 0x2E0000}))
+    split = tmp_path / "runtime-shared.wasm"
+    split.write_bytes(
+        _build_data_address_export_runtime({"molt_PyType_Type": 0x2E0000})
+    )
+
+    assert _runtime_wasm_missing_exports(canonical, {"PyType_Type"}) == set()
+    assert _split_runtime_wasm_missing_exports(split, {"PyType_Type"}) == set()
+
+
+@pytest.mark.parametrize(
+    ("split", "export_name"),
+    [(False, "PyType_Type"), (True, "molt_PyType_Type")],
+)
+def test_runtime_export_validation_rejects_function_impersonating_data(
+    tmp_path: Path, split: bool, export_name: str
+) -> None:
+    from molt.cli.runtime_wasm_validation import (
+        _runtime_wasm_missing_exports,
+        _split_runtime_wasm_missing_exports,
+    )
+
+    runtime = tmp_path / "runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module(export_name))
+    missing = (
+        _split_runtime_wasm_missing_exports(runtime, {"PyType_Type"})
+        if split
+        else _runtime_wasm_missing_exports(runtime, {"PyType_Type"})
+    )
+    assert missing
+
+
+@pytest.mark.parametrize(
+    ("split", "export_name"),
+    [(False, "molt_add"), (True, "molt_add")],
+)
+def test_runtime_export_validation_rejects_global_impersonating_function(
+    tmp_path: Path, split: bool, export_name: str
+) -> None:
+    from molt.cli.runtime_wasm_validation import (
+        _runtime_wasm_missing_exports,
+        _split_runtime_wasm_missing_exports,
+    )
+
+    runtime = tmp_path / "runtime.wasm"
+    runtime.write_bytes(_build_single_data_export_shape(export_name))
+    missing = (
+        _split_runtime_wasm_missing_exports(runtime, {"molt_add"})
+        if split
+        else _runtime_wasm_missing_exports(runtime, {"molt_add"})
+    )
+    assert missing
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "diagnostic"),
+    [
+        ({"mutable": 1}, "immutable"),
+        ({"value_type": 0x7E, "initializer": b"\x42\x01\x0b"}, "i32 type"),
+        ({"initializer": b"\x23\x00\x0b"}, "i32.const initializer"),
+    ],
+)
+def test_runtime_data_address_exports_fail_closed_on_noncanonical_global_shape(
+    kwargs: dict[str, object], diagnostic: str
+) -> None:
+    runtime = _build_single_data_export_shape("PyType_Type", **kwargs)
+    with pytest.raises(ValueError, match=diagnostic):
+        wasm_link._runtime_exported_data_symbol_addresses(runtime)
 
 
 def test_split_runtime_data_alias_points_at_deploy_runtime_addresses(

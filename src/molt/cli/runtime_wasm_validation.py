@@ -1,97 +1,34 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from pathlib import Path
 import shutil
 
 from molt._wasm_runtime_exports import (
     wasm_runtime_missing_required_exports,
+    wasm_runtime_required_export_symbol_kinds,
     wasm_split_runtime_missing_required_exports,
+    wasm_split_runtime_required_export_symbol_kinds,
+    wasm_split_runtime_import_name_for_export,
 )
-from molt.cli.atomic_io import _atomic_write_text
+from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES,
+    wasm_import_signature,
+    wasm_runtime_import_name,
+)
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.file_hashing import _sha256_file
 from molt.wasm_artifact import (
-    _collect_wasm_export_names,
     _wasm_import_minima,
+    _read_wasm_memory_min_bytes,
     has_nonempty_wasm_code_section,
     inspect_wasm_binary,
+    read_wasm_defined_globals,
+    read_wasm_exports,
+    _wasm_export_function_signatures,
+    WASM_EXTERN_KIND_FUNCTION,
+    WASM_EXTERN_KIND_GLOBAL,
+    WASM_VALUE_TYPE_I32,
 )
-
-
-_RUNTIME_WASM_INTEGRITY_KEY_RE = re.compile(r"\A[0-9a-f]{64}\Z")
-
-
-def _runtime_wasm_integrity_key(fingerprint: Mapping[str, object]) -> str:
-    """Return the integrity-pin key for one resolved runtime build identity.
-
-    The key is the runtime fingerprint ``meta_digest`` (cargo profile, target,
-    rustflags, and resolved feature set), computed by
-    ``molt.cli.runtime_fingerprints._runtime_fingerprint``. It is the single
-    authority for build identity, so builds with different resolved
-    profile/feature identities publish to distinct pin slots instead of
-    contending for one.
-    """
-    meta_digest = fingerprint.get("meta_digest")
-    if (
-        not isinstance(meta_digest, str)
-        or _RUNTIME_WASM_INTEGRITY_KEY_RE.match(meta_digest) is None
-    ):
-        raise ValueError(
-            "Runtime fingerprint carries no meta_digest integrity key: "
-            f"{meta_digest!r}"
-        )
-    return meta_digest
-
-
-def _runtime_wasm_integrity_sidecar_path(path: Path, integrity_key: str) -> Path:
-    """Keyed integrity-pin slot ``<artifact>.<integrity_key>.sha256``."""
-    if _RUNTIME_WASM_INTEGRITY_KEY_RE.match(integrity_key) is None:
-        raise ValueError(f"Invalid runtime integrity key: {integrity_key!r}")
-    return path.with_name(f"{path.name}.{integrity_key}.sha256")
-
-
-def _runtime_wasm_integrity_pin_paths(path: Path) -> tuple[Path, ...]:
-    """Every keyed integrity pin published for ``path``, sorted by name."""
-    prefix = f"{path.name}."
-    suffix = ".sha256"
-    pins = [
-        candidate
-        for candidate in path.parent.glob(f"{path.name}.*{suffix}")
-        if _RUNTIME_WASM_INTEGRITY_KEY_RE.match(
-            candidate.name[len(prefix) : -len(suffix)]
-        )
-        is not None
-    ]
-    return tuple(sorted(pins))
-
-
-def _runtime_wasm_has_matching_integrity_pin(path: Path) -> bool:
-    """Return true when one keyed integrity pin matches ``path`` exactly."""
-    try:
-        digest = _sha256_file(path)
-    except OSError:
-        return False
-    for sidecar in _runtime_wasm_integrity_pin_paths(path):
-        try:
-            raw = sidecar.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
-        if match is not None and match.group(1).lower() == digest:
-            return True
-    return False
-
-
-def _write_runtime_wasm_integrity_sidecar(path: Path, *, integrity_key: str) -> None:
-    digest = _sha256_file(path)
-    sidecar = _runtime_wasm_integrity_sidecar_path(path, integrity_key)
-    _atomic_write_text(sidecar, f"{digest}\n")
-    for stale_sidecar in path.parent.glob(f"{path.name}.*.sha256"):
-        if stale_sidecar != sidecar:
-            stale_sidecar.unlink(missing_ok=True)
-    path.with_name(f"{path.name}.sha256").unlink(missing_ok=True)
 
 
 def _validate_wasm_structural(path: Path) -> str | None:
@@ -102,12 +39,13 @@ def _validate_wasm_structural(path: Path) -> str | None:
             "artifact reuse is disabled until the validator is provisioned"
         )
     try:
+        resolved = path.resolve()
         result = _run_completed_command(
-            [exe, "validate", str(path)],
+            [exe, "validate", str(resolved)],
             capture_output=True,
             timeout=60,
             env=None,
-            cwd=path.parent,
+            cwd=resolved.parent,
             memory_guard_prefix="MOLT_BUILD",
         )
     except Exception as exc:
@@ -184,20 +122,124 @@ def _runtime_wasm_missing_exports(
     path: Path,
     required_exports: set[str] | frozenset[str] | None,
 ) -> set[str]:
-    export_names = _collect_wasm_export_names(path)
-    if not export_names and required_exports:
-        return {
-            name if name.startswith("molt_") else f"molt_{name}"
-            for name in required_exports
-        }
-    return wasm_runtime_missing_required_exports(export_names, required_exports)
+    available = _runtime_wasm_typed_export_names(
+        path,
+        wasm_runtime_required_export_symbol_kinds(required_exports),
+    )
+    if not available and required_exports:
+        return wasm_runtime_missing_required_exports((), required_exports)
+    return wasm_runtime_missing_required_exports(available, required_exports)
 
 
 def _split_runtime_wasm_missing_exports(
     path: Path,
     required_exports: set[str] | frozenset[str] | None,
 ) -> set[str]:
-    export_names = _collect_wasm_export_names(path)
-    if not export_names and required_exports:
+    available = _runtime_wasm_typed_export_names(
+        path,
+        wasm_split_runtime_required_export_symbol_kinds(required_exports),
+    )
+    if not available and required_exports:
         return wasm_split_runtime_missing_required_exports((), required_exports)
-    return wasm_split_runtime_missing_required_exports(export_names, required_exports)
+    return wasm_split_runtime_missing_required_exports(available, required_exports)
+
+
+def _runtime_wasm_typed_export_names(
+    path: Path,
+    expected_symbol_kinds: Mapping[str, str],
+) -> set[str]:
+    """Return only exports whose WebAssembly shape satisfies generated authority.
+
+    Function obligations require function exports. Data obligations require a
+    *defined*, immutable i32 global initialized directly by ``i32.const``; an
+    imported, mutable, wrong-valtype, or ``global.get``-initialized global is
+    not an address receipt and therefore cannot satisfy the contract.
+    """
+    try:
+        exports = read_wasm_exports(path)
+        globals_by_index = {
+            global_.index: global_ for global_ in read_wasm_defined_globals(path)
+        }
+        function_names = {
+            name for name, kind in expected_symbol_kinds.items() if kind == "function"
+        }
+        function_signatures = _wasm_export_function_signatures(
+            path, export_names=function_names
+        )
+        memory_min_bytes = _read_wasm_memory_min_bytes(path)
+    except (OSError, UnicodeDecodeError, ValueError, IndexError):
+        return set()
+    exports_by_name: dict[str, tuple[int, int] | None] = {}
+    for export in exports:
+        identity = (export.kind, export.index)
+        previous = exports_by_name.get(export.name)
+        if previous is not None and previous != identity:
+            exports_by_name[export.name] = None
+        elif export.name not in exports_by_name:
+            exports_by_name[export.name] = identity
+    available: set[str] = set()
+    expected_data_identities: dict[tuple[int, int], str] = {}
+    for name, expected_kind in expected_symbol_kinds.items():
+        if expected_kind != "data":
+            continue
+        identity = exports_by_name.get(name)
+        if identity is None:
+            continue
+        previous = expected_data_identities.get(identity)
+        if previous is not None and previous != name:
+            # Two public data names cannot silently project the same address;
+            # canonical/split renames are exclusive publication modes.
+            exports_by_name[previous] = None
+            exports_by_name[name] = None
+        else:
+            expected_data_identities[identity] = name
+    for name, expected_kind in expected_symbol_kinds.items():
+        identity = exports_by_name.get(name)
+        if identity is None:
+            continue
+        kind, index = identity
+        if expected_kind == "function":
+            canonical_name = (
+                wasm_split_runtime_import_name_for_export(name)
+                or wasm_runtime_import_name(name)
+                or name
+            )
+            expected_signature = (
+                WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES.get(canonical_name)
+            )
+            if expected_signature is None:
+                generated = wasm_import_signature(canonical_name)
+                if generated is not None:
+                    params, results = generated
+                    expected_signature = {
+                        "params": list(params),
+                        "result": "nil" if not results else ", ".join(results),
+                    }
+            if (
+                kind == WASM_EXTERN_KIND_FUNCTION
+                and expected_signature is not None
+                and function_signatures.get(name) == expected_signature
+            ):
+                available.add(name)
+            continue
+        if expected_kind != "data" or kind != WASM_EXTERN_KIND_GLOBAL:
+            continue
+        global_ = globals_by_index.get(index)
+        address = (
+            None
+            if global_ is None or global_.i32_const is None
+            else global_.i32_const & 0xFFFF_FFFF
+        )
+        if (
+            global_ is not None
+            and global_.value_type == WASM_VALUE_TYPE_I32
+            and not global_.mutable
+            and global_.initializer_opcode == 0x41
+            and global_.i32_const_canonical
+            and address is not None
+            and address != 0
+            and memory_min_bytes is not None
+            and address < memory_min_bytes
+        ):
+            available.add(name)
+    return available

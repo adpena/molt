@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -39,7 +40,6 @@ from molt.cli.artifact_state import (
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_json,
-    _atomic_write_bytes,
     _atomic_write_text,
 )
 from molt.cli.build_locks import _build_lock
@@ -92,6 +92,13 @@ from molt.cli.runtime_fingerprints import (
     _runtime_fingerprint_metadata_needs_refresh,
     _write_runtime_fingerprint,
 )
+from molt.cli.runtime_build_identity import (
+    RuntimeBuildIdentity,
+    RuntimePairMemberPlan,
+    RuntimeToolchainContentManifest,
+    provision_runtime_toolchain_content_manifest,
+    resolve_runtime_build_pair_identities,
+)
 from molt.cli.runtime_paths import (
     _cargo_profile_dir,
     _cargo_target_root,
@@ -104,11 +111,8 @@ from molt.cli.static_archive_identity import (
     artifact_content_identity,
 )
 from molt.cli.runtime_wasm_cache import (
-    _build_reuse_compatible_enabled,
-    _hydrate_runtime_wasm_from_compatible_cache,
-    _hydrate_runtime_wasm_from_shared_cache,
-    _publish_runtime_wasm_to_shared_cache,
-    _runtime_wasm_compat_digest,
+    hydrate_runtime_wasm_pair_from_shared_cache,
+    publish_runtime_wasm_pair_to_shared_cache,
 )
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
@@ -121,11 +125,14 @@ from molt.cli.runtime_wasm_validation import (
     _split_runtime_wasm_exports_satisfy,
     _split_runtime_wasm_missing_exports,
     _runtime_wasm_exports_satisfy,
-    _runtime_wasm_has_matching_integrity_pin,
-    _runtime_wasm_integrity_key,
     _runtime_wasm_missing_exports,
     _shared_runtime_wasm_validation_error,
-    _write_runtime_wasm_integrity_sidecar,
+)
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmGeneration,
+    publish_runtime_wasm_generation,
+    read_runtime_wasm_generation,
+    runtime_wasm_generation_path,
 )
 from molt.cli.wasm_link_args import (
     wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
@@ -140,8 +147,8 @@ from molt.cli.models import (
 )
 from molt.wasm_artifact import (
     inspect_wasm_binary as _inspect_wasm_binary,
-    rename_wasm_export_names,
     strip_wasm_publication_sections,
+    transform_wasm_publication_file,
 )
 
 
@@ -1288,81 +1295,6 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     )
 
 
-def _ensure_runtime_wasm_artifact(
-    runtime_state: _RuntimeArtifactState,
-    *,
-    reloc: bool,
-    json_output: bool,
-    cargo_profile: str,
-    cargo_timeout: float | None,
-    project_root: Path,
-    simd_enabled: bool,
-    freestanding: bool,
-    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
-    resolved_modules: set[str] | frozenset[str] | None = None,
-    required_link_features: frozenset[str] = frozenset(),
-    required_exports: set[str] | frozenset[str] | None = None,
-) -> bool:
-    runtime_path = (
-        runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
-    )
-    requested_exports = (
-        None if required_exports is None else frozenset(required_exports)
-    )
-    requested_features = frozenset(required_link_features)
-    ready_export_sets = (
-        runtime_state.runtime_reloc_wasm_ready_export_sets
-        if reloc
-        else runtime_state.runtime_wasm_ready_export_sets
-    )
-    ready_feature_keys = (
-        runtime_state.runtime_reloc_wasm_ready_feature_keys
-        if reloc
-        else runtime_state.runtime_wasm_ready_feature_keys
-    )
-    ready_key = (requested_features, requested_exports)
-    ready_all_exports_key = (requested_features, None)
-    ready = (
-        runtime_state.runtime_reloc_wasm_ready
-        if reloc
-        else runtime_state.runtime_wasm_ready
-    )
-    if runtime_path is None:
-        return True
-    if ready_key in ready_feature_keys or ready_all_exports_key in ready_feature_keys:
-        return True
-    if not requested_features and (
-        None in ready_export_sets or requested_exports in ready_export_sets
-    ):
-        return True
-    if ready and required_exports is None and not requested_features:
-        ready_export_sets.add(None)
-        ready_feature_keys.add(ready_key)
-        return True
-    if not _ensure_runtime_wasm(
-        runtime_path,
-        reloc=reloc,
-        json_output=json_output,
-        cargo_profile=cargo_profile,
-        cargo_timeout=cargo_timeout,
-        project_root=project_root,
-        simd_enabled=simd_enabled,
-        freestanding=freestanding,
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-        required_link_features=required_link_features,
-        required_exports=required_exports,
-    ):
-        return False
-    if reloc:
-        runtime_state.runtime_reloc_wasm_ready = True
-    else:
-        runtime_state.runtime_wasm_ready = True
-    ready_export_sets.add(requested_exports)
-    ready_feature_keys.add(ready_key)
-    return True
-
-
 def _prebuild_runtime_wasm(
     *,
     project_root: Path,
@@ -1402,65 +1334,43 @@ def _prebuild_runtime_wasm(
         target_triple=None,
         stdlib_profile=concrete_stdlib_profile,
     )
-    artifacts: dict[str, str] = {}
-    if kind == "both":
-        # V1 dual-compile burn-down: a single combined `cargo rustc --lib`
-        # selects exactly staticlib+cdylib at Cargo level, so the reloc and shared
-        # artifacts are produced from ONE compile instead of two (and no rlib).
-        if (
-            runtime_state.runtime_wasm is None
-            or runtime_state.runtime_reloc_wasm is None
-        ):
-            return fail("Runtime wasm shared/reloc artifact path is unavailable.")
-        if verbose and not json_output:
-            print(
-                "Prebuilding runtime wasm shared+reloc (single combined compile): "
-                f"{runtime_state.runtime_wasm}",
-                file=sys.stderr,
-            )
-        if not _ensure_runtime_wasm_both(
-            runtime_state,
-            json_output=json_output,
-            cargo_profile=cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=project_root,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-            stdlib_profile=concrete_stdlib_profile,
-            resolved_modules=None,
-            required_exports=None,
-        ):
-            return fail("Runtime wasm prebuild failed.")
-        artifacts["shared"] = os.fspath(runtime_state.runtime_wasm)
-        artifacts["reloc"] = os.fspath(runtime_state.runtime_reloc_wasm)
-    else:
-        label = "shared" if kind == "shared" else "reloc"
-        reloc = kind == "reloc"
-        runtime_path = (
-            runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
+    if runtime_state.runtime_wasm is None or runtime_state.runtime_reloc_wasm is None:
+        return fail("Runtime wasm shared/reloc artifact path is unavailable.")
+    if verbose and not json_output:
+        print(
+            "Prebuilding atomic runtime wasm shared+reloc generation: "
+            f"{runtime_state.runtime_wasm}",
+            file=sys.stderr,
         )
-        if runtime_path is None:
-            return fail(f"Runtime wasm {label} artifact path is unavailable.")
-        if verbose and not json_output:
-            print(
-                f"Prebuilding runtime wasm {label} artifact: {runtime_path}",
-                file=sys.stderr,
-            )
-        if not _ensure_runtime_wasm_artifact(
-            runtime_state,
-            reloc=reloc,
-            json_output=json_output,
-            cargo_profile=cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=project_root,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-            stdlib_profile=concrete_stdlib_profile,
-            resolved_modules=None,
-            required_exports=None,
-        ):
-            return fail(f"Runtime wasm {label} prebuild failed.")
-        artifacts[label] = os.fspath(runtime_path)
+    if not _ensure_runtime_wasm_both(
+        runtime_state,
+        json_output=json_output,
+        cargo_profile=cargo_profile,
+        cargo_timeout=cargo_timeout,
+        project_root=project_root,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=concrete_stdlib_profile,
+        resolved_modules=None,
+        required_exports=None,
+    ):
+        return fail("Runtime wasm pair prebuild failed.")
+    if (
+        runtime_state.runtime_wasm_selected is None
+        or runtime_state.runtime_reloc_wasm_selected is None
+        or runtime_state.runtime_wasm_generation is None
+    ):
+        return fail("Runtime wasm pair publication selected no immutable generation.")
+    all_artifacts = {
+        "shared": os.fspath(runtime_state.runtime_wasm_selected),
+        "reloc": os.fspath(runtime_state.runtime_reloc_wasm_selected),
+        "generation": os.fspath(runtime_state.runtime_wasm_generation),
+    }
+    artifacts = (
+        all_artifacts
+        if kind == "both"
+        else {kind: all_artifacts[kind], "generation": all_artifacts["generation"]}
+    )
     _emit_runtime_wasm_build_timings(json_output=json_output)
     if json_output:
         print(
@@ -2387,29 +2297,6 @@ def _link_runtime_staticlib_to_reloc_wasm(
     return True
 
 
-def _materialize_split_runtime_public_exports(
-    runtime_wasm: Path,
-    required_exports: set[str] | frozenset[str] | None,
-    *,
-    json_output: bool,
-) -> bool:
-    rename_map = wasm_split_runtime_export_rename_map(required_exports)
-    if not rename_map:
-        return True
-    try:
-        updated = rename_wasm_export_names(runtime_wasm.read_bytes(), rename_map)
-        if updated is not None:
-            _atomic_write_bytes(runtime_wasm, updated)
-    except (OSError, ValueError) as exc:
-        if not json_output:
-            print(
-                f"Failed to materialize split-runtime public exports: {exc}",
-                file=sys.stderr,
-            )
-        return False
-    return True
-
-
 def _runtime_exports_satisfy_for_mode(
     path: Path,
     required_exports: set[str] | frozenset[str] | None,
@@ -2465,6 +2352,109 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     staticlib_fingerprint: dict[str, Any] | None
 
 
+def _resolved_runtime_wasm_pair_identities(
+    root: Path,
+    shared_spec: _RuntimeWasmBuildSpec,
+    reloc_spec: _RuntimeWasmBuildSpec,
+    *,
+    toolchain_manifest: RuntimeToolchainContentManifest | None = None,
+) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
+    if (
+        shared_spec.cargo_profile != reloc_spec.cargo_profile
+        or shared_spec.fingerprint_features != reloc_spec.fingerprint_features
+        or shared_spec.cargo_rustflags != reloc_spec.cargo_rustflags
+    ):
+        raise ValueError("runtime shared/reloc specs do not form one resolved pair")
+    sysroot_raw = shared_spec.env.get("MOLT_WASI_SYSROOT") or shared_spec.env.get(
+        "WASI_SYSROOT"
+    )
+    linker = wasm_toolchain.resolve_wasm_linker()
+    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    wasi_libc = wasm_toolchain.wasm_wasi_libc_archive()
+    rust_builtins = wasm_toolchain.wasm_compiler_builtins_archive()
+    if (
+        not sysroot_raw
+        or linker is None
+        or policy.error is not None
+        or policy.printscan is None
+        or policy.builtins is None
+        or wasi_libc is None
+        or rust_builtins is None
+    ):
+        raise ValueError(
+            policy.error or "runtime WASM toolchain identity is incomplete"
+        )
+    preserve_debug = any(
+        marker in shared_spec.cargo_profile.lower() for marker in ("dev", "debug")
+    )
+    return resolve_runtime_build_pair_identities(
+        root,
+        env=shared_spec.env,
+        cargo_profile=shared_spec.cargo_profile,
+        target_triple="wasm32-wasip1",
+        runtime_features=shared_spec.fingerprint_features,
+        base_rustflags=shared_spec.cargo_rustflags,
+        producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
+        shared=RuntimePairMemberPlan(
+            kind="shared",
+            resolved_rustflags=shared_spec.fingerprint_rustflags,
+            link_args=tuple(shlex.split(shared_spec.link_flags)),
+            publication_transform="strip-final-link-metadata-v1",
+            preserve_debug=preserve_debug,
+        ),
+        reloc=RuntimePairMemberPlan(
+            kind="reloc",
+            resolved_rustflags=reloc_spec.fingerprint_rustflags,
+            link_args=tuple(shlex.split(reloc_spec.link_flags)),
+            publication_transform="relocatable-wasm-byte-identity-v1",
+            preserve_debug=preserve_debug,
+        ),
+        wasi_sysroot=Path(sysroot_raw),
+        wasm_linker=linker.path,
+        long_double_archive=policy.printscan,
+        builtins_archive=policy.builtins,
+        wasi_libc_archive=wasi_libc,
+        rust_builtins_archive=rust_builtins,
+        toolchain_manifest=toolchain_manifest,
+    )
+
+
+def _provision_runtime_wasm_toolchain_manifest(
+    spec: _RuntimeWasmBuildSpec,
+) -> RuntimeToolchainContentManifest:
+    sysroot_raw = spec.env.get("MOLT_WASI_SYSROOT") or spec.env.get("WASI_SYSROOT")
+    linker = wasm_toolchain.resolve_wasm_linker()
+    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    wasi_libc = wasm_toolchain.wasm_wasi_libc_archive()
+    rust_builtins = wasm_toolchain.wasm_compiler_builtins_archive()
+    if (
+        not sysroot_raw
+        or linker is None
+        or policy.error is not None
+        or policy.printscan is None
+        or policy.builtins is None
+        or wasi_libc is None
+        or rust_builtins is None
+    ):
+        raise ValueError(
+            policy.error or "runtime WASM toolchain identity is incomplete"
+        )
+    return provision_runtime_toolchain_content_manifest(
+        env=spec.env,
+        target_triple="wasm32-wasip1",
+        wasi_sysroot=Path(sysroot_raw),
+        wasm_linker=linker.path,
+        long_double_archive=policy.printscan,
+        builtins_archive=policy.builtins,
+        wasi_libc_archive=wasi_libc,
+        rust_builtins_archive=rust_builtins,
+    )
+
+
+def _runtime_wasm_toolchain_manifest_path(spec: _RuntimeWasmBuildSpec) -> Path:
+    return spec.target_root / ".molt" / "runtime-toolchain-content.wasm32-wasip1.json"
+
+
 def _compute_runtime_wasm_build_spec(
     root: Path,
     runtime_wasm: Path,
@@ -2501,6 +2491,9 @@ def _compute_runtime_wasm_build_spec(
     profile_dir = _cargo_profile_dir(cargo_profile)
     incremental_enabled = _runtime_wasm_incremental_enabled()
     env = _cargo_build_env()
+    _configure_wasm_cc_env(env)
+    _configure_wasi_sysroot_env(env)
+    _configure_wasm_long_double_env(env)
     if "CARGO_INCREMENTAL" not in os.environ:
         env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
     cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
@@ -2732,26 +2725,6 @@ def _ensure_runtime_wasm(
                     file=sys.stderr,
                 )
             return False
-    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if runtime_wasm.exists():
-            runtime_valid = (
-                _is_valid_runtime_wasm_artifact(runtime_wasm)
-                if reloc
-                else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
-            )
-            return (
-                runtime_valid
-                and _runtime_wasm_has_matching_integrity_pin(runtime_wasm)
-                and (
-                    not validate_exports
-                    or _runtime_exports_satisfy_for_mode(
-                        runtime_wasm,
-                        required_exports,
-                        reloc=reloc,
-                    )
-                )
-            )
     (
         requested_cargo_profile,
         cargo_profile,
@@ -2799,7 +2772,7 @@ def _ensure_runtime_wasm(
     # FAIL LOUD for the witness/CPython-ABI tier: when this reloc runtime links
     # numpy/scipy long double, the long-double formatter + compiler-rt builtins
     # archives MUST be resolvable. Check BEFORE any reuse/hydrate/build path (the
-    # shared-cache / compat-lattice / fingerprint-match reuse paths skip the
+    # generation-cache and intermediate-fingerprint reuse paths skip the
     # reloc link entirely) so a runtime that would relink the abort() stub and
     # trap at import can never be built OR served from cache. Micro / no-numpy
     # builds are unaffected (they degrade). The archive presence is folded into
@@ -2816,39 +2789,43 @@ def _ensure_runtime_wasm(
             if not json_output:
                 print(_archives.error, file=sys.stderr)
             return False
-    # V3 lattice index recorded alongside every published artifact: the
-    # profile-independent ABI identity so a later iteration-profile request can
-    # find this artifact as compatible-or-better (see runtime_wasm_cache).
-    _compat_key = {
-        "inputs_digest": fingerprint.get("inputs_digest"),
-        "compat_digest": _runtime_wasm_compat_digest(
-            target_triple="wasm32-wasip1",
-            rustflags=fingerprint_rustflags,
-            features=fingerprint_features,
-        ),
-        "cargo_profile": cargo_profile,
-    }
 
-    def _publish_runtime_integrity_pin() -> None:
+    def _finalize_runtime_publication() -> bool:
+        # Publication semantics derive only from the canonical Cargo profile;
+        # requested aliases cannot silently select different output bytes.
         preserve_debug = any(
-            marker in profile_name.lower()
-            for profile_name in (requested_cargo_profile, cargo_profile)
-            for marker in ("dev", "debug")
+            marker in cargo_profile.lower() for marker in ("dev", "debug")
         )
-        published = runtime_wasm.read_bytes()
-        stripped = _runtime_publication_bytes(
-            published,
-            reloc=reloc,
-            preserve_debug=preserve_debug,
+        started = time.perf_counter()
+        try:
+            metrics = transform_wasm_publication_file(
+                runtime_wasm,
+                rename_map=(
+                    {}
+                    if reloc
+                    else wasm_split_runtime_export_rename_map(required_exports)
+                ),
+                final_artifact=not reloc,
+                preserve_debug=preserve_debug,
+            )
+        except (OSError, ValueError) as exc:
+            if not json_output:
+                print(
+                    f"Runtime WASM publication transform failed: {exc}", file=sys.stderr
+                )
+            return False
+        _record_runtime_wasm_build_phase(
+            "publication_transform",
+            time.perf_counter() - started,
+            kind="reloc" if reloc else "shared",
+            mode="bounded_mmap",
+            detail=(
+                f"input={metrics.input_bytes} output={metrics.output_bytes} "
+                f"scanned={metrics.scanned_bytes} written={metrics.written_bytes} "
+                f"max_buffer={metrics.max_buffer_bytes} changed={metrics.changed}"
+            ),
         )
-        if stripped != published:
-            _atomic_write_bytes(runtime_wasm, stripped)
-        # One integrity-pin slot per resolved build identity: the fingerprint
-        # meta digest keys the sidecar so different-profile builds never
-        # contend for a single pinned hash.
-        _write_runtime_wasm_integrity_sidecar(
-            runtime_wasm, integrity_key=_runtime_wasm_integrity_key(fingerprint)
-        )
+        return True
 
     lock_suffix = "reloc" if reloc else "shared"
     lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.{lock_suffix}"
@@ -2867,6 +2844,10 @@ def _ensure_runtime_wasm(
             fingerprint_path,
             require_artifact_digest=True,
         )
+        if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+            # Only the pair entrypoint may honor skip after validating one
+            # complete generation against both trusted identities.
+            return False
         if (
             not needs_rebuild
             and (
@@ -2884,7 +2865,8 @@ def _ensure_runtime_wasm(
             )
         ):
             try:
-                _publish_runtime_integrity_pin()
+                if not _finalize_runtime_publication():
+                    return False
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_runtime_fingerprint(
                     fingerprint_path,
@@ -2894,7 +2876,7 @@ def _ensure_runtime_wasm(
             except OSError:
                 if not json_output:
                     print(
-                        "Failed to update runtime wasm integrity sidecar.",
+                        "Failed to update runtime wasm fingerprint metadata.",
                         file=sys.stderr,
                     )
                 return False
@@ -2931,18 +2913,14 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            # Validate only AFTER materialization.  The target-dir cdylib holds
+            # Validate only AFTER finalization. The target-dir cdylib holds
             # rustc's raw #[no_mangle] names while the shipped shared artifact
             # renames the CPython-ABI subset (for example `PyBool_Check` to
             # `molt_PyBool_Check`).  Rejecting the raw target before this step
             # made every combined compile fall through to a redundant second
             # cargo compile even though it had already produced the canonical
             # crate-type pair.
-            if not _materialize_split_runtime_public_exports(
-                runtime_wasm,
-                required_exports,
-                json_output=json_output,
-            ):
+            if not _finalize_runtime_publication():
                 return False
             reused_missing_exports = _runtime_missing_exports_for_mode(
                 runtime_wasm,
@@ -2958,7 +2936,6 @@ def _ensure_runtime_wasm(
                     )
                 return False
             try:
-                _publish_runtime_integrity_pin()
                 target_runtime_wasm_fingerprint_path.parent.mkdir(
                     parents=True,
                     exist_ok=True,
@@ -2982,95 +2959,6 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-
-        def _finalize_reused_runtime_wasm() -> bool:
-            # Shared reuse/hydration lands a validated artifact at
-            # ``runtime_wasm``; record the integrity pin + fingerprint sidecar so
-            # the normal fast-path recognizes it on the next call without a
-            # rebuild.
-            assert fingerprint is not None
-            try:
-                _publish_runtime_integrity_pin()
-                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(
-                    fingerprint_path,
-                    fingerprint,
-                    artifact=runtime_wasm,
-                )
-            except OSError:
-                if not json_output:
-                    print(
-                        "Failed to publish reused runtime wasm metadata.",
-                        file=sys.stderr,
-                    )
-                return False
-            return True
-
-        # Cross-session shared cache: the session-local target dir missed (a
-        # fresh session/worktree always starts cold), but a byte-identical
-        # runtime wasm for this exact content-addressed build identity may
-        # already sit in the session-independent shared cache. Reuse it instead
-        # of recompiling the entire runtime crate. The app.wasm build stays
-        # session-scoped; only this fixed runtime artifact is shared.
-        _shared_cache_validator = (
-            _is_valid_runtime_wasm_artifact
-            if reloc
-            else _is_valid_shared_runtime_wasm_artifact
-        )
-        if _hydrate_runtime_wasm_from_shared_cache(
-            dest=runtime_wasm,
-            fingerprint=fingerprint,
-            reloc=reloc,
-            is_valid=_shared_cache_validator,
-        ) and (
-            not validate_exports
-            or _runtime_exports_satisfy_for_mode(
-                runtime_wasm,
-                required_exports,
-                reloc=reloc,
-            )
-        ):
-            if _finalize_reused_runtime_wasm():
-                _record_runtime_wasm_build_phase(
-                    "cargo_compile",
-                    0.0,
-                    kind="reloc" if reloc else "shared",
-                    mode="shared_cache",
-                    detail="hydrated from session-independent shared cache",
-                )
-                return True
-
-        # V3 config-lattice reuse (opt-in): the exact-identity cache missed, but
-        # an iteration request may be served by a SAME-SOURCE artifact built at a
-        # compatible-or-better opt level (the consumer only observes the export/
-        # import ABI, not the profile). Acceptance lanes keep this OFF and pin
-        # exact identity. The candidate is re-validated (structure + exports).
-        if (
-            _build_reuse_compatible_enabled()
-            and _hydrate_runtime_wasm_from_compatible_cache(
-                dest=runtime_wasm,
-                reloc=reloc,
-                inputs_digest=_compat_key["inputs_digest"],
-                compat_digest=str(_compat_key["compat_digest"]),
-                request_profile=cargo_profile,
-                is_valid=_shared_cache_validator,
-                exports_ok=lambda path: (
-                    not validate_exports
-                    or _runtime_exports_satisfy_for_mode(
-                        path, required_exports, reloc=reloc
-                    )
-                ),
-            )
-        ):
-            if _finalize_reused_runtime_wasm():
-                _record_runtime_wasm_build_phase(
-                    "cargo_compile",
-                    0.0,
-                    kind="reloc" if reloc else "shared",
-                    mode="compat_lattice",
-                    detail="reused compatible-or-better-opt artifact (V3 lattice)",
-                )
-                return True
 
         target_runtime_staticlib_current = _current_runtime_target_artifact(
             _wasm_runtime_staticlib_candidates(target_root, profile_dir),
@@ -3108,7 +2996,8 @@ def _ensure_runtime_wasm(
                 mode="link",
             )
             try:
-                _publish_runtime_integrity_pin()
+                if not _finalize_runtime_publication():
+                    return False
                 target_runtime_staticlib_fingerprint_path.parent.mkdir(
                     parents=True,
                     exist_ok=True,
@@ -3269,11 +3158,12 @@ def _ensure_runtime_wasm(
                 mode="link",
             )
             try:
-                _publish_runtime_integrity_pin()
+                if not _finalize_runtime_publication():
+                    return False
             except OSError:
                 if not json_output:
                     print(
-                        "Failed to update runtime wasm integrity sidecar.",
+                        "Failed to update runtime wasm fingerprint metadata.",
                         file=sys.stderr,
                     )
                 return False
@@ -3299,24 +3189,6 @@ def _ensure_runtime_wasm(
                     staticlib_fingerprint,
                     artifact=src,
                 )
-                # Publish the freshly built reloc runtime wasm to the shared,
-                # session-independent cache so the next fresh session/worktree
-                # reuses it instead of recompiling the runtime crate.
-                # Incremental iteration builds are NOT published: they share the
-                # fingerprint of a non-incremental release build, so publishing
-                # would let an incrementally-compiled artifact hydrate an
-                # acceptance / final-green run (M05). The per-family incremental
-                # target dir already provides cross-iteration reuse.
-                if not incremental_enabled:
-                    _warn_runtime_wasm_cache_publish_failure(
-                        _publish_runtime_wasm_to_shared_cache(
-                            src=runtime_wasm,
-                            fingerprint=fingerprint,
-                            reloc=reloc,
-                            compat=_compat_key,
-                        ),
-                        json_output=json_output,
-                    )
             return True
         src_state = _inspect_wasm_binary(src)
         if src_state == "missing":
@@ -3483,11 +3355,7 @@ def _ensure_runtime_wasm(
                     file=sys.stderr,
                 )
             return False
-        if not reloc and not _materialize_split_runtime_public_exports(
-            runtime_wasm,
-            required_exports,
-            json_output=json_output,
-        ):
+        if not _finalize_runtime_publication():
             return False
         try:
             missing_exports = _runtime_missing_exports_for_mode(
@@ -3503,11 +3371,10 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            _publish_runtime_integrity_pin()
         except OSError:
             if not json_output:
                 print(
-                    "Failed to update runtime wasm integrity sidecar.",
+                    "Failed to update runtime wasm fingerprint metadata.",
                     file=sys.stderr,
                 )
             return False
@@ -3531,24 +3398,6 @@ def _ensure_runtime_wasm(
                     fingerprint,
                     artifact=runtime_wasm,
                 )
-                # Publish the freshly built shared runtime wasm to the
-                # session-independent shared cache so the next fresh
-                # session/worktree reuses it instead of recompiling the runtime
-                # crate from a cold per-session target dir.
-                # Incremental iteration builds are NOT published (see the reloc
-                # branch): they share the release fingerprint, so publishing
-                # would leak an incrementally-compiled artifact into an
-                # acceptance / final-green hydrate (M05).
-                if not incremental_enabled:
-                    _warn_runtime_wasm_cache_publish_failure(
-                        _publish_runtime_wasm_to_shared_cache(
-                            src=runtime_wasm,
-                            fingerprint=fingerprint,
-                            reloc=reloc,
-                            compat=_compat_key,
-                        ),
-                        json_output=json_output,
-                    )
             except OSError:
                 if not json_output:
                     print(
@@ -3556,18 +3405,6 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
     return True
-
-
-def _single_compile_split_runtime_enabled() -> bool:
-    """Whether ``--kind both`` uses ONE combined cargo compile (V1 dedup).
-
-    Default ON.  Kill switch ``MOLT_RUNTIME_WASM_SINGLE_COMPILE=0`` reverts to the
-    proven sequential dual-compile (two exact Cargo-level crate-type selections),
-    the fallback also taken automatically whenever the combined compile fails.
-    """
-    return os.environ.get(
-        "MOLT_RUNTIME_WASM_SINGLE_COMPILE", "1"
-    ).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _prepopulate_combined_runtime_wasm_target(
@@ -3579,6 +3416,7 @@ def _prepopulate_combined_runtime_wasm_target(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
+    force_build: bool = False,
 ) -> bool:
     """Run ONE ``cargo rustc --lib`` selecting BOTH staticlib and cdylib (V1).
 
@@ -3592,10 +3430,9 @@ def _prepopulate_combined_runtime_wasm_target(
     export enumeration -- the ~3260 exports the reverted hand-link dropped.
 
     Both target-dir fingerprints are then recorded so the per-artifact reuse
-    fast path in ``_ensure_runtime_wasm`` finalises each artifact (export
-    materialization, integrity pin, sidecars) WITHOUT a second compile.  Returns
-    ``True`` when the target dir now satisfies both crate-types, else ``False``
-    (caller falls back to the sequential dual-compile -- correct, just no dedup).
+    fast path in ``_ensure_runtime_wasm`` finalises each artifact before the
+    pair generation commits. Returns ``True`` when the target dir satisfies
+    both crate-types, else ``False``; no sequential dual-compile lane exists.
     """
     root = project_root
     if (
@@ -3627,7 +3464,7 @@ def _prepopulate_combined_runtime_wasm_target(
         target_label=target_label,
         fingerprint=reloc_spec.staticlib_fingerprint,
     )
-    if cdylib_current is not None and staticlib_current is not None:
+    if not force_build and cdylib_current is not None and staticlib_current is not None:
         # Both crate-types already fresh in the target dir; nothing to compile.
         return True
 
@@ -3812,24 +3649,65 @@ def _ensure_runtime_wasm_both(
 ) -> bool:
     """Ensure BOTH the shared (cdylib) and reloc (staticlib) runtime wasm.
 
-    V1 dual-compile burn-down: when single-compile is enabled (default), one
-    combined ``cargo rustc --lib`` populates the target dir with both crate-types
-    (``_prepopulate_combined_runtime_wasm_target``); the two per-artifact
-    ``_ensure_runtime_wasm_artifact`` calls then finalise each via the UNCHANGED
-    reuse path (no second compile).  On any combined-build failure the per-artifact
-    calls transparently recompile, so behaviour degrades to the proven sequential
-    dual-compile -- never incorrect, only un-deduped.
+    One combined ``cargo rustc --lib`` populates both crate-types. The two
+    per-artifact finalizers may only consume that same compile transaction;
+    there is no sequential dual-compile fallback or per-member publication.
     """
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
     try:
         combined_wasm_linker = wasm_toolchain.resolve_wasm_linker()
-    except wasm_toolchain.WasmLinkerContractError:
-        combined_wasm_linker = None
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        if not json_output:
+            print(f"Runtime WASM linker identity failed: {exc}", file=sys.stderr)
+        return False
+
+    if (
+        runtime_wasm is None
+        or runtime_reloc_wasm is None
+        or combined_wasm_linker is None
+    ):
+        if combined_wasm_linker is None and not json_output:
+            print("Runtime WASM linker identity failed: wasm-ld not found.", file=sys.stderr)
+        return False
 
     def _ensure(reloc: bool) -> bool:
-        return _ensure_runtime_wasm_artifact(
-            runtime_state,
+        """Finalize one member after the combined pair compile has succeeded."""
+
+        runtime_path = runtime_reloc_wasm if reloc else runtime_wasm
+        requested_exports = (
+            None if required_exports is None else frozenset(required_exports)
+        )
+        requested_features = frozenset(required_link_features)
+        ready_export_sets = (
+            runtime_state.runtime_reloc_wasm_ready_export_sets
+            if reloc
+            else runtime_state.runtime_wasm_ready_export_sets
+        )
+        ready_feature_keys = (
+            runtime_state.runtime_reloc_wasm_ready_feature_keys
+            if reloc
+            else runtime_state.runtime_wasm_ready_feature_keys
+        )
+        ready_key = (requested_features, requested_exports)
+        ready_all_exports_key = (requested_features, None)
+        ready = (
+            runtime_state.runtime_reloc_wasm_ready
+            if reloc
+            else runtime_state.runtime_wasm_ready
+        )
+        if ready_key in ready_feature_keys or ready_all_exports_key in ready_feature_keys:
+            return True
+        if not requested_features and (
+            None in ready_export_sets or requested_exports in ready_export_sets
+        ):
+            return True
+        if ready and required_exports is None and not requested_features:
+            ready_export_sets.add(None)
+            ready_feature_keys.add(ready_key)
+            return True
+        if not _ensure_runtime_wasm(
+            runtime_path,
             reloc=reloc,
             json_output=json_output,
             cargo_profile=cargo_profile,
@@ -3841,53 +3719,251 @@ def _ensure_runtime_wasm_both(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
-        )
+        ):
+            return False
+        if reloc:
+            runtime_state.runtime_reloc_wasm_ready = True
+        else:
+            runtime_state.runtime_wasm_ready = True
+        ready_export_sets.add(requested_exports)
+        ready_feature_keys.add(ready_key)
+        return True
 
-    if (
-        _single_compile_split_runtime_enabled()
-        and combined_wasm_linker is not None
-        and runtime_wasm is not None
-        and runtime_reloc_wasm is not None
+    shared_spec = _compute_runtime_wasm_build_spec(
+        project_root,
+        runtime_wasm,
+        reloc=False,
+        cargo_profile=cargo_profile,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
+        wasm_linker_identity=combined_wasm_linker,
+    )
+    reloc_spec = _compute_runtime_wasm_build_spec(
+        project_root,
+        runtime_reloc_wasm,
+        reloc=True,
+        cargo_profile=cargo_profile,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
+        wasm_linker_identity=combined_wasm_linker,
+    )
+    toolchain_manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
+    try:
+        provisioned_toolchain = RuntimeToolchainContentManifest.read(
+            toolchain_manifest_path
+        )
+    except ValueError:
+        provisioned_toolchain = None
+    if provisioned_toolchain is not None:
+        try:
+            pre_shared_identity, pre_reloc_identity = (
+                _resolved_runtime_wasm_pair_identities(
+                    project_root,
+                    shared_spec,
+                    reloc_spec,
+                    toolchain_manifest=provisioned_toolchain,
+                )
+            )
+        except (OSError, ValueError):
+            pre_shared_identity = pre_reloc_identity = None
+    else:
+        pre_shared_identity = pre_reloc_identity = None
+    manifest = runtime_wasm_generation_path(runtime_wasm)
+
+    def _valid_generation() -> RuntimeWasmGeneration | None:
+        if pre_shared_identity is None or pre_reloc_identity is None:
+            return None
+        generation = read_runtime_wasm_generation(
+            manifest,
+            expected_shared_identity=pre_shared_identity,
+            expected_reloc_identity=pre_reloc_identity,
+        )
+        if (
+            generation is None
+            or not _is_valid_shared_runtime_wasm_artifact(generation.shared)
+            or not _is_valid_runtime_wasm_artifact(generation.reloc)
+            or not _runtime_exports_satisfy_for_mode(
+                generation.shared, required_exports, reloc=False
+            )
+            or not _runtime_exports_satisfy_for_mode(
+                generation.reloc, required_exports, reloc=True
+            )
+        ):
+            return None
+        return generation
+
+    def _accept_generation() -> bool:
+        generation = _valid_generation()
+        if generation is None:
+            return False
+        assert pre_shared_identity is not None and pre_reloc_identity is not None
+        expected_path = (
+            _build_state_root(project_root)
+            / "runtime_wasm_generations"
+            / f"{pre_shared_identity.pair_digest}.expected.json"
+        )
+        payload = {
+            "schema": "molt.runtime-wasm-expected-pair.v1",
+            "shared": pre_shared_identity.to_dict(),
+            "reloc": pre_reloc_identity.to_dict(),
+        }
+        try:
+            _atomic_write_text(
+                expected_path,
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            )
+        except OSError:
+            return False
+        runtime_state.runtime_wasm_generation = generation.manifest
+        runtime_state.runtime_wasm_selected = generation.shared
+        runtime_state.runtime_reloc_wasm_selected = generation.reloc
+        runtime_state.runtime_wasm_expected_identity = expected_path
+        for staging in (runtime_wasm, runtime_reloc_wasm):
+            with contextlib.suppress(OSError):
+                staging.unlink(missing_ok=True)
+        return True
+
+    if _accept_generation():
+        return True
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        return False
+    # Entering a build/cache-miss transaction performs one exact toolchain
+    # scan. Normal valid-generation reads above consume only the immutable
+    # content manifest and never launch compiler/version subprocesses.
+    try:
+        exact_pre_toolchain = _provision_runtime_wasm_toolchain_manifest(shared_spec)
+        pre_shared_identity, pre_reloc_identity = (
+            _resolved_runtime_wasm_pair_identities(
+                project_root,
+                shared_spec,
+                reloc_spec,
+                toolchain_manifest=exact_pre_toolchain,
+            )
+        )
+        exact_pre_toolchain.write(toolchain_manifest_path)
+    except (OSError, ValueError) as exc:
+        if not json_output:
+            print(f"Runtime WASM identity provisioning failed: {exc}", file=sys.stderr)
+        return False
+    if _accept_generation():
+        return True
+    if hydrate_runtime_wasm_pair_from_shared_cache(
+        dest_shared=runtime_wasm,
+        dest_reloc=runtime_reloc_wasm,
+        shared_identity=pre_shared_identity,
+        reloc_identity=pre_reloc_identity,
+        is_valid_shared=_is_valid_shared_runtime_wasm_artifact,
+        is_valid_reloc=_is_valid_runtime_wasm_artifact,
     ):
-        shared_spec = _compute_runtime_wasm_build_spec(
-            project_root,
-            runtime_wasm,
-            reloc=False,
-            cargo_profile=cargo_profile,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=required_exports,
-            wasm_linker_identity=combined_wasm_linker,
-        )
-        reloc_spec = _compute_runtime_wasm_build_spec(
-            project_root,
-            runtime_reloc_wasm,
-            reloc=True,
-            cargo_profile=cargo_profile,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=required_exports,
-            wasm_linker_identity=combined_wasm_linker,
-        )
-        # Best-effort: populate the target dir with one compile. A False result
-        # (build failed / toolchain missing) just means the per-artifact calls
-        # below recompile as before -- correctness is unaffected.
-        _prepopulate_combined_runtime_wasm_target(
-            shared_spec=shared_spec,
-            reloc_spec=reloc_spec,
-            json_output=json_output,
-            cargo_timeout=cargo_timeout,
-            project_root=project_root,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-        )
+        return _accept_generation()
+    if not _prepopulate_combined_runtime_wasm_target(
+        shared_spec=shared_spec,
+        reloc_spec=reloc_spec,
+        json_output=json_output,
+        cargo_timeout=cargo_timeout,
+        project_root=project_root,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        force_build=True,
+    ):
+        return False
+    if not _ensure(reloc=False) or not _ensure(reloc=True):
+        return False
 
-    ok_shared = _ensure(reloc=False)
-    ok_reloc = _ensure(reloc=True)
-    return ok_shared and ok_reloc
+    # Recompute every source/toolchain/config byte after the long build. A
+    # mutation during Cargo invalidates the candidate instead of letting it be
+    # published under the pre-build identity.
+    try:
+        post_wasm_linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        if not json_output:
+            print(f"Runtime WASM post-build linker identity failed: {exc}", file=sys.stderr)
+        return False
+    if post_wasm_linker is None:
+        if not json_output:
+            print(
+                "Runtime WASM post-build linker identity failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
+        return False
+    post_shared = _compute_runtime_wasm_build_spec(
+        project_root,
+        runtime_wasm,
+        reloc=False,
+        cargo_profile=cargo_profile,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
+        wasm_linker_identity=post_wasm_linker,
+    )
+    post_reloc = _compute_runtime_wasm_build_spec(
+        project_root,
+        runtime_reloc_wasm,
+        reloc=True,
+        cargo_profile=cargo_profile,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
+        wasm_linker_identity=post_wasm_linker,
+    )
+    try:
+        exact_post_toolchain = _provision_runtime_wasm_toolchain_manifest(post_shared)
+        post_shared_identity, post_reloc_identity = (
+            _resolved_runtime_wasm_pair_identities(
+                project_root,
+                post_shared,
+                post_reloc,
+                toolchain_manifest=exact_post_toolchain,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        if not json_output:
+            print(f"Runtime WASM post-build identity failed: {exc}", file=sys.stderr)
+        return False
+    if (
+        exact_post_toolchain != exact_pre_toolchain
+        or post_shared_identity != pre_shared_identity
+        or post_reloc_identity != pre_reloc_identity
+    ):
+        if not json_output:
+            print(
+                "Runtime build identity changed during Cargo; refusing publication.",
+                file=sys.stderr,
+            )
+        return False
+    try:
+        published = publish_runtime_wasm_generation(
+            runtime_wasm,
+            runtime_reloc_wasm,
+            shared_identity=post_shared_identity,
+            reloc_identity=post_reloc_identity,
+        )
+    except (OSError, ValueError) as exc:
+        if not json_output:
+            print(f"Runtime WASM pair publication failed: {exc}", file=sys.stderr)
+        return False
+    if not post_shared.incremental_enabled:
+        _warn_runtime_wasm_cache_publish_failure(
+            publish_runtime_wasm_pair_to_shared_cache(
+                shared=published.shared,
+                reloc=published.reloc,
+                shared_identity=post_shared_identity,
+                reloc_identity=post_reloc_identity,
+            ),
+            json_output=json_output,
+        )
+    return _accept_generation()

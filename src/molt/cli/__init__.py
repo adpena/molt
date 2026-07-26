@@ -320,7 +320,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_ensure_native_runtime_lib_ready_before_link': ('runtime_build', '_ensure_native_runtime_lib_ready_before_link'),
     '_ensure_runtime_lib': ('runtime_build', '_ensure_runtime_lib'),
     '_ensure_runtime_lib_ready': ('runtime_build', '_ensure_runtime_lib_ready'),
-    '_ensure_runtime_wasm_artifact': ('runtime_build', '_ensure_runtime_wasm_artifact'),
     '_initialize_runtime_artifact_state': ('runtime_build', '_initialize_runtime_artifact_state'),
     '_maybe_start_native_runtime_lib_ready_async': ('runtime_build', '_maybe_start_native_runtime_lib_ready_async'),
     '_runtime_build': ('runtime_build', None),

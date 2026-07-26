@@ -373,6 +373,126 @@ def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
     return tuple(name for name, _kind in generator_cpython_abi_link_import_kinds())
 
 
+def _normalize_c_wasm_scalar(c_type: str, *, result: bool) -> tuple[str, bool]:
+    """Lower one public C ABI type to wasm32's canonical scalar shape.
+
+    wasm32's C ABI passes aggregate parameters indirectly and aggregate results
+    through a leading sret pointer. The ABI header intentionally contains only
+    scalar, pointer, enum/typedef-scalar, and the Py_complex/PyStatus aggregate
+    families, so unknown named scalar typedefs are pointer-width i32 while the
+    two aggregate results are explicit and fail closed.
+    """
+
+    typ = re.sub(r"\b(?:const|volatile|restrict)\b", "", c_type)
+    typ = re.sub(r"\s+", " ", typ).strip()
+    if "*" in typ or "(" in typ or "[" in typ or typ == "va_list":
+        return "i32", False
+    if typ == "void":
+        return "void", False
+    if typ in {"float"}:
+        return "f32", False
+    if typ in {"double"}:
+        return "f64", False
+    if re.search(r"(?:long\s+long|u?int64|Py_uint64|Py_int64)", typ):
+        return "i64", False
+    if result and typ in {"Py_complex", "PyStatus"}:
+        return "void", True
+    return "i32", False
+
+
+def _strip_c_parameter_name(parameter: str) -> str:
+    value = parameter.strip()
+    if "(*" in value:
+        return value
+    value = re.sub(r"\[[^\]]*\]\s*$", " *", value)
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\s*$", "", value).strip()
+
+
+@lru_cache(maxsize=1)
+def generator_cpython_abi_link_import_signatures() -> tuple[
+    tuple[str, tuple[str, ...], tuple[str, ...]], ...
+]:
+    """Derive every CPython function export's wasm32 C ABI from Python.h."""
+
+    header = CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h"
+    text = header.read_text(encoding="utf-8")
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    text = re.sub(r"//[^\n]*", " ", text)
+    declarations: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    for statement_match in re.finditer(r"\bextern\s+(.*?);", text, flags=re.S):
+        statement = re.sub(r"\s+", " ", statement_match.group(1)).strip()
+        name_match = re.search(
+            r"\b(?P<name>(?:Py|_Py|molt_capi_|molt_cpython_abi_)"
+            r"[A-Za-z0-9_]*)\s*\((?P<params>.*)\)\s*$",
+            statement,
+        )
+        if name_match is None:
+            continue
+        name = name_match.group("name")
+        return_type = statement[: name_match.start("name")].strip()
+        result_kind, sret = _normalize_c_wasm_scalar(return_type, result=True)
+        params: list[str] = ["i32"] if sret else []
+        raw_params = name_match.group("params").strip()
+        if raw_params and raw_params != "void":
+            for raw_param in _split_rust_top_level_commas(raw_params):
+                if raw_param == "...":
+                    params.append("i32")
+                    continue
+                param_type = _strip_c_parameter_name(raw_param)
+                scalar, _ = _normalize_c_wasm_scalar(param_type, result=False)
+                params.append(scalar)
+        results = () if result_kind == "void" else (result_kind,)
+        signature = (tuple(params), results)
+        previous = declarations.get(name)
+        if previous is not None and previous != signature:
+            raise WasmAbiManifestError(
+                f"CPython ABI declaration {name!r} has conflicting signatures"
+            )
+        declarations[name] = signature
+    required = {
+        name
+        for name, kind in generator_cpython_abi_link_import_kinds()
+        if kind == "function"
+    }
+    aliases = _rust_type_aliases()
+    rust_fn_re = re.compile(
+        r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+        r"(?P<name>(?:Py|_Py|molt_capi_|molt_cpython_abi_)[A-Za-z0-9_]*)"
+        r"\s*\((?P<params>.*?)\)\s*(?:->\s*(?P<result>[^{\n]+?))?\s*\{",
+        re.S,
+    )
+    for path in sorted(CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs")):
+        source = path.read_text(encoding="utf-8")
+        for match in rust_fn_re.finditer(source):
+            name = match.group("name")
+            if name not in required or name in declarations:
+                continue
+            params: list[str] = []
+            raw_params = match.group("params").strip()
+            if raw_params:
+                for raw_param in _split_rust_top_level_commas(raw_params):
+                    rust_type = raw_param.rsplit(":", 1)[-1].strip()
+                    scalar = _normalize_rust_wasm_scalar(rust_type, aliases)
+                    params.append(scalar if scalar in WASM_VAL_TYPES else "i32")
+            rust_result = (match.group("result") or "()").strip()
+            result_kind = _normalize_rust_wasm_scalar(rust_result, aliases)
+            if result_kind in {"Py_complex", "PyStatus"}:
+                params.insert(0, "i32")
+                results: tuple[str, ...] = ()
+            elif result_kind == "void":
+                results = ()
+            else:
+                results = (result_kind if result_kind in WASM_VAL_TYPES else "i32",)
+            declarations[name] = (tuple(params), results)
+    missing = sorted(required - declarations.keys())
+    if missing:
+        raise WasmAbiManifestError(
+            "CPython ABI function exports lack canonical header signatures: "
+            + ", ".join(missing)
+        )
+    return tuple((name, *declarations[name]) for name in sorted(required))
+
+
 def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
     external_imports = list(data.get("external_native_link_import", []))
     link_allowed_names = {
@@ -1409,11 +1529,13 @@ def validate_loaded_manifest(
         )
     callable_table_publication = data.get("callable_table_publication")
     if not isinstance(callable_table_publication, dict):
-        raise WasmAbiManifestError(
-            "manifest must define [callable_table_publication]"
-        )
+        raise WasmAbiManifestError("manifest must define [callable_table_publication]")
     section_name = callable_table_publication.get("section_name")
-    if not isinstance(section_name, str) or not section_name or not section_name.isascii():
+    if (
+        not isinstance(section_name, str)
+        or not section_name
+        or not section_name.isascii()
+    ):
         raise WasmAbiManifestError(
             "[callable_table_publication].section_name must be non-empty ASCII"
         )
@@ -2252,15 +2374,19 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
     """Return direct file inputs that can affect generated WASM ABI output.
 
     Runtime Rust sources are parsed into normalized export-signature rows below
-    instead of being raw cache-key inputs. Ordinary implementation edits must
-    not invalidate generated ABI output when the extern ABI surface is unchanged.
+    instead of being raw cache-key inputs. The separately scanned CPython ABI
+    sources and header are direct generator inputs and must be keyed byte-for-byte.
     """
-    return (
+    direct = {
         path,
         INTRINSICS_MANIFEST,
         INTRINSIC_CATEGORIES,
         FRONTEND_TYPES,
-    )
+        CPYTHON_ABI_VARIADIC_SHIM,
+        CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h",
+        *CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs"),
+    }
+    return tuple(sorted(direct, key=lambda item: item.as_posix()))
 
 
 def generator_runtime_export_signature_rows() -> tuple[

@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import runtime_build as RUNTIME_BUILD
 from molt._wasm_runtime_exports import (
     _all_dynamic_runtime_owned_intrinsic_exports,
     wasm_cpython_abi_requested_data_export_names,
@@ -25,7 +24,7 @@ from molt._wasm_abi_generated import (
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt.cli.backend_execution import _backend_codegen_env_digest
 from molt.cli.required_features import reached_intrinsic_symbols
-from molt.wasm_artifact import parse_wasm_exports
+from molt.wasm_artifact import parse_wasm_exports, transform_wasm_publication_file
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -256,7 +255,7 @@ def test_runtime_build_receives_raw_cpython_abi_requested_export_names() -> None
     )
 
 
-def test_split_runtime_public_export_materializer_rewrites_raw_cpython_abi_names(
+def test_split_runtime_publication_transform_rewrites_raw_cpython_abi_names(
     tmp_path: Path,
 ) -> None:
     runtime = tmp_path / "runtime.wasm"
@@ -264,11 +263,15 @@ def test_split_runtime_public_export_materializer_rewrites_raw_cpython_abi_names
         _build_exported_wasm_module(["PyType_Ready", "molt_socket_drop"])
     )
 
-    assert RUNTIME_BUILD._materialize_split_runtime_public_exports(
+    metrics = transform_wasm_publication_file(
         runtime,
-        {"PyType_Ready", "socket_drop"},
-        json_output=True,
+        rename_map=wasm_split_runtime_export_rename_map(
+            {"PyType_Ready", "socket_drop"}
+        ),
+        final_artifact=False,
+        preserve_debug=True,
     )
+    assert metrics.changed
 
     exports = {export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)}
     assert "molt_PyType_Ready" in exports
@@ -276,7 +279,7 @@ def test_split_runtime_public_export_materializer_rewrites_raw_cpython_abi_names
     assert "molt_socket_drop" in exports
 
 
-def test_split_runtime_public_export_materializer_rejects_rename_collision(
+def test_split_runtime_publication_transform_rejects_rename_collision(
     tmp_path: Path,
 ) -> None:
     runtime = tmp_path / "runtime.wasm"
@@ -284,18 +287,13 @@ def test_split_runtime_public_export_materializer_rejects_rename_collision(
         _build_exported_wasm_module(["PyType_Ready", "molt_PyType_Ready"])
     )
 
-    assert not RUNTIME_BUILD._materialize_split_runtime_public_exports(
-        runtime,
-        {"PyType_Ready"},
-        json_output=True,
-    )
-
-
-def test_runtime_wasm_build_gates_split_export_materialization_to_split_mode() -> (
-    None
-):
-    text = (ROOT / "src/molt/cli/runtime_build.py").read_text(encoding="utf-8")
-    assert "if not reloc and not _materialize_split_runtime_public_exports(" in text
+    with pytest.raises(ValueError, match="collision"):
+        transform_wasm_publication_file(
+            runtime,
+            rename_map=wasm_split_runtime_export_rename_map({"PyType_Ready"}),
+            final_artifact=False,
+            preserve_debug=True,
+        )
 
 
 def test_wasm_runtime_exports_use_generated_intrinsic_symbols_and_ast_scan() -> None:

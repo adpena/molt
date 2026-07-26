@@ -10,23 +10,60 @@ import time
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_cache import (
-    _hydrate_runtime_wasm_from_shared_cache,
     _shared_runtime_wasm_cache_root,
+    hydrate_runtime_wasm_pair_from_shared_cache,
 )
-from molt.cli.runtime_wasm_validation import _is_valid_shared_runtime_wasm_artifact
+from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmGeneration,
+    read_runtime_wasm_generation,
+)
+from molt.cli.runtime_wasm_validation import (
+    _is_valid_runtime_wasm_artifact,
+    _is_valid_shared_runtime_wasm_artifact,
+)
 
 
-def _fingerprint_from_path(path: Path) -> dict[str, str]:
-    parts = path.name.split(".")
-    return {"hash": parts[2], "meta_digest": parts[3]}
+def _read_cached_generation(
+    manifest: Path,
+) -> RuntimeWasmGeneration:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    receipts = payload.get("receipts")
+    if not isinstance(receipts, dict):
+        raise ValueError(f"runtime generation receipts are missing: {manifest}")
+    shared_record = receipts.get("shared")
+    reloc_record = receipts.get("reloc")
+    if not isinstance(shared_record, dict) or not isinstance(reloc_record, dict):
+        raise ValueError(f"runtime generation member receipts are invalid: {manifest}")
+    shared_identity = RuntimeBuildIdentity.from_dict(shared_record.get("identity"))
+    reloc_identity = RuntimeBuildIdentity.from_dict(reloc_record.get("identity"))
+    generation = read_runtime_wasm_generation(
+        manifest,
+        expected_shared_identity=shared_identity,
+        expected_reloc_identity=reloc_identity,
+    )
+    if generation is None:
+        raise ValueError(f"runtime generation is invalid: {manifest}")
+    return generation
 
 
-def _legacy_hydrate(*, source: Path, dest: Path) -> bool:
-    if not _is_valid_shared_runtime_wasm_artifact(source):
+def _legacy_hydrate_pair(
+    *,
+    source_shared: Path,
+    source_reloc: Path,
+    dest_shared: Path,
+    dest_reloc: Path,
+) -> bool:
+    if not _is_valid_shared_runtime_wasm_artifact(source_shared):
         return False
-    _atomic_copy_file(source, dest)
-    return _is_valid_shared_runtime_wasm_artifact(dest)
+    if not _is_valid_runtime_wasm_artifact(source_reloc):
+        return False
+    _atomic_copy_file(source_shared, dest_shared)
+    _atomic_copy_file(source_reloc, dest_reloc)
+    return _is_valid_shared_runtime_wasm_artifact(
+        dest_shared
+    ) and _is_valid_runtime_wasm_artifact(dest_reloc)
 
 
 def _peak_rss_bytes() -> int:
@@ -67,23 +104,38 @@ def _peak_rss_bytes() -> int:
 def _run_sample(
     *,
     mode: str,
-    source: Path,
-    dest: Path,
-    fingerprint: dict[str, str],
+    source_shared: Path,
+    source_reloc: Path,
+    dest_shared: Path,
+    dest_reloc: Path,
+    shared_identity: RuntimeBuildIdentity,
+    reloc_identity: RuntimeBuildIdentity,
 ) -> tuple[float, int]:
     started = time.perf_counter()
     if mode == "before":
-        ok = _legacy_hydrate(source=source, dest=dest)
-    else:
-        ok = _hydrate_runtime_wasm_from_shared_cache(
-            dest=dest,
-            fingerprint=fingerprint,
-            reloc=False,
-            is_valid=_is_valid_shared_runtime_wasm_artifact,
+        ok = _legacy_hydrate_pair(
+            source_shared=source_shared,
+            source_reloc=source_reloc,
+            dest_shared=dest_shared,
+            dest_reloc=dest_reloc,
         )
+    else:
+        generation = hydrate_runtime_wasm_pair_from_shared_cache(
+            dest_shared=dest_shared,
+            dest_reloc=dest_reloc,
+            shared_identity=shared_identity,
+            reloc_identity=reloc_identity,
+            is_valid_shared=_is_valid_shared_runtime_wasm_artifact,
+            is_valid_reloc=_is_valid_runtime_wasm_artifact,
+        )
+        ok = generation is not None
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    if not ok or dest.read_bytes() != source.read_bytes():
-        raise RuntimeError(f"{mode} hydrate contract failed")
+    hydrated_shared = dest_shared if mode == "before" else generation.shared
+    hydrated_reloc = dest_reloc if mode == "before" else generation.reloc
+    if not ok or hydrated_shared.read_bytes() != source_shared.read_bytes() or (
+        hydrated_reloc.read_bytes() != source_reloc.read_bytes()
+    ):
+        raise RuntimeError(f"{mode} pair hydrate contract failed")
     return elapsed_ms, _peak_rss_bytes()
 
 
@@ -96,56 +148,67 @@ def main() -> int:
         raise SystemExit("at least three samples are required")
 
     cache_root = _shared_runtime_wasm_cache_root()
-    source = max(
-        cache_root.glob("molt_runtime.shared.*.wasm"),
-        key=lambda path: path.stat().st_size,
+    candidates = []
+    for manifest in cache_root.glob("*/molt_runtime.generation.json"):
+        try:
+            generation = _read_cached_generation(manifest)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        candidates.append(generation)
+    if not candidates:
+        raise SystemExit(f"no valid cached runtime generation under {cache_root}")
+    source_generation = max(
+        candidates,
+        key=lambda value: value.shared.stat().st_size + value.reloc.stat().st_size,
     )
-    fingerprint = _fingerprint_from_path(source)
+    source_shared = source_generation.shared
+    source_reloc = source_generation.reloc
+    shared_identity = source_generation.shared_identity
+    reloc_identity = source_generation.reloc_identity
+
     samples = {"before": [], "after": []}
     max_rss = 0
     with tempfile.TemporaryDirectory(dir=r"C:\Molt") as temp_dir:
         root = Path(temp_dir)
         for sample_index in range(args.samples):
             for mode in ("before", "after"):
+                sample_root = root / f"{sample_index}-{mode}"
                 elapsed_ms, rss = _run_sample(
                     mode=mode,
-                    source=source,
-                    dest=root / f"{sample_index}-{mode}.wasm",
-                    fingerprint=fingerprint,
+                    source_shared=source_shared,
+                    source_reloc=source_reloc,
+                    dest_shared=sample_root / "molt_runtime.wasm",
+                    dest_reloc=sample_root / "molt_runtime_reloc.wasm",
+                    shared_identity=shared_identity,
+                    reloc_identity=reloc_identity,
                 )
                 samples[mode].append(elapsed_ms)
                 max_rss = max(max_rss, rss)
 
-    source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_digest = hashlib.sha256(
+        source_shared.read_bytes() + source_reloc.read_bytes()
+    ).hexdigest()
     before_median = statistics.median(samples["before"])
     after_median = statistics.median(samples["after"])
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "claim": "OPT-MATRIX-R2",
-        "scenario": "real release runtime-WASM exact-cache hydrate serial differential",
+        "scenario": "real release runtime-WASM atomic-pair cache hydrate",
         "profile": "release",
-        "hot_path": "exact-identity shared-cache hydrate validates and copies the release runtime WASM",
+        "hot_path": "trusted generation validation and atomic shared+reloc deployment",
         "complexity": {
-            "before": "2 * O(artifact_bytes) structural validation plus O(artifact_bytes) copy",
-            "after": "1 * O(artifact_bytes) structural validation plus O(artifact_bytes) atomic copy",
+            "before": "2 * O(pair_bytes) validation plus O(pair_bytes) copy",
+            "after": "O(pair_bytes) generation validation plus O(pair_bytes) atomic deployment",
         },
-        "artifact": str(source),
+        "pair_digest": shared_identity.pair_digest,
         "artifact_sha256": source_digest,
-        "artifact_bytes": source.stat().st_size,
-        "before": {
-            "mode": "validate source, atomic copy, validate destination",
-            "runs": samples["before"],
-            "median_ms": before_median,
-        },
-        "after": {
-            "mode": "validate source once, atomic copy",
-            "runs": samples["after"],
-            "median_ms": after_median,
-        },
+        "artifact_bytes": source_shared.stat().st_size + source_reloc.stat().st_size,
+        "before": {"runs": samples["before"], "median_ms": before_median},
+        "after": {"runs": samples["after"], "median_ms": after_median},
         "held_benches": {
-            "byte_identity": True,
-            "source_structural_validation": True,
-            "atomic_copy_failure_is_miss": True,
+            "pair_identity": True,
+            "source_generation_validation": True,
+            "atomic_pair_publication": True,
         },
         "memory_ceiling": {"pass": True, "max_rss_bytes": max_rss},
     }

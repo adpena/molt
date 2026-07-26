@@ -3,18 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-_SHA256_HEX_GLOB = "[0-9a-f]" * 64
-_KEYED_WASM_RUNTIME_PIN_GLOB = f"wasm/molt_runtime*.wasm.{_SHA256_HEX_GLOB}.sha256"
-
-# Tracked paths excluded from dirty-tree gates by default: WASM checksum
-# sidecars legitimately churn when partner/runtime artifacts are regenerated.
-# Bare slots are legacy, while keyed slots must carry the 64-hex digest shape.
-DEFAULT_DIRTY_TREE_IGNORE_GLOBS = (
-    "wasm/molt_runtime.wasm.sha256",
-    "wasm/molt_runtime_reloc.wasm.sha256",
-    "wasm/molt_runtime_reloc.wasm.wasm-release.sha256",
-    _KEYED_WASM_RUNTIME_PIN_GLOB,
-)
+# Runtime generations are atomic manifests, not ignored checksum files. Dirty
+# tree policy has no runtime-artifact exception lane.
+DEFAULT_DIRTY_TREE_IGNORE_GLOBS: tuple[str, ...] = ()
 
 _GLOB_CACHE: dict[str, "re.Pattern[str]"] = {}
 

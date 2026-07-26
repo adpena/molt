@@ -139,3 +139,38 @@ def validate_path_role(
         raise PathCustodyError(
             f"{authority} cannot use forbidden D: durable authority: {raw}"
         )
+
+
+def canonical_host_path(
+    raw: PathInput,
+    role: CustodyPathRole,
+    *,
+    authority: str,
+    require_exists: bool = False,
+) -> Path:
+    """Return one absolute, resolved host spelling or reject path aliases.
+
+    Durable-path policy is checked against the original spelling before any
+    normalization, so a forbidden Windows drive cannot be hidden by a host
+    alias.  The lexical absolute spelling must then equal the filesystem's
+    resolved spelling.  This rejects ``..`` traversal, symlinks, and Windows
+    junction aliases instead of silently promoting them into custody.
+    """
+
+    validate_path_role(raw, role, authority=authority)
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise PathCustodyError(f"{authority} must be absolute: {raw}")
+    if ".." in expanded.parts:
+        raise PathCustodyError(f"{authority} cannot contain '..' aliases: {raw}")
+    lexical = Path(os.path.abspath(expanded))
+    try:
+        resolved = expanded.resolve(strict=require_exists)
+    except OSError as exc:
+        raise PathCustodyError(f"{authority} cannot be resolved: {raw}: {exc}") from exc
+    if os.path.normcase(os.fspath(lexical)) != os.path.normcase(os.fspath(resolved)):
+        raise PathCustodyError(
+            f"{authority} must use its canonical filesystem spelling: "
+            f"{raw} resolves to {resolved}"
+        )
+    return resolved

@@ -39,6 +39,7 @@ from molt.cli.models import (
     BuildProfile,
     _ExternalPackageNativeArtifactPlan,
     _PreparedNonNativeResult,
+    _RuntimeArtifactState,
     _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
@@ -540,33 +541,6 @@ def _external_native_artifact_fingerprint_inputs(
     )
 
 
-def _app_split_runtime_dual_compile_forced() -> bool:
-    """Whether the app split-runtime build must use two separate cargo compiles.
-
-    Default False -> the non-freestanding split-runtime app routes the reloc
-    staticlib and the shared cdylib through ONE combined cargo compile
-    (``_ensure_runtime_wasm_both``), so the runtime builds ONCE per app build.
-
-    Forced True by either operator kill switch:
-
-    * ``MOLT_RUNTIME_WASM_DUAL_COMPILE=1`` -- the explicit app-path override; or
-    * ``MOLT_RUNTIME_WASM_SINGLE_COMPILE=0`` -- the landed single-compile
-      authority (reused, not re-parsed), so disabling single-compile reverts the
-      app path to the proven sequential reloc-then-shared ensures too.
-    """
-    if os.environ.get("MOLT_RUNTIME_WASM_DUAL_COMPILE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return True
-    # Reuse the landed single-compile authority (avoids a second env parser).
-    from molt.cli.runtime_build import _single_compile_split_runtime_enabled
-
-    return not _single_compile_split_runtime_enabled()
-
-
 def _prepare_non_native_build_result(
     *,
     is_rust_transpile: bool,
@@ -581,10 +555,7 @@ def _prepare_non_native_build_result(
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
-    runtime_wasm: Path | None,
-    runtime_reloc_wasm: Path | None,
-    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
+    runtime_state: _RuntimeArtifactState,
     ensure_runtime_wasm_both: (
         Callable[[set[str] | frozenset[str] | None], bool] | None
     ) = None,
@@ -754,49 +725,22 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            # Ensure the runtime-wasm artifact(s) the app link consumes.  A
-            # non-freestanding split-runtime app needs BOTH the reloc staticlib
-            # (hand-linked into the app) AND the shared cdylib runtime; route
-            # them through ONE combined cargo compile (doctrine 74 V1 /
-            # _ensure_runtime_wasm_both) so the runtime builds ONCE per app
-            # build instead of twice (a reloc ensure + a shared ensure = two
-            # cargo compiles).  Freestanding builds need only the reloc runtime.
-            # The combined helper honours the MOLT_RUNTIME_WASM_SINGLE_COMPILE
-            # authority internally and degrades to the sequential dual-compile
-            # on any failure; the app path additionally honours the
-            # MOLT_RUNTIME_WASM_DUAL_COMPILE=1 kill switch (and a missing
-            # combined callable) by falling back to the two separate ensures.
-            _runtime_shared_ensured = False
-            if is_wasm_freestanding:
-                if not ensure_runtime_wasm_reloc(required_runtime_exports):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-            elif (
-                ensure_runtime_wasm_both is not None
-                and not _app_split_runtime_dual_compile_forced()
+            # Runtime bytes are admitted only as one shared+reloc generation.
+            if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
+                required_runtime_exports
             ):
-                if not ensure_runtime_wasm_both(required_runtime_exports):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                # One combined compile produced BOTH the reloc and the shared
-                # runtime; skip the redundant standalone shared ensure below.
-                _runtime_shared_ensured = True
-            else:
-                if not ensure_runtime_wasm_reloc(required_runtime_exports):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-            if runtime_reloc_wasm is None:
                 return None, _fail(
-                    "Runtime wasm build failed",
+                    "Atomic runtime WASM pair build failed",
+                    json_output,
+                    command="build",
+                )
+            runtime_wasm = runtime_state.runtime_wasm_selected
+            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
+            runtime_wasm_generation = runtime_state.runtime_wasm_generation
+            runtime_wasm_expected_identity = runtime_state.runtime_wasm_expected_identity
+            if runtime_reloc_wasm is None or not runtime_reloc_wasm.is_file():
+                return None, _fail(
+                    "Runtime WASM generation has no selected reloc member",
                     json_output,
                     command="build",
                 )
@@ -805,31 +749,36 @@ def _prepare_non_native_build_result(
             if resolved_linked_output.parent != Path("."):
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
             if not is_wasm_freestanding:
-                if runtime_wasm is None:
+                if runtime_wasm is None or not runtime_wasm.is_file():
                     return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if not _runtime_shared_ensured:
-                    if not ensure_runtime_wasm_shared(required_runtime_exports):
-                        return None, _fail(
-                            "Runtime wasm build failed",
-                            json_output,
-                            command="build",
-                        )
-                if not runtime_wasm.exists():
-                    return None, _fail(
-                        "Runtime wasm build failed",
+                        "Runtime WASM generation has no selected shared member",
                         json_output,
                         command="build",
                     )
             tool = molt_root / "tools" / "wasm_link.py"
+            if (
+                runtime_wasm is None
+                or runtime_wasm_generation is None
+                or not runtime_wasm_generation.is_file()
+                or runtime_wasm_expected_identity is None
+                or not runtime_wasm_expected_identity.is_file()
+            ):
+                return None, _fail(
+                    "Runtime WASM pair has no trusted expected identity",
+                    json_output,
+                    command="build",
+                )
             link_cmd = [
                 sys.executable,
                 str(tool),
                 "--runtime",
                 str(runtime_reloc_wasm),
+                "--runtime-shared",
+                str(runtime_wasm),
+                "--runtime-generation",
+                str(runtime_wasm_generation),
+                "--runtime-expected-identity",
+                str(runtime_wasm_expected_identity),
                 "--input",
                 str(output_wasm),
                 "--output",
@@ -1028,15 +977,18 @@ def _prepare_non_native_build_result(
                 required_runtime_exports.update(
                     native_artifact_plan.runtime_export_symbols()
                 )
-            if not ensure_runtime_wasm_shared(required_runtime_exports):
+            if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
+                required_runtime_exports
+            ):
                 return None, _fail(
-                    "Runtime wasm build failed",
+                    "Atomic runtime WASM pair build failed",
                     json_output,
                     command="build",
                 )
-            if not runtime_wasm.exists():
+            runtime_wasm = runtime_state.runtime_wasm_selected
+            if runtime_wasm is None or not runtime_wasm.is_file():
                 return None, _fail(
-                    "Runtime wasm build failed",
+                    "Runtime WASM generation has no selected shared member",
                     json_output,
                     command="build",
                 )
@@ -1334,9 +1286,7 @@ def _prepare_non_native_build_result(
             )
             try:
                 for name, payload in browser_asset_payloads.items():
-                    _atomic_write_bytes(
-                        split_dir.joinpath(*Path(name).parts), payload
-                    )
+                    _atomic_write_bytes(split_dir.joinpath(*Path(name).parts), payload)
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime browser asset closure: {exc}",

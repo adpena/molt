@@ -344,8 +344,6 @@ def _run_backend_pipeline(
                 backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
                 entry_module=resolved_build_entry.entry_module,
                 resolved_modules=resolved_modules,
-                ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
-                ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
                 ensure_runtime_wasm_both=prepared_backend_runtime_context.ensure_runtime_wasm_both,
                 artifacts_root=artifacts_root,
                 ir=ir,
