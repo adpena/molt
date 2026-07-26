@@ -575,6 +575,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
         .args([
             "--no-entry",
             "--import-table",
+            "--import-memory",
             "--table-base=8",
             "--export=__molt_output_export_1",
             "--export=__molt_output_export_2",
@@ -593,8 +594,10 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
 const bytes=fs.readFileSync(process.argv[2]);
 const runtimeBytes=fs.readFileSync(process.argv[3]);
 const table=new WebAssembly.Table({initial:16,element:'anyfunc'});
-WebAssembly.instantiate(runtimeBytes,{env:{__indirect_function_table:table}})
-.then(()=>WebAssembly.instantiate(bytes,{env:{__indirect_function_table:table}})).then(({instance})=>{
+const memory=new WebAssembly.Memory({initial:2});
+const env={__indirect_function_table:table,memory};
+WebAssembly.instantiate(runtimeBytes,{env})
+.then(()=>WebAssembly.instantiate(bytes,{env})).then(({instance})=>{
   const prefix=instance.exports.prefix_invoke();
   const candidate=instance.exports.candidate_invoke();
   if(prefix!==7 || candidate!==42) throw new Error(`bad results ${prefix},${candidate}`);

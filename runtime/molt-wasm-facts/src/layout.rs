@@ -23,37 +23,42 @@ pub(crate) fn validate_callable_table_layout(
     if fixed_end > layout.finalized_app_base {
         return Err("callable-table fixed and app regions overlap".to_string());
     }
-    if matches!(
-        role,
-        CallableTableArtifactRole::Monolithic | CallableTableArtifactRole::App
-    ) {
-        let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
-        let (runtime_entries, app_entries) = entries.split_at(app_start);
-        validate_runtime_entries(layout, runtime_entries)?;
-        let expected_app_count = usize::try_from(layout.app_entry_count)
-            .map_err(|_| "callable-table app region exceeds host usize")?;
-        if app_entries.len() != expected_app_count {
-            return Err(format!(
-                "callable-table monolithic app entry count does not match final active elements: layout={expected_app_count}, final={}",
-                app_entries.len()
-            ));
+    match role {
+        CallableTableArtifactRole::Monolithic => {
+            let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
+            let (runtime_entries, app_entries) = entries.split_at(app_start);
+            validate_runtime_entries(layout, runtime_entries)?;
+            validate_app_entries(layout, app_entries)
         }
-        validate_contiguous_entries(app_entries, layout.finalized_app_base, "app")?;
-        return Ok(());
+        CallableTableArtifactRole::App => {
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.slot < layout.finalized_app_base)
+            {
+                return Err(format!(
+                    "split app publishes runtime-owned callable slot {} below app base {}",
+                    entry.slot, layout.finalized_app_base
+                ));
+            }
+            validate_app_entries(layout, entries)
+        }
+        CallableTableArtifactRole::Runtime => validate_runtime_entries(layout, entries),
     }
-    if role == CallableTableArtifactRole::Runtime {
-        return validate_runtime_entries(layout, entries);
-    }
-    let (expected_base, expected_count, label) =
-        (layout.finalized_app_base, layout.app_entry_count, "app");
-    if usize::try_from(expected_count).ok() != Some(entries.len()) {
+}
+
+fn validate_app_entries(
+    layout: CallableTableLayout,
+    entries: &[WasmCallableTableEntryFact],
+) -> Result<(), String> {
+    let expected_app_count = usize::try_from(layout.app_entry_count)
+        .map_err(|_| "callable-table app region exceeds host usize")?;
+    if entries.len() != expected_app_count {
         return Err(format!(
-            "callable-table layout {label} entry count does not match final active elements: layout={expected_count}, final={}",
+            "callable-table app entry count does not match final active elements: layout={expected_app_count}, final={}",
             entries.len()
         ));
     }
-    validate_contiguous_entries(entries, expected_base, label)?;
-    Ok(())
+    validate_contiguous_entries(entries, layout.finalized_app_base, "app")
 }
 
 fn validate_runtime_entries(

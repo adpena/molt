@@ -26,4 +26,44 @@ def python_node_source_key(node: ast.AST) -> PythonSourceKey:
     )
 
 
-__all__ = ["PythonSourceKey", "python_node_source_key"]
+def python_pattern_capture_names(pattern: ast.pattern) -> tuple[str, ...]:
+    """Return one pattern's captures in deterministic source order."""
+
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str | None) -> None:
+        if name and name != "_" and name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    def visit(current: ast.pattern) -> None:
+        if isinstance(current, ast.MatchAs):
+            if current.pattern is not None:
+                visit(current.pattern)
+            add(current.name)
+        elif isinstance(current, ast.MatchStar):
+            add(current.name)
+        elif isinstance(current, ast.MatchMapping):
+            for child in current.patterns:
+                visit(child)
+            add(current.rest)
+        elif isinstance(current, ast.MatchSequence):
+            for child in current.patterns:
+                visit(child)
+        elif isinstance(current, ast.MatchClass):
+            for child in (*current.patterns, *current.kwd_patterns):
+                visit(child)
+        elif isinstance(current, ast.MatchOr):
+            for child in current.patterns:
+                visit(child)
+
+    visit(pattern)
+    return tuple(names)
+
+
+__all__ = [
+    "PythonSourceKey",
+    "python_node_source_key",
+    "python_pattern_capture_names",
+]

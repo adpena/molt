@@ -582,9 +582,25 @@ class StatementScopeVisitorMixin(_MixinBase):
             raise FrontendRejection(
                 Diagnostic.TYPE_FORM, "Unsupported type alias target"
             )
-        alias_val = self._emit_type_alias_value(node)
+        class_scope = self._class_ns_stack[-1] if self._class_ns_stack else None
+        if class_scope is None:
+            alias_val = self._emit_type_alias_value(node)
+        else:
+            class_scope_names = set(class_scope.attr_values) | class_scope.names
+            alias_val = self._emit_type_alias_value(
+                node,
+                expression_rewriter=lambda expression: (
+                    self._rewrite_class_annotation_expr(
+                        expression,
+                        class_scope.class_name,
+                        class_scope_names,
+                    )
+                ),
+                module_override=class_scope.module_name,
+            )
         self.locals[node.name.id] = alias_val
-        if self._class_body_depth > 0:
+        if class_scope is not None:
+            self._class_ns_store(class_scope, node.name.id, alias_val)
             return None
         if self.current_func_name == "molt_main":
             self.globals[node.name.id] = alias_val
@@ -653,15 +669,15 @@ class StatementScopeVisitorMixin(_MixinBase):
                 resolved_modules = {
                     resolution.module
                     for resolution in resolutions
-                    if resolution.module is not None
-                    and not resolution.requires_runtime
+                    if resolution.module is not None and not resolution.requires_runtime
                 }
                 error_kinds = {resolution.error for resolution in resolutions}
                 if (
                     any(resolution.requires_runtime for resolution in resolutions)
                     or len(resolved_modules) != 1
                     or any(
-                        error in {
+                        error
+                        in {
                             "invalid_package",
                             "unknown_package",
                             "invalid_spec",

@@ -156,6 +156,9 @@ box = []
 lock = _private.allocate_lock()
 lock.acquire()
 lock.release()
+context_lock = _private.allocate_lock()
+lock_context_value = context_lock.__enter__()
+context_lock.__exit__(None, None, None)
 rlock = _private.RLock()
 rlock.acquire()
 rlock.acquire()
@@ -163,6 +166,9 @@ saved = rlock._release_save()
 rlock._acquire_restore(saved)
 rlock.release()
 rlock.release()
+context_rlock = _private.RLock()
+rlock_context_value = context_rlock.__enter__()
+context_rlock.__exit__(None, None, None)
 
 
 def _captured_error(call):
@@ -184,6 +190,8 @@ checks = {{
     "behavior": (
         type(lock).__name__ == "lock"
         and lock.locked() is False
+        and lock_context_value is True
+        and rlock_context_value is True
         and saved == (2, 1)
         and rlock._is_owned() is False
         and thread_id == 101

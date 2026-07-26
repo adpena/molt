@@ -16,6 +16,7 @@ from molt.compiler_analysis.python_effects import (
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,
+    python_pattern_capture_names,
 )
 
 
@@ -261,9 +262,7 @@ def parse_module_spec_parent(
     if (
         not isinstance(value, ast.Call)
         or dotted_expression_name(value.func) not in proven_pure_calls
-        or expression_may_execute_python(
-            value, proven_pure_calls=proven_pure_calls
-        )
+        or expression_may_execute_python(value, proven_pure_calls=proven_pure_calls)
     ):
         return INVALID_VALUE if isinstance(value, ast.Constant) else UNKNOWN_VALUE
     # ModuleSpec(name, loader, *, origin=None, loader_state=None, is_package=None)
@@ -271,13 +270,14 @@ def parse_module_spec_parent(
         return INVALID_VALUE
     allowed_keywords = {"name", "loader", "origin", "loader_state", "is_package"}
     keyword_ids = [keyword.arg for keyword in value.keywords]
-    if (
-        any(keyword not in allowed_keywords for keyword in keyword_ids)
-        or len(keyword_ids) != len(set(keyword_ids))
-    ):
+    if any(keyword not in allowed_keywords for keyword in keyword_ids) or len(
+        keyword_ids
+    ) != len(set(keyword_ids)):
         return INVALID_VALUE
     positional_name = value.args[0] if value.args else None
-    keyword_names = [keyword.value for keyword in value.keywords if keyword.arg == "name"]
+    keyword_names = [
+        keyword.value for keyword in value.keywords if keyword.arg == "name"
+    ]
     if positional_name is not None and keyword_names or len(keyword_names) > 1:
         return INVALID_VALUE
     name_node = positional_name or (keyword_names[0] if keyword_names else None)
@@ -289,9 +289,7 @@ def parse_module_spec_parent(
         return INVALID_VALUE
     if positional_loader is None and not keyword_loaders:
         return INVALID_VALUE
-    if not (
-        isinstance(name_node, ast.Constant) and isinstance(name_node.value, str)
-    ):
+    if not (isinstance(name_node, ast.Constant) and isinstance(name_node.value, str)):
         return UNKNOWN_VALUE if name_node is not None else INVALID_VALUE
     is_package: bool | None = None
     package_keywords = [
@@ -392,7 +390,9 @@ def metadata_value_from_expression(
         if expression.id == "__name__":
             return state.name
     resolved = resolve_string(expression) if resolve_string is not None else None
-    return StaticMetadataValue.known(resolved) if resolved is not None else UNKNOWN_VALUE
+    return (
+        StaticMetadataValue.known(resolved) if resolved is not None else UNKNOWN_VALUE
+    )
 
 
 def dunder_globals_state_from_expression(
@@ -432,9 +432,7 @@ def dunder_globals_state_from_expression(
                     unpacked.spec_parent
                     if unpacked.spec_parent.kind != "absent"
                     else state.spec_parent,
-                    unpacked.name
-                    if unpacked.name.kind != "absent"
-                    else state.name,
+                    unpacked.name if unpacked.name.kind != "absent" else state.name,
                     unpacked.has_path or state.has_path,
                     state.proven_pure_calls & unpacked.proven_pure_calls,
                 )
@@ -534,7 +532,9 @@ def _state_sort_key(state: ModuleImportState) -> tuple[str, ...]:
     )
 
 
-def _merge_states(*groups: Iterable[ModuleImportState]) -> tuple[ModuleImportState, ...]:
+def _merge_states(
+    *groups: Iterable[ModuleImportState],
+) -> tuple[ModuleImportState, ...]:
     states = {state for group in groups for state in group}
     if len(states) <= _MAX_DISJUNCTIVE_IMPORT_STATES:
         return tuple(sorted(states, key=_state_sort_key))
@@ -544,9 +544,7 @@ def _merge_states(*groups: Iterable[ModuleImportState]) -> tuple[ModuleImportSta
         return next(iter(values)) if len(values) == 1 else UNKNOWN_VALUE
 
     path_values = {state.has_path for state in states}
-    proven_calls = set.intersection(
-        *(set(state.proven_pure_calls) for state in states)
-    )
+    proven_calls = set.intersection(*(set(state.proven_pure_calls) for state in states))
     return (
         ModuleImportState(
             join_value("package"),
@@ -618,7 +616,9 @@ def _analyze_module_import_flow_uncached(
         current = states
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
-                if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
+                if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(
+                    value.elts
+                ):
                     for element, element_value in zip(target.elts, value.elts):
                         current = assign_states(
                             current,
@@ -736,9 +736,7 @@ def _analyze_module_import_flow_uncached(
         targets: Sequence[ast.AST],
         value: ast.AST,
     ) -> None:
-        target_names = {
-            target.id for target in targets if isinstance(target, ast.Name)
-        }
+        target_names = {target.id for target in targets if isinstance(target, ast.Name)}
         source_is_mutator = expression_may_be_metadata_mutator(value)
         for name in target_names:
             metadata_mutator_functions.discard(name)
@@ -791,9 +789,7 @@ def _analyze_module_import_flow_uncached(
                 continue
             if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 targets = (
-                    child.targets
-                    if isinstance(child, ast.Assign)
-                    else (child.target,)
+                    child.targets if isinstance(child, ast.Assign) else (child.target,)
                 )
                 if any(
                     import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
@@ -806,10 +802,7 @@ def _analyze_module_import_flow_uncached(
                     return True
             elif isinstance(child, ast.Delete) and any(
                 import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
-                and (
-                    not isinstance(target, ast.Name)
-                    or target.id in relevant_globals
-                )
+                and (not isinstance(target, ast.Name) or target.id in relevant_globals)
                 for target in child.targets
             ):
                 return True
@@ -842,8 +835,7 @@ def _analyze_module_import_flow_uncached(
             return invalidate_proven_call_bindings(current, (expression.target,))
         if (
             isinstance(expression, ast.Call)
-            and
-            isinstance(expression.func, ast.Attribute)
+            and isinstance(expression.func, ast.Attribute)
             and expression.func.attr == "__setitem__"
             and isinstance(expression.func.value, ast.Call)
             and isinstance(expression.func.value.func, ast.Name)
@@ -887,9 +879,7 @@ def _analyze_module_import_flow_uncached(
                     )
                 owner_name = dotted_expression_name(expression.args[0])
                 rebound = (
-                    f"{owner_name}.{attribute_name}"
-                    if owner_name is not None
-                    else None
+                    f"{owner_name}.{attribute_name}" if owner_name is not None else None
                 )
                 if rebound is not None:
                     synthetic_target = ast.parse(rebound, mode="eval").body
@@ -963,14 +953,10 @@ def _analyze_module_import_flow_uncached(
                     )
                     all_states.update(current)
             elif isinstance(statement, ast.Delete):
-                current = invalidate_proven_call_bindings(
-                    current, statement.targets
-                )
+                current = invalidate_proven_call_bindings(current, statement.targets)
                 if mutate_metadata:
                     for target in statement.targets:
-                        if not target_writes_metadata(
-                            target, direct_metadata_names
-                        ):
+                        if not target_writes_metadata(target, direct_metadata_names):
                             continue
                         current = _merge_states(
                             invalidate_module_import_state(state, target, deleted=True)
@@ -1048,9 +1034,15 @@ def _analyze_module_import_flow_uncached(
                         )
                         if argument.annotation is not None
                     ]
-                    if statement.args.vararg is not None and statement.args.vararg.annotation is not None:
+                    if (
+                        statement.args.vararg is not None
+                        and statement.args.vararg.annotation is not None
+                    ):
                         annotations.append(statement.args.vararg.annotation)
-                    if statement.args.kwarg is not None and statement.args.kwarg.annotation is not None:
+                    if (
+                        statement.args.kwarg is not None
+                        and statement.args.kwarg.annotation is not None
+                    ):
                         annotations.append(statement.args.kwarg.annotation)
                     if statement.returns is not None:
                         annotations.append(statement.returns)
@@ -1116,7 +1108,7 @@ def _analyze_module_import_flow_uncached(
                     direct_metadata_names=direct_metadata_names,
                 )
                 current = unknown_states(current)
-            elif isinstance(statement, ast.Try):
+            elif isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
                 states_before_try = set(all_states)
                 body = flow_statements(
                     statement.body,
@@ -1168,16 +1160,7 @@ def _analyze_module_import_flow_uncached(
                     if case.guard is not None:
                         record(case.guard, case_states)
                         case_states = expression_effects(case.guard, case_states)
-                    pattern_names = {
-                        pattern.name
-                        for pattern in ast.walk(case.pattern)
-                        if isinstance(pattern, ast.MatchAs) and pattern.name is not None
-                    }
-                    pattern_names.update(
-                        name
-                        for pattern in ast.walk(case.pattern)
-                        if isinstance(pattern, ast.MatchStar) and (name := pattern.name) is not None
-                    )
+                    pattern_names = set(python_pattern_capture_names(case.pattern))
                     if mutate_metadata and pattern_names & set(direct_metadata_names):
                         case_states = unknown_states(case_states)
                     branches.append(
@@ -1201,9 +1184,7 @@ def _analyze_module_import_flow_uncached(
     # union every reachable module state; frontend lowering keeps them relative.
     for deferred_body, mutates_metadata in deferred_bodies:
         body_states = (
-            unknown_states(deferred_states)
-            if mutates_metadata
-            else deferred_states
+            unknown_states(deferred_states) if mutates_metadata else deferred_states
         )
         flow_statements(
             deferred_body,
@@ -1214,7 +1195,9 @@ def _analyze_module_import_flow_uncached(
     for deferred_expression in deferred_expressions:
         record(deferred_expression, deferred_states)
         expression_effects(deferred_expression, deferred_states)
-    return ModuleImportFlow(by_node, final_states, _merge_states(all_states, final_states))
+    return ModuleImportFlow(
+        by_node, final_states, _merge_states(all_states, final_states)
+    )
 
 
 def analyze_module_import_flow(
@@ -1330,9 +1313,7 @@ def resolve_relative_import(
     else:
         assert state.name.value is not None
         package = StaticMetadataValue.known(
-            state.name.value
-            if state.has_path
-            else state.name.value.rpartition(".")[0]
+            state.name.value if state.has_path else state.name.value.rpartition(".")[0]
         )
         # CPython warns when it must fall back to __name__/__path__. Runtime
         # lowering preserves that observable warning even when graph analysis
@@ -1370,7 +1351,9 @@ def project_static_import_request(
     if request.kind == "import_module":
         leading = len(name) - len(name.lstrip("."))
         if not leading:
-            return StaticImportProjection(static_import_candidates(name, request.fromlist))
+            return StaticImportProjection(
+                static_import_candidates(name, request.fromlist)
+            )
         level = leading
         name = name[leading:]
         package = request.package_argument
@@ -1394,8 +1377,7 @@ def project_static_import_request(
         return StaticImportProjection(
             (),
             resolution.error,
-            resolution.error
-            in {"unknown_package", "unknown_spec", "unknown_name"},
+            resolution.error in {"unknown_package", "unknown_spec", "unknown_name"},
         )
     return StaticImportProjection(
         static_import_candidates(resolution.module, request.fromlist),

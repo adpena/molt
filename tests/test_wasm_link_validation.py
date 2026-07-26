@@ -835,6 +835,116 @@ def test_install_callable_table_layout_can_publish_app_region_without_fixed_expo
     assert (entry_count, function_index, offset) == (1, 0, len(element_payload))
 
 
+def _build_native_growth_callable_module() -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray(write_varuint(1))
+    type_payload.extend(b"\x60\x00\x01\x7e")
+    sections.append((1, bytes(type_payload)))
+
+    function_payload = bytearray(write_varuint(4))
+    function_payload.extend(write_varuint(0) * 4)
+    sections.append((3, bytes(function_payload)))
+
+    table_payload = write_varuint(1) + b"\x70\x00" + write_varuint(12)
+    sections.append((4, table_payload))
+
+    exports = [
+        (wasm_link._callable_entry_export_name(0), 0),
+        (wasm_link._callable_entry_export_name(1), 1),
+        ("invoke_compiler_slot", 3),
+    ]
+    export_payload = bytearray(write_varuint(len(exports)))
+    for name, index in exports:
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    native_segment = bytearray(write_varuint(1))
+    native_segment.extend(b"\x00\x41\x0a\x0b")
+    native_segment.extend(write_varuint(1))
+    native_segment.extend(write_varuint(2))
+    sections.append((9, bytes(native_segment)))
+
+    code_payload = bytearray(write_varuint(4))
+    for value in (41, 42, 43):
+        body = b"\x00\x42" + bytes((value,)) + b"\x0b"
+        code_payload.extend(write_varuint(len(body)))
+        code_payload.extend(body)
+    invoke_body = b"\x00\x41\x08\x11\x00\x00\x0b"
+    code_payload.extend(write_varuint(len(invoke_body)))
+    code_payload.extend(invoke_body)
+    sections.append((10, bytes(code_payload)))
+    return wasm_link._build_sections(sections)
+
+
+def _simple_active_function_segments(data: bytes) -> list[tuple[int, list[int]]]:
+    payload = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(data)
+        if section_id == 9
+    )
+    segment_count, offset = wasm_link._read_varuint(payload, 0)
+    segments: list[tuple[int, list[int]]] = []
+    for _ in range(segment_count):
+        flags, offset = wasm_link._read_varuint(payload, offset)
+        assert flags == 0
+        assert payload[offset] == 0x41
+        base, offset = wasm_link._read_varsint(payload, offset + 1)
+        assert payload[offset] == 0x0B
+        entry_count, offset = wasm_link._read_varuint(payload, offset + 1)
+        indices: list[int] = []
+        for _ in range(entry_count):
+            index, offset = wasm_link._read_varuint(payload, offset)
+            indices.append(index)
+        segments.append((base, indices))
+    assert offset == len(payload)
+    return segments
+
+
+def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> None:
+    layout = wasm_link.CallableTableLayout(0, 0, 8, 2)
+    module = _build_native_growth_callable_module()
+    code_before = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(module)
+        if section_id == 10
+    )
+
+    assert (
+        wasm_link._linked_callable_occupied_end(
+            [[10, 2, 0, 0]], layout
+        )
+        == 11
+    )
+    published = wasm_link._install_callable_table_layout(
+        module, layout, include_fixed_prefix=False
+    )
+
+    code_after = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(published)
+        if section_id == 10
+    )
+    assert code_after == code_before
+    assert b"\x41\x08\x11\x00\x00" in code_after
+    assert _simple_active_function_segments(published) == [
+        (10, [2]),
+        (8, [0, 1]),
+    ]
+
+
+def test_linked_callable_growth_rejects_compiler_owned_slot_overlap() -> None:
+    layout = wasm_link.CallableTableLayout(3, 2, 8, 2)
+
+    with pytest.raises(ValueError, match="pre-link callable region"):
+        wasm_link._linked_callable_occupied_end([[9, 0, 0, 0]], layout)
+    with pytest.raises(ValueError, match="pre-link callable region"):
+        wasm_link._linked_callable_occupied_end([[3, 0, 0, 0]], layout)
+
+
 def _build_host_call_indirect_module(
     import_name: str = "molt_call_indirect3",
 ) -> bytes:

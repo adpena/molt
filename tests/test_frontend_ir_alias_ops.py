@@ -173,6 +173,32 @@ def test_plain_local_alias_assignment_emits_owned_binding_alias() -> None:
     assert any(op["kind"] == "binding_alias" for op in lowered_ops)
 
 
+def test_class_control_flow_type_alias_publishes_through_class_namespace() -> None:
+    ops = _raw_ops(
+        "class AliasOwner:\n"
+        "    ClassValue = int\n"
+        "    if True:\n"
+        "        type Member[T] = tuple[ClassValue, T]\n",
+        module_name="type_alias_class_scope",
+    )
+    member_keys = {
+        op.result.name
+        for op in ops
+        if op.kind == "CONST_STR"
+        and op.args == ["Member"]
+        and op.result is not None
+    }
+
+    assert member_keys
+    assert any(
+        op.kind == "STORE_INDEX"
+        and len(op.args) >= 2
+        and isinstance(op.args[1], MoltValue)
+        and op.args[1].name in member_keys
+        for op in ops
+    )
+
+
 def test_inc_ref_and_dec_ref_lower_to_explicit_ownership_lanes() -> None:
     inc = _map_single(
         MoltOp(kind="INC_REF", args=[MoltValue("value")], result=MoltValue("owned"))
