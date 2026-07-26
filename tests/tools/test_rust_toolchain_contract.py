@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -48,3 +49,20 @@ def test_ci_gate_uses_repo_rust_toolchain_gate_without_compile_slot() -> None:
     ]
     assert check.needs_rust is False
     assert check.needs_cargo is True
+
+
+def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
+    tool = _load_check_rust_toolchain()
+    captured: dict[str, object] = {}
+
+    def fake_run(_command: list[str], **kwargs: object):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess([], 0, "cargo 1.96.1", "")
+
+    monkeypatch.setenv("CARGO_BUILD_RUSTC_WRAPPER", "sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+
+    tool._run(["cargo", "--version"])
+
+    assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]

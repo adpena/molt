@@ -35,6 +35,37 @@ def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> N
     assert calls[0][1]["timeout"] == 30.0
 
 
+@pytest.mark.parametrize(
+    "wrapper_env",
+    [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ],
+)
+def test_cargo_metadata_probe_normalizes_wrapper_incremental_conflict(
+    monkeypatch,
+    wrapper_env: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(_command: list[str], **kwargs: object):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess([], 0, "{}", "")
+
+    monkeypatch.setattr(process_guard.subprocess, "run", fake_run)
+    process_guard.run_completed_command(
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        env={wrapper_env: "sccache", "CARGO_INCREMENTAL": "1"},
+        memory_guard_prefix=None,
+        capture_output=True,
+    )
+
+    assert calls[0]["env"][wrapper_env] == "sccache"  # type: ignore[index]
+    assert calls[0]["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+
+
 def test_guarded_boundary_rejects_false_stderr_interleaving_contract() -> None:
     with pytest.raises(ValueError, match="preserve stdout/stderr separately"):
         process_guard.run_completed_command(

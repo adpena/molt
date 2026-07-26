@@ -12,6 +12,13 @@ import sys
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from molt.cargo_execution_policy import (
+    _wrapper_is_sccache,
+    cargo_compiler_wrappers,
+    normalize_cargo_environment,
+    sccache_compiler_wrappers,
+    without_sccache_compiler_wrappers,
+)
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
     _BYTES_PER_CARGO_JOB,  # noqa: F401 (re-exported for compat)
@@ -301,29 +308,10 @@ def _sccache_server_responsive(sccache: str) -> bool:
         return False
 
 
-def _wrapper_is_sccache(wrapper: str) -> bool:
-    name = wrapper.strip().strip('"').replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name == "sccache" or name == "sccache.exe"
-
-
-def _apply_cargo_incremental_policy(env: dict[str, str]) -> None:
-    """Enforce the production Cargo wrapper/incremental invariant.
-
-    Cargo does not submit incremental compilation units to compiler wrappers.
-    An inherited explicit ``CARGO_INCREMENTAL=1`` therefore cannot override the
-    sccache contract.  Without sccache, preserve an explicit caller policy and
-    otherwise enable the normal warm-build default.
-    """
-
-    if _wrapper_is_sccache(env.get("RUSTC_WRAPPER", "")):
-        env["CARGO_INCREMENTAL"] = "0"
-    else:
-        env.setdefault("CARGO_INCREMENTAL", "1")
-
-
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
-    if env.get("RUSTC_WRAPPER"):
-        _apply_cargo_incremental_policy(env)
+    if cargo_compiler_wrappers(env):
+        normalized, _applied = normalize_cargo_environment(env)
+        env.update(normalized)
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
@@ -358,7 +346,8 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env["RUSTC_WRAPPER"] = sccache
-    _apply_cargo_incremental_policy(env)
+    normalized, _applied = normalize_cargo_environment(env)
+    env.update(normalized)
     _sccache_diag(
         f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness."
     )
@@ -384,7 +373,7 @@ def _cargo_build_env() -> dict[str, str]:
     # Explicit incremental policy wins only when it is compatible with the
     # active wrapper. The invariant is enforced here because every production
     # nested Cargo build obtains its environment through this authority.
-    _apply_cargo_incremental_policy(env)
+    env, _applied = normalize_cargo_environment(env, default_incremental="1")
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
@@ -496,18 +485,19 @@ def _run_cargo_attempt(
     tempfile_runner: _TempfileCargoRunner | None,
     progress_label: str | None,
 ) -> subprocess.CompletedProcess[Any]:
+    normalized_env, _applied = normalize_cargo_environment(env)
     if tempfile_runner is not None:
         return tempfile_runner(
             cmd,
             cwd=cwd,
-            env=env,
+            env=normalized_env,
             timeout=timeout,
             progress_label=progress_label,
         )
     return _run_completed_command(
         cmd,
         cwd=cwd,
-        env=dict(env),
+        env=normalized_env,
         capture_output=True,
         memory_guard_prefix="MOLT_BUILD",
         timeout=timeout,
@@ -537,7 +527,8 @@ def _run_cargo_with_sccache_retry(
         progress_label=progress_label,
     )
     first_duration = time.perf_counter() - started
-    wrapper = env.get("RUSTC_WRAPPER", "")
+    wrappers = sccache_compiler_wrappers(env)
+    wrapper = wrappers[0][1] if wrappers else ""
     retry_reason = (
         _sccache_wrapper_failure_reason(build)
         if build.returncode != 0 and wrapper and _wrapper_is_sccache(wrapper)
@@ -553,8 +544,7 @@ def _run_cargo_with_sccache_retry(
         )
     ]
     if retry_reason is not None:
-        retry_env = env.copy()
-        retry_env.pop("RUSTC_WRAPPER", None)
+        retry_env = without_sccache_compiler_wrappers(env)
         if not json_output:
             print(
                 f"{label}: sccache wrapper failure detected ({retry_reason}); "
@@ -579,7 +569,8 @@ def _run_cargo_with_sccache_retry(
                 failure_kind=None,
             )
         )
-    active_wrapper = env.get("RUSTC_WRAPPER", "")
+    active_wrappers = sccache_compiler_wrappers(env)
+    active_wrapper = active_wrappers[0][1] if active_wrappers else ""
     if not json_output and active_wrapper and _wrapper_is_sccache(active_wrapper):
         _attest_sccache_stats(active_wrapper, label)
     return CargoExecutionResult(

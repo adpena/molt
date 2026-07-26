@@ -54,3 +54,26 @@ def test_read_only_git_classifier_excludes_mutations() -> None:
     assert not command_execution._is_bounded_metadata_probe(
         ["git", "commit", "-m", "message"]
     )
+
+
+def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(command_execution.subprocess, "Popen", FakePopen)
+    executor = command_execution.CommandExecutor.for_file(__file__)
+
+    executor.start_owned(
+        ["cargo", "metadata", "--no-deps"],
+        env={"RUSTC_WORKSPACE_WRAPPER": "sccache", "CARGO_INCREMENTAL": "1"},
+    )
+
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["env"]["CARGO_INCREMENTAL"] == "0"

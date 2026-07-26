@@ -27,6 +27,7 @@ authority_inputs = [
   "formal/lean/lean-toolchain",
   "rust-toolchain.toml",
   "src/molt/dx.py",
+  "src/molt/cargo_execution_policy.py",
   "src/molt/llvm_toolchain.py",
   "tools/artifact_publish.py",
   "tools/check_generator_manifest.py",
@@ -259,16 +260,6 @@ version_pattern = '^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[
 setup_value = "1.253.0"
 setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"]
 
-# Rust compiler wrappers and incremental compilation are mutually exclusive.
-# The executor applies this after command-local overrides to every command that
-# declares both compiler toolchains, so no proof family can inherit the invalid
-# hosted-runner combination.
-[[environment_policy]]
-name = "sccache-disables-incremental"
-toolchains = ["rustc", "cargo"]
-match_environment = { RUSTC_WRAPPER = '(?i)(?:^|.*[/\\])sccache(?:\.exe)?$' }
-set_environment = { CARGO_INCREMENTAL = "0" }
-
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
 runner = "ubuntu-latest"
@@ -467,7 +458,7 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 90
+timeout_minutes = 105
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -547,7 +538,7 @@ admission_job = "llvm-backend"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main", "nightly"]
 required = true
-timeout_minutes = 60
+timeout_minutes = 75
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1116,7 +1107,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 900
+timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
@@ -1129,7 +1120,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
@@ -1142,7 +1133,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 900
+timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
@@ -1156,7 +1147,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
@@ -1184,7 +1175,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
@@ -1211,7 +1202,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
@@ -1225,7 +1216,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
@@ -1239,7 +1230,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
@@ -1266,7 +1257,7 @@ family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 600
+timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
@@ -1303,7 +1294,7 @@ family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 900
+timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
@@ -1315,7 +1306,7 @@ family = "rust"
 cell = "linux-x86_64-rust-wasi-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 240
+timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--target", "wasm32-wasip1", "-p", "molt-tir"]
@@ -1327,7 +1318,7 @@ family = "rust"
 cell = "linux-x86_64-rust-aarch64-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 240
+timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--target", "aarch64-unknown-linux-gnu", "-p", "molt-runtime-math"]
@@ -1342,7 +1333,7 @@ resource_class = "compiler-build-resource"
 # Cold hosted run 29649415885 remained in the canonical workspace compile at
 # 600 seconds with four measured-safe jobs and no cache. Preserve the complete
 # truth command and size its bounded proof window for that observed cold shape.
-timeout_seconds = 1800
+timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/run_cargo_test_truth.py"]
@@ -1354,7 +1345,7 @@ family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 240
+timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = ["rust.test.default-truth"]
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
@@ -1366,7 +1357,7 @@ family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 240
+timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = ["rust.clippy.workspace-default"]
 argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
@@ -1378,7 +1369,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "cold"
 cache_domain = "llvm-cargo"
 dependencies = []
 argv = ["cargo", "build", "--locked", "-p", "molt-backend", "--features", "native-backend llvm"]
@@ -1390,7 +1381,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "test", "--locked", "-p", "molt-backend", "--features", "native-backend llvm", "--lib", "llvm_backend::lowering", "--no-fail-fast"]
@@ -1402,7 +1393,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-linker-release-fast"
 tiers = ["pre-push", "pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 120
+timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "test", "--locked", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
@@ -1414,7 +1405,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 120
+timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--features", "native-backend llvm", "--lib", "--", "-D", "warnings"]
@@ -1426,7 +1417,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-mlir-dev"
 tiers = ["pre-push", "pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 300
+timeout_budget = "warm"
 cache_domain = "mlir-cargo"
 dependencies = ["llvm.build.backend"]
 cwd = "runtime/molt-backend-mlir"
@@ -1451,7 +1442,7 @@ family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pr", "main", "nightly"]
 resource_class = "compiler-build-resource"
-timeout_seconds = 1800
+timeout_budget = "suite"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.test.lowering"]
 env = { MOLT_PYTEST_TRUTH_RECEIPT = "proof-receipts/evidence/llvm-differential-truth.json", MOLT_PYTEST_TRUTH_MINIMUM_EXECUTED = "2" }

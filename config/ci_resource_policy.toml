@@ -1,4 +1,4 @@
-schema = "molt.ci-resource-policy.v1"
+schema = "molt.ci-resource-policy.v2"
 
 [cargo_build]
 max_jobs = 4
@@ -7,3 +7,22 @@ headroom_ratio = 0.40
 measurement_run_id = 29646901351
 measurement_commit = "4002a0956af24736d39bc6b077045a1c278f0adc"
 measurement_command = "python3 tools/run_cargo_test_truth.py"
+
+[cargo_environment]
+incident_run_id = 30211145633
+incident_job_id = 89817499999
+incident_commit = "66c042c7ba51bc8606f34b27cfc6af90783cec61"
+incident_command = "cargo metadata --locked --format-version 1"
+
+[cargo_execution]
+cross_check_timeout_seconds = 240
+warm_timeout_seconds = 300
+integration_timeout_seconds = 600
+cold_timeout_seconds = 1200
+suite_timeout_seconds = 1800
+observed_cold_timeout_seconds = 300.51
+minimum_cold_headroom_multiplier = 3.0
+measurement_run_id = 30209686001
+measurement_job_id = 89813773652
+measurement_commit = "88f2c1ae305e78bbbf4ad2b86aa8d620825d9523"
+measurement_command = "cargo build --locked --profile dev-fast -p molt-wasm-host"

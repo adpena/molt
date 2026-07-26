@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.cargo_execution_policy import cargo_subprocess_environment
+
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
 DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS = 30.0
@@ -120,6 +122,7 @@ def run_completed_command(
     command = [str(part) for part in cmd]
     if not command:
         raise ValueError("command argv must not be empty")
+    env, _cargo_policies = cargo_subprocess_environment(command, env)
     if capture_output and (stdout is not None or stderr is not None):
         raise ValueError("capture_output cannot be combined with stdout or stderr")
     supported_streams = {None, subprocess.PIPE, subprocess.DEVNULL}
