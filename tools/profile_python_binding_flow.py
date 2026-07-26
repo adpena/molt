@@ -34,6 +34,13 @@ from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
     python_source_digest,
 )
 
+try:
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from command_execution import CommandExecutor
+
+_COMMANDS = CommandExecutor.for_file(__file__)
+
 
 def _representative_source(
     import_count: int,
@@ -78,8 +85,7 @@ def _representative_source(
             )
         for index in range(nested_sibling_count):
             lines.append(
-                "    from importlib import import_module as "
-                f"sibling_loader_{index}"
+                f"    from importlib import import_module as sibling_loader_{index}"
             )
     return "\n".join(lines) + "\n"
 
@@ -92,6 +98,7 @@ def _percentile(samples: list[int], percentile: float) -> int:
 
 def _process_memory_bytes() -> tuple[int | None, int | None]:
     if os.name == "nt":
+
         class ProcessMemoryCounters(ctypes.Structure):
             _fields_ = [
                 ("cb", ctypes.c_ulong),
@@ -140,13 +147,16 @@ def _file_digest(path: Path) -> str:
 
 
 def _identity(*, label: str) -> dict[str, object]:
-    implementation_path = Path(sys.modules[analyze_python_bindings.__module__].__file__ or "")
+    implementation_path = Path(
+        sys.modules[analyze_python_bindings.__module__].__file__ or ""
+    )
     try:
-        git_head = subprocess.run(
+        git_head = _COMMANDS.run(
             ["git", "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
+            cwd=IMPLEMENTATION_ROOT,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         git_head = None
@@ -339,9 +349,7 @@ def _fit_log_log_slope(
 ) -> float:
     xs = [math.log(float(cast(int, sample["ast_nodes"]))) for sample in samples]
     ys = [
-        math.log(
-            float(cast(int, cast(dict[str, object], sample[metric])[field]))
-        )
+        math.log(float(cast(int, cast(dict[str, object], sample[metric])[field])))
         for sample in samples
     ]
     x_mean = statistics.fmean(xs)
@@ -354,9 +362,7 @@ def _fit_log_log_slope(
 def _fit_nonnegative_log_log_slope(
     samples: list[dict[str, object]], metric: str, field: str
 ) -> float | None:
-    raw_values = [
-        cast(dict[str, object], sample[metric])[field] for sample in samples
-    ]
+    raw_values = [cast(dict[str, object], sample[metric])[field] for sample in samples]
     if any(value is None for value in raw_values):
         return None
     values = [int(cast(int, value)) for value in raw_values]
@@ -393,14 +399,16 @@ def _run_isolated_sample(
     child_env["MOLT_BINDING_PROFILE_SOURCE_ROOT"] = str(IMPLEMENTATION_ROOT)
     child_env["MOLT_PROJECT_ROOT"] = str(IMPLEMENTATION_ROOT)
     child_env["PYTHONPATH"] = str(IMPLEMENTATION_SRC)
-    completed = subprocess.run(
+    completed = _COMMANDS.run(
         command,
         check=False,
         capture_output=True,
         text=True,
         env=child_env,
+        cwd=IMPLEMENTATION_ROOT,
     )
     if completed.returncode:
+
         def bounded(value: str, limit: int = 8_000) -> str:
             return value if len(value) <= limit else value[-limit:]
 
@@ -428,11 +436,11 @@ def main() -> int:
     parser.add_argument("--scales", default="1,2,4,8")
     parser.add_argument("--max-analysis-slope", type=float, default=1.35)
     parser.add_argument("--implementation-label", default="candidate")
-    parser.add_argument(
-        "--workload-name", default="mixed-import-binding-authority-v1"
-    )
+    parser.add_argument("--workload-name", default="mixed-import-binding-authority-v1")
     parser.add_argument("--json", type=Path)
-    parser.add_argument("--internal-sample", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--internal-sample", action="store_true", help=argparse.SUPPRESS
+    )
     args = parser.parse_args()
     if (
         args.imports <= 0
@@ -460,7 +468,11 @@ def main() -> int:
         scales = [int(value) for value in args.scales.split(",")]
     except ValueError:
         parser.error("--scales must be a comma-separated list of positive integers")
-    if not scales or any(scale <= 0 for scale in scales) or len(set(scales)) != len(scales):
+    if (
+        not scales
+        or any(scale <= 0 for scale in scales)
+        or len(set(scales)) != len(scales)
+    ):
         parser.error("--scales must contain unique positive integers")
     if len(scales) < 3:
         parser.error("performance claims require at least three geometric scales")
@@ -476,9 +488,7 @@ def main() -> int:
         "passes": True,
     }
     if len(samples) >= 3:
-        analysis_slope = _fit_log_log_slope(
-            samples, "analysis_only", "median_ns"
-        )
+        analysis_slope = _fit_log_log_slope(samples, "analysis_only", "median_ns")
         parse_analysis_slope = _fit_log_log_slope(
             samples, "parse_and_analysis", "median_ns"
         )
@@ -500,9 +510,7 @@ def main() -> int:
             retained_index_slope=(
                 None if retained_slope is None else round(retained_slope, 4)
             ),
-            peak_rss_delta_slope=(
-                None if rss_slope is None else round(rss_slope, 4)
-            ),
+            peak_rss_delta_slope=(None if rss_slope is None else round(rss_slope, 4)),
             passes=(
                 analysis_slope <= args.max_analysis_slope
                 and parse_analysis_slope <= args.max_analysis_slope
