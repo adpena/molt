@@ -98,7 +98,6 @@ def _run_wasm_test_process(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
-        default_timeout=120.0,
         check=check,
     )
 

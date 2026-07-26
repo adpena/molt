@@ -5,8 +5,6 @@ from collections.abc import Mapping, Sequence
 from tools import harness_memory_guard
 from tests import process_guard_common
 
-DEFAULT_MUTATION_TIMEOUT_SEC = process_guard_common.DEFAULT_TEST_PROCESS_TIMEOUT_SEC
-
 
 def run_mutation_process(
     args: Sequence[str],
@@ -22,7 +20,6 @@ def run_mutation_process(
         prefix="MOLT_MUTATION",
         env=env,
         timeout=timeout,
-        default_timeout=DEFAULT_MUTATION_TIMEOUT_SEC,
         capture_output=capture_output,
         text=text,
         check=check,

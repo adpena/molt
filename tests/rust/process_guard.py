@@ -5,8 +5,6 @@ from collections.abc import Mapping, Sequence
 from tools import harness_memory_guard
 from tests import process_guard_common
 
-DEFAULT_RUST_TEST_TIMEOUT_SEC = process_guard_common.DEFAULT_TEST_PROCESS_TIMEOUT_SEC
-
 
 def run_rust_test_process(
     args: Sequence[str],
@@ -24,7 +22,6 @@ def run_rust_test_process(
         cwd=cwd,
         env=env,
         timeout=timeout,
-        default_timeout=DEFAULT_RUST_TEST_TIMEOUT_SEC,
         capture_output=capture_output,
         text=text,
         check=check,

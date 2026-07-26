@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 import tests.wasm_linked_runner as wasm_runner
+from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 
 
 def _require_node_binary() -> str:
@@ -78,6 +79,30 @@ def test_wasm_test_process_preserves_timeout_semantics(
         assert exc.stderr == "memory_guard: timeout after 2.00s\n"
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected TimeoutExpired")
+
+
+def test_wasm_nested_default_inherits_owning_proof_budget(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    wasm_runner._run_wasm_test_process(
+        ["node", "runner.js"],
+        cwd=tmp_path,
+        env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
+    )
+
+    assert captured["kwargs"]["timeout"] == 1200
 
 
 def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
