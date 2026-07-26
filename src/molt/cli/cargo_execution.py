@@ -162,16 +162,23 @@ def cargo_execution_evidence(
 ) -> dict[str, object]:
     """Return one stable JSON-ready execution payload for Cargo build failures."""
     attempts = getattr(result, "attempts", None)
-    if isinstance(attempts, tuple) and all(
-        isinstance(attempt, CargoAttemptEvidence) for attempt in attempts
+    typed_attempts = (
+        [attempt for attempt in attempts if isinstance(attempt, CargoAttemptEvidence)]
+        if isinstance(attempts, tuple)
+        else []
+    )
+    if (
+        isinstance(attempts, tuple)
+        and typed_attempts
+        and len(typed_attempts) == len(attempts)
     ):
-        attempt_payloads = [attempt.json_payload() for attempt in attempts]
+        attempt_records = typed_attempts
     else:
         stderr = _text_output(result.stderr)
         stdout = _text_output(result.stdout)
         elapsed = getattr(result, "elapsed_s", 0.0)
         duration = float(elapsed) if isinstance(elapsed, (int, float)) else 0.0
-        attempt_payloads = [
+        attempt_records = [
             CargoAttemptEvidence(
                 index=1,
                 wrapper=None,
@@ -184,30 +191,31 @@ def cargo_execution_evidence(
                 failure_kind=None,
                 stdout=_bounded_cargo_attempt_text(stdout),
                 stderr=_bounded_cargo_attempt_text(stderr),
-            ).json_payload()
+            )
         ]
-    final = attempt_payloads[-1]
-    durations = [float(attempt["duration_seconds"]) for attempt in attempt_payloads]
+    final = attempt_records[-1]
+    attempt_payloads = [attempt.json_payload() for attempt in attempt_records]
+    durations = [attempt.duration_seconds for attempt in attempt_records]
     process_peaks = [
-        int(attempt["peak_process_rss_bytes"])
-        for attempt in attempt_payloads
-        if isinstance(attempt.get("peak_process_rss_bytes"), int)
+        attempt.peak_process_rss_bytes
+        for attempt in attempt_records
+        if attempt.peak_process_rss_bytes is not None
     ]
     tree_peaks = [
-        int(attempt["peak_tree_rss_bytes"])
-        for attempt in attempt_payloads
-        if isinstance(attempt.get("peak_tree_rss_bytes"), int)
+        attempt.peak_tree_rss_bytes
+        for attempt in attempt_records
+        if attempt.peak_tree_rss_bytes is not None
     ]
     retry_reason = getattr(result, "retry_reason", None)
     return {
         "schema": _CARGO_EXECUTION_EVIDENCE_SCHEMA,
         "attempt_count": len(attempt_payloads),
         "retry_reason": retry_reason if isinstance(retry_reason, str) else None,
-        "timed_out": bool(final.get("timed_out", False)),
+        "timed_out": final.timed_out,
         "duration_seconds": round(sum(durations), 6),
         "peak_process_rss_bytes": max(process_peaks, default=None),
         "peak_tree_rss_bytes": max(tree_peaks, default=None),
-        "signal": final.get("signal"),
+        "signal": final.signal,
         "attempts": attempt_payloads,
     }
 
