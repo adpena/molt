@@ -339,6 +339,43 @@ def _emit_build_diagnostics(
                 f"target_cost_per_worker={target_cost:.3f}",
                 file=sys.stderr,
             )
+            worker_selection = policy.get("worker_selection")
+            worker_memory_bytes = policy.get("worker_memory_bytes")
+            worker_memory_headroom_bytes = policy.get("worker_memory_headroom_bytes")
+            if (
+                isinstance(worker_selection, str)
+                and isinstance(worker_memory_bytes, int)
+                and isinstance(worker_memory_headroom_bytes, int)
+            ):
+                mib = 1024 * 1024
+                resource_fields = [
+                    f"selection={worker_selection}",
+                    f"worker_memory_mib={worker_memory_bytes / mib:.1f}",
+                    "worker_memory_headroom_mib="
+                    f"{worker_memory_headroom_bytes / mib:.1f}",
+                ]
+                requested = policy.get("worker_requested")
+                resource_fields.append(
+                    "requested=auto" if requested is None else f"requested={requested}"
+                )
+                for key, label in (
+                    ("worker_cpu_count", "cpu_count"),
+                    ("worker_memory_ceiling", "memory_ceiling"),
+                ):
+                    value = policy.get(key)
+                    if isinstance(value, int):
+                        resource_fields.append(f"{label}={value}")
+                for key, label in (
+                    ("system_total_memory_bytes", "system_total_mib"),
+                    ("system_available_memory_bytes", "system_available_mib"),
+                ):
+                    value = policy.get(key)
+                    if isinstance(value, int):
+                        resource_fields.append(f"{label}={value / mib:.1f}")
+                print(
+                    "- frontend_parallel.resources: " + " ".join(resource_fields),
+                    file=sys.stderr,
+                )
         layer_stats = frontend_parallel.get("layers")
         if not summary_only and isinstance(layer_stats, list):
             limit = 20 if full_details else 10
