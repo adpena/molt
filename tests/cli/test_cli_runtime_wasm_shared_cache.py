@@ -15,7 +15,6 @@ shared-cache entry exists.
 from __future__ import annotations
 
 import contextlib
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -115,9 +114,7 @@ def test_shared_cache_key_separates_build_identities() -> None:
 
 
 def test_shared_cache_path_rejects_incomplete_fingerprint() -> None:
-    assert (
-        RWC._shared_runtime_wasm_cache_path({"hash": None}, reloc=False) is None
-    )
+    assert RWC._shared_runtime_wasm_cache_path({"hash": None}, reloc=False) is None
     assert (
         RWC._shared_runtime_wasm_cache_path(
             {"hash": _HASH_A, "meta_digest": "not-hex"}, reloc=False
@@ -182,8 +179,9 @@ def test_hydrate_validates_source_once_before_atomic_copy(
         dest=dest,
         fingerprint=fp,
         reloc=False,
-        is_valid=lambda path: validated.append(path) is None
-        and path.read_bytes() == payload,
+        is_valid=lambda path: (
+            validated.append(path) is None and path.read_bytes() == payload
+        ),
     )
 
     cache_path = RWC._shared_runtime_wasm_cache_path(fp, reloc=False)
@@ -291,7 +289,9 @@ def test_ensure_runtime_wasm_reuses_shared_cache_across_sessions(
     monkeypatch.setattr(
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda p: True
     )
-    monkeypatch.setattr(RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda p: True)
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda p: True
+    )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda p: "valid")
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_exports_satisfy_for_mode", lambda *a, **k: True
@@ -357,7 +357,7 @@ def test_memory_bounded_cargo_jobs_fits_small_box(
     # Simulate an 8GB, 16-core box: jobs must be bounded well below 16 so the
     # wasm build fits memory instead of thrashing. Job-sizing authority lives in
     # molt.dx (re-exported through cargo_execution); patch it where it resolves.
-    monkeypatch.setattr(DX, "_total_system_memory_bytes", lambda: 8 * 1024**3)
+    monkeypatch.setattr(DX, "_system_memory_bytes", lambda: (8 * 1024**3, 8 * 1024**3))
     monkeypatch.setattr(DX.os, "cpu_count", lambda: 16)
     jobs = CARGO_EXEC._memory_bounded_cargo_jobs()
     assert jobs is not None
@@ -372,7 +372,9 @@ def test_memory_bounded_cargo_jobs_capped_by_cpu(
     # Lots of RAM but few cores: never exceed the CPU count. The job-sizing
     # authority lives in molt.dx (re-exported through cargo_execution), so patch
     # the probes where the function resolves them.
-    monkeypatch.setattr(DX, "_total_system_memory_bytes", lambda: 128 * 1024**3)
+    monkeypatch.setattr(
+        DX, "_system_memory_bytes", lambda: (128 * 1024**3, 128 * 1024**3)
+    )
     monkeypatch.setattr(DX.os, "cpu_count", lambda: 4)
     assert CARGO_EXEC._memory_bounded_cargo_jobs() == 4
 
