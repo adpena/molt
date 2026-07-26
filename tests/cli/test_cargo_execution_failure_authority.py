@@ -77,6 +77,28 @@ def test_real_rustc_failure_with_sccache_command_is_never_retry_authority(
     }
 
 
+def test_empty_or_untyped_attempts_fall_back_to_one_typed_terminal_record() -> None:
+    result = _completed(
+        ["cargo", "check"],
+        101,
+        stderr="error: terminal cargo failure",
+        elapsed_s=0.25,
+        peak_process_kb=12,
+        peak_tree_kb=24,
+    )
+    result.attempts = ()  # type: ignore[attr-defined]
+
+    evidence = CARGO.cargo_execution_evidence(result)
+
+    assert evidence["attempt_count"] == 1
+    assert evidence["duration_seconds"] == pytest.approx(0.25)
+    assert evidence["peak_process_rss_bytes"] == 12 * 1024
+    assert evidence["peak_tree_rss_bytes"] == 24 * 1024
+    attempts = evidence["attempts"]
+    assert isinstance(attempts, list)
+    assert attempts[0]["stderr"] == "error: terminal cargo failure"
+
+
 @pytest.mark.parametrize(
     ("stderr", "reason"),
     [

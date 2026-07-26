@@ -54,3 +54,36 @@ def test_capture_output_rejects_explicit_streams_before_dispatch() -> None:
             capture_output=True,
             stdout=subprocess.PIPE,
         )
+
+
+def test_guarded_timeout_without_requested_timeout_fails_closed() -> None:
+    class FakeContext:
+        @classmethod
+        def from_env(cls, *_args: object, **_kwargs: object) -> "FakeContext":
+            return cls()
+
+        def run(self, command: list[str], **_kwargs: object) -> object:
+            return type(
+                "GuardedResult",
+                (),
+                {
+                    "timed_out": True,
+                    "stdout": "partial",
+                    "stderr": "guard timed out",
+                    "returncode": 124,
+                },
+            )()
+
+    harness = type(
+        "FakeHarness",
+        (),
+        {"HarnessExecutionContext": FakeContext},
+    )
+
+    with pytest.raises(RuntimeError, match="timeout custody is inconsistent"):
+        process_guard.run_completed_command(
+            ["compiler", "input.py"],
+            memory_guard_prefix="MOLT_TEST",
+            timeout=None,
+            guard_loader=lambda _cwd: harness,
+        )
