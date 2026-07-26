@@ -30,6 +30,7 @@ from molt.dx import (
 )
 from molt.cli.build_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli.command_runtime import _run_completed_command
+from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.project_roots import _find_molt_root
 
 
@@ -259,9 +260,9 @@ def _maybe_enable_lld_link(env: dict[str, str]) -> None:
     key = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
     if env.get(key, "").strip():
         return
-    lld = shutil.which("lld-link")
-    if lld:
-        env[key] = lld
+    candidates = llvm_linker_candidates("lld-link")
+    if candidates:
+        env[key] = str(candidates[0])
 
 
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:

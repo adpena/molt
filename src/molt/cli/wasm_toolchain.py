@@ -10,6 +10,12 @@ from pathlib import Path
 import tomllib
 
 from molt.cli.command_runtime import _run_completed_command
+from molt.cli.file_hashing import _sha256_file
+from molt.cli.llvm_wasi_tools import (
+    llvm_linker_candidates,
+    resolve_explicit_tool_command,
+)
+from molt.llvm_linker_roles import executable_selects_linker_role
 from molt.wasi_sysroot import (
     WASI_TARGET_INCLUDE_DIRS as _WASI_TARGET_INCLUDE_DIRS,
     normalize_wasi_sysroot,
@@ -33,11 +39,20 @@ class WasmLinkerIdentity:
     path: Path
     version: str
     wasi_sdk_llvm_version: str | None
+    sha256: str | None = None
 
     @property
     def diagnostic(self) -> str:
         expected = self.wasi_sdk_llvm_version or "unattested"
-        return f"wasm-ld={self.path} version={self.version} wasi-sdk-llvm={expected}"
+        digest = self.sha256 or "unattested"
+        return (
+            f"role=wasm-ld path={self.path} version={self.version} "
+            f"sha256={digest} wasi-sdk-llvm={expected}"
+        )
+
+    @property
+    def fingerprint_token(self) -> str:
+        return f"wasm-ld:{self.version}:{self.sha256 or 'unattested'}"
 
 
 @dataclass(frozen=True)
@@ -374,6 +389,29 @@ def _wasm_linker_version(path: Path) -> str:
     return match.group(1)
 
 
+@functools.lru_cache(maxsize=32)
+def _wasm_linker_binary_identity(
+    path_text: str,
+    stat_identity: tuple[int, int, int, int, int],
+) -> tuple[str, str]:
+    path = Path(path_text)
+    version = _wasm_linker_version(path)
+    sha256 = _sha256_file(path)
+    stat = path.stat()
+    after = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_dev,
+        stat.st_ino,
+    )
+    if after != stat_identity:
+        raise WasmLinkerContractError(
+            f"wasm-ld changed while its linker identity was computed: {path}"
+        )
+    return version, sha256
+
+
 def _llvm_release_line(version: str) -> tuple[int, int]:
     major, minor, *_ = version.split(".")
     return int(major), int(minor)
@@ -381,25 +419,41 @@ def _llvm_release_line(version: str) -> tuple[int, int]:
 
 def resolve_wasm_linker() -> WasmLinkerIdentity | None:
     sysroot = resolve_wasi_sysroot()
-    candidates: list[Path] = []
+    explicit_commands: tuple[tuple[str, ...], ...] = ()
     override = os.environ.get("MOLT_WASM_LD", "").strip()
     if override:
-        candidates.append(Path(override).expanduser())
+        try:
+            explicit = resolve_explicit_tool_command(override, label="MOLT_WASM_LD")
+        except ValueError as exc:
+            raise WasmLinkerContractError(str(exc)) from exc
+        if not executable_selects_linker_role(Path(explicit[0]), "wasm-ld"):
+            raise WasmLinkerContractError(
+                "MOLT_WASM_LD must select the wasm-ld entrypoint; generic lld and "
+                f"other linker roles are not wasm linkers: {explicit[0]}"
+            )
+        explicit_commands = (explicit,)
+    sibling_directories: tuple[Path, ...] = ()
     if sysroot is not None:
         sdk_root = _wasi_sdk_root_for_sysroot(sysroot)
         if sdk_root is not None:
-            candidates.append(
-                sdk_root / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
-            )
-    on_path = shutil.which("wasm-ld")
-    if on_path:
-        candidates.append(Path(on_path))
-    linker = next(
-        (path.resolve(strict=False) for path in candidates if path.is_file()), None
+            sibling_directories = (sdk_root / "bin",)
+    candidates = llvm_linker_candidates(
+        "wasm-ld",
+        explicit_commands=explicit_commands,
+        sibling_directories=sibling_directories,
     )
-    if linker is None:
+    if not candidates:
         return None
-    version = _wasm_linker_version(linker)
+    linker = candidates[0]
+    stat = linker.stat()
+    stat_identity = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_dev,
+        stat.st_ino,
+    )
+    version, sha256 = _wasm_linker_binary_identity(str(linker), stat_identity)
     expected = None
     if sysroot is not None:
         expected = wasi_sysroot_llvm_version(sysroot)
@@ -412,7 +466,7 @@ def resolve_wasm_linker() -> WasmLinkerIdentity | None:
                 f"LLVM {expected}; use the matching wasi-sdk bin/wasm-ld or set "
                 "MOLT_WASM_LD"
             )
-    return WasmLinkerIdentity(linker, version, expected)
+    return WasmLinkerIdentity(linker, version, expected, sha256)
 
 
 @functools.lru_cache(maxsize=8)

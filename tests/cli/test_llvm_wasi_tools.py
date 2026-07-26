@@ -7,6 +7,7 @@ from pathlib import Path
 from molt.cli import backend_cache
 from molt.cli import llvm_wasi_tools
 from molt.cli import source_extension_toolchain
+from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 import pytest
 
 
@@ -69,6 +70,9 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
         lambda path: f"version:{path.name}",
     )
     monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+    )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
         explicit_commands={"cc": (str(paths["cc"]), "--sysroot", "sdk")}
@@ -93,6 +97,9 @@ def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
     alias, driver = _replace_wasm_ld_with_driver_alias(paths)
     monkeypatch.setattr(llvm_wasi_tools, "_tool_version", lambda _path: "22.1.8")
     monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+    )
 
     family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
         explicit_commands={"cc": (str(paths["cc"]),)}
@@ -163,6 +170,72 @@ def test_wasm_ld_role_name_is_host_separator_independent(
     expected: bool,
 ) -> None:
     assert llvm_wasi_tools._is_wasm_ld_entrypoint(path) is expected
+
+
+@pytest.mark.parametrize(
+    "role",
+    ("wasm-ld", "ld.lld", "ld64.lld", "lld-link"),
+)
+def test_every_linker_role_preserves_its_alias_and_rejects_generic_driver(
+    role: LlvmLinkerRole,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / role.replace(".", "_") / "bin"
+    directory.mkdir(parents=True)
+    suffix = ".exe" if os.name == "nt" else ""
+    driver = directory / f"lld{suffix}"
+    driver.write_bytes(b"shared generic driver")
+    alias = directory / f"{role}{suffix}"
+    try:
+        alias.symlink_to(driver.name)
+    except OSError:
+        os.link(driver, alias)
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+    )
+
+    candidates = llvm_wasi_tools.llvm_linker_candidates(
+        role,
+        explicit_commands=((str(driver),),),
+        sibling_directories=(directory,),
+    )
+
+    assert candidates == (alias.absolute(),)
+    assert candidates[0] != driver.absolute()
+    assert executable_selects_linker_role(candidates[0], role)
+
+
+@pytest.mark.parametrize(
+    ("requested", "wrong"),
+    (
+        ("wasm-ld", "ld.lld"),
+        ("ld.lld", "ld64.lld"),
+        ("ld64.lld", "lld-link"),
+        ("lld-link", "wasm-ld"),
+    ),
+)
+def test_linker_roles_never_accept_a_sibling_role(
+    requested: LlvmLinkerRole,
+    wrong: LlvmLinkerRole,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrong_path = tmp_path / wrong
+    wrong_path.write_bytes(b"wrong role")
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root: ()
+    )
+
+    assert (
+        llvm_wasi_tools.llvm_linker_candidates(
+            requested,
+            explicit_commands=((str(wrong_path),),),
+        )
+        == ()
+    )
 
 
 def test_tool_family_resolves_managed_target_root_before_path(

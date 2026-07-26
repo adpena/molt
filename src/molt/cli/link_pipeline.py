@@ -40,6 +40,7 @@ from molt.cli.native_link_command import (
     _windows_coff_library_command,
 )
 from molt.cli.native_link_deps import _native_target_is_windows
+from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
@@ -433,6 +434,7 @@ def _prepare_native_link(
             *artifact.staged_support_paths,
         )
     ]
+    link_tool_facts = native_link_cache_tool_facts(link_plan)
     link_fingerprint = _link_fingerprint(
         project_root=project_root,
         inputs=[
@@ -447,6 +449,7 @@ def _prepare_native_link(
             *external_native_fingerprint_inputs,
         ],
         link_cmd=link_cmd,
+        tool_facts=link_tool_facts,
         stored_fingerprint=stored_link_fingerprint,
     )
     link_skipped = not _artifact_needs_rebuild(
@@ -577,11 +580,14 @@ def _link_fingerprint(
     project_root: Path,
     inputs: list[Path],
     link_cmd: list[str],
+    tool_facts: Sequence[Mapping[str, object]] = (),
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, str | None] | None:
     inputs_meta = _hash_source_tree_metadata(inputs, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
-    meta_digest = hashlib.sha256("\0".join(link_cmd).encode("utf-8")).hexdigest()
+    tool_identity = json.dumps(list(tool_facts), sort_keys=True, separators=(",", ":"))
+    meta = "\0".join((*link_cmd, tool_identity))
+    meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
     if _stored_fingerprint_matches_source_metadata(
         stored_fingerprint,
         inputs_digest=inputs_digest,
@@ -596,7 +602,7 @@ def _link_fingerprint(
             "meta_digest": meta_digest,
         }
     hasher = hashlib.sha256()
-    hasher.update("\0".join(link_cmd).encode("utf-8"))
+    hasher.update(meta.encode("utf-8"))
     hasher.update(b"\0")
     try:
         for path in sorted(inputs, key=lambda item: str(item)):

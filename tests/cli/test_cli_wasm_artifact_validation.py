@@ -1507,7 +1507,12 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        RUNTIME_BUILD.shutil, "which", lambda name: "wasm-ld", raising=True
+        WASM_TOOLCHAIN,
+        "resolve_wasm_linker",
+        lambda: WASM_TOOLCHAIN.WasmLinkerIdentity(
+            Path("wasm-ld"), "22.1.8", None, "a" * 64
+        ),
+        raising=True,
     )
     monkeypatch.setattr(
         WASM_TOOLCHAIN, "wasm_wasi_libc_archive", lambda: libc, raising=True
@@ -1903,7 +1908,13 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         output.write_bytes(_valid_wasm_bytes(b"reloc"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: "/usr/bin/wasm-ld")
+    monkeypatch.setattr(
+        WASM_TOOLCHAIN,
+        "resolve_wasm_linker",
+        lambda: WASM_TOOLCHAIN.WasmLinkerIdentity(
+            Path("/usr/bin/wasm-ld"), "22.1.8", None, "a" * 64
+        ),
+    )
     monkeypatch.setattr(
         WASM_TOOLCHAIN,
         "wasm_wasi_libc_archive",
@@ -1927,7 +1938,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     )
 
     cmd = captured["cmd"]
-    assert cmd[:2] == ["/usr/bin/wasm-ld", "-r"]
+    assert cmd[:2] == [str(Path("/usr/bin/wasm-ld")), "-r"]
     assert cmd[2].startswith("@")
     response_text = Path(cmd[2].removeprefix("@")).read_text(encoding="utf-8")
     assert "--export-if-defined=molt_reloc_required_export" in response_text

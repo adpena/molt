@@ -206,8 +206,24 @@ setup_value = "22.1.8"
 setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
 
 [[toolchain_policy]]
-name = "lld"
+name = "ld.lld"
 executable = "ld.lld"
+version_args = ["--version"]
+version_pattern = '\bLLD 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "ld64.lld"
+executable = "ld64.lld"
+version_args = ["--version"]
+version_pattern = '\bLLD 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "lld-link"
+executable = "lld-link"
 version_args = ["--version"]
 version_pattern = '\bLLD 22\.1\.8\b'
 setup_value = "22.1.8"
@@ -1118,7 +1134,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend"]
-toolchains = ["rustc", "cargo", "lld", "wasm-ld"]
+toolchains = ["rustc", "cargo", "ld.lld", "wasm-ld"]
 
 [[command]]
 id = "wasm.build.host"
@@ -1131,7 +1147,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-wasm-host"]
-toolchains = ["rustc", "cargo", "lld"]
+toolchains = ["rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "wasm.build.shared-runtime"
@@ -1145,7 +1161,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 env = { RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "wasm.compile.hello"
@@ -1159,7 +1175,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_hello.wasm"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "wasm.run.hello"
@@ -1187,7 +1203,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_comprehension.wasm"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "wasm.run.comprehension"
@@ -1242,7 +1258,7 @@ cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_sieve.wasm"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "wasm.run.sieve"
@@ -1268,7 +1284,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "-q"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
 id = "python.static.ty"
@@ -1304,7 +1320,7 @@ timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
-toolchains = ["python", "uv", "rustc", "cargo", "lld"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "rust.check.tir-wasi32"
@@ -1403,7 +1419,7 @@ timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "test", "--locked", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
-toolchains = ["rustc", "cargo", "clang", "llvm-config", "lld"]
+toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.clippy.backend"
@@ -1440,7 +1456,7 @@ timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = ["linker.test.generated-object-admission"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/cli/test_native_link_plan.py", "tests/cli/test_cli_native_link_command_authority.py", "tests/cli/test_native_link_fail_closed.py"]
-toolchains = ["python", "uv", "clang", "llvm-config", "lld"]
+toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.test.differential"

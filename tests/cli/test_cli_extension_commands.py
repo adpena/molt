@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -79,6 +80,45 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     with pytest.raises(
         cli_wasm_toolchain.WasmLinkerContractError,
         match="requires LLVM 22.1.0",
+    ):
+        cli_wasm_toolchain.resolve_wasm_linker()
+
+
+def test_resolve_wasm_linker_preserves_debian_role_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "usr" / "lib" / "llvm-22" / "bin"
+    directory.mkdir(parents=True)
+    driver = directory / "lld"
+    driver.write_bytes(b"shared lld driver")
+    alias = directory / "wasm-ld"
+    try:
+        alias.symlink_to(driver.name)
+    except OSError:
+        os.link(driver, alias)
+    monkeypatch.setenv("MOLT_WASM_LD", str(alias))
+    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: None)
+    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.8")
+
+    identity = cli_wasm_toolchain.resolve_wasm_linker()
+
+    assert identity is not None
+    assert identity.path == alias.absolute()
+    assert identity.path != driver.absolute()
+    assert identity.sha256 == hashlib.sha256(b"shared lld driver").hexdigest()
+
+
+def test_resolve_wasm_linker_rejects_generic_lld_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = tmp_path / "lld"
+    driver.write_bytes(b"generic lld")
+    monkeypatch.setenv("MOLT_WASM_LD", str(driver))
+    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: None)
+
+    with pytest.raises(
+        cli_wasm_toolchain.WasmLinkerContractError,
+        match="generic lld.*not wasm linkers",
     ):
         cli_wasm_toolchain.resolve_wasm_linker()
 
