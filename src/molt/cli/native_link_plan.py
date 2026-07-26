@@ -92,15 +92,19 @@ def native_linker_name_from_driver_command(
     return name
 
 
-def native_dead_strip_identity_flags(
+def native_link_policy_flags(
     *,
     target: NativeTargetSpec,
     capabilities: NativeLinkCapabilities,
     msvc_driver: bool = False,
     dead_strip: bool = True,
 ) -> tuple[str, ...]:
+    """Return one driver-ready deterministic and identity-preserving policy."""
     if target.object_format is NativeObjectFormat.COFF:
-        flags = ("/OPT:REF", "/OPT:NOICF") if dead_strip else ("/OPT:NOICF",)
+        flags = ["/Brepro"]
+        if dead_strip:
+            flags.append("/OPT:REF")
+        flags.append("/OPT:NOICF")
         if msvc_driver:
             return ("/link", *flags)
         return tuple(f"-Wl,{flag}" for flag in flags)

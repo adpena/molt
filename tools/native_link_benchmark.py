@@ -45,6 +45,7 @@ from molt.cli.native_link_manifest import (  # noqa: E402
 )
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -53,7 +54,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 KIND = "molt_native_link_benchmark"
 SUPPORTED_OSES = frozenset({"linux", "macos", "windows"})
 SUPPORTED_ARCHES = frozenset({"x86_64", "aarch64"})
@@ -114,6 +115,7 @@ def measurement_authority_fingerprint() -> str:
 def implementation_source_facts() -> dict[str, object]:
     """Record the primary native-link authorities as the experimental treatment."""
     sources = (
+        "llvm_wasi_tools.py",
         "native_link_plan.py",
         "native_link_command.py",
         "native_link_deps.py",
@@ -445,6 +447,11 @@ def measure_command(
     peak_tree = (
         result.peak_total.rss_kb * 1024 if result.peak_total is not None else None
     )
+    peak_job_commit = result.peak_job_commit_bytes
+    if os.name == "nt" and peak_job_commit is None:
+        raise LinkBenchmarkError(
+            "Windows native-link measurement requires peak Job commit telemetry"
+        )
     return result, {
         "wall_ns": child_wall_ns,
         "orchestration_wall_ns": orchestration_wall_ns,
@@ -453,6 +460,7 @@ def measure_command(
         "cpu_source": "getrusage_children" if cpu_before is not None else "unavailable",
         "peak_process_rss_bytes": peak_process,
         "peak_tree_rss_bytes": peak_tree,
+        "peak_job_commit_bytes": peak_job_commit,
         "returncode": result.returncode,
         "timed_out": result.timed_out,
     }
@@ -582,6 +590,11 @@ def summarize_runs(runs: Sequence[Mapping[str, object]]) -> dict[str, object]:
             for run in selected
             if (value := run["execution"].get("peak_tree_rss_bytes")) is not None  # type: ignore[union-attr,index]
         ]
+        job_commit = [
+            int(value)
+            for run in selected
+            if (value := run["execution"].get("peak_job_commit_bytes")) is not None  # type: ignore[union-attr,index]
+        ]
         median_wall = int(statistics.median(walls))
         mad_wall = int(statistics.median(abs(value - median_wall) for value in walls))
         relative_mad = mad_wall / median_wall if median_wall else None
@@ -600,6 +613,7 @@ def summarize_runs(runs: Sequence[Mapping[str, object]]) -> dict[str, object]:
                 int(statistics.median(finalization)) if finalization else None
             ),
             "peak_tree_rss_bytes_max": max(tree_rss, default=None),
+            "peak_job_commit_bytes_max": max(job_commit, default=None),
         }
     return summary
 
@@ -705,6 +719,13 @@ def compare_reports(
                 else int(new["peak_tree_rss_bytes_max"])
                 - int(old["peak_tree_rss_bytes_max"])
             ),
+            "peak_job_commit_delta_bytes": (
+                None
+                if old.get("peak_job_commit_bytes_max") is None
+                or new.get("peak_job_commit_bytes_max") is None
+                else int(new["peak_job_commit_bytes_max"])
+                - int(old["peak_job_commit_bytes_max"])
+            ),
         }
     old_warm = baseline_summary.get("warm")
     new_warm = current_summary.get("warm")
@@ -775,12 +796,22 @@ def validate_report(report: Mapping[str, object], *, require_runs: bool = True) 
     errors: list[str] = []
     if report.get("schema_version") != SCHEMA_VERSION or report.get("kind") != KIND:
         errors.append("unsupported schema/kind")
+    host = report.get("host")
+    host_os: object = None
+    if not isinstance(host, Mapping):
+        errors.append("missing host")
+    else:
+        host_os = host.get("os")
+        if host_os not in SUPPORTED_OSES:
+            errors.append(f"unsupported host os {host_os!r}")
     target = report.get("target")
+    target_os: object = None
     if not isinstance(target, Mapping):
         errors.append("missing target")
     else:
-        if target.get("os") not in SUPPORTED_OSES:
-            errors.append(f"unsupported target os {target.get('os')!r}")
+        target_os = target.get("os")
+        if target_os not in SUPPORTED_OSES:
+            errors.append(f"unsupported target os {target_os!r}")
         if target.get("arch") not in SUPPORTED_ARCHES:
             errors.append(f"unsupported target arch {target.get('arch')!r}")
     identity = report.get("identity")
@@ -808,6 +839,16 @@ def validate_report(report: Mapping[str, object], *, require_runs: bool = True) 
     runs = report.get("runs")
     if require_runs and (not isinstance(runs, list) or not runs):
         errors.append("no linker runs recorded")
+    elif require_runs and isinstance(runs, list) and host_os == "windows":
+        for index, run in enumerate(runs):
+            execution = run.get("execution") if isinstance(run, Mapping) else None
+            job_commit = (
+                execution.get("peak_job_commit_bytes")
+                if isinstance(execution, Mapping)
+                else None
+            )
+            if type(job_commit) is not int or job_commit < 0:
+                errors.append(f"run {index} has no Windows Job commit telemetry")
     if errors:
         raise LinkBenchmarkError("invalid native-link report: " + "; ".join(errors))
 

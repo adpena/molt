@@ -60,6 +60,7 @@ def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> d
                 "wall_ns": 200,
                 "orchestration_wall_ns": 220,
                 "peak_tree_rss_bytes": 1000,
+                "peak_job_commit_bytes": 2000,
             },
             "finalization": {"wall_ns": 20},
         },
@@ -70,6 +71,7 @@ def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> d
                     "wall_ns": value,
                     "orchestration_wall_ns": value + 20,
                     "peak_tree_rss_bytes": 900,
+                    "peak_job_commit_bytes": 1900,
                 },
                 "finalization": {"wall_ns": 10},
             }
@@ -81,6 +83,7 @@ def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> d
                 "wall_ns": 110,
                 "orchestration_wall_ns": 130,
                 "peak_tree_rss_bytes": 950,
+                "peak_job_commit_bytes": 1950,
             },
             "finalization": {"wall_ns": 11},
         },
@@ -176,6 +179,7 @@ def test_link_wall_uses_guarded_child_elapsed_not_orchestration_overhead(
         elapsed_s=0.25,
         peak=None,
         peak_total=None,
+        peak_job_commit_bytes=4096,
         returncode=0,
         timed_out=False,
     )
@@ -196,6 +200,91 @@ def test_link_wall_uses_guarded_child_elapsed_not_orchestration_overhead(
     assert result is guarded
     assert measurement["wall_ns"] == 250_000_000
     assert measurement["orchestration_wall_ns"] >= 0
+    assert measurement["peak_job_commit_bytes"] == 4096
+
+
+def test_windows_measurement_fails_closed_without_job_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    guarded = SimpleNamespace(
+        elapsed_s=0.25,
+        peak=None,
+        peak_total=None,
+        peak_job_commit_bytes=None,
+        returncode=0,
+        timed_out=False,
+    )
+    monkeypatch.setattr(benchmark.os, "name", "nt")
+    monkeypatch.setattr(
+        benchmark.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: guarded,
+    )
+    monkeypatch.setattr(
+        benchmark.harness_memory_guard,
+        "limits_from_env",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    with pytest.raises(benchmark.LinkBenchmarkError, match="Job commit"):
+        benchmark.measure_command(["linker"], cwd=tmp_path, timeout=1.0)
+
+
+def test_non_windows_measurement_records_unavailable_job_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    guarded = SimpleNamespace(
+        elapsed_s=0.25,
+        peak=None,
+        peak_total=None,
+        peak_job_commit_bytes=None,
+        returncode=0,
+        timed_out=False,
+    )
+    monkeypatch.setattr(benchmark.os, "name", "posix")
+    monkeypatch.setattr(
+        benchmark.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: guarded,
+    )
+    monkeypatch.setattr(
+        benchmark.harness_memory_guard,
+        "limits_from_env",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    _result, measurement = benchmark.measure_command(
+        ["linker"], cwd=tmp_path, timeout=1.0
+    )
+    assert measurement["peak_job_commit_bytes"] is None
+
+
+def test_windows_host_report_validation_requires_job_commit_telemetry() -> None:
+    report = _report()
+    report.update(
+        {
+            "schema_version": benchmark.SCHEMA_VERSION,
+            "kind": benchmark.KIND,
+            "host": {"os": "windows"},
+            # Host custody remains Windows Job based even for a cross target.
+            "target": {"os": "linux", "arch": "x86_64"},
+            "inputs": {"count": 3},
+            "plan_metrics": {
+                "wall_ns": 1,
+                "cold_wall_ns": 1,
+                "warm_wall_ns_median": 1,
+                "warm_wall_ns_mad": 0,
+                "traced_peak_bytes": 1,
+                "net_allocated_blocks": 1,
+                "net_allocated_bytes": 1,
+            },
+        }
+    )
+    benchmark.validate_report(report)
+
+    del report["runs"][0]["execution"]["peak_job_commit_bytes"]
+    with pytest.raises(benchmark.LinkBenchmarkError, match="run 0.*Job commit"):
+        benchmark.validate_report(report)
 
 
 def test_comparison_rejects_each_identity_drift_class() -> None:
@@ -236,12 +325,18 @@ def test_measurement_authority_is_content_addressed(monkeypatch) -> None:
     assert benchmark.measurement_authority_fingerprint() != first
 
 
+def test_implementation_identity_includes_canonical_tool_candidate_resolver() -> None:
+    facts = benchmark.implementation_source_facts()
+    assert "llvm_wasi_tools.py" in {str(item["name"]) for item in facts["files"]}
+
+
 def test_comparison_is_attestable_only_for_stable_five_run_warm_samples() -> None:
     baseline = _report()
     current = _report(warm=[90, 91, 90, 89, 90])
     comparison = benchmark.compare_reports(baseline, current)
     assert comparison["attestable"] is True
     assert comparison["phases"]["warm"]["link_wall_ratio"] == pytest.approx(0.9)
+    assert comparison["phases"]["warm"]["peak_job_commit_delta_bytes"] == 0
 
     noisy = _report(warm=[50, 150, 60, 140, 100])
     comparison = benchmark.compare_reports(baseline, noisy)
@@ -377,7 +472,7 @@ def test_link_benchmark_cannot_reconstruct_link_or_publication_policy() -> None:
         "-dead_strip",
         "_atomic_copy_file(",
         "_assert_native_binary_valid(",
-        "native_dead_strip_identity_flags(",
+        "native_link_policy_flags(",
     ):
         assert forbidden not in source
 

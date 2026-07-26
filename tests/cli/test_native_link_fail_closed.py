@@ -191,7 +191,11 @@ def test_extension_link_applies_identity_policy_after_user_link_arguments() -> N
 def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> None:
     cli_root = Path(__file__).resolve().parents[2] / "src" / "molt" / "cli"
     allowed_identity_authority = cli_root / "native_link_plan.py"
-    identity_tokens = ("/OPT:NOICF", "-no_deduplicate", "--icf=none")
+    authority_source = allowed_identity_authority.read_text(encoding="utf-8")
+    assert "def native_link_policy_flags(" in authority_source
+    assert "def native_dead_strip_identity_flags(" not in authority_source
+    assert "def native_reproducible_link_flags(" not in authority_source
+    identity_tokens = ("/Brepro", "/OPT:NOICF", "-no_deduplicate", "--icf=none")
     for source_path in cli_root.glob("*.py"):
         if source_path == allowed_identity_authority:
             continue
@@ -212,6 +216,6 @@ def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> 
     assert "_build_native_link_plan(" in main_link
     assert "_native_link_execution_command(" in main_link
     assert "_source_extension_link_policy_args(" in extension_link
-    assert "native_dead_strip_identity_flags(" in extension_policy
+    assert "native_link_policy_flags(" in extension_policy
     assert "_retry_native_link" not in main_link
     assert "Linker fallback:" not in main_link
