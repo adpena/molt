@@ -284,7 +284,16 @@ def _record_native_runtime_failure(
         }
     )
     signal_value = execution.get("signal")
-    execution_signal = signal_value if isinstance(signal_value, dict) else None
+    execution_signal: dict[str, object] | None = None
+    if isinstance(signal_value, dict):
+        signal_entries: dict[str, object] = {}
+        for key, value in signal_value.items():
+            if not isinstance(key, str):
+                signal_entries.clear()
+                break
+            signal_entries[key] = value
+        else:
+            execution_signal = signal_entries
     duration_value = execution.get("duration_seconds")
     execution_duration = (
         float(duration_value) if isinstance(duration_value, (int, float)) else None
@@ -298,6 +307,18 @@ def _record_native_runtime_failure(
         int(tree_rss_value) if isinstance(tree_rss_value, int) else None
     )
     execution_timed_out = timed_out or bool(execution.get("timed_out", False))
+    attempt_count_value = execution.get("attempt_count")
+    execution_attempt_count = (
+        attempt_count_value
+        if isinstance(attempt_count_value, int)
+        and not isinstance(attempt_count_value, bool)
+        and attempt_count_value >= 0
+        else 0
+    )
+    retry_reason_value = execution.get("retry_reason")
+    execution_retry_reason = (
+        retry_reason_value if isinstance(retry_reason_value, str) else None
+    )
     evidence_path: Path | None = None
     try:
         evidence_path = (
@@ -341,12 +362,8 @@ def _record_native_runtime_failure(
             duration_seconds=execution_duration,
             peak_process_rss_bytes=execution_process_rss,
             peak_tree_rss_bytes=execution_tree_rss,
-            attempt_count=int(execution["attempt_count"]),
-            retry_reason=(
-                str(execution["retry_reason"])
-                if execution["retry_reason"] is not None
-                else None
-            ),
+            attempt_count=execution_attempt_count,
+            retry_reason=execution_retry_reason,
         )
     return False
 
