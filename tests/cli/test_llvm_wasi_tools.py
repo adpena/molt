@@ -43,6 +43,21 @@ def _write_tool_family(directory: Path) -> dict[str, Path]:
     return paths
 
 
+def _replace_wasm_ld_with_driver_alias(paths: dict[str, Path]) -> tuple[Path, Path]:
+    alias = paths["wasm_ld"]
+    alias.unlink()
+    suffix = ".exe" if os.name == "nt" else ""
+    driver = alias.parent / f"lld{suffix}"
+    driver.write_bytes(b"generic lld driver")
+    try:
+        alias.symlink_to(driver.name)
+    except OSError:
+        # Windows hosts without symlink privilege still exercise the lexical
+        # role identity through a second hardlink to the shared driver bytes.
+        os.link(driver, alias)
+    return alias, driver
+
+
 def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -68,6 +83,86 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
         "sha256": hashlib.sha256(b"tool").hexdigest(),
         "version": f"version:{paths['nm'].name}",
     }
+
+
+def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _write_tool_family(tmp_path / "LLVM" / "bin")
+    alias, driver = _replace_wasm_ld_with_driver_alias(paths)
+    monkeypatch.setattr(llvm_wasi_tools, "_tool_version", lambda _path: "22.1.8")
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        explicit_commands={"cc": (str(paths["cc"]),)}
+    )
+
+    assert family.wasm_ld is not None
+    assert family.wasm_ld.path == alias.absolute()
+    assert family.wasm_ld.command == (str(alias.absolute()),)
+    assert family.wasm_ld.path != driver.absolute()
+
+
+def test_wasm_ld_role_rejects_explicit_generic_driver_and_uses_named_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / "llvm" / "bin"
+    paths = _write_tool_family(directory)
+    alias, driver = _replace_wasm_ld_with_driver_alias(paths)
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        explicit_commands={"wasm_ld": (str(driver),)},
+        sibling_directories=(directory,),
+    )
+
+    assert family.wasm_ld is not None
+    assert family.wasm_ld.path == alias.absolute()
+    assert family.wasm_ld.command == (str(alias.absolute()),)
+
+
+def test_wasm_ld_path_alias_remains_role_specific_across_cache_hits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / "path-bin"
+    paths = _write_tool_family(directory)
+    alias, driver = _replace_wasm_ld_with_driver_alias(paths)
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "_managed_llvm_bin_directories",
+        lambda _target_root: (),
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools.shutil,
+        "which",
+        lambda name: str(alias) if name == "wasm-ld" else None,
+    )
+
+    first = llvm_wasi_tools.llvm_tool_candidates("wasm_ld")
+    second = llvm_wasi_tools.llvm_tool_candidates("wasm_ld")
+
+    assert first == second == (alias.absolute(),)
+    assert first[0] != driver.absolute()
+    assert llvm_wasi_tools.llvm_tool_candidate_cache_info()["hits"] == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (Path("/usr/lib/llvm-22/bin/wasm-ld"), True),
+        (Path("/usr/lib/llvm-22/bin/lld"), False),
+        (Path(r"C:\LLVM\bin\wasm-ld.exe"), True),
+        (Path(r"C:\LLVM\bin\lld.exe"), False),
+    ],
+)
+def test_wasm_ld_role_name_is_host_separator_independent(
+    path: Path,
+    expected: bool,
+) -> None:
+    assert llvm_wasi_tools._is_wasm_ld_entrypoint(path) is expected
 
 
 def test_tool_family_resolves_managed_target_root_before_path(

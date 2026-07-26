@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from molt.cli.cache_keys import _json_ir_default
+from molt.cli.cargo_execution import _cargo_build_env
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
@@ -63,7 +64,10 @@ def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | 
     if cargo is None:
         return None, "MLIR backend is not built and cargo is unavailable on PATH"
     try:
-        env = mlir_toolchain_environment(project_root)
+        env = mlir_toolchain_environment(
+            project_root,
+            environ=_cargo_build_env(),
+        )
     except LlvmToolchainConfigError as exc:
         return None, str(exc)
 

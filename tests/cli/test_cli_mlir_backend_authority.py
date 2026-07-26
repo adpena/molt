@@ -76,7 +76,15 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     monkeypatch.setattr(
         mlir_backend,
         "mlir_toolchain_environment",
-        lambda root: {"MOLT_LLVM_PREFIX": "C:/LLVM"},
+        lambda root, *, environ: {**environ, "MOLT_LLVM_PREFIX": "C:/LLVM"},
+    )
+    monkeypatch.setattr(
+        mlir_backend,
+        "_cargo_build_env",
+        lambda: {
+            "RUSTC_WRAPPER": "/usr/bin/sccache",
+            "CARGO_INCREMENTAL": "0",
+        },
     )
 
     def fake_run(command: list[str], **kwargs: object):
@@ -106,7 +114,11 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     ]
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
-    assert kwargs["env"] == {"MOLT_LLVM_PREFIX": "C:/LLVM"}
+    assert kwargs["env"] == {
+        "RUSTC_WRAPPER": "/usr/bin/sccache",
+        "CARGO_INCREMENTAL": "0",
+        "MOLT_LLVM_PREFIX": "C:/LLVM",
+    }
     assert kwargs["timeout"] == 1800
 
 

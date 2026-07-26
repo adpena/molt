@@ -86,7 +86,7 @@ def resolve_explicit_tool_command(raw_command: str, *, label: str) -> tuple[str,
     """Parse and resolve one explicitly configured executable command."""
     direct_path = Path(raw_command).expanduser()
     if direct_path.is_file():
-        return (str(direct_path.resolve()),)
+        return (str(_absolute_tool_path(direct_path)),)
     try:
         argv = shlex.split(raw_command, posix=os.name != "nt")
     except ValueError as exc:
@@ -105,11 +105,36 @@ def resolve_explicit_tool_command(raw_command: str, *, label: str) -> tuple[str,
         path = Path(executable).expanduser()
         if not path.exists() or not path.is_file():
             raise ValueError(f"{label} executable not found: {executable}")
-        return (str(path.resolve()), *argv[1:])
+        return (str(_absolute_tool_path(path)), *argv[1:])
     resolved = shutil.which(executable)
     if resolved is None:
         raise ValueError(f"{label} executable not found on PATH: {executable}")
-    return (resolved, *argv[1:])
+    return (str(_absolute_tool_path(Path(resolved))), *argv[1:])
+
+
+def _absolute_tool_path(path: Path) -> Path:
+    """Normalize an executable path without erasing its invoked entrypoint.
+
+    LLVM distributions commonly expose ``wasm-ld`` as a symlink to the generic
+    ``lld`` driver.  Resolving the symlink changes which driver basename is
+    invoked and therefore changes the tool's role.  Keep the lexical executable
+    identity while still making relative PATH entries deterministic.
+    """
+
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _dedupe_tool_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        absolute = _absolute_tool_path(path)
+        key = os.path.normcase(os.fspath(absolute))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(absolute)
+    return tuple(result)
 
 
 def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
@@ -346,7 +371,7 @@ def _cached_llvm_named_tool_candidates(
         resolved = shutil.which(name)
         if resolved is not None:
             paths.append(Path(resolved))
-    return _dedupe_paths(paths)
+    return _dedupe_tool_paths(paths)
 
 
 def clear_llvm_tool_candidate_cache() -> None:
@@ -378,13 +403,38 @@ def llvm_tool_candidates(
     include_rust_toolchain: bool = False,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
-    return llvm_named_tool_candidates(
+    candidates = llvm_named_tool_candidates(
         *_LLVM_TOOL_NAMES[role],
         explicit_commands=explicit_commands,
         sibling_directories=sibling_directories,
         target_root=target_root,
         include_rust_toolchain=include_rust_toolchain,
     )
+    if role != "wasm_ld":
+        return candidates
+    return tuple(path for path in candidates if _is_wasm_ld_entrypoint(path))
+
+
+def _is_wasm_ld_entrypoint(path: Path) -> bool:
+    """Require the role-selecting wasm-ld name on every host.
+
+    A physical file may be shared with ``lld`` through a symlink or hardlink,
+    but invoking the generic driver is not equivalent to invoking its wasm role.
+    Accept the Windows executable suffix without letting a generic ``lld`` path
+    cross the role boundary.
+    """
+
+    name = os.fspath(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name == "wasm-ld"
+
+
+def _command_selects_path(command: tuple[str, ...] | None, path: Path) -> bool:
+    if not command:
+        return False
+    executable = Path(command[0]).expanduser()
+    return executable.is_file() and _absolute_tool_path(executable) == path
 
 
 def llvm_named_tool_candidates(
@@ -497,13 +547,16 @@ def resolve_llvm_wasi_tool_family(
             continue
         path = candidates[0]
         search_directories.append(path.parent)
-        key = os.path.normcase(os.fspath(path))
+        key = os.path.normcase(os.path.realpath(path))
         if key not in identity_by_path:
             identity_by_path[key] = (_tool_version(path), _sha256_file(path))
         version, sha256 = identity_by_path[key]
+        selected_command = (str(path),)
+        if command is not None and _command_selects_path(command, path):
+            selected_command = command
         resolved[role] = ResolvedLlvmTool(
             role=role,
-            command=command if command is not None else (str(path),),
+            command=selected_command,
             path=path,
             version=version,
             sha256=sha256,
