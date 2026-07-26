@@ -226,9 +226,8 @@ class RLock:
             raise TypeError("internal lock state must be a 2-tuple")
         _rlock_acquire_restore_intrinsic(self._handle, int(state[0]))
 
-    def __enter__(self) -> RLock:
-        self.acquire()
-        return self
+    def __enter__(self) -> bool:
+        return self.acquire()
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> bool:
         self.release()

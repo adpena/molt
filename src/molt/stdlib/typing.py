@@ -189,6 +189,23 @@ def _format_args(args: tuple[object, ...]) -> str:
     return ", ".join([_type_repr(arg) for arg in args])
 
 
+def _collect_type_parameters(args: tuple[object, ...]) -> tuple[object, ...]:
+    """Collect residual free type parameters in stable first-use order."""
+
+    parameters: list[object] = []
+    for arg in args:
+        if isinstance(arg, (_TypeVarLike, _TypeVarTuple)):
+            candidates = (arg,)
+        else:
+            candidates = getattr(arg, "__parameters__", ())
+            if not isinstance(candidates, tuple):
+                candidates = ()
+        for candidate in candidates:
+            if all(candidate is not parameter for parameter in parameters):
+                parameters.append(candidate)
+    return tuple(parameters)
+
+
 class _TypingBase:
     __slots__ = ()
 
@@ -293,11 +310,12 @@ class _LazySpecialGenericAlias(_TypingBase):
 
 
 class _GenericAlias(_TypingBase):
-    __slots__ = ("__origin__", "__args__", "_name")
+    __slots__ = ("__origin__", "__args__", "__parameters__", "_name")
 
     def __init__(self, origin: object, args: object, name: str | None = None) -> None:
         self.__origin__ = origin
         self.__args__ = _as_tuple(args)
+        self.__parameters__ = _collect_type_parameters(self.__args__)
         self._name = name
 
     def __repr__(self) -> str:
@@ -419,7 +437,7 @@ class _MoltTypeAliasApplied(_TypingBase):
         self._alias = alias
         self.__args__ = args
         self.__origin__ = alias
-        self.__parameters__ = alias.__type_params__
+        self.__parameters__ = _collect_type_parameters(args)
 
     @property
     def __value__(self) -> object:
@@ -430,11 +448,12 @@ class _MoltTypeAliasApplied(_TypingBase):
 
 
 class _UnionGenericAlias(_TypingBase):
-    __slots__ = ("__args__", "__origin__")
+    __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, args: tuple[object, ...]) -> None:
         self.__args__ = args
         self.__origin__ = Union
+        self.__parameters__ = _collect_type_parameters(args)
 
     def __repr__(self) -> str:
         args = self.__args__

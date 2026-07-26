@@ -28,6 +28,9 @@ print("context-manager-released")
 
 # 4. RLock can be acquired multiple times by same thread
 rlock = threading.RLock()
+context_value = rlock.__enter__()
+rlock.__exit__(None, None, None)
+print("rlock-context-value", context_value, context_value is True)
 print("rlock-1", rlock.acquire())
 print("rlock-2", rlock.acquire())
 rlock.release()
@@ -63,9 +66,11 @@ except RuntimeError as e:
 lock = threading.Lock()
 order = []
 
+
 def worker(name, lock, order):
     with lock:
         order.append(name)
+
 
 lock.acquire()
 t1 = threading.Thread(target=worker, args=("first", lock, order))
@@ -74,6 +79,7 @@ t1.start()
 t2.start()
 
 import time
+
 time.sleep(0.05)
 lock.release()
 
@@ -104,9 +110,11 @@ print("wait-set", result)
 barrier = threading.Barrier(3)
 results = [None] * 3
 
+
 def barrier_worker(idx, barrier, results):
     barrier.wait()
     results[idx] = f"passed-{idx}"
+
 
 threads = []
 for i in range(3):

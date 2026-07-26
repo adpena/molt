@@ -164,6 +164,19 @@ def test_applied_type_alias_repr_formats_concrete_argument_sequence(
     assert repr(alias[int, str]) == "Pair[int, str]"
 
 
+def test_applied_type_alias_parameters_are_residual_not_declared(molt_typing) -> None:
+    parameter = molt_typing.TypeVar("T")
+    alias = molt_typing._molt_type_alias(
+        "Pair",
+        lambda _format: {"__value__": tuple},
+        (parameter,),
+    )
+
+    assert alias.__type_params__ == (parameter,)
+    assert alias[int].__parameters__ == ()
+    assert alias[parameter].__parameters__ == (parameter,)
+
+
 @pytest.mark.parametrize("shift", [0, 4, 12, 20, 32, 40, 48, 56])
 def test_lazy_type_lock_mix_distributes_address_and_handle_families(
     molt_typing, shift: int

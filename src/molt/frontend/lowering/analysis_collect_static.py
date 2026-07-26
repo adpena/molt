@@ -21,6 +21,7 @@ from molt.frontend._types import (
     MoltValue,
     _canonical_intrinsic_runtime_name,
 )
+from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
 from molt.compiler_analysis.static_truth import (
     SysPlatformStaticTruthKwargs,
     static_if_live_branch,
@@ -139,30 +140,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 record_target(target.value)
 
         def record_pattern(pattern: ast.pattern) -> None:
-            if isinstance(pattern, ast.MatchAs):
-                if pattern.name and pattern.name != "_":
-                    record(pattern.name)
-                if pattern.pattern is not None:
-                    record_pattern(pattern.pattern)
-            elif isinstance(pattern, ast.MatchStar):
-                if pattern.name and pattern.name != "_":
-                    record(pattern.name)
-            elif isinstance(pattern, ast.MatchMapping):
-                for sub in pattern.patterns:
-                    record_pattern(sub)
-                if pattern.rest and pattern.rest != "_":
-                    record(pattern.rest)
-            elif isinstance(pattern, ast.MatchSequence):
-                for sub in pattern.patterns:
-                    record_pattern(sub)
-            elif isinstance(pattern, ast.MatchClass):
-                for sub in pattern.patterns:
-                    record_pattern(sub)
-                for sub in pattern.kwd_patterns:
-                    record_pattern(sub)
-            elif isinstance(pattern, ast.MatchOr):
-                for sub in pattern.patterns:
-                    record_pattern(sub)
+            for name in python_pattern_capture_names(pattern):
+                record(name)
 
         class Collector(ast.NodeVisitor):
             def __init__(self) -> None:
@@ -484,53 +463,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
         return bindings
 
     def _collect_pattern_capture_names(self, pattern: ast.pattern) -> list[str]:
-        # Source order, deduplicated.  A set leaked PYTHONHASHSEED ordering into
-        # emitted IR because _collect_assigned_names_ordered feeds these capture
-        # names positionally into the function's co_varnames tuple (#34,
-        # match-capture class).  Callers that need set semantics (e.g. MatchOr
-        # binding-equality) wrap in set(...).
-        names: list[str] = []
-        seen: set[str] = set()
-
-        def add(name: str) -> None:
-            if name not in seen:
-                seen.add(name)
-                names.append(name)
-
-        def visit(current: ast.pattern) -> None:
-            if isinstance(current, ast.MatchAs):
-                if current.name and current.name != "_":
-                    add(current.name)
-                if current.pattern is not None:
-                    visit(current.pattern)
-                return
-            if isinstance(current, ast.MatchStar):
-                if current.name and current.name != "_":
-                    add(current.name)
-                return
-            if isinstance(current, ast.MatchMapping):
-                for sub in current.patterns:
-                    visit(sub)
-                if current.rest and current.rest != "_":
-                    add(current.rest)
-                return
-            if isinstance(current, ast.MatchSequence):
-                for sub in current.patterns:
-                    visit(sub)
-                return
-            if isinstance(current, ast.MatchClass):
-                for sub in current.patterns:
-                    visit(sub)
-                for sub in current.kwd_patterns:
-                    visit(sub)
-                return
-            if isinstance(current, ast.MatchOr):
-                for sub in current.patterns:
-                    visit(sub)
-                return
-
-        visit(pattern)
-        return names
+        return list(python_pattern_capture_names(pattern))
 
     def _collect_assigned_names(self, nodes: list[ast.stmt]) -> set[str]:
         outer = self
@@ -875,9 +808,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 for alias in node.names:
                     add(alias.name)
                     if alias.name == "sys":
-                        self.sys_platform_module_aliases.add(
-                            alias.asname or alias.name
-                        )
+                        self.sys_platform_module_aliases.add(alias.asname or alias.name)
                     if "." in alias.name:
                         if module_scope:
                             add(import_store_name(alias))
