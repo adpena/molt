@@ -31,9 +31,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.commands) >= 69
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
-    assert [policy.name for policy in PLAN.environment_policies] == [
-        "sccache-disables-incremental"
-    ]
+    assert "src/molt/cargo_execution_policy.py" in PLAN.authority_inputs
     assert PLAN.executor_max_workers == 4
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
         "compiler-build-resource": 1,
@@ -67,16 +65,33 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v3"
+    assert projection["schema"] == "molt.proof-plan-projection.v4"
     assert projection["receipt_schema"] == "molt.proof-receipt.v2"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
     assert projection["toolchain_policies"] == [
         policy.data for policy in PLAN.toolchain_policies
     ]
-    assert projection["environment_policies"] == [
-        policy.data for policy in PLAN.environment_policies
-    ]
+    assert projection["cargo_execution_policy"]["timeout_seconds_by_class"] == {
+        "cold": 1200,
+        "cross-check": 240,
+        "integration": 600,
+        "suite": 1800,
+        "warm": 300,
+    }
+    assert projection["cargo_execution_policy"]["measurement_job_id"] == 89_813_773_652
+    assert projection["cargo_environment_policy"] == {
+        "wrapper_environment_names": [
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        ],
+        "incident_run_id": 30_211_145_633,
+        "incident_job_id": 89_817_499_999,
+        "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
+        "incident_command": "cargo metadata --locked --format-version 1",
+    }
     assert projection["executor"]["max_workers"] == 4
     assert projection["executor"]["resource_policies"] == [
         {"name": policy.name, "max_parallel": policy.max_parallel}
@@ -95,6 +110,26 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "projected_makespan_seconds": 3300,
         "critical_path_seconds": 1500,
         "resource_capacity_floor_seconds": {"repository-policy": 2730},
+        "headroom_seconds": 300,
+    }
+    assert timeout_envelopes["wasm"] == {
+        "budget_seconds": 6300,
+        "projected_makespan_seconds": 5700,
+        "critical_path_seconds": 3000,
+        "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 5700,
+            "wasm-runtime": 450,
+        },
+        "headroom_seconds": 600,
+    }
+    assert timeout_envelopes["llvm"] == {
+        "budget_seconds": 4500,
+        "projected_makespan_seconds": 4200,
+        "critical_path_seconds": 3300,
+        "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 4200,
+            "python-tests": 60,
+        },
         "headroom_seconds": 300,
     }
     local = projection["local"]
@@ -284,16 +319,26 @@ def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> Non
     assert not re.fullmatch(pattern, "wasm-tools 1.253.0 (local build)")
 
 
+@pytest.mark.parametrize(
+    "wrapper_env",
+    [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ],
+)
 def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch,
+    wrapper_env: str,
 ) -> None:
-    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
+    monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     rust_commands = [
         command
         for command in PLAN.commands
         if {"rustc", "cargo"}.issubset(command.toolchains)
-        and command.data.get("env", {}).get("RUSTC_WRAPPER") != ""
+        and command.data.get("env", {}).get(wrapper_env) != ""
     ]
 
     assert {command.family for command in rust_commands} == {
@@ -308,6 +353,56 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         environment, applied = proof_plan._command_environment(PLAN, command, 30)
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
         assert applied == ("sccache-disables-incremental",), command.id
+
+
+def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
+    compiler_commands = [
+        command
+        for command in PLAN.commands
+        if command.data["resource_class"] == "compiler-build-resource"
+    ]
+    assert compiler_commands
+    assert all(command.data.get("timeout_budget") for command in compiler_commands)
+    assert {
+        command.id: (command.data["timeout_budget"], command.data["timeout_seconds"])
+        for command in compiler_commands
+        if command.id
+        in {
+            "wasm.build.host",
+            "native.integration.bench-cli",
+            "rust.check.tir-wasi32",
+            "rust.test.default-truth",
+            "llvm.build.backend",
+            "mlir.test.backend",
+        }
+    } == {
+        "wasm.build.host": ("cold", 1200),
+        "native.integration.bench-cli": ("cold", 1200),
+        "rust.check.tir-wasi32": ("cross-check", 240),
+        "rust.test.default-truth": ("suite", 1800),
+        "llvm.build.backend": ("cold", 1200),
+        "mlir.test.backend": ("warm", 300),
+    }
+
+
+def test_compiler_build_command_cannot_restore_an_explicit_timeout_lane() -> None:
+    commands = tuple(
+        replace(
+            command,
+            data={
+                **command.data,
+                "timeout_budget": None,
+                "timeout_seconds": 300,
+            },
+        )
+        if command.id == "wasm.build.host"
+        else command
+        for command in PLAN.commands
+    )
+
+    errors = replace(PLAN, commands=commands).validate()
+
+    assert "wasm.build.host: compiler-build-resource requires timeout_budget" in errors
 
 
 def test_command_direct_rustc_override_does_not_apply_sccache_policy(
@@ -683,6 +778,7 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
                 "peak_rss_bytes": 1024,
                 "cache_disposition": "cold",
                 "resource_class": command.data["resource_class"],
+                "timeout_budget": command.data.get("timeout_budget"),
                 "status": "success",
                 "returncode": 0,
                 "guard_metrics_schema": "molt.guarded-command-metrics.v1",

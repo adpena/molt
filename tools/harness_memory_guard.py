@@ -48,6 +48,7 @@ from molt.dx import (  # noqa: E402
     RunContext,
     development_artifacts_requested,
 )
+from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
 CANONICAL_RUN_ENV_KEYS = _CANONICAL_RUN_ENV_KEYS
@@ -1337,6 +1338,7 @@ def guarded_completed_process(
     on_spawn: Callable[[int], None] | None = None,
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
+    env, _cargo_policies = cargo_subprocess_environment(command, env)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing interpreter against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
@@ -1601,6 +1603,7 @@ def guarded_completed_process_to_tempfiles(
     direct child exits.
     """
 
+    env, _cargo_policies = cargo_subprocess_environment(command, env)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.

@@ -8,8 +8,18 @@ import json
 import math
 import os
 from pathlib import Path
-import re
-import tomllib
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = ROOT / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from molt.cargo_execution_policy import (  # noqa: E402
+    CargoBuildResourcePolicy,
+    load_ci_cargo_policy,
+)
 
 if __package__:
     from . import memory_guard, resource_pressure
@@ -18,96 +28,14 @@ else:  # pragma: no cover - direct script execution
     import resource_pressure  # type: ignore
 
 
-ROOT = Path(__file__).resolve().parents[1]
 CI_RESOURCE_POLICY = ROOT / "config" / "ci_resource_policy.toml"
-CI_RESOURCE_POLICY_SCHEMA = "molt.ci-resource-policy.v1"
-
-
-@dataclass(frozen=True, slots=True)
-class CargoBuildMemoryPolicy:
-    max_jobs: int
-    measured_peak_rss_bytes: int
-    headroom_ratio: float
-    measurement_run_id: int
-    measurement_commit: str
-    measurement_command: str
-
-    @property
-    def gb_per_job(self) -> float:
-        measured_gib = self.measured_peak_rss_bytes / float(1024**3)
-        return measured_gib * (1.0 + self.headroom_ratio)
+CargoBuildMemoryPolicy = CargoBuildResourcePolicy
 
 
 def load_ci_resource_policy(
     path: Path = CI_RESOURCE_POLICY,
 ) -> CargoBuildMemoryPolicy:
-    try:
-        payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read CI resource policy {path}: {exc}") from exc
-    if payload.get("schema") != CI_RESOURCE_POLICY_SCHEMA:
-        raise ValueError(
-            f"CI resource policy schema must be {CI_RESOURCE_POLICY_SCHEMA!r}"
-        )
-    cargo = payload.get("cargo_build")
-    expected_fields = {
-        "max_jobs",
-        "measured_peak_rss_bytes",
-        "headroom_ratio",
-        "measurement_run_id",
-        "measurement_commit",
-        "measurement_command",
-    }
-    if not isinstance(cargo, Mapping) or set(cargo) != expected_fields:
-        raise ValueError(
-            "CI resource policy cargo_build fields must be exactly "
-            + ", ".join(sorted(expected_fields))
-        )
-    max_jobs = cargo["max_jobs"]
-    measured_peak = cargo["measured_peak_rss_bytes"]
-    headroom = cargo["headroom_ratio"]
-    run_id = cargo["measurement_run_id"]
-    commit = cargo["measurement_commit"]
-    command = cargo["measurement_command"]
-    if not isinstance(max_jobs, int) or isinstance(max_jobs, bool) or max_jobs <= 0:
-        raise ValueError("CI resource policy max_jobs must be a positive integer")
-    if (
-        not isinstance(measured_peak, int)
-        or isinstance(measured_peak, bool)
-        or measured_peak <= 0
-    ):
-        raise ValueError(
-            "CI resource policy measured_peak_rss_bytes must be a positive integer"
-        )
-    if (
-        not isinstance(headroom, (int, float))
-        or isinstance(headroom, bool)
-        or not math.isfinite(float(headroom))
-        or not 0.10 <= float(headroom) <= 2.0
-    ):
-        raise ValueError(
-            "CI resource policy headroom_ratio must be finite and within [0.10, 2.0]"
-        )
-    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
-        raise ValueError(
-            "CI resource policy measurement_run_id must be a positive integer"
-        )
-    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-        raise ValueError(
-            "CI resource policy measurement_commit must be a lowercase 40-hex SHA"
-        )
-    if not isinstance(command, str) or not command.strip():
-        raise ValueError(
-            "CI resource policy measurement_command must be a non-empty string"
-        )
-    return CargoBuildMemoryPolicy(
-        max_jobs=max_jobs,
-        measured_peak_rss_bytes=measured_peak,
-        headroom_ratio=float(headroom),
-        measurement_run_id=run_id,
-        measurement_commit=commit,
-        measurement_command=command,
-    )
+    return load_ci_cargo_policy(path).build_resources
 
 
 @dataclass(frozen=True, slots=True)

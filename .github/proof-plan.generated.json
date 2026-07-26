@@ -19,6 +19,7 @@
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
     "src/molt/dx.py",
+    "src/molt/cargo_execution_policy.py",
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
     "tools/check_generator_manifest.py",
@@ -48,7 +49,34 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "26e91c662ff02f17b946a31984b800e837982aa54704c779a65a580b286951ef",
+  "authority_sha256": "26b142572a51ab3ff055cc9624c8ff577cd8fb83d8416d225e49a29633f16c5a",
+  "cargo_environment_policy": {
+    "incident_command": "cargo metadata --locked --format-version 1",
+    "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
+    "incident_job_id": 89817499999,
+    "incident_run_id": 30211145633,
+    "wrapper_environment_names": [
+      "RUSTC_WRAPPER",
+      "RUSTC_WORKSPACE_WRAPPER",
+      "CARGO_BUILD_RUSTC_WRAPPER",
+      "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"
+    ]
+  },
+  "cargo_execution_policy": {
+    "measurement_command": "cargo build --locked --profile dev-fast -p molt-wasm-host",
+    "measurement_commit": "88f2c1ae305e78bbbf4ad2b86aa8d620825d9523",
+    "measurement_job_id": 89813773652,
+    "measurement_run_id": 30209686001,
+    "minimum_cold_headroom_multiplier": 3.0,
+    "observed_cold_timeout_seconds": 300.51,
+    "timeout_seconds_by_class": {
+      "cold": 1200,
+      "cross-check": 240,
+      "integration": 600,
+      "suite": 1800,
+      "warm": 300
+    }
+  },
   "ci_families": [
     {
       "admission_job": "docs-gates",
@@ -108,7 +136,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 90,
+      "timeout_minutes": 105,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -278,7 +306,7 @@
         "main",
         "nightly"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 75,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -1575,11 +1603,12 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cold",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
         "cargo",
@@ -1609,11 +1638,12 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cold",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 300,
+      "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
         "cargo",
@@ -1649,11 +1679,12 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cold",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -1697,6 +1728,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "warm",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -1775,6 +1807,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "warm",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -1849,6 +1882,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "warm",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -1893,6 +1927,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "warm",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -1938,6 +1973,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "warm",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -2003,6 +2039,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "integration",
       "timeout_env": [
         "MOLT_CARGO_TIMEOUT",
         "MOLT_WASM_TEST_TIMEOUT_SEC"
@@ -2099,7 +2136,8 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 900,
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -2129,6 +2167,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cross-check",
       "timeout_seconds": 240,
       "toolchains": [
         "rustc",
@@ -2156,6 +2195,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cross-check",
       "timeout_seconds": 240,
       "toolchains": [
         "rustc",
@@ -2178,6 +2218,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "suite",
       "timeout_seconds": 1800,
       "toolchains": [
         "python",
@@ -2210,6 +2251,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cross-check",
       "timeout_seconds": 240,
       "toolchains": [
         "rustc",
@@ -2250,6 +2292,7 @@
         "pr",
         "main"
       ],
+      "timeout_budget": "cross-check",
       "timeout_seconds": 240,
       "toolchains": [
         "rustc",
@@ -2278,7 +2321,8 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 300,
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2313,6 +2357,7 @@
         "main",
         "nightly"
       ],
+      "timeout_budget": "warm",
       "timeout_seconds": 300,
       "toolchains": [
         "rustc",
@@ -2348,7 +2393,8 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 120,
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2385,7 +2431,8 @@
         "main",
         "nightly"
       ],
-      "timeout_seconds": 120,
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
       "toolchains": [
         "rustc",
         "cargo",
@@ -2416,6 +2463,7 @@
         "main",
         "nightly"
       ],
+      "timeout_budget": "warm",
       "timeout_seconds": 300,
       "toolchains": [
         "rustc",
@@ -2491,6 +2539,7 @@
         "main",
         "nightly"
       ],
+      "timeout_budget": "suite",
       "timeout_seconds": 1800,
       "toolchains": [
         "python",
@@ -2671,40 +2720,25 @@
       ]
     }
   ],
-  "environment_policies": [
-    {
-      "match_environment": {
-        "RUSTC_WRAPPER": "(?i)(?:^|.*[/\\\\])sccache(?:\\.exe)?$"
-      },
-      "name": "sccache-disables-incremental",
-      "set_environment": {
-        "CARGO_INCREMENTAL": "0"
-      },
-      "toolchains": [
-        "rustc",
-        "cargo"
-      ]
-    }
-  ],
   "executor": {
     "github_job_timeout_envelopes": {
       "llvm": {
-        "budget_seconds": 3600,
-        "critical_path_seconds": 2400,
-        "headroom_seconds": 660,
-        "projected_makespan_seconds": 2940,
+        "budget_seconds": 4500,
+        "critical_path_seconds": 3300,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 4200,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 2940,
+          "compiler-build-resource": 4200,
           "python-tests": 60
         }
       },
       "native_integration": {
         "budget_seconds": 1500,
-        "critical_path_seconds": 900,
-        "headroom_seconds": 600,
-        "projected_makespan_seconds": 900,
+        "critical_path_seconds": 1200,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 1200,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 900
+          "compiler-build-resource": 1200
         }
       },
       "python_security": {
@@ -2762,12 +2796,12 @@
         }
       },
       "wasm": {
-        "budget_seconds": 5400,
-        "critical_path_seconds": 2400,
-        "headroom_seconds": 1200,
-        "projected_makespan_seconds": 4200,
+        "budget_seconds": 6300,
+        "critical_path_seconds": 3000,
+        "headroom_seconds": 600,
+        "projected_makespan_seconds": 5700,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 4200,
+          "compiler-build-resource": 5700,
           "wasm-runtime": 450
         }
       }
@@ -3879,7 +3913,7 @@
     }
   ],
   "receipt_schema": "molt.proof-receipt.v2",
-  "schema": "molt.proof-plan-projection.v3",
+  "schema": "molt.proof-plan-projection.v4",
   "toolchain_policies": [
     {
       "executable": "{python}",

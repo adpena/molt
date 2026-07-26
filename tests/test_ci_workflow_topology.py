@@ -779,7 +779,7 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         "python3",
         "tools/run_cargo_test_truth.py",
     ]
-    assert commands["rust.test.default-truth"]["timeout_seconds"] == 1800
+    assert commands["rust.test.default-truth"]["timeout_budget"] == "suite"
     assert commands["rust.clippy.workspace-default"]["argv"] == [
         "cargo",
         "clippy",
@@ -1207,7 +1207,16 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "--run-family wasm --receipt" in wasm_text
     assert len(wasm_commands) >= 12
     assert all(command.get("timeout_env") for command in wasm_commands)
-    assert all(command["timeout_seconds"] <= 1500 for command in wasm_commands)
+    assert all(
+        command.get("timeout_budget") or command.get("timeout_seconds")
+        for command in wasm_commands
+    )
+    assert (
+        next(
+            command for command in wasm_commands if command["id"] == "wasm.build.host"
+        )["timeout_budget"]
+        == "cold"
+    )
     assert any(command["id"] == "wasm.compile.hello" for command in wasm_commands)
     assert any(command["id"] == "wasm.test.control-flow" for command in wasm_commands)
     assert "python3 tools/profile_hotspots.py --limit 20" in wasm_text

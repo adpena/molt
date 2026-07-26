@@ -393,6 +393,25 @@ def test_ci_gate_tier1_includes_build_graph_ratchet():
     assert "--check" in check.cmd
 
 
+def test_metadata_probe_normalizes_workspace_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(_command: list[str], **kwargs: object):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess([], 0, '{"packages": []}', "")
+
+    monkeypatch.setenv("RUSTC_WORKSPACE_WRAPPER", "sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.setattr(bga.subprocess, "run", fake_run)
+
+    bga.run_cargo_metadata(tmp_path)
+
+    assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+
+
 def test_ci_gate_tier1_includes_build_graph_audit_contract():
     module = _load_ci_gate()
     checks = {check.name: check for check in module._build_checks()}

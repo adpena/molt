@@ -10,6 +10,7 @@ import sys
 
 from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
 from generator_io import generated_file_matches, write_generated_text
+from molt.cargo_execution_policy import load_ci_cargo_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,8 @@ def _timeout_envelope_projection(plan: ProofPlan) -> dict[str, dict[str, object]
 
 
 def _json_projection(plan: ProofPlan) -> str:
+    shared_cargo_policy = load_ci_cargo_policy()
+    cargo_policy = shared_cargo_policy.execution_budgets
     local_commands = {
         **{
             f"local.always.{index}": command
@@ -59,7 +62,7 @@ def _json_projection(plan: ProofPlan) -> str:
         for rule in plan.local_rules
     ]
     payload = {
-        "schema": "molt.proof-plan-projection.v3",
+        "schema": "molt.proof-plan-projection.v4",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
         "authority_inputs": list(plan.authority_inputs),
         "authority_sha256": _authority_sha256(plan),
@@ -76,7 +79,28 @@ def _json_projection(plan: ProofPlan) -> str:
         "matrix_cells": [cell.data for cell in plan.matrix_cells],
         "commands": [command.data for command in plan.commands],
         "toolchain_policies": [policy.data for policy in plan.toolchain_policies],
-        "environment_policies": [policy.data for policy in plan.environment_policies],
+        "cargo_environment_policy": {
+            "wrapper_environment_names": list(
+                shared_cargo_policy.environment.wrapper_environment_names
+            ),
+            "incident_run_id": shared_cargo_policy.environment.incident_run_id,
+            "incident_job_id": shared_cargo_policy.environment.incident_job_id,
+            "incident_commit": shared_cargo_policy.environment.incident_commit,
+            "incident_command": shared_cargo_policy.environment.incident_command,
+        },
+        "cargo_execution_policy": {
+            "timeout_seconds_by_class": dict(cargo_policy.timeout_seconds_by_class),
+            "observed_cold_timeout_seconds": (
+                cargo_policy.observed_cold_timeout_seconds
+            ),
+            "minimum_cold_headroom_multiplier": (
+                cargo_policy.minimum_cold_headroom_multiplier
+            ),
+            "measurement_run_id": cargo_policy.measurement_run_id,
+            "measurement_job_id": cargo_policy.measurement_job_id,
+            "measurement_commit": cargo_policy.measurement_commit,
+            "measurement_command": cargo_policy.measurement_command,
+        },
         "local": {
             "always": list(plan.always),
             "always_command_ids": [
@@ -90,6 +114,8 @@ def _json_projection(plan: ProofPlan) -> str:
 
 
 def _markdown_projection(plan: ProofPlan) -> str:
+    shared_cargo_policy = load_ci_cargo_policy()
+    cargo_policy = shared_cargo_policy.execution_budgets
     unique_local_commands = {
         command for rule in plan.local_rules for command in rule.get("gates", [])
     } | set(plan.always)
@@ -202,42 +228,38 @@ def _markdown_projection(plan: ProofPlan) -> str:
     lines.extend(
         [
             "",
-            "## Proof environment contracts",
+            "## Cargo execution contracts",
             "",
-            "Environment policy is applied by the canonical command executor after "
-            "command overrides, so every matching proof family receives the same "
-            "fail-closed compiler environment.",
+            "Cargo wrapper and incremental policy is applied at the canonical "
+            "subprocess boundary, including metadata and toolchain probes. Compiler "
+            "build partitions select a named timeout budget derived from the shared "
+            "receipt-calibrated CI Cargo policy.",
             "",
-            "| Policy | Required toolchains | Match | Set |",
-            "|---|---|---|---|",
+            "The wrapper conflict was reconfirmed by native CI run "
+            f"`{shared_cargo_policy.environment.incident_run_id}` job "
+            f"`{shared_cargo_policy.environment.incident_job_id}` at commit "
+            f"`{shared_cargo_policy.environment.incident_commit}`.",
+            "",
+            "| Budget | Timeout |",
+            "|---|---:|",
         ]
     )
-    for policy in plan.environment_policies:
-        data = policy.data
-        matches = ", ".join(
-            f"`{name}={pattern}`" for name, pattern in data["match_environment"].items()
-        )
-        settings = ", ".join(
-            f"`{name}={value}`" for name, value in data["set_environment"].items()
-        )
-        lines.append(
-            f"| `{policy.name}` | "
-            f"{', '.join(f'`{name}`' for name in data['toolchains'])} | "
-            f"{matches} | {settings} |"
-        )
+    for name, timeout in cargo_policy.timeout_seconds_by_class.items():
+        lines.append(f"| `{name}` | {timeout} s |")
     lines.extend(
         [
             "",
             "## Executable partitions",
             "",
-            "| Command ID | Family | Cell | Timeout | Resource | Parents |",
-            "|---|---|---|---:|---|---:|",
+            "| Command ID | Family | Cell | Budget | Timeout | Resource | Parents |",
+            "|---|---|---|---|---:|---|---:|",
         ]
     )
     for command in plan.commands:
         data = command.data
         lines.append(
             f"| `{command.id}` | `{data['family']}` | `{data['cell']}` | "
+            f"`{data.get('timeout_budget', 'explicit')}` | "
             f"{data['timeout_seconds']} s | `{data['resource_class']}` | "
             f"{len(data['dependencies'])} |"
         )

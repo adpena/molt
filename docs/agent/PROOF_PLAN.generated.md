@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 46 |
+| Hashed executable authority inputs | 1 | 47 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -36,12 +36,12 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3300 s | 300 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 90 min | 4200 s | 1200 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
+| `wasm` | pr, main | yes | `github-job` | 105 min | 5700 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 7 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | 900 s | 600 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 9 |
+| `native_integration` | pr, main | yes | `github-job` | 25 min | 1200 s | 300 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 9 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 60 min | 2760 s | 840 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 10 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 60 min | 2940 s | 660 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
+| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 21 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -94,93 +94,99 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `wasm-ld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-tools` | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
 
-## Proof environment contracts
+## Cargo execution contracts
 
-Environment policy is applied by the canonical command executor after command overrides, so every matching proof family receives the same fail-closed compiler environment.
+Cargo wrapper and incremental policy is applied at the canonical subprocess boundary, including metadata and toolchain probes. Compiler build partitions select a named timeout budget derived from the shared receipt-calibrated CI Cargo policy.
 
-| Policy | Required toolchains | Match | Set |
-|---|---|---|---|
-| `sccache-disables-incremental` | `rustc`, `cargo` | `RUSTC_WRAPPER=(?i)(?:^|.*[/\\])sccache(?:\.exe)?$` | `CARGO_INCREMENTAL=0` |
+The wrapper conflict was reconfirmed by native CI run `30211145633` job `89817499999` at commit `66c042c7ba51bc8606f34b27cfc6af90783cec61`.
+
+| Budget | Timeout |
+|---|---:|
+| `cross-check` | 240 s |
+| `warm` | 300 s |
+| `integration` | 600 s |
+| `cold` | 1200 s |
+| `suite` | 1800 s |
 
 ## Executable partitions
 
-| Command ID | Family | Cell | Timeout | Resource | Parents |
-|---|---|---|---:|---|---:|
-| `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
-| `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | 600 s | `python-tests` | 0 |
-| `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | 600 s | `python-tests` | 0 |
-| `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | 120 s | `python-tests` | 0 |
-| `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | 120 s | `python-tests` | 0 |
-| `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 120 s | `repository-policy` | 0 |
-| `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.cargo-test.truth` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.performance-doc.freshness` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.op-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.heap-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.python-effects.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.runtime-profile.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.cpython-slots.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.op-kinds.drift` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 1 |
-| `repository.wasm-abi.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.cpython-coverage.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.intrinsics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.codecs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.stringprep.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.frontend-protocol.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.frontend-diagnostics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.luau-support.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.differential-lanes.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.target-features.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 2 |
-| `repository.cpython-abi-layout.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 16 |
-| `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.runtime-bridge-stubs` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 300 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | 600 s | `repository-policy` | 6 |
-| `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 0 |
-| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
-| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | 900 s | `compiler-build-resource` | 1 |
-| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
-| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 1 |
-| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | 300 s | `wasm-runtime` | 1 |
-| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | 600 s | `compiler-build-resource` | 2 |
-| `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | 300 s | `python-static` | 0 |
-| `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | 900 s | `python-tests` | 0 |
-| `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | 900 s | `compiler-build-resource` | 0 |
-| `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | 240 s | `compiler-build-resource` | 0 |
-| `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | 240 s | `compiler-build-resource` | 0 |
-| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | 1800 s | `compiler-build-resource` | 0 |
-| `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
-| `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | 240 s | `compiler-build-resource` | 1 |
-| `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 0 |
-| `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 300 s | `compiler-build-resource` | 1 |
-| `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 120 s | `compiler-build-resource` | 1 |
-| `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 120 s | `compiler-build-resource` | 1 |
-| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | 300 s | `compiler-build-resource` | 1 |
-| `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | 120 s | `python-tests` | 1 |
-| `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | 1800 s | `compiler-build-resource` | 1 |
-| `security.python.audit` | `python_security` | `linux-x86_64-py312-python-audit` | 900 s | `network-audit` | 0 |
-| `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | 450 s | `network-audit` | 0 |
-| `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | 450 s | `network-audit` | 1 |
-| `formal.lean.build` | `formal` | `linux-x86_64-formal-verification` | 900 s | `formal-tools` | 0 |
-| `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | 300 s | `formal-tools` | 1 |
-| `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | 1200 s | `formal-tools` | 0 |
-| `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | 300 s | `formal-tools` | 0 |
+| Command ID | Family | Cell | Budget | Timeout | Resource | Parents |
+|---|---|---|---|---:|---|---:|
+| `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
+| `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
+| `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
+| `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.cargo-test.truth` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.performance-doc.freshness` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.op-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.heap-kinds.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.python-effects.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.runtime-profile.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.cpython-slots.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.op-kinds.drift` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 1 |
+| `repository.wasm-abi.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.cpython-coverage.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.intrinsics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.codecs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.stringprep.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.frontend-protocol.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.frontend-diagnostics.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.luau-support.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.differential-lanes.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.target-features.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 2 |
+| `repository.cpython-abi-layout.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 16 |
+| `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.runtime-bridge-stubs` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 6 |
+| `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
+| `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `rust.check.tir-wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
+| `rust.check.math-aarch64` | `rust` | `linux-x86_64-rust-aarch64-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
+| `rust.test.default-truth` | `rust` | `linux-x86_64-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
+| `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
+| `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 1 |
+| `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `explicit` | 120 s | `python-tests` | 1 |
+| `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `suite` | 1800 s | `compiler-build-resource` | 1 |
+| `security.python.audit` | `python_security` | `linux-x86_64-py312-python-audit` | `explicit` | 900 s | `network-audit` | 0 |
+| `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | `explicit` | 450 s | `network-audit` | 0 |
+| `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | `explicit` | 450 s | `network-audit` | 1 |
+| `formal.lean.build` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 900 s | `formal-tools` | 0 |
+| `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
+| `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
+| `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
 
 ## Local integration families
 
