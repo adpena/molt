@@ -21,6 +21,13 @@ _TOOL_FILE_NAMES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tool_candidate_cache():
+    llvm_wasi_tools.clear_llvm_tool_candidate_cache()
+    yield
+    llvm_wasi_tools.clear_llvm_tool_candidate_cache()
+
+
 def _tool_path(directory: Path, role: str) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     return directory / f"{_TOOL_FILE_NAMES[role]}{suffix}"
@@ -108,6 +115,136 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
 
     assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed["cc"].resolve()
+
+
+def test_candidate_resolution_memoizes_filesystem_candidate_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clang = _tool_path(tmp_path / "path-bin", "cc")
+    clang.parent.mkdir()
+    clang.write_bytes(b"clang")
+    calls: list[str] = []
+    managed_calls = 0
+
+    def managed(_target_root: Path | None) -> tuple[Path, ...]:
+        nonlocal managed_calls
+        managed_calls += 1
+        return ()
+
+    def which(name: str) -> str | None:
+        calls.append(name)
+        return str(clang) if name == "clang" else None
+
+    monkeypatch.setattr(llvm_wasi_tools, "_managed_llvm_bin_directories", managed)
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", which)
+
+    first = llvm_wasi_tools.llvm_tool_candidates("cc")
+    second = llvm_wasi_tools.llvm_tool_candidates("cc")
+
+    assert first == second == (clang.resolve(),)
+    assert calls == ["clang"]
+    # The cheap search-topology snapshot is refreshed to detect installation;
+    # candidate-name probes and PATH lookup remain memoized.
+    assert managed_calls == 2
+    assert llvm_wasi_tools.llvm_tool_candidate_cache_info() == {
+        "hits": 1,
+        "misses": 1,
+        "maxsize": 256,
+        "currsize": 1,
+    }
+
+
+def test_candidate_cache_keys_path_and_directory_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path_a = tmp_path / "path-a" / "clang.exe"
+    path_b = tmp_path / "path-b" / "clang.exe"
+    managed_dir = tmp_path / "managed"
+    for path in (path_a, path_b):
+        path.parent.mkdir()
+        path.write_bytes(path.name.encode())
+
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "_managed_llvm_bin_directories",
+        lambda _target_root: (managed_dir,),
+    )
+
+    def which(name: str) -> str | None:
+        assert name == "clang"
+        return str(path_a if os.environ["PATH"] == "A" else path_b)
+
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", which)
+    monkeypatch.setenv("PATH", "A")
+    assert llvm_wasi_tools.llvm_tool_candidates("cc") == (path_a.resolve(),)
+    monkeypatch.setenv("PATH", "B")
+    assert llvm_wasi_tools.llvm_tool_candidates("cc") == (path_b.resolve(),)
+
+    managed_dir.mkdir()
+    managed = _tool_path(managed_dir, "cc")
+    managed.write_bytes(b"managed")
+    assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed.resolve()
+
+
+def test_candidate_cache_revalidates_selected_path_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    managed = _tool_path(managed_dir, "cc")
+    fallback = _tool_path(tmp_path / "fallback", "cc")
+    fallback.parent.mkdir()
+    managed.write_bytes(b"managed")
+    fallback.write_bytes(b"fallback")
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "_managed_llvm_bin_directories",
+        lambda _target_root: (managed_dir,),
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools.shutil,
+        "which",
+        lambda name: str(fallback) if name == "clang" else None,
+    )
+
+    assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed.resolve()
+    managed.unlink()
+    assert llvm_wasi_tools.llvm_tool_candidates("cc") == (fallback.resolve(),)
+
+
+def test_candidate_cache_drops_removed_explicit_tool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    explicit = _tool_path(tmp_path / "explicit", "cc")
+    fallback = _tool_path(tmp_path / "fallback", "cc")
+    explicit.parent.mkdir()
+    fallback.parent.mkdir()
+    explicit.write_bytes(b"explicit")
+    fallback.write_bytes(b"fallback")
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "_managed_llvm_bin_directories",
+        lambda _target_root: (),
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools.shutil,
+        "which",
+        lambda name: str(fallback) if name == "clang" else None,
+    )
+
+    command = (str(explicit),)
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", explicit_commands=(command,)) == (
+        explicit.resolve(),
+        fallback.resolve(),
+    )
+    explicit.unlink()
+    assert llvm_wasi_tools.llvm_tool_candidates("cc", explicit_commands=(command,)) == (
+        fallback.resolve(),
+    )
 
 
 def test_source_commands_share_family_and_never_duplicate_target() -> None:
