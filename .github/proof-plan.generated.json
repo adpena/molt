@@ -55,7 +55,7 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "0726dc9f0cc3a30bfaed0c6fbd15f9cd362a88c8cd9cdd083e4073334501b755",
+  "authority_sha256": "772d8c0a23686c5521bf07665a7cdfaf6869f8ecc23c4cdf58f920191382d087",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -1619,7 +1619,7 @@
       "toolchains": [
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld"
       ]
     },
@@ -1654,7 +1654,7 @@
       "toolchains": [
         "rustc",
         "cargo",
-        "lld"
+        "ld.lld"
       ]
     },
     {
@@ -1697,7 +1697,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld",
         "wasm-tools"
       ]
@@ -1746,7 +1746,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld",
         "wasm-tools"
       ]
@@ -1825,7 +1825,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld",
         "wasm-tools"
       ]
@@ -1991,7 +1991,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld",
         "wasm-tools"
       ]
@@ -2057,7 +2057,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld",
+        "ld.lld",
         "wasm-ld",
         "wasm-tools"
       ]
@@ -2150,7 +2150,7 @@
         "uv",
         "rustc",
         "cargo",
-        "lld"
+        "ld.lld"
       ]
     },
     {
@@ -2407,7 +2407,7 @@
         "cargo",
         "clang",
         "llvm-config",
-        "lld"
+        "ld.lld"
       ]
     },
     {
@@ -2512,7 +2512,7 @@
         "uv",
         "clang",
         "llvm-config",
-        "lld"
+        "ld.lld"
       ]
     },
     {
@@ -4058,7 +4058,31 @@
     },
     {
       "executable": "ld.lld",
-      "name": "lld",
+      "name": "ld.lld",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "\\bLLD 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "ld64.lld",
+      "name": "ld64.lld",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "\\bLLD 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "lld-link",
+      "name": "lld-link",
       "setup_evidence": [
         "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
       ],

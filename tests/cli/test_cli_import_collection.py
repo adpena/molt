@@ -699,9 +699,7 @@ def test_deferred_relative_import_preserves_call_time_globals_transaction() -> N
     )
     gen.visit(
         ast.parse(
-            "def load():\n"
-            "    from .child import value\n"
-            "__package__ = 'other.pkg'\n"
+            "def load():\n    from .child import value\n__package__ = 'other.pkg'\n"
         )
     )
     functions = gen.to_json()["functions"]
@@ -9214,6 +9212,46 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     assert first["hash"] != second["hash"]
 
 
+def test_link_fingerprint_changes_when_role_specific_linker_identity_changes(
+    tmp_path: Path,
+) -> None:
+    obj = tmp_path / "output.o"
+    obj.write_bytes(b"object")
+    command = ["clang", str(obj), "-fuse-ld=lld", "-o", "app"]
+    first = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[obj],
+        link_cmd=command,
+        tool_facts=(
+            {
+                "role": "linker",
+                "resolved": True,
+                "path": "/llvm/bin/ld.lld",
+                "version": "LLD 22.1.8",
+                "sha256": "a" * 64,
+            },
+        ),
+    )
+    second = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[obj],
+        link_cmd=command,
+        tool_facts=(
+            {
+                "role": "linker",
+                "resolved": True,
+                "path": "/llvm/bin/ld.lld",
+                "version": "LLD 22.1.8",
+                "sha256": "b" * 64,
+            },
+        ),
+        stored_fingerprint=first,
+    )
+
+    assert first is not None and second is not None
+    assert first["hash"] != second["hash"]
+
+
 def test_split_link_fingerprint_tracks_deploy_runtime_content(tmp_path: Path) -> None:
     app = tmp_path / "output.wasm"
     reloc_runtime = tmp_path / "molt_runtime_reloc.wasm"
@@ -9318,9 +9356,10 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         project_root: Path,
         inputs: list[Path],
         link_cmd: list[str],
+        tool_facts: Sequence[Mapping[str, object]] = (),
         stored_fingerprint: dict[str, object] | None = None,
     ) -> dict[str, str | None]:
-        del project_root, link_cmd, stored_fingerprint
+        del project_root, link_cmd, tool_facts, stored_fingerprint
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
@@ -9588,9 +9627,10 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         project_root: Path,
         inputs: list[Path],
         link_cmd: list[str],
+        tool_facts: Sequence[Mapping[str, object]] = (),
         stored_fingerprint: dict[str, object] | None = None,
     ) -> dict[str, str]:
-        del project_root, link_cmd, stored_fingerprint
+        del project_root, link_cmd, tool_facts, stored_fingerprint
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
@@ -18993,9 +19033,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_every_wasm_ki
         stdlib_object_path=None,
         cache_candidates=[],
     )
-    captured: list[
-        tuple[str, frozenset[str], frozenset[str], frozenset[str]]
-    ] = []
+    captured: list[tuple[str, frozenset[str], frozenset[str], frozenset[str]]] = []
 
     monkeypatch.setattr(
         cli_backend_compile,
@@ -19593,6 +19631,8 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
 # Any 64-hex value is a valid runtime integrity-pin key; the real key is the
 # runtime fingerprint meta digest (resolved profile/feature identity).
 _TEST_RUNTIME_META_DIGEST = "ab" * 32
+
+
 def _expand_rustflags_response_files(rustflags: str) -> str:
     """Splice wasm link-arg @response-file contents back into the flag string.
 
@@ -21130,7 +21170,9 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
             "hash": "runtime-test",
             "meta_digest": _TEST_RUNTIME_META_DIGEST,
             "rustc": "rustc-test",
-            "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
+            "runtime_features": tuple(
+                cast(tuple[str, ...], kwargs["runtime_features"])
+            ),
         },
     )
 

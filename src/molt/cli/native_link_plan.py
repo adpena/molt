@@ -85,7 +85,14 @@ def native_linker_name_from_driver_command(
             selected = arg.split("=", 1)[1].strip().lower()
             break
     name = Path(selected).name if selected else None
-    if name in {"ld.lld", "lld-link", "lld.exe", "lld-link.exe"}:
+    if name in {
+        "ld.lld",
+        "ld.lld.exe",
+        "ld64.lld",
+        "ld64.lld.exe",
+        "lld-link",
+        "lld-link.exe",
+    }:
         return "lld"
     if name in {"mold", "mold.exe"}:
         return "mold"

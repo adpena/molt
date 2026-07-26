@@ -14,6 +14,7 @@ from molt.dx import DX_ENV_KEYS, DxProject
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.cli.default_paths import _default_molt_cache
+from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
@@ -582,7 +583,8 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             ),
         )
 
-    wasm_ld_path = shutil.which("wasm-ld")
+    wasm_ld_candidates = llvm_linker_candidates("wasm-ld")
+    wasm_ld_path = str(wasm_ld_candidates[0]) if wasm_ld_candidates else None
     record(
         "wasm-ld",
         bool(wasm_ld_path),

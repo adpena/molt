@@ -153,7 +153,13 @@ def test_link_hard_errors_before_invoking_wasm_ld(
     staticlib = tmp_path / "libmolt_runtime.a"
     staticlib.write_bytes(b"")
 
-    monkeypatch.setattr(rb.shutil, "which", lambda _name: str(fake_wasm_ld))
+    monkeypatch.setattr(
+        wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: wasm_toolchain.WasmLinkerIdentity(
+            fake_wasm_ld, "22.1.8", None, "a" * 64
+        ),
+    )
     monkeypatch.setattr(
         wasm_toolchain, "wasm_wasi_libc_archive", lambda *a, **k: fake_libc
     )

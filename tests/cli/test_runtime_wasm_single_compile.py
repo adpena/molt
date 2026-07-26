@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli.runtime_build as rb
+from molt.cli.wasm_toolchain import WasmLinkerIdentity
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.models import (
     _ExternalNativeAbiSymbol,
@@ -78,6 +79,32 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     # Shared link flags carry the split-runtime import ABI.
     for flag in ("--import-memory", "--import-table", "--growable-table"):
         assert flag in shared.link_flags
+
+
+def test_reloc_cache_identity_tracks_exact_wasm_linker_binary() -> None:
+    root = _compiler_root()
+    first = rb._compute_runtime_wasm_build_spec(
+        root,
+        root / "wasm" / "molt_runtime_reloc.wasm",
+        reloc=True,
+        wasm_linker_identity=WasmLinkerIdentity(
+            Path("/llvm/bin/wasm-ld"), "22.1.8", "22.1.8", "a" * 64
+        ),
+        **_COMMON,
+    )
+    second = rb._compute_runtime_wasm_build_spec(
+        root,
+        root / "wasm" / "molt_runtime_reloc.wasm",
+        reloc=True,
+        wasm_linker_identity=WasmLinkerIdentity(
+            Path("/llvm/bin/wasm-ld"), "22.1.8", "22.1.8", "b" * 64
+        ),
+        **_COMMON,
+    )
+
+    assert first.fingerprint is not None and second.fingerprint is not None
+    assert first.fingerprint["meta_digest"] != second.fingerprint["meta_digest"]
+    assert first.staticlib_fingerprint == second.staticlib_fingerprint
 
 
 def test_native_plan_is_the_pre_staging_runtime_export_authority() -> None:

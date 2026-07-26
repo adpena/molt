@@ -12,6 +12,11 @@ from typing import Literal
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.file_hashing import _sha256_file
+from molt.llvm_linker_roles import (
+    LlvmLinkerRole,
+    executable_selects_linker_role,
+    lexical_executable_path,
+)
 
 
 LlvmToolRole = Literal["cc", "cxx", "wasm_ld", "ar", "ranlib", "nm", "strip"]
@@ -121,7 +126,7 @@ def _absolute_tool_path(path: Path) -> Path:
     identity while still making relative PATH entries deterministic.
     """
 
-    return Path(os.path.abspath(os.fspath(path.expanduser())))
+    return lexical_executable_path(path)
 
 
 def _dedupe_tool_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
@@ -265,12 +270,14 @@ def _rust_llvm_bin_directories() -> tuple[Path, ...]:
 
 
 def _executable_names(name: str) -> tuple[str, ...]:
-    if os.name != "nt" or Path(name).suffix:
+    if os.name != "nt":
         return (name,)
     raw_extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     extensions = tuple(
         extension.lower() for extension in raw_extensions.split(";") if extension
     )
+    if name.lower().endswith(extensions):
+        return (name,)
     return (name, *(name + extension for extension in extensions))
 
 
@@ -403,16 +410,43 @@ def llvm_tool_candidates(
     include_rust_toolchain: bool = False,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
-    candidates = llvm_named_tool_candidates(
+    if role == "wasm_ld":
+        return llvm_linker_candidates(
+            "wasm-ld",
+            explicit_commands=explicit_commands,
+            sibling_directories=sibling_directories,
+            target_root=target_root,
+            include_rust_toolchain=include_rust_toolchain,
+        )
+    return llvm_named_tool_candidates(
         *_LLVM_TOOL_NAMES[role],
         explicit_commands=explicit_commands,
         sibling_directories=sibling_directories,
         target_root=target_root,
         include_rust_toolchain=include_rust_toolchain,
     )
-    if role != "wasm_ld":
-        return candidates
-    return tuple(path for path in candidates if _is_wasm_ld_entrypoint(path))
+
+
+def llvm_linker_candidates(
+    role: LlvmLinkerRole,
+    *,
+    explicit_commands: Sequence[tuple[str, ...]] = (),
+    sibling_directories: Sequence[Path] = (),
+    target_root: Path | None = None,
+    include_rust_toolchain: bool = False,
+) -> tuple[Path, ...]:
+    """Return only entrypoints that select one exact LLVM linker role."""
+
+    candidates = llvm_named_tool_candidates(
+        role,
+        explicit_commands=explicit_commands,
+        sibling_directories=sibling_directories,
+        target_root=target_root,
+        include_rust_toolchain=include_rust_toolchain,
+    )
+    return tuple(
+        path for path in candidates if executable_selects_linker_role(path, role)
+    )
 
 
 def _is_wasm_ld_entrypoint(path: Path) -> bool:
@@ -424,10 +458,7 @@ def _is_wasm_ld_entrypoint(path: Path) -> bool:
     cross the role boundary.
     """
 
-    name = os.fspath(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
-    return name == "wasm-ld"
+    return executable_selects_linker_role(path, "wasm-ld")
 
 
 def _command_selects_path(command: tuple[str, ...] | None, path: Path) -> bool:

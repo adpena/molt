@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -2258,14 +2257,23 @@ def _link_runtime_staticlib_to_reloc_wasm(
     export_link_args: str = "",
     long_double_required: bool = False,
 ) -> bool:
-    wasm_ld = shutil.which("wasm-ld")
-    if wasm_ld is None:
+    try:
+        wasm_linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        if not json_output:
+            print(
+                f"Runtime relocatable wasm linker contract failed: {exc}",
+                file=sys.stderr,
+            )
+        return False
+    if wasm_linker is None:
         if not json_output:
             print(
                 "Runtime relocatable wasm link failed: wasm-ld not found.",
                 file=sys.stderr,
             )
         return False
+    wasm_ld = str(wasm_linker.path)
     libc_archive = wasm_toolchain.wasm_wasi_libc_archive()
     if libc_archive is None:
         if not json_output:
@@ -2459,6 +2467,7 @@ def _compute_runtime_wasm_build_spec(
     resolved_modules: set[str] | frozenset[str] | None,
     required_link_features: frozenset[str],
     required_exports: set[str] | frozenset[str] | None,
+    wasm_linker_identity: wasm_toolchain.WasmLinkerIdentity | None = None,
 ) -> _RuntimeWasmBuildSpec:
     """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
     # The emitted app import ABI is the final link-time requirement authority.
@@ -2545,6 +2554,16 @@ def _compute_runtime_wasm_build_spec(
         f"--cfg molt_{'reloc' if reloc else 'shared'}_longdouble_link"
         f'="{_longdouble_link_token}"',
     )
+    if reloc:
+        linker_token = (
+            wasm_linker_identity.fingerprint_token
+            if wasm_linker_identity is not None
+            else "wasm-ld:unattested"
+        )
+        fingerprint_rustflags = _append_rustflags_text(
+            fingerprint_rustflags,
+            f'--cfg molt_wasm_linker_identity="{linker_token}"',
+        )
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
@@ -2682,6 +2701,21 @@ def _ensure_runtime_wasm(
         return None
 
     root = project_root or _compiler_root()
+    wasm_linker_identity: wasm_toolchain.WasmLinkerIdentity | None = None
+    if reloc:
+        try:
+            wasm_linker_identity = wasm_toolchain.resolve_wasm_linker()
+        except wasm_toolchain.WasmLinkerContractError as exc:
+            if not json_output:
+                print(f"Runtime wasm linker contract failed: {exc}", file=sys.stderr)
+            return False
+        if wasm_linker_identity is None:
+            if not json_output:
+                print(
+                    "Runtime wasm linker contract failed: wasm-ld not found.",
+                    file=sys.stderr,
+                )
+            return False
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_wasm.exists():
@@ -2732,6 +2766,7 @@ def _ensure_runtime_wasm(
         resolved_modules=resolved_modules,
         required_link_features=required_link_features,
         required_exports=required_exports,
+        wasm_linker_identity=wasm_linker_identity,
     )
     if fingerprint is None:
         if not json_output:
@@ -3779,6 +3814,10 @@ def _ensure_runtime_wasm_both(
     """
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    try:
+        combined_wasm_linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError:
+        combined_wasm_linker = None
 
     def _ensure(reloc: bool) -> bool:
         return _ensure_runtime_wasm_artifact(
@@ -3798,6 +3837,7 @@ def _ensure_runtime_wasm_both(
 
     if (
         _single_compile_split_runtime_enabled()
+        and combined_wasm_linker is not None
         and runtime_wasm is not None
         and runtime_reloc_wasm is not None
     ):
@@ -3812,6 +3852,7 @@ def _ensure_runtime_wasm_both(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
+            wasm_linker_identity=combined_wasm_linker,
         )
         reloc_spec = _compute_runtime_wasm_build_spec(
             project_root,
@@ -3824,6 +3865,7 @@ def _ensure_runtime_wasm_both(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
+            wasm_linker_identity=combined_wasm_linker,
         )
         # Best-effort: populate the target dir with one compile. A False result
         # (build failed / toolchain missing) just means the per-artifact calls

@@ -86,7 +86,9 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `clang` | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-config` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `ld.lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `ld64.lld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `lld-link` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lean` | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 3 |
 | `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
 | `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |

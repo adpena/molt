@@ -9,6 +9,8 @@ pre-set wrapper. If this test regresses, the cache silently turned off again.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import molt.dx as dx
 
 
@@ -156,7 +158,9 @@ def test_lld_link_enabled_on_windows_when_available(monkeypatch):
 
     monkeypatch.setattr(ce.os, "name", "nt")
     monkeypatch.setattr(
-        ce.shutil, "which", lambda n: "C:/LLVM/bin/lld-link.exe" if n == "lld-link" else None
+        ce,
+        "llvm_linker_candidates",
+        lambda role: (Path("C:/LLVM/bin/lld-link.exe"),) if role == "lld-link" else (),
     )
     env: dict[str, str] = {}
     ce._maybe_enable_lld_link(env)
@@ -168,7 +172,7 @@ def test_lld_link_noop_when_absent(monkeypatch):
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setattr(ce.os, "name", "nt")
-    monkeypatch.setattr(ce.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ce, "llvm_linker_candidates", lambda _role: ())
     env: dict[str, str] = {}
     ce._maybe_enable_lld_link(env)
     assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
