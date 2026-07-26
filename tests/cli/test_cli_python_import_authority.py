@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -78,6 +79,20 @@ def test_python_import_semantics_have_one_source_authority() -> None:
             assert definition not in inspect.getsource(consumer)
 
 
+def test_pep695_type_parameter_factory_is_closed_and_fails_unknown_kinds() -> None:
+    typing_path = Path(python_imports.__file__).parents[1] / "stdlib" / "typing.py"
+    source = typing_path.read_text(encoding="utf-8")
+    assert 'if kind == "TypeVar":' in source
+    assert 'if kind == "ParamSpec":' in source
+    assert 'if kind == "TypeVarTuple":' in source
+    assert "unsupported PEP 695 type parameter kind" in source
+    assert "Type parameter defaults require target Python 3.13+" in Path(
+        module_import_scanner.__file__
+    ).parents[1].joinpath("frontend", "lowering", "type_annotations.py").read_text(
+        encoding="utf-8"
+    )
+
+
 def _contexts_for(
     source: str,
     *,
@@ -151,6 +166,30 @@ def test_source_order_uses_state_at_each_import(tmp_path: Path) -> None:
     ) == expected
 
 
+def test_module_level_policy_skips_deferred_bodies_without_hiding_module_imports(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "import package.eager\n"
+        "def deferred():\n"
+        "    import package.lazy\n",
+        encoding="utf-8",
+    )
+    resolver = LocalPythonModuleResolver((tmp_path,))
+
+    assert local_import_targets(
+        path,
+        resolver,
+        PythonImportPolicy(True, False, True),
+    ) == {"package.eager"}
+    assert local_import_targets(
+        path,
+        resolver,
+        PythonImportPolicy(False, False, True),
+    ) == {"package.eager", "package.lazy"}
+
+
 def test_branch_join_preserves_whole_possible_states() -> None:
     source = (
         "if condition:\n"
@@ -219,6 +258,44 @@ def test_unresolved_effect_boundary_requires_explicit_runtime_custody() -> None:
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         module_import_scanner._collect_imports(
             tree, module_name="pkg.entry", is_package=False
+        )
+
+
+def test_class_global_metadata_write_updates_module_import_state() -> None:
+    source = (
+        "class Scope:\n"
+        "    global __package__\n"
+        "    __package__ = 'other.pkg'\n"
+        "from .child import value\n"
+    )
+    assert set(
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
+        )
+    ) == {"other.pkg.child", "other.pkg.child.value"}
+
+
+@pytest.mark.parametrize(
+    "execution",
+    (
+        "class Scope(metaclass=mutate()):\n    pass\n",
+        "factory = lambda value=mutate(): None\n",
+        "callbacks = [mutate]\ncallbacks[0]()\n",
+    ),
+)
+def test_indirect_definition_time_execution_invalidates_import_state(
+    execution: str,
+) -> None:
+    source = (
+        "def mutate():\n"
+        "    global __package__\n"
+        "    __package__ = 'other.pkg'\n"
+        f"{execution}"
+        "from .child import value\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry", is_package=False
         )
 
 
@@ -310,6 +387,114 @@ def test_import_flow_cache_is_content_addressed_across_reparse() -> None:
     assert second.states_for(second_request)[0].package == StaticMetadataValue.known(
         "pkg"
     )
+
+
+def test_import_flow_cache_publishes_transitively_immutable_facts() -> None:
+    source = "__package__ = 'pkg'\nfrom .child import value\n"
+    context = ModuleImportContext("pkg.entry", False)
+    first_tree = ast.parse(source)
+    first = analyze_module_import_flow(first_tree, context)
+    request = first_tree.body[1]
+    assert isinstance(request, ast.ImportFrom)
+    key = next(iter(first.states_by_node))
+    mutable_view = cast(dict[object, object], first.states_by_node)
+
+    with pytest.raises(TypeError):
+        mutable_view[key] = ()
+
+    second_tree = ast.parse(source)
+    second = analyze_module_import_flow(second_tree, context)
+    second_request = second_tree.body[1]
+    assert second is first
+    assert second.states_for(second_request)[0].package == StaticMetadataValue.known(
+        "pkg"
+    )
+
+
+def test_dynamic_import_closure_uses_canonical_binding_facts(tmp_path: Path) -> None:
+    cases = {
+        "assigned": (
+            "import importlib\n"
+            "load = importlib.import_module\n"
+            "load('pkg.assigned')\n",
+            "pkg.assigned",
+        ),
+        "module_after_definition": (
+            "def load_later():\n"
+            "    load('pkg.after')\n"
+            "from importlib import import_module as load\n",
+            "pkg.after",
+        ),
+        "enclosing_after_definition": (
+            "def outer():\n"
+            "    def load_later():\n"
+            "        load('pkg.enclosing')\n"
+            "    from importlib import import_module as load\n",
+            "pkg.enclosing",
+        ),
+        "class_enclosing_after_definition": (
+            "def outer():\n"
+            "    class DeferredOwner:\n"
+            "        def load_later(self):\n"
+            "            load('pkg.class_enclosing')\n"
+            "    from importlib import import_module as load\n",
+            "pkg.class_enclosing",
+        ),
+        "global_skips_enclosing": (
+            "from importlib import import_module as load\n"
+            "def outer():\n"
+            "    load = print\n"
+            "    def load_global():\n"
+            "        global load\n"
+            "        load('pkg.global')\n",
+            "pkg.global",
+        ),
+    }
+    package = tmp_path / "pkg"
+    package.mkdir()
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    policy = PythonImportPolicy(False, True, True)
+    for name, (source, expected) in cases.items():
+        path = package / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        assert expected in local_import_targets(path, resolver, policy)
+
+    shadowed = package / "shadowed.py"
+    shadowed.write_text(
+        "from importlib import import_module as load\n"
+        "def local_parameter(load):\n"
+        "    load('pkg.not_an_import')\n",
+        encoding="utf-8",
+    )
+    assert "pkg.not_an_import" not in local_import_targets(
+        shadowed, resolver, policy
+    )
+
+
+def test_type_alias_dynamic_imports_are_lazy_full_graph_edges() -> None:
+    source = (
+        "type Alias = load('pkg.lazy')\n"
+        "from importlib import import_module as load\n"
+    )
+    tree = ast.parse(source)
+    full = set(
+        module_import_scanner._collect_imports(
+            tree,
+            module_name="pkg.entry",
+            import_scan_mode="full",
+        )
+    )
+    module_init = set(
+        module_import_scanner._collect_imports(
+            tree,
+            module_name="pkg.entry",
+            import_scan_mode="module_init",
+        )
+    )
+
+    assert {"typing", "pkg.lazy"} <= full
+    assert "typing" in module_init
+    assert "pkg.lazy" not in module_init
 
 
 @pytest.mark.parametrize(

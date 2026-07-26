@@ -7,12 +7,17 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Iterable, Literal
+from typing import Literal
+
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingPolicy,
+    analyze_python_bindings,
+    python_ast_digest,
+)
 
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
-    analyze_module_import_flow,
     bind_static_import_call_arguments,
     dunder_globals_state_from_expression,
     metadata_value_from_expression,
@@ -232,414 +237,6 @@ def _project_import_request(
     return projection.modules
 
 
-_AliasProvenance = str | None
-
-
-@dataclass
-class _LexicalImportScope:
-    parent: _LexicalImportScope | None
-    events: dict[
-        str, list[tuple[tuple[int, int], _AliasProvenance, bool]]
-    ] = field(
-        default_factory=dict
-    )
-
-    def bind(
-        self,
-        name: str,
-        provenance: _AliasProvenance,
-        position: tuple[int, int],
-        *,
-        conditional: bool = False,
-    ) -> None:
-        self.events.setdefault(name, []).append((position, provenance, conditional))
-
-    def resolve_all(
-        self, name: str, position: tuple[int, int]
-    ) -> frozenset[_AliasProvenance]:
-        candidates = sorted(
-            (
-            event for event in self.events.get(name, ()) if event[0] <= position
-            ),
-            key=lambda event: event[0],
-        )
-        if candidates:
-            possible: set[_AliasProvenance] = set()
-            for _event_position, provenance, conditional in candidates:
-                if not conditional:
-                    possible = {provenance}
-                else:
-                    possible.add(provenance)
-            return frozenset(possible)
-        return (
-            self.parent.resolve_all(name, position)
-            if self.parent is not None
-            else frozenset({None})
-        )
-
-    def resolve(self, name: str, position: tuple[int, int]) -> _AliasProvenance:
-        possible = self.resolve_all(name, position)
-        return next(iter(possible)) if len(possible) == 1 else None
-
-
-def _binding_names(target: ast.AST | None) -> set[str]:
-    if target is None:
-        return set()
-    if isinstance(target, ast.Name):
-        return {target.id}
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return {name for item in target.elts for name in _binding_names(item)}
-    if isinstance(target, ast.Starred):
-        return _binding_names(target.value)
-    if isinstance(target, (ast.MatchAs, ast.MatchStar)):
-        names = {target.name} if target.name else set()
-        if isinstance(target, ast.MatchAs):
-            names.update(_binding_names(target.pattern))
-        return names
-    if isinstance(target, ast.MatchMapping):
-        names = {target.rest} if target.rest else set()
-        for pattern in target.patterns:
-            names.update(_binding_names(pattern))
-        return names
-    if isinstance(target, ast.MatchSequence):
-        return {name for pattern in target.patterns for name in _binding_names(pattern)}
-    if isinstance(target, ast.MatchClass):
-        return {
-            name
-            for pattern in (*target.patterns, *target.kwd_patterns)
-            for name in _binding_names(pattern)
-        }
-    if isinstance(target, ast.MatchOr):
-        return {name for pattern in target.patterns for name in _binding_names(pattern)}
-    return set()
-
-
-class _FunctionLocalBindings(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.names: set[str] = set()
-        self.globals: set[str] = set()
-        self.nonlocals: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.names.add(node.id)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        self.names.update(
-            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
-        )
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.names.update(
-            alias.asname or alias.name for alias in node.names if alias.name != "*"
-        )
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.names.add(node.name)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-    def visit_Global(self, node: ast.Global) -> None:
-        self.globals.update(node.names)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        self.nonlocals.update(node.names)
-
-    def visit_comprehension(self, node: ast.comprehension) -> None:
-        self.visit(node.iter)
-        for condition in node.ifs:
-            self.visit(condition)
-
-
-def _function_local_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-) -> set[str]:
-    collector = _FunctionLocalBindings()
-    body = node.body if isinstance(node.body, list) else [node.body]
-    for statement in body:
-        collector.visit(statement)
-    arguments = node.args
-    collector.names.update(
-        arg.arg
-        for arg in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        )
-    )
-    if arguments.vararg is not None:
-        collector.names.add(arguments.vararg.arg)
-    if arguments.kwarg is not None:
-        collector.names.add(arguments.kwarg.arg)
-    return collector.names - collector.globals - collector.nonlocals
-
-
-def _node_end(node: ast.AST) -> tuple[int, int]:
-    return (
-        int(getattr(node, "end_lineno", getattr(node, "lineno", 0))),
-        int(getattr(node, "end_col_offset", getattr(node, "col_offset", 0))),
-    )
-
-
-class _DynamicImportLexicalIndex(ast.NodeVisitor):
-    def __init__(self, tree: ast.Module) -> None:
-        self.scope = _LexicalImportScope(None)
-        self.conditional_depth = 0
-        self.scope.bind("__import__", "dunder_import", (-1, -1))
-        self.calls: list[tuple[ast.Call, _LexicalImportScope]] = []
-        self.visit(tree)
-
-    def _bind_target(self, target: ast.AST | None, node: ast.AST) -> None:
-        for name in _binding_names(target):
-            self.scope.bind(
-                name,
-                None,
-                _node_end(node),
-                conditional=self.conditional_depth > 0,
-            )
-
-    def _visit_conditional(self, statements: Iterable[ast.AST]) -> None:
-        self.conditional_depth += 1
-        try:
-            for statement in statements:
-                self.visit(statement)
-        finally:
-            self.conditional_depth -= 1
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            name = alias.asname or alias.name.split(".", 1)[0]
-            provenance = (
-                "importlib"
-                if alias.name == "importlib"
-                or (alias.name.startswith("importlib.") and alias.asname is None)
-                else None
-            )
-            self.scope.bind(
-                name,
-                provenance,
-                _node_end(node),
-                conditional=self.conditional_depth > 0,
-            )
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            if alias.name == "*":
-                continue
-            name = alias.asname or alias.name
-            provenance: _AliasProvenance = None
-            if (
-                node.level == 0
-                and node.module == "importlib"
-                and alias.name == "import_module"
-            ):
-                provenance = "import_module"
-            elif (
-                node.level == 0
-                and node.module == "builtins"
-                and alias.name == "__import__"
-            ):
-                provenance = "dunder_import"
-            self.scope.bind(
-                name,
-                provenance,
-                _node_end(node),
-                conditional=self.conditional_depth > 0,
-            )
-
-    def visit_If(self, node: ast.If) -> None:
-        self.visit(node.test)
-        self._visit_conditional((*node.body, *node.orelse))
-
-    def visit_While(self, node: ast.While) -> None:
-        self.visit(node.test)
-        self._visit_conditional((*node.body, *node.orelse))
-
-    def visit_Try(self, node: ast.Try) -> None:
-        self._visit_conditional(node.body)
-        for handler in node.handlers:
-            self._visit_conditional((handler,))
-        self._visit_conditional(node.orelse)
-        for statement in node.finalbody:
-            self.visit(statement)
-
-    def visit_Assign(self, node: ast.Assign) -> None:
-        self.visit(node.value)
-        for target in node.targets:
-            self._bind_target(target, node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.visit(node.annotation)
-        if node.value is not None:
-            self.visit(node.value)
-        self._bind_target(node.target, node)
-
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self.visit(node.target)
-        self.visit(node.value)
-        self._bind_target(node.target, node)
-
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        self.visit(node.value)
-        self._bind_target(node.target, node)
-
-    def visit_Delete(self, node: ast.Delete) -> None:
-        for target in node.targets:
-            self._bind_target(target, node)
-
-    def visit_For(self, node: ast.For) -> None:
-        self.visit(node.iter)
-        self.conditional_depth += 1
-        try:
-            self._bind_target(node.target, node.target)
-            self._visit_conditional((*node.body, *node.orelse))
-        finally:
-            self.conditional_depth -= 1
-
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        self.visit(node.iter)
-        self.conditional_depth += 1
-        try:
-            self._bind_target(node.target, node.target)
-            self._visit_conditional((*node.body, *node.orelse))
-        finally:
-            self.conditional_depth -= 1
-
-    def visit_With(self, node: ast.With) -> None:
-        for item in node.items:
-            self.visit(item.context_expr)
-            self._bind_target(item.optional_vars, item)
-        for statement in node.body:
-            self.visit(statement)
-
-    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        for item in node.items:
-            self.visit(item.context_expr)
-            self._bind_target(item.optional_vars, item)
-        for statement in node.body:
-            self.visit(statement)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.type is not None:
-            self.visit(node.type)
-        if node.name:
-            self.scope.bind(node.name, None, (int(node.lineno), int(node.col_offset)))
-        for statement in node.body:
-            self.visit(statement)
-
-    def visit_match_case(self, node: ast.match_case) -> None:
-        self.conditional_depth += 1
-        try:
-            for name in _binding_names(node.pattern):
-                self.scope.bind(
-                    name,
-                    None,
-                    _node_end(node.pattern),
-                    conditional=True,
-                )
-            if node.guard is not None:
-                self.visit(node.guard)
-            for statement in node.body:
-                self.visit(statement)
-        finally:
-            self.conditional_depth -= 1
-
-    def _visit_function(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    ) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for decorator in node.decorator_list:
-                self.visit(decorator)
-            if node.returns is not None:
-                self.visit(node.returns)
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default is not None:
-                self.visit(default)
-        parent = self.scope
-        child = _LexicalImportScope(parent)
-        for name in _function_local_names(node):
-            child.bind(name, None, (-1, -1))
-        self.scope = child
-        body = node.body if isinstance(node.body, list) else [node.body]
-        for statement in body:
-            self.visit(statement)
-        self.scope = parent
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            parent.bind(node.name, None, _node_end(node))
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_function(node)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for expression in (*node.decorator_list, *node.bases):
-            self.visit(expression)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-        parent = self.scope
-        self.scope = _LexicalImportScope(parent)
-        for statement in node.body:
-            self.visit(statement)
-        self.scope = parent
-        parent.bind(node.name, None, _node_end(node))
-
-    def _visit_comprehension(self, node: ast.AST) -> None:
-        parent = self.scope
-        child = _LexicalImportScope(parent)
-        generators = getattr(node, "generators")
-        for generator in generators:
-            for name in _binding_names(generator.target):
-                child.bind(name, None, (-1, -1))
-        self.scope = child
-        self.generic_visit(node)
-        self.scope = parent
-
-    visit_ListComp = _visit_comprehension
-    visit_SetComp = _visit_comprehension
-    visit_DictComp = _visit_comprehension
-    visit_GeneratorExp = _visit_comprehension
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self.calls.append((node, self.scope))
-        self.generic_visit(node)
-
-
-def _dynamic_import_kind(
-    call: ast.Call,
-    scope: _LexicalImportScope,
-) -> Literal["import_module", "dunder_import"] | None:
-    position = (int(call.lineno), int(call.col_offset))
-    callee = call.func
-    if isinstance(callee, ast.Name):
-        provenance = scope.resolve_all(callee.id, position)
-        if "import_module" in provenance:
-            return "import_module"
-        if "dunder_import" in provenance:
-            return "dunder_import"
-        return None
-    if (
-        isinstance(callee, ast.Attribute)
-        and callee.attr == "import_module"
-        and isinstance(callee.value, ast.Name)
-        and "importlib" in scope.resolve_all(callee.value.id, position)
-    ):
-        return "import_module"
-    return None
-
-
 def _dynamic_import_target(
     call: ast.Call,
     *,
@@ -736,7 +333,18 @@ def local_import_targets(
         is_package=path.name == "__init__.py",
         spec_name=module,
     )
-    import_flow = analyze_module_import_flow(tree, base_context)
+    binding_index = analyze_python_bindings(
+        tree,
+        source_digest=python_ast_digest(tree),
+        policy=PythonBindingPolicy(
+            module_name=module,
+            module_spec_name=module,
+            module_is_package=path.name == "__init__.py",
+            module_execution_kind="imported",
+            analyze_deferred_bodies=not policy.module_level_only,
+        ),
+    )
+    import_flow = binding_index.module_import_flow
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         return tuple(
@@ -773,28 +381,39 @@ def local_import_targets(
 
     nonliteral_dynamic_imports = 0
     if not policy.module_level_only:
-        lexical_index = _DynamicImportLexicalIndex(tree)
-        for node, scope in lexical_index.calls:
-            kind = _dynamic_import_kind(node, scope)
-            if kind is None:
+        for node in nodes:
+            if not isinstance(node, ast.Call):
                 continue
-            try:
-                target = _dynamic_import_target(
-                    node,
-                    kind=kind,
-                    contexts=contexts_for(node),
-                    path=path,
-                )
-            except ValueError:
+            fact = binding_index.call_fact(node)
+            kinds = fact.possible_import_call_kinds() if fact is not None else ()
+            if not kinds:
+                continue
+            targets_for_call: set[str] = set()
+            errors: list[ValueError] = []
+            projection_succeeded = False
+            for kind in kinds:
+                try:
+                    target = _dynamic_import_target(
+                        node,
+                        kind=kind,
+                        contexts=contexts_for(node),
+                        path=path,
+                    )
+                except ValueError as exc:
+                    errors.append(exc)
+                    continue
+                projection_succeeded = True
+                if target is not None:
+                    targets_for_call.update(target)
+            if not projection_succeeded:
                 nonliteral_dynamic_imports += 1
                 if (
                     policy.fail_on_nonliteral_dynamic_import
                     and expected_nonliteral_dynamic_imports is None
                 ):
-                    raise
+                    raise errors[0]
                 continue
-            if target is not None:
-                targets.update(target)
+            targets.update(targets_for_call)
         if (
             expected_nonliteral_dynamic_imports is not None
             and nonliteral_dynamic_imports != expected_nonliteral_dynamic_imports

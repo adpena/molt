@@ -36,6 +36,9 @@ except RuntimeError:
 _require_intrinsic("molt_stdlib_probe")
 _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new")
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param")
+_MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new")
+_MOLT_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire")
+_MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
 
 
 TYPE_CHECKING = False
@@ -309,16 +312,94 @@ class _GenericAlias(_TypingBase):
         return ()
 
 
+_LAZY_TYPE_VALUE_UNSET = object()
+# 128 is the smallest measured pool that keeps eight unrelated first reads
+# within the no-contention envelope. Store canonical runtime handles directly:
+# Python RLock wrappers add no synchronization authority and are unsafe to
+# construct before the application callable resolver is installed.
+_LAZY_TYPE_LOCK_MASK = 127
+_lazy_type_locks = []
+for _lazy_type_lock_slot in range(_LAZY_TYPE_LOCK_MASK + 1):
+    _lazy_type_locks.append(_MOLT_RLOCK_NEW())
+_LAZY_TYPE_LOCKS = tuple(_lazy_type_locks)
+del _lazy_type_locks, _lazy_type_lock_slot
+
+
+def _lazy_type_lock_index(identity: int) -> int:
+    """Fold all address/handle bits without invoking user-defined hashing."""
+    identity ^= identity >> 32
+    identity ^= identity >> 16
+    identity ^= identity >> 8
+    return (identity * 0x9E3779B1) & _LAZY_TYPE_LOCK_MASK
+
+
+def _lazy_type_lock(owner: object) -> object:
+    return _LAZY_TYPE_LOCKS[_lazy_type_lock_index(id(owner))]
+
+
+def _evaluate_lazy_type_value(evaluator: object, key: str) -> object:
+    if not callable(evaluator):
+        raise TypeError("lazy type evaluator must be callable")
+    values = evaluator(1)
+    if not isinstance(values, dict):
+        raise TypeError("lazy type evaluator must return a dict")
+    return values[key]
+
+
+def _evaluate_lazy_type_value_once(
+    owner: object,
+    cache_name: str,
+    evaluator_name: str,
+    key: str,
+    fallback: object,
+) -> object:
+    lock = _lazy_type_lock(owner)
+    _MOLT_RLOCK_ACQUIRE(lock, True, -1.0)
+    try:
+        value = getattr(owner, cache_name)
+        if value is _LAZY_TYPE_VALUE_UNSET:
+            evaluator = getattr(owner, evaluator_name)
+            value = (
+                fallback
+                if evaluator is None
+                else _evaluate_lazy_type_value(evaluator, key)
+            )
+            setattr(owner, cache_name, value)
+        return value
+    finally:
+        _MOLT_RLOCK_RELEASE(lock)
+
+
 class _MoltTypeAlias(_TypingBase):
-    __slots__ = ("__name__", "__value__", "__type_params__", "__parameters__")
+    __slots__ = (
+        "__name__",
+        "_value_evaluator",
+        "_value_cache",
+        "__type_params__",
+        "__parameters__",
+    )
 
     def __init__(
-        self, name: str, value: object, type_params: tuple[object, ...]
+        self, name: str, value_evaluator: object, type_params: tuple[object, ...]
     ) -> None:
         self.__name__ = name
-        self.__value__ = value
+        self._value_evaluator = value_evaluator
+        self._value_cache = _LAZY_TYPE_VALUE_UNSET
         self.__type_params__ = type_params
         self.__parameters__ = type_params
+
+    @property
+    def __value__(self) -> object:
+        value = self._value_cache
+        if value is _LAZY_TYPE_VALUE_UNSET:
+            value = _evaluate_lazy_type_value_once(
+                self,
+                "_value_cache",
+                "_value_evaluator",
+                "__value__",
+                _LAZY_TYPE_VALUE_UNSET,
+            )
+        return value
 
     def __repr__(self) -> str:
         return self.__name__
@@ -329,14 +410,17 @@ class _MoltTypeAlias(_TypingBase):
 
 
 class _MoltTypeAliasApplied(_TypingBase):
-    __slots__ = ("_alias", "__args__", "__origin__", "__value__", "__parameters__")
+    __slots__ = ("_alias", "__args__", "__origin__", "__parameters__")
 
     def __init__(self, alias: _MoltTypeAlias, args: tuple[object, ...]) -> None:
         self._alias = alias
         self.__args__ = args
         self.__origin__ = alias
-        self.__value__ = alias.__value__
         self.__parameters__ = alias.__type_params__
+
+    @property
+    def __value__(self) -> object:
+        return self._alias.__value__
 
     def __repr__(self) -> str:
         return f"{self._alias.__name__}[{_format_args(self.__args__)}]"
@@ -692,6 +776,12 @@ class _TypeVarLike(_TypingBase):
         "_constraints",
         "_default",
         "_pep695",
+        "_bound_evaluator",
+        "_constraints_evaluator",
+        "_default_evaluator",
+        "_bound_cache",
+        "_constraints_cache",
+        "_default_cache",
     )
 
     def __init__(
@@ -709,16 +799,46 @@ class _TypeVarLike(_TypingBase):
         self._contravariant = contravariant
         self._bound = bound
         self._constraints = constraints
-        self._default = default
+        self._default = (
+            NoDefault
+            if _SUPPORTS_TYPEVAR_DEFAULTS and default is _TYPEVAR_NO_DEFAULT
+            else default
+        )
         self._pep695 = pep695
+        self._bound_evaluator = None
+        self._constraints_evaluator = None
+        self._default_evaluator = None
+        self._bound_cache = _LAZY_TYPE_VALUE_UNSET
+        self._constraints_cache = _LAZY_TYPE_VALUE_UNSET
+        self._default_cache = _LAZY_TYPE_VALUE_UNSET
 
     @property
     def __constraints__(self) -> tuple[object, ...]:
-        return self._constraints
+        value = self._constraints_cache
+        if value is _LAZY_TYPE_VALUE_UNSET:
+            value = _evaluate_lazy_type_value_once(
+                self,
+                "_constraints_cache",
+                "_constraints_evaluator",
+                "__constraints__",
+                self._constraints,
+            )
+        if not isinstance(value, tuple):
+            raise TypeError("type parameter constraints evaluator must return a tuple")
+        return value
 
     @property
     def __bound__(self) -> object | None:
-        return self._bound
+        value = self._bound_cache
+        if value is _LAZY_TYPE_VALUE_UNSET:
+            value = _evaluate_lazy_type_value_once(
+                self,
+                "_bound_cache",
+                "_bound_evaluator",
+                "__bound__",
+                self._bound,
+            )
+        return value
 
     @property
     def __covariant__(self) -> bool:
@@ -732,10 +852,19 @@ class _TypeVarLike(_TypingBase):
 if _SUPPORTS_TYPEVAR_DEFAULTS:
 
     def _typevarlike_default(self: _TypeVarLike) -> object:
-        return self._default
+        value = self._default_cache
+        if value is _LAZY_TYPE_VALUE_UNSET:
+            value = _evaluate_lazy_type_value_once(
+                self,
+                "_default_cache",
+                "_default_evaluator",
+                "__default__",
+                self._default,
+            )
+        return value
 
     def _typevarlike_has_default(self: _TypeVarLike) -> bool:
-        return self._default is not NoDefault
+        return self._default_evaluator is not None or self._default is not NoDefault
 
     _TypeVarLike.__default__ = property(_typevarlike_default)  # type: ignore[attr-defined]
     _TypeVarLike.has_default = _typevarlike_has_default  # type: ignore[attr-defined]
@@ -743,6 +872,7 @@ if _SUPPORTS_TYPEVAR_DEFAULTS:
 
 class _TypeVar(_TypeVarLike):
     __slots__ = ()
+    __qualname__ = "TypeVar"
 
     def __repr__(self) -> str:
         if self._pep695:
@@ -757,19 +887,49 @@ class _TypeVar(_TypeVarLike):
 
 
 class _TypeVarTuple(_TypingBase):
-    __slots__ = ("__name__",)
+    __slots__ = (
+        "__name__",
+        "_pep695",
+        "_default_evaluator",
+        "_default_cache",
+        "_default",
+    )
+    __qualname__ = "TypeVarTuple"
 
     def __init__(self, name: str) -> None:
         self.__name__ = name
+        self._pep695 = False
+        self._default_evaluator = None
+        self._default_cache = _LAZY_TYPE_VALUE_UNSET
+        self._default = NoDefault if _SUPPORTS_TYPEVAR_DEFAULTS else _TYPEVAR_NO_DEFAULT
 
     def __repr__(self) -> str:
         return self.__name__
 
     __str__ = __repr__
 
+    if _SUPPORTS_TYPEVAR_DEFAULTS:
+
+        @property
+        def __default__(self) -> object:
+            value = self._default_cache
+            if value is _LAZY_TYPE_VALUE_UNSET:
+                value = _evaluate_lazy_type_value_once(
+                    self,
+                    "_default_cache",
+                    "_default_evaluator",
+                    "__default__",
+                    self._default,
+                )
+            return value
+
+        def has_default(self) -> bool:
+            return self._default_evaluator is not None or self._default is not NoDefault
+
 
 class _ParamSpec(_TypeVarLike):
     __slots__ = ("args", "kwargs")
+    __qualname__ = "ParamSpec"
 
     def __init__(
         self,
@@ -793,6 +953,14 @@ class _ParamSpec(_TypeVarLike):
         return f"~{self.__name__}"
 
     __str__ = __repr__
+
+
+for _type_param_class, _type_param_class_name in (
+    (_TypeVar, "TypeVar"),
+    (_TypeVarTuple, "TypeVarTuple"),
+    (_ParamSpec, "ParamSpec"),
+):
+    _type_param_class.__name__ = _type_param_class_name
 
 
 class _ParamSpecArgs(_TypingBase):
@@ -867,18 +1035,40 @@ def TypeVarTuple(name: str) -> _TypeVarTuple:
     return _TypeVarTuple(name)
 
 
-def _molt_type_param(name: str, default: object = _TYPEVAR_NO_DEFAULT) -> _TypeVar:
-    if default is _TYPEVAR_NO_DEFAULT:
-        return _typing_cast(_TypeVar, _MOLT_TYPING_TYPE_PARAM(TypeVar, name))
-    if not _SUPPORTS_TYPEVAR_DEFAULTS:
-        raise TypeError("'default' is an invalid keyword argument for typevar()")
+def _molt_type_param(name: str, kind: str) -> object:
+    if kind == "TypeVar":
+        return _MOLT_TYPING_TYPE_PARAM(TypeVar, name)
+    if kind == "ParamSpec":
+        return _MOLT_TYPING_TYPE_PARAM(ParamSpec, name)
+    if kind == "TypeVarTuple":
+        return _MOLT_TYPING_TYPE_PARAM(TypeVarTuple, name)
+    raise TypeError(f"unsupported PEP 695 type parameter kind: {kind}")
 
-    def _typevar_ctor_with_default(param_name: str) -> _TypeVar:
-        return TypeVar(param_name, default=default)
 
-    return _typing_cast(
-        _TypeVar, _MOLT_TYPING_TYPE_PARAM(_typevar_ctor_with_default, name)
-    )
+def _molt_type_param_set_evaluators(
+    param: _TypeVarLike | _TypeVarTuple,
+    bound_evaluator: object,
+    constraints_evaluator: object,
+    default_evaluator: object,
+) -> _TypeVarLike | _TypeVarTuple:
+    def update() -> None:
+        if isinstance(param, _TypeVarLike):
+            param._bound_evaluator = bound_evaluator
+            param._constraints_evaluator = constraints_evaluator
+            param._bound_cache = _LAZY_TYPE_VALUE_UNSET
+            param._constraints_cache = _LAZY_TYPE_VALUE_UNSET
+        elif bound_evaluator is not None or constraints_evaluator is not None:
+            raise TypeError("TypeVarTuple cannot define a bound or constraints")
+        param._default_evaluator = default_evaluator
+        param._default_cache = _LAZY_TYPE_VALUE_UNSET
+
+    lock = _lazy_type_lock(param)
+    _MOLT_RLOCK_ACQUIRE(lock, True, -1.0)
+    try:
+        update()
+    finally:
+        _MOLT_RLOCK_RELEASE(lock)
+    return param
 
 
 def _molt_class_getitem(cls: object, params: object) -> object:
@@ -888,10 +1078,10 @@ def _molt_class_getitem(cls: object, params: object) -> object:
 
 
 def _molt_type_alias(
-    name: str, value: object, type_params: tuple[object, ...]
+    name: str, value_evaluator: object, type_params: tuple[object, ...]
 ) -> _MoltTypeAlias:
     params = _as_tuple(type_params)
-    return _MoltTypeAlias(name, value, params)
+    return _MoltTypeAlias(name, value_evaluator, params)
 
 
 class Generic:

@@ -96,6 +96,15 @@ def test_threading_available_wasm_returns_false() -> None:
     assert "MoltObject::from_bool(false).bits()" in content
 
 
+def test_wasm_main_thread_identity_is_stable_and_nonzero() -> None:
+    isolates_rs = (
+        ROOT / "runtime" / "molt-runtime" / "src" / "concurrency" / "isolates.rs"
+    )
+    content = isolates_rs.read_text()
+    assert "const WASM_MAIN_THREAD_IDENT: i64 = 1;" in content
+    assert content.count("MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()") == 3
+
+
 def test_cargo_check_passes() -> None:
     """cargo check -p molt-runtime passes after our changes."""
     result = _run_wasm_test_process(

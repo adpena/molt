@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from molt.compiler_analysis.python_binding_facts import (
     IdentityMask,
     MemberMask,
     PythonBindingIndex,
+    PythonBindingTelemetry,
     PythonCallSiteFact,
     PythonExpressionFact,
     PythonIdentity,
@@ -64,7 +66,7 @@ from molt.compiler_analysis.python_effects_generated import (
 from molt.compiler_analysis.python_imports import import_metadata_target_name
 
 
-_ANALYSIS_SCHEMA: Final = 3
+_ANALYSIS_SCHEMA: Final = 4
 _MAX_LOOP_FIXPOINT_STEPS: Final = 8
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -73,11 +75,6 @@ _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
 _IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = (
     ALL_INVALID_MEMBERS & ~int(PythonMember.TYPING_TYPE_CHECKING)
 )
-_BINDING_CHUNK_SHIFT: Final = 5
-_BINDING_CHUNK_SIZE: Final = 1 << _BINDING_CHUNK_SHIFT
-_BINDING_CHUNK_MASK: Final = _BINDING_CHUNK_SIZE - 1
-
-
 _BUILTIN_IDENTITIES: Final[dict[str, IdentityMask]] = {
     "__import__": exact_identity(PythonIdentity.BUILTINS_IMPORT),
     "globals": exact_identity(PythonIdentity.BUILTIN_GLOBALS),
@@ -111,19 +108,57 @@ class PythonBindingPolicy:
     module_is_package: bool = False
     module_execution_kind: Literal["imported", "module", "script"] = "imported"
     standard_imports_are_canonical: bool = True
+    analyze_deferred_bodies: bool = True
+
+
+_BINDING_CHUNK_SHIFT: Final = 5
+_BINDING_CHUNK_SIZE: Final = 1 << _BINDING_CHUNK_SHIFT
+_BINDING_CHUNK_MASK: Final = _BINDING_CHUNK_SIZE - 1
+_BINDING_CHUNK_BITS_MASK: Final = (1 << _BINDING_CHUNK_SIZE) - 1
+_BINDING_TREE_SHIFT: Final = 2
+_BINDING_TREE_SIZE: Final = 1 << _BINDING_TREE_SHIFT
+_BINDING_TREE_MASK: Final = _BINDING_TREE_SIZE - 1
 
 
 @dataclass(frozen=True, slots=True)
 class _BindingChunk:
     identities: tuple[IdentityMask, ...]
     static_values: tuple[PythonStaticValue, ...]
+    clean_epochs: tuple[int, ...]
     active_mask: int
+    clean_mask: int
 
 
 _EMPTY_BINDING_CHUNK: Final = _BindingChunk(
     (UNBOUND_IDENTITY,) * _BINDING_CHUNK_SIZE,
     (None,) * _BINDING_CHUNK_SIZE,
+    (0,) * _BINDING_CHUNK_SIZE,
     0,
+    0,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingEnvironment:
+    root: tuple[object, ...] = ()
+    chunk_count: int = 0
+    depth: int = 1
+
+
+_EMPTY_BINDING_ENVIRONMENT: Final = _BindingEnvironment()
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingResolution:
+    """One canonical value/static/clean result for a binding lookup."""
+
+    identities: IdentityMask
+    static_value: PythonStaticValue
+    clean: bool
+
+
+_UNBOUND_BINDING_RESOLUTION: Final = _BindingResolution(
+    UNBOUND_IDENTITY, None, False
 )
 
 
@@ -135,7 +170,11 @@ class _BindingState:
     updated_slot: int = -1
     updated_value: IdentityMask = UNBOUND_IDENTITY
     updated_static_value: PythonStaticValue = None
-    clean_slots: int = 0
+    updated_clean: bool | None = None
+    updated_bindings: tuple[
+        tuple[int, IdentityMask, PythonStaticValue, bool], ...
+    ] = ()
+    taint_epoch: int = 0
     maybe_invalidated_members: MemberMask = 0
     definitely_invalidated_members: MemberMask = 0
 
@@ -145,125 +184,358 @@ class _StatePool:
         initial = _BindingState()
         self._states: list[_BindingState] = [initial]
         self._ids: dict[_BindingState, int] = {initial: 0}
-        self._binding_chunks: list[tuple[_BindingChunk, ...]] = [()]
+        self._binding_environments: list[_BindingEnvironment] = [
+            _EMPTY_BINDING_ENVIRONMENT
+        ]
+        self._taint_domain_mask = 0
+        self.structural_diff_node_visits = 0
+        self.structural_diff_shared_skips = 0
+        self.binding_lookups = 0
+        self.join_calls = 0
+        self.join_node_visits = 0
+        self.join_shared_subtrees_skipped = 0
+        self.join_chunk_merges = 0
+
+    def set_taint_domain(self, slots: int) -> None:
+        if slots & self._taint_domain_mask != self._taint_domain_mask:
+            raise RuntimeError("binding taint domain can only grow")
+        self._taint_domain_mask = slots
 
     @staticmethod
-    def _raw_binding(
-        chunks: tuple[_BindingChunk, ...], slot: int
-    ) -> IdentityMask:
-        chunk_index = slot >> _BINDING_CHUNK_SHIFT
-        if chunk_index >= len(chunks):
-            return UNBOUND_IDENTITY
-        chunk = chunks[chunk_index]
+    def _chunk_at(
+        environment: _BindingEnvironment, chunk_index: int
+    ) -> _BindingChunk:
+        if chunk_index >= environment.chunk_count:
+            return _EMPTY_BINDING_CHUNK
+        node = environment.root
+        for level in range(environment.depth - 1, -1, -1):
+            offset = (chunk_index >> (level * _BINDING_TREE_SHIFT)) & (
+                _BINDING_TREE_MASK
+            )
+            if offset >= len(node):
+                return _EMPTY_BINDING_CHUNK
+            child = node[offset]
+            if level == 0:
+                return cast(_BindingChunk, child)
+            node = cast(tuple[object, ...], child)
+        return _EMPTY_BINDING_CHUNK
+
+    def _binding_resolution(
+        self,
+        state_id: int,
+        slot: int,
+        memo: dict[int, _BindingResolution] | None = None,
+    ) -> _BindingResolution:
+        if memo is None:
+            memo = {}
+        cached = memo.get(state_id)
+        if cached is not None:
+            return cached
+        environment = self._binding_environments[state_id]
+        chunk = self._chunk_at(environment, slot >> _BINDING_CHUNK_SHIFT)
         chunk_offset = slot & _BINDING_CHUNK_MASK
-        if not chunk.active_mask & (1 << chunk_offset):
-            return UNBOUND_IDENTITY
-        return chunk.identities[chunk_offset]
+        slot_bit = 1 << chunk_offset
+        if chunk.active_mask & slot_bit or chunk.clean_mask & slot_bit:
+            clean = bool(chunk.clean_mask & slot_bit)
+            if clean and self._taint_domain_mask & (1 << slot):
+                clean = (
+                    chunk.clean_epochs[chunk_offset]
+                    == self._states[state_id].taint_epoch
+                )
+            resolution = _BindingResolution(
+                chunk.identities[chunk_offset],
+                chunk.static_values[chunk_offset],
+                clean,
+            )
+        else:
+            resolution = _UNBOUND_BINDING_RESOLUTION
+        memo[state_id] = resolution
+        return resolution
 
-    @staticmethod
-    def _raw_static_value(
-        chunks: tuple[_BindingChunk, ...], slot: int
-    ) -> PythonStaticValue:
-        chunk_index = slot >> _BINDING_CHUNK_SHIFT
-        if chunk_index >= len(chunks):
-            return None
-        chunk = chunks[chunk_index]
-        chunk_offset = slot & _BINDING_CHUNK_MASK
-        if not chunk.active_mask & (1 << chunk_offset):
-            return None
-        return chunk.static_values[chunk_offset]
-
-    @staticmethod
+    @classmethod
     def _updated_environment(
-        chunks: tuple[_BindingChunk, ...],
+        cls,
+        environment: _BindingEnvironment,
         slot: int,
         identity: IdentityMask,
         static_value: PythonStaticValue,
-    ) -> tuple[_BindingChunk, ...]:
+        clean: bool,
+        clean_epoch: int,
+    ) -> _BindingEnvironment:
         chunk_index = slot >> _BINDING_CHUNK_SHIFT
-        chunk_offset = slot & _BINDING_CHUNK_MASK
-        updated_chunks = list(chunks)
-        if chunk_index >= len(updated_chunks):
-            updated_chunks.extend(
-                (_EMPTY_BINDING_CHUNK,) * (chunk_index + 1 - len(updated_chunks))
-            )
-        previous = updated_chunks[chunk_index]
+        previous = cls._chunk_at(environment, chunk_index)
         identities = list(previous.identities)
-        identities[chunk_offset] = identity
-        static_values = previous.static_values
-        if static_values[chunk_offset] != static_value:
-            updated_static_values = list(static_values)
-            updated_static_values[chunk_offset] = static_value
-            static_values = tuple(updated_static_values)
-        slot_bit = 1 << chunk_offset
+        identities[slot & _BINDING_CHUNK_MASK] = identity
+        static_values = list(previous.static_values)
+        static_values[slot & _BINDING_CHUNK_MASK] = static_value
+        clean_epochs = list(previous.clean_epochs)
+        clean_epochs[slot & _BINDING_CHUNK_MASK] = clean_epoch
+        slot_bit = 1 << (slot & _BINDING_CHUNK_MASK)
         active_mask = previous.active_mask
+        clean_mask = previous.clean_mask
         if identity == UNBOUND_IDENTITY and static_value is None:
             active_mask &= ~slot_bit
         else:
             active_mask |= slot_bit
-        updated_chunks[chunk_index] = _BindingChunk(
-            tuple(identities), static_values, active_mask
+        if clean:
+            clean_mask |= slot_bit
+        else:
+            clean_mask &= ~slot_bit
+        updated_chunk = _BindingChunk(
+            tuple(identities),
+            tuple(static_values),
+            tuple(clean_epochs),
+            active_mask,
+            clean_mask,
         )
-        while updated_chunks and not updated_chunks[-1].active_mask:
-            updated_chunks.pop()
-        return tuple(updated_chunks)
+
+        def update_node(
+            node: tuple[object, ...], level: int
+        ) -> tuple[object, ...]:
+            offset = (chunk_index >> (level * _BINDING_TREE_SHIFT)) & (
+                _BINDING_TREE_MASK
+            )
+            children = list(node)
+            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
+            if offset >= len(children):
+                children.extend((filler,) * (offset + 1 - len(children)))
+            if level == 0:
+                children[offset] = updated_chunk
+            else:
+                children[offset] = update_node(
+                    cast(tuple[object, ...], children[offset]), level - 1
+                )
+            while children and children[-1] == filler:
+                children.pop()
+            return tuple(children)
+
+        root = environment.root
+        depth = environment.depth
+        while chunk_index >= _BINDING_TREE_SIZE**depth:
+            root = (root,)
+            depth += 1
+        root = update_node(root, depth - 1)
+        chunk_count = max(environment.chunk_count, chunk_index + 1)
+        if not (active_mask or clean_mask) and chunk_index + 1 == chunk_count:
+            while chunk_count and not cls._chunk_at(
+                _BindingEnvironment(root, chunk_count, depth), chunk_count - 1
+            ).active_mask and not cls._chunk_at(
+                _BindingEnvironment(root, chunk_count, depth), chunk_count - 1
+            ).clean_mask:
+                chunk_count -= 1
+        return _BindingEnvironment(
+            root,
+            chunk_count,
+            depth,
+        )
 
     def _joined_environment(
-        self, parents: tuple[int, ...]
-    ) -> tuple[_BindingChunk, ...]:
-        parent_environments = tuple(self._binding_chunks[parent] for parent in parents)
-        chunk_count = max(map(len, parent_environments), default=0)
-        joined_chunks: list[_BindingChunk] = []
-        for chunk_index in range(chunk_count):
-            parent_chunks = tuple(
-                environment[chunk_index]
-                if chunk_index < len(environment)
-                else _EMPTY_BINDING_CHUNK
-                for environment in parent_environments
-            )
-            first = parent_chunks[0]
-            if all(chunk is first for chunk in parent_chunks[1:]):
-                joined_chunks.append(first)
-                continue
+        self, parents: tuple[int, ...], taint_epoch: int
+    ) -> _BindingEnvironment:
+        environments = tuple(self._binding_environments[parent] for parent in parents)
+        depth = max((environment.depth for environment in environments), default=1)
+        roots: list[tuple[object, ...]] = []
+        for environment in environments:
+            root = environment.root
+            for _level in range(environment.depth, depth):
+                root = (root,) if root else ()
+            roots.append(root)
+        parent_epochs = tuple(self._states[parent].taint_epoch for parent in parents)
+
+        def merge_chunks(
+            chunks: tuple[_BindingChunk, ...], chunk_index: int
+        ) -> _BindingChunk:
+            self.join_chunk_merges += 1
+            first = chunks[0]
+            if all(chunk is first for chunk in chunks[1:]):
+                self.join_shared_subtrees_skipped += 1
+                return first
+            chunk_epochs = parent_epochs
+            if len(chunks) > 3:
+                unique_chunks: list[_BindingChunk] = []
+                unique_epochs: list[int] = []
+                seen: set[tuple[int, int]] = set()
+                for chunk, parent_epoch in zip(
+                    chunks, parent_epochs, strict=True
+                ):
+                    key = (id(chunk), parent_epoch)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique_chunks.append(chunk)
+                    unique_epochs.append(parent_epoch)
+                chunks = tuple(unique_chunks)
+                chunk_epochs = tuple(unique_epochs)
+            if len(chunks) == 1 and chunk_epochs[0] == taint_epoch:
+                return chunks[0]
             candidate_mask = 0
-            for chunk in parent_chunks:
-                candidate_mask |= chunk.active_mask
-            identities = [UNBOUND_IDENTITY] * _BINDING_CHUNK_SIZE
-            static_values: list[PythonStaticValue] = [None] * _BINDING_CHUNK_SIZE
+            for chunk in chunks:
+                candidate_mask |= chunk.active_mask | chunk.clean_mask
+            if not candidate_mask:
+                return _EMPTY_BINDING_CHUNK
+            identities = list(_EMPTY_BINDING_CHUNK.identities)
+            static_values = list(_EMPTY_BINDING_CHUNK.static_values)
+            clean_epochs = list(_EMPTY_BINDING_CHUNK.clean_epochs)
             active_mask = 0
+            clean_mask = 0
+            taint_mask = (
+                self._taint_domain_mask
+                >> (chunk_index << _BINDING_CHUNK_SHIFT)
+            ) & _BINDING_CHUNK_BITS_MASK
+            if len(chunks) == 2:
+                left, right = chunks
+                left_epoch, right_epoch = chunk_epochs
+                left_present = left.active_mask | left.clean_mask
+                right_present = right.active_mask | right.clean_mask
+                remaining = candidate_mask
+                while remaining:
+                    slot_bit = remaining & -remaining
+                    chunk_offset = slot_bit.bit_length() - 1
+                    remaining ^= slot_bit
+                    left_identity = (
+                        left.identities[chunk_offset]
+                        if left_present & slot_bit
+                        else UNBOUND_IDENTITY
+                    )
+                    right_identity = (
+                        right.identities[chunk_offset]
+                        if right_present & slot_bit
+                        else UNBOUND_IDENTITY
+                    )
+                    identity = left_identity | right_identity
+                    left_static = (
+                        left.static_values[chunk_offset]
+                        if left_present & slot_bit
+                        else None
+                    )
+                    right_static = (
+                        right.static_values[chunk_offset]
+                        if right_present & slot_bit
+                        else None
+                    )
+                    static_value = (
+                        left_static if left_static == right_static else None
+                    )
+                    clean = (
+                        bool(left.clean_mask & slot_bit)
+                        and bool(right.clean_mask & slot_bit)
+                    )
+                    if clean and taint_mask & slot_bit:
+                        clean = (
+                            left_epoch == taint_epoch
+                            and right_epoch == taint_epoch
+                            and left.clean_epochs[chunk_offset] == left_epoch
+                            and right.clean_epochs[chunk_offset] == right_epoch
+                        )
+                    identities[chunk_offset] = identity
+                    static_values[chunk_offset] = static_value
+                    clean_epochs[chunk_offset] = taint_epoch
+                    if identity != UNBOUND_IDENTITY or static_value is not None:
+                        active_mask |= slot_bit
+                    if clean:
+                        clean_mask |= slot_bit
+                if not (active_mask or clean_mask):
+                    return _EMPTY_BINDING_CHUNK
+                return _BindingChunk(
+                    tuple(identities),
+                    tuple(static_values),
+                    tuple(clean_epochs),
+                    active_mask,
+                    clean_mask,
+                )
             remaining = candidate_mask
             while remaining:
                 slot_bit = remaining & -remaining
                 chunk_offset = slot_bit.bit_length() - 1
                 remaining ^= slot_bit
-                identity = 0
-                first_static = parent_chunks[0].static_values[chunk_offset]
-                static_value = first_static
-                for chunk in parent_chunks:
+                identity = NO_IDENTITIES
+                static_value: PythonStaticValue = None
+                static_initialized = False
+                clean = True
+                for chunk, parent_epoch in zip(chunks, chunk_epochs, strict=True):
+                    present = bool(
+                        (chunk.active_mask | chunk.clean_mask) & slot_bit
+                    )
                     identity |= (
                         chunk.identities[chunk_offset]
-                        if chunk.active_mask & slot_bit
+                        if present
                         else UNBOUND_IDENTITY
                     )
-                    if (
-                        chunk.static_values[chunk_offset]
-                        if chunk.active_mask & slot_bit
-                        else None
-                    ) != first_static:
+                    candidate_static = (
+                        chunk.static_values[chunk_offset] if present else None
+                    )
+                    if not static_initialized:
+                        static_value = candidate_static
+                        static_initialized = True
+                    elif candidate_static != static_value:
                         static_value = None
-                if identity == UNBOUND_IDENTITY and static_value is None:
-                    continue
+                    parent_clean = bool(chunk.clean_mask & slot_bit)
+                    if parent_clean and taint_mask & slot_bit:
+                        parent_clean = (
+                            chunk.clean_epochs[chunk_offset] == parent_epoch
+                        )
+                    clean = clean and parent_clean
+                    if clean and taint_mask & slot_bit:
+                        clean = parent_epoch == taint_epoch
                 identities[chunk_offset] = identity
                 static_values[chunk_offset] = static_value
-                active_mask |= slot_bit
-            joined_chunks.append(
-                _BindingChunk(tuple(identities), tuple(static_values), active_mask)
-                if active_mask
-                else _EMPTY_BINDING_CHUNK
+                clean_epochs[chunk_offset] = taint_epoch
+                if identity != UNBOUND_IDENTITY or static_value is not None:
+                    active_mask |= slot_bit
+                if clean:
+                    clean_mask |= slot_bit
+            if not (active_mask or clean_mask):
+                return _EMPTY_BINDING_CHUNK
+            return _BindingChunk(
+                tuple(identities),
+                tuple(static_values),
+                tuple(clean_epochs),
+                active_mask,
+                clean_mask,
             )
-        while joined_chunks and not joined_chunks[-1].active_mask:
-            joined_chunks.pop()
-        return tuple(joined_chunks)
+
+        def merge_nodes(
+            nodes: tuple[tuple[object, ...], ...],
+            level: int,
+            chunk_prefix: int,
+        ) -> tuple[object, ...]:
+            self.join_node_visits += 1
+            first = nodes[0]
+            if all(node is first for node in nodes[1:]):
+                self.join_shared_subtrees_skipped += 1
+                return first
+            child_count = max((len(node) for node in nodes), default=0)
+            children: list[object] = []
+            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
+            for offset in range(child_count):
+                branch = tuple(
+                    node[offset] if offset < len(node) else filler
+                    for node in nodes
+                )
+                child_prefix = chunk_prefix | (
+                    offset << (level * _BINDING_TREE_SHIFT)
+                )
+                if level == 0:
+                    child = merge_chunks(
+                        cast(tuple[_BindingChunk, ...], branch), child_prefix
+                    )
+                else:
+                    child = merge_nodes(
+                        cast(tuple[tuple[object, ...], ...], branch),
+                        level - 1,
+                        child_prefix,
+                    )
+                children.append(child)
+            while children and children[-1] is filler:
+                children.pop()
+            return tuple(children)
+
+        root = merge_nodes(tuple(roots), depth - 1, 0)
+        return _BindingEnvironment(
+            root,
+            max((environment.chunk_count for environment in environments), default=0),
+            depth,
+        )
 
     def intern(self, state: _BindingState) -> int:
         known = self._ids.get(state)
@@ -272,39 +544,53 @@ class _StatePool:
         index = len(self._states)
         self._states.append(state)
         if not state.parents:
-            chunks: tuple[_BindingChunk, ...] = ()
+            environment = _EMPTY_BINDING_ENVIRONMENT
         elif len(state.parents) == 1:
-            parent = state.parents[0]
-            chunks = self._binding_chunks[parent]
+            environment = self._binding_environments[state.parents[0]]
         else:
-            chunks = self._joined_environment(state.parents)
+            environment = self._joined_environment(state.parents, state.taint_epoch)
         if state.updated_slot >= 0:
-            chunks = self._updated_environment(
-                chunks,
+            assert state.updated_clean is not None
+            environment = self._updated_environment(
+                environment,
                 state.updated_slot,
                 state.updated_value,
                 state.updated_static_value,
+                state.updated_clean,
+                state.taint_epoch,
             )
-        self._binding_chunks.append(chunks)
+        for slot, value, static_value, clean in state.updated_bindings:
+            environment = self._updated_environment(
+                environment,
+                slot,
+                value,
+                static_value,
+                clean,
+                state.taint_epoch,
+            )
+        self._binding_environments.append(environment)
         self._ids[state] = index
         return index
 
     def get(self, state_id: int) -> _BindingState:
         return self._states[state_id]
 
-    def binding(self, state_id: int, slot: int) -> IdentityMask:
-        value = self._raw_binding(self._binding_chunks[state_id], slot)
-        if (
-            value != UNBOUND_IDENTITY
-            and not self._states[state_id].clean_slots & (1 << slot)
-        ):
+    def _binding_details(
+        self, state_id: int, slot: int
+    ) -> tuple[IdentityMask, PythonStaticValue, bool]:
+        resolution = self._binding_resolution(state_id, slot)
+        value = resolution.identities
+        if value != UNBOUND_IDENTITY and not resolution.clean:
             value |= OTHER_IDENTITY
-        return value
+        static_value = resolution.static_value if resolution.clean else None
+        return value, static_value, resolution.clean
+
+    def binding(self, state_id: int, slot: int) -> IdentityMask:
+        self.binding_lookups += 1
+        return self._binding_details(state_id, slot)[0]
 
     def static_value(self, state_id: int, slot: int) -> PythonStaticValue:
-        if not self._states[state_id].clean_slots & (1 << slot):
-            return None
-        return self._raw_static_value(self._binding_chunks[state_id], slot)
+        return self._binding_details(state_id, slot)[1]
 
     def set_binding(
         self,
@@ -313,11 +599,10 @@ class _StatePool:
         value: IdentityMask,
         static_value: PythonStaticValue = None,
     ) -> int:
-        if (
-            self.binding(state_id, slot) == value
-            and self.static_value(state_id, slot) == static_value
-            and self._states[state_id].clean_slots & (1 << slot)
-        ):
+        current_value, current_static_value, clean = self._binding_details(
+            state_id, slot
+        )
+        if current_value == value and current_static_value == static_value and clean:
             return state_id
         state = self._states[state_id]
         return self.intern(
@@ -326,25 +611,184 @@ class _StatePool:
                 updated_slot=slot,
                 updated_value=value,
                 updated_static_value=static_value,
-                clean_slots=state.clean_slots | (1 << slot),
+                updated_clean=True,
+                taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=state.maybe_invalidated_members,
                 definitely_invalidated_members=state.definitely_invalidated_members,
             )
         )
 
-    def taint_slots(self, state_id: int, slots: int) -> int:
-        state = self._states[state_id]
-        clean_slots = state.clean_slots & ~slots
-        if clean_slots == state.clean_slots:
+    def set_bindings(
+        self,
+        state_id: int,
+        bindings: Sequence[tuple[int, IdentityMask]],
+    ) -> int:
+        updates: list[tuple[int, IdentityMask, PythonStaticValue, bool]] = []
+        for slot, value in bindings:
+            current_value, current_static_value, clean = self._binding_details(
+                state_id, slot
+            )
+            if current_value == value and current_static_value is None and clean:
+                continue
+            updates.append((slot, value, None, True))
+        if not updates:
             return state_id
+        state = self._states[state_id]
         return self.intern(
             _BindingState(
                 parents=(state_id,),
-                clean_slots=clean_slots,
+                updated_bindings=tuple(updates),
+                taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=state.maybe_invalidated_members,
                 definitely_invalidated_members=state.definitely_invalidated_members,
             )
         )
+
+    def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
+        """Return public-identity changes via persistent-trie structural diff."""
+
+        previous_environment = self._binding_environments[previous]
+        current_environment = self._binding_environments[current]
+        depth = max(previous_environment.depth, current_environment.depth)
+
+        def root_at_depth(
+            environment: _BindingEnvironment,
+        ) -> tuple[object, ...]:
+            root = environment.root
+            for _level in range(environment.depth, depth):
+                root = (root,) if root else ()
+            return root
+
+        changed: set[int] = set()
+        pending = [
+            (
+                root_at_depth(previous_environment),
+                root_at_depth(current_environment),
+                depth - 1,
+                0,
+            )
+        ]
+        while pending:
+            previous_node, current_node, level, chunk_prefix = pending.pop()
+            self.structural_diff_node_visits += 1
+            if previous_node is current_node:
+                self.structural_diff_shared_skips += 1
+                continue
+            child_count = max(len(previous_node), len(current_node))
+            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
+            for offset in range(child_count):
+                previous_child = (
+                    previous_node[offset]
+                    if offset < len(previous_node)
+                    else filler
+                )
+                current_child = (
+                    current_node[offset]
+                    if offset < len(current_node)
+                    else filler
+                )
+                if previous_child is current_child:
+                    self.structural_diff_shared_skips += 1
+                    continue
+                child_prefix = chunk_prefix | (
+                    offset << (level * _BINDING_TREE_SHIFT)
+                )
+                if level:
+                    pending.append(
+                        (
+                            cast(tuple[object, ...], previous_child),
+                            cast(tuple[object, ...], current_child),
+                            level - 1,
+                            child_prefix,
+                        )
+                    )
+                    continue
+                previous_chunk = cast(_BindingChunk, previous_child)
+                current_chunk = cast(_BindingChunk, current_child)
+                candidate_mask = (
+                    previous_chunk.active_mask
+                    | previous_chunk.clean_mask
+                    | current_chunk.active_mask
+                    | current_chunk.clean_mask
+                )
+                while candidate_mask:
+                    slot_bit = candidate_mask & -candidate_mask
+                    candidate_mask ^= slot_bit
+                    slot = (
+                        child_prefix << _BINDING_CHUNK_SHIFT
+                    ) | (slot_bit.bit_length() - 1)
+                    if self._binding_details(
+                        previous, slot
+                    )[:2] != self._binding_details(current, slot)[:2]:
+                        changed.add(slot)
+        return tuple(sorted(changed))
+
+    def transition_binding_events(
+        self, previous: int, current: int
+    ) -> tuple[tuple[int, IdentityMask], ...]:
+        direct: dict[int, IdentityMask] = {}
+        cursor = current
+        while cursor != previous:
+            state = self._states[cursor]
+            if state.updated_slot >= 0:
+                value = state.updated_value
+                if state.updated_clean is False and value != UNBOUND_IDENTITY:
+                    value |= OTHER_IDENTITY
+                direct.setdefault(state.updated_slot, value)
+            for slot, value, _static_value, clean in reversed(
+                state.updated_bindings
+            ):
+                if not clean and value != UNBOUND_IDENTITY:
+                    value |= OTHER_IDENTITY
+                direct.setdefault(slot, value)
+            if len(state.parents) != 1:
+                break
+            cursor = state.parents[0]
+        if cursor == previous:
+            return tuple(sorted(direct.items()))
+        return tuple(
+            (slot, self.binding(current, slot))
+            for slot in self.changed_slots_between(previous, current)
+        )
+
+    def taint_slots(self, state_id: int, slots: int) -> int:
+        if slots & self._taint_domain_mask:
+            state = self._states[state_id]
+            state_id = self.intern(
+                _BindingState(
+                    parents=(state_id,),
+                    taint_epoch=state.taint_epoch + 1,
+                    maybe_invalidated_members=state.maybe_invalidated_members,
+                    definitely_invalidated_members=(
+                        state.definitely_invalidated_members
+                    ),
+                )
+            )
+            slots &= ~self._taint_domain_mask
+        remaining = slots
+        while remaining:
+            slot_bit = remaining & -remaining
+            slot = slot_bit.bit_length() - 1
+            remaining ^= slot_bit
+            resolution = self._binding_resolution(state_id, slot)
+            if not resolution.clean:
+                continue
+            state = self._states[state_id]
+            state_id = self.intern(
+                _BindingState(
+                    parents=(state_id,),
+                    updated_slot=slot,
+                    updated_value=resolution.identities,
+                    updated_static_value=resolution.static_value,
+                    updated_clean=False,
+                    taint_epoch=state.taint_epoch,
+                    maybe_invalidated_members=state.maybe_invalidated_members,
+                    definitely_invalidated_members=(
+                        state.definitely_invalidated_members
+                    ),
+                )
+            )
+        return state_id
 
     def invalidate_members(
         self, state_id: int, members: MemberMask, *, definite: bool = False
@@ -364,7 +808,7 @@ class _StatePool:
         return self.intern(
             _BindingState(
                 parents=(state_id,),
-                clean_slots=state.clean_slots,
+                taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=maybe,
                 definitely_invalidated_members=definitely,
             )
@@ -382,38 +826,46 @@ class _StatePool:
         return self.intern(
             _BindingState(
                 parents=(state_id,),
-                clean_slots=state.clean_slots,
+                taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=maybe,
                 definitely_invalidated_members=definitely,
             )
         )
 
-    def join_member_state(
-        self, state_id: int, summary_id: int, summarized_slots: int
+    def overlay_summary_properties(
+        self,
+        state_id: int,
+        *,
+        maybe_invalidated_members: MemberMask,
+        definitely_invalidated_members: MemberMask,
+        taint_epoch: int,
     ) -> int:
         state = self._states[state_id]
-        summary = self._states[summary_id]
+        maybe = state.maybe_invalidated_members | maybe_invalidated_members
+        definitely = (
+            state.definitely_invalidated_members & definitely_invalidated_members
+        )
+        epoch = max(state.taint_epoch, taint_epoch)
+        if (
+            maybe == state.maybe_invalidated_members
+            and definitely == state.definitely_invalidated_members
+            and epoch == state.taint_epoch
+        ):
+            return state_id
         return self.intern(
             _BindingState(
                 parents=(state_id,),
-                clean_slots=(state.clean_slots & ~summarized_slots)
-                | (
-                    state.clean_slots
-                    & summary.clean_slots
-                    & summarized_slots
-                ),
-                maybe_invalidated_members=(
-                    state.maybe_invalidated_members
-                    | summary.maybe_invalidated_members
-                ),
-                definitely_invalidated_members=(
-                    state.definitely_invalidated_members
-                    & summary.definitely_invalidated_members
-                ),
+                taint_epoch=epoch,
+                maybe_invalidated_members=maybe,
+                definitely_invalidated_members=definitely,
             )
         )
 
+    def slot_in_taint_domain(self, slot: int) -> bool:
+        return bool(self._taint_domain_mask & (1 << slot))
+
     def join(self, *state_ids: int) -> int:
+        self.join_calls += 1
         if not state_ids:
             return 0
         parents = tuple(sorted(set(state_ids)))
@@ -421,16 +873,16 @@ class _StatePool:
             return parents[0]
         maybe_invalidated = 0
         definitely_invalidated = ALL_INVALID_MEMBERS
-        clean_slots = -1
+        taint_epoch = 0
         for state_id in parents:
             state = self._states[state_id]
             maybe_invalidated |= state.maybe_invalidated_members
             definitely_invalidated &= state.definitely_invalidated_members
-            clean_slots &= state.clean_slots
+            taint_epoch = max(taint_epoch, state.taint_epoch)
         return self.intern(
             _BindingState(
                 parents=parents,
-                clean_slots=clean_slots,
+                taint_epoch=taint_epoch,
                 maybe_invalidated_members=maybe_invalidated,
                 definitely_invalidated_members=definitely_invalidated,
             )
@@ -442,13 +894,23 @@ class _StatePool:
         left = self._states[left_id]
         right = self._states[right_id]
         if (
-            left.clean_slots != right.clean_slots
-            or left.maybe_invalidated_members != right.maybe_invalidated_members
+            left.maybe_invalidated_members != right.maybe_invalidated_members
             or left.definitely_invalidated_members
             != right.definitely_invalidated_members
         ):
             return False
-        return self._binding_chunks[left_id] == self._binding_chunks[right_id]
+        if self.changed_slots_between(left_id, right_id):
+            return False
+        remaining = self._taint_domain_mask
+        while remaining:
+            slot_bit = remaining & -remaining
+            remaining ^= slot_bit
+            slot = slot_bit.bit_length() - 1
+            if self._binding_details(left_id, slot)[:2] != self._binding_details(
+                right_id, slot
+            )[:2]:
+                return False
+        return True
 
     def __len__(self) -> int:
         return len(self._states)
@@ -467,8 +929,6 @@ class _Scope:
     globals: frozenset[str]
     nonlocals: frozenset[str]
     slots: dict[str, int]
-    entry_state_id: int = 0
-    exit_state_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +1028,47 @@ class _DeclarationCollector(ast.NodeVisitor):
             self.visit(condition)
 
 
+class _DeferredLoadCollector(ast.NodeVisitor):
+    """Collect names loaded by one deferred body without per-job class cycles."""
+
+    def __init__(self) -> None:
+        self.loaded: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self.loaded.add(node.id)
+
+    def _visit_function_definition(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_definition(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function_definition(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (
+            *node.decorator_list,
+            *node.bases,
+            *(keyword.value for keyword in node.keywords),
+        ):
+            self.visit(expression)
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+
 def _scope_declarations(
     body: Sequence[ast.stmt],
     parameters: Iterable[str] = (),
@@ -591,10 +1092,6 @@ def _argument_names(arguments: ast.arguments) -> tuple[str, ...]:
     if arguments.kwarg is not None:
         names.append(arguments.kwarg.arg)
     return tuple(names)
-
-
-def _node_key(node: ast.AST) -> PythonNodeKey:
-    return PythonNodeKey.from_node(node)
 
 
 def _literal_string(node: ast.AST | None) -> str | None:
@@ -657,6 +1154,131 @@ class _FunctionJob:
     outer_state_id: int
     module_history_start: int | None
     module_states: tuple[int, ...] | None
+    module_base_bindings: tuple[tuple[int, IdentityMask], ...]
+    lexical_history: list[int] | None
+    lexical_history_start: int
+    lexical_base_bindings: tuple[tuple[int, IdentityMask], ...]
+
+
+@dataclass(slots=True)
+class _HistorySummary:
+    states: Sequence[int]
+    maybe_suffix: tuple[MemberMask, ...]
+    definitely_suffix: tuple[MemberMask, ...]
+    taint_epoch_suffix: tuple[int, ...]
+    taint_indices: tuple[int, ...]
+    slot_events: dict[
+        int,
+        tuple[
+            tuple[int, ...],
+            tuple[IdentityMask, ...],
+            tuple[IdentityMask, ...],
+        ],
+    ]
+    initial_values: dict[int, IdentityMask]
+
+    @classmethod
+    def build(
+        cls, pool: _StatePool, states: Sequence[int]
+    ) -> _HistorySummary:
+        count = len(states)
+        maybe_suffix = [0] * count
+        definitely_suffix = [ALL_INVALID_MEMBERS] * count
+        taint_epoch_suffix = [0] * count
+        maybe = 0
+        definitely = ALL_INVALID_MEMBERS
+        taint_epoch = 0
+        for index in range(count - 1, -1, -1):
+            state = pool.get(states[index])
+            maybe |= state.maybe_invalidated_members
+            definitely &= state.definitely_invalidated_members
+            taint_epoch = max(taint_epoch, state.taint_epoch)
+            maybe_suffix[index] = maybe
+            definitely_suffix[index] = definitely
+            taint_epoch_suffix[index] = taint_epoch
+
+        events: dict[int, list[tuple[int, IdentityMask]]] = {}
+        taint_indices: list[int] = []
+        for index in range(1, count):
+            previous = states[index - 1]
+            current = states[index]
+            if pool.get(current).taint_epoch > pool.get(previous).taint_epoch:
+                taint_indices.append(index)
+            for slot, value in pool.transition_binding_events(previous, current):
+                events.setdefault(slot, []).append(
+                    (index, value)
+                )
+
+        slot_events: dict[
+            int,
+            tuple[
+                tuple[int, ...],
+                tuple[IdentityMask, ...],
+                tuple[IdentityMask, ...],
+            ],
+        ] = {}
+        for slot, rows in events.items():
+            suffix_values = [NO_IDENTITIES] * len(rows)
+            value = NO_IDENTITIES
+            for index in range(len(rows) - 1, -1, -1):
+                value |= rows[index][1]
+                suffix_values[index] = value
+            slot_events[slot] = (
+                tuple(row[0] for row in rows),
+                tuple(row[1] for row in rows),
+                tuple(suffix_values),
+            )
+        return cls(
+            states,
+            tuple(maybe_suffix),
+            tuple(definitely_suffix),
+            tuple(taint_epoch_suffix),
+            tuple(taint_indices),
+            slot_events,
+            {},
+        )
+
+    def properties(self, start: int) -> tuple[MemberMask, MemberMask, int]:
+        return (
+            self.maybe_suffix[start],
+            self.definitely_suffix[start],
+            self.taint_epoch_suffix[start],
+        )
+
+    def binding(self, pool: _StatePool, start: int, slot: int) -> IdentityMask:
+        rows = self.slot_events.get(slot)
+        if slot not in self.initial_values:
+            self.initial_values[slot] = pool.binding(self.states[0], slot)
+        base_value = self.initial_values[slot]
+        value = base_value
+        if rows is not None:
+            indices, event_values, suffix_values = rows
+            previous_event = bisect_right(indices, start) - 1
+            if previous_event >= 0:
+                base_value = event_values[previous_event]
+                value = base_value
+            event_index = bisect_left(indices, start)
+            if event_index < len(indices):
+                value |= suffix_values[event_index]
+        if pool.slot_in_taint_domain(slot):
+            taint_index = bisect_left(self.taint_indices, start)
+            if taint_index < len(self.taint_indices):
+                last_taint = self.taint_indices[-1]
+                bound_before_taint = base_value != UNBOUND_IDENTITY
+                if not bound_before_taint and rows is not None:
+                    indices, event_values, _suffix_values = rows
+                    event_index = bisect_left(indices, start)
+                    while (
+                        event_index < len(indices)
+                        and indices[event_index] <= last_taint
+                    ):
+                        if event_values[event_index] != UNBOUND_IDENTITY:
+                            bound_before_taint = True
+                            break
+                        event_index += 1
+                if bound_before_taint:
+                    value |= OTHER_IDENTITY
+        return value
 
 
 class _Analyzer:
@@ -676,6 +1298,20 @@ class _Analyzer:
         self._module_history: list[int] = [0]
         self._active_module_states: tuple[int, ...] | None = None
         self._module_import_flow_required = False
+        self._scope_slot_cache: dict[tuple[int, str], int | None] = {}
+        self._history_summaries: dict[int, _HistorySummary] = {}
+        # AST instances use identity equality/hash. Keeping the node itself as the
+        # key both avoids repeated source-key construction and retains synthetic
+        # nodes for the analysis lifetime, so CPython cannot recycle an id into a
+        # false cache hit.
+        self._node_keys: dict[ast.AST, PythonNodeKey] = {}
+
+    def _node_key(self, node: ast.AST) -> PythonNodeKey:
+        key = self._node_keys.get(node)
+        if key is None:
+            key = PythonNodeKey.from_node(node)
+            self._node_keys[node] = key
+        return key
 
     @staticmethod
     def _target_may_write_import_metadata(target: ast.AST) -> bool:
@@ -690,7 +1326,7 @@ class _Analyzer:
         pending = [expression]
         while pending:
             node = pending.pop()
-            fact = self.expressions.get(_node_key(node))
+            fact = self.expressions.get(self._node_key(node))
             if fact is not None and fact.identities & int(
                 PythonIdentity.CURRENT_GLOBALS
             ):
@@ -704,6 +1340,12 @@ class _Analyzer:
         scope: _Scope,
         state_id: int,
     ) -> None:
+        module_slots, lexical_slots = self._deferred_slot_dependencies(node, scope)
+        lexical_history = (
+            self._observed_stack[-1]
+            if lexical_slots and self._observed_stack
+            else None
+        )
         self.function_jobs.append(
             _FunctionJob(
                 node,
@@ -715,8 +1357,84 @@ class _Analyzer:
                     else len(self._module_history)
                 ),
                 self._active_module_states,
+                tuple(
+                    (slot, self.states.binding(state_id, slot))
+                    for slot in module_slots
+                ),
+                lexical_history,
+                len(lexical_history) if lexical_history is not None else 0,
+                tuple(
+                    (slot, self.states.binding(state_id, slot))
+                    for slot in lexical_slots
+                ),
             )
         )
+
+    def _deferred_slot_dependencies(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+        parent_scope: _Scope,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        parameters = _argument_names(node.args)
+        body = node.body if isinstance(node.body, list) else [ast.Return(value=node.body)]
+        declarations = _scope_declarations(body, parameters)
+        collector = _DeferredLoadCollector()
+        for statement in body:
+            collector.visit(statement)
+        loaded = collector.loaded
+        module_slots: set[int] = set()
+        lexical_slots: set[int] = set()
+        assert self.module_scope is not None
+        for name in loaded:
+            if name in declarations.bound:
+                continue
+            if name in declarations.globals:
+                slot = self.module_scope.slots.get(name)
+            else:
+                slot = None
+                visible: _Scope | None = parent_scope
+                while visible is not None:
+                    candidate = visible.slots.get(name)
+                    if candidate is not None:
+                        slot = candidate
+                        break
+                    visible = visible.parent
+            if slot is None:
+                continue
+            if slot in self.module_slots:
+                module_slots.add(slot)
+            else:
+                lexical_slots.add(slot)
+        return tuple(sorted(module_slots)), tuple(sorted(lexical_slots))
+
+    def _queue_annotation_expression(
+        self,
+        expression: ast.expr,
+        scope: _Scope,
+        state_id: int,
+        type_params: Sequence[ast.AST],
+    ) -> None:
+        parameters = [
+            ast.arg(arg=name)
+            for type_param in type_params
+            if isinstance((name := getattr(type_param, "name", None)), str)
+        ]
+        deferred = ast.copy_location(
+            ast.Lambda(
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=parameters,
+                    vararg=None,
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    kwarg=None,
+                    defaults=[],
+                ),
+                body=expression,
+            ),
+            expression,
+        )
+        self._queue_function(deferred, scope, state_id)
 
     def _new_scope(
         self,
@@ -746,6 +1464,8 @@ class _Analyzer:
                     )
                     self.module_slots.append(slot)
                     self.module_slot_mask |= 1 << slot
+                    self.states.set_taint_domain(self.module_slot_mask)
+                    self._scope_slot_cache.clear()
         for local_name in sorted(scope.locals):
             scope.slots[local_name] = len(self.slot_names)
             self.slot_names.append(f"{scope.scope_id}:{local_name}")
@@ -766,20 +1486,21 @@ class _Analyzer:
         return None
 
     def _slot_for_name(self, scope: _Scope, name: str) -> int | None:
+        cache_key = (scope.scope_id, name)
+        if cache_key in self._scope_slot_cache:
+            return self._scope_slot_cache[cache_key]
         if name in scope.globals:
-            return self._module_slot(name)
-        if name in scope.nonlocals:
-            return self._nonlocal_slot(scope, name)
-        slot = scope.slots.get(name)
-        if slot is not None:
-            return slot
-        parent = scope.parent
-        while parent is not None:
-            slot = parent.slots.get(name)
-            if slot is not None:
-                return slot
-            parent = parent.parent
-        return None
+            slot = self._module_slot(name)
+        elif name in scope.nonlocals:
+            slot = self._nonlocal_slot(scope, name)
+        else:
+            slot = scope.slots.get(name)
+            parent = scope.parent
+            while slot is None and parent is not None:
+                slot = parent.slots.get(name)
+                parent = parent.parent
+        self._scope_slot_cache[cache_key] = slot
+        return slot
 
     def _lookup_name(self, state_id: int, scope: _Scope, name: str) -> IdentityMask:
         slot = self._slot_for_name(scope, name)
@@ -817,8 +1538,9 @@ class _Analyzer:
         effects: EffectMask,
         static_value: PythonStaticValue,
     ) -> None:
-        self.expressions[_node_key(node)] = PythonExpressionFact(
-            _node_key(node),
+        key = self._node_key(node)
+        self.expressions[key] = PythonExpressionFact(
+            key,
             scope.scope_id,
             identities,
             effects,
@@ -1036,7 +1758,7 @@ class _Analyzer:
         return result, effects, state_id
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
-        fact = self.expressions.get(_node_key(node))
+        fact = self.expressions.get(self._node_key(node))
         return fact.identities if fact is not None else OTHER_IDENTITY
 
     def eval_expr(self, node: ast.expr, state_id: int, scope: _Scope) -> _ExpressionResult:
@@ -1128,8 +1850,9 @@ class _Analyzer:
                 state_id, scope, node, callee_result.identities, effects
             )
             state_id = self._apply_effects(state_id, effects)
-            self.calls[_node_key(node)] = PythonCallSiteFact(
-                _node_key(node), scope.scope_id, callee_result.identities,
+            key = self._node_key(node)
+            self.calls[key] = PythonCallSiteFact(
+                key, scope.scope_id, callee_result.identities,
                 identities,
                 effects,
                 self.states.get(state_id).maybe_invalidated_members,
@@ -1282,7 +2005,6 @@ class _Analyzer:
             | EXECUTES_ARBITRARY_PYTHON
             | RAISES
         )
-        scope.entry_state_id = first_iterable.state_id
         deferred_effects = NO_EFFECTS
         current = first_iterable.state_id
         for index, generator in enumerate(generators):
@@ -1312,7 +2034,6 @@ class _Analyzer:
             result = self.eval_expr(payload, current, scope)
             current = result.state_id
             deferred_effects |= result.effects
-        scope.exit_state_id = current
         if isinstance(node, ast.GeneratorExp):
             return first_iterable.state_id, immediate_effects
         return current, immediate_effects | deferred_effects
@@ -1651,9 +2372,7 @@ class _Analyzer:
                 effects |= result.effects
             declarations = _scope_declarations(node.body)
             class_scope = self._new_scope(parent=scope, kind="class", name=node.name, declarations=declarations)
-            class_scope.entry_state_id = state_id
             class_state, class_effects = self.exec_statements(node.body, state_id, class_scope)
-            class_scope.exit_state_id = class_state
             effects |= class_effects | EXECUTES_ARBITRARY_PYTHON | ALLOCATES | RAISES
             state_id = self._apply_effects(state_id, effects)
             class_identity = possible_identity(PythonIdentity.USER_CLASS)
@@ -1661,6 +2380,33 @@ class _Analyzer:
                 node.name, class_identity, state_id, scope
             )
             effects |= bind_effects
+        elif isinstance(node, getattr(ast, "TypeAlias", ())):
+            for expression in (
+                node.value,
+                *(
+                    value
+                    for type_param in node.type_params
+                    for attribute in ("bound", "default_value")
+                    if isinstance(
+                        (value := getattr(type_param, attribute, None)), ast.expr
+                    )
+                ),
+            ):
+                self._queue_annotation_expression(
+                    expression,
+                    scope,
+                    state_id,
+                    node.type_params,
+                )
+            if isinstance(node.name, ast.Name):
+                state_id, bind_effects = self._bind_name(
+                    node.name.id,
+                    exact_identity(PythonIdentity.INERT_VALUE),
+                    state_id,
+                    scope,
+                )
+                effects |= bind_effects
+            effects |= ALLOCATES
         elif isinstance(node, (ast.Return, ast.Raise)):
             value = getattr(node, "value", None) or getattr(node, "exc", None)
             if isinstance(value, ast.expr):
@@ -1776,24 +2522,39 @@ class _Analyzer:
                     OTHER_IDENTITY,
                     PythonParameterRef(parameter),
                 )
-        scope.entry_state_id = state_id
         observed: list[int] = [state_id]
         self._observed_stack.append(observed)
         try:
             exit_state, _effects = self.exec_statements(body, state_id, scope)
         finally:
             self._observed_stack.pop()
-        scope.exit_state_id = self.states.join(exit_state, *observed)
 
-    def _overlay_module_summary(self, state_id: int, summary_id: int) -> int:
-        for slot in self.module_slots:
-            value = self.states.binding(state_id, slot) | self.states.binding(
-                summary_id, slot
-            )
-            state_id = self.states.set_binding(state_id, slot, value)
-        return self.states.join_member_state(
-            state_id, summary_id, self.module_slot_mask
+    def _overlay_future_states(
+        self,
+        state_id: int,
+        summary_states: Sequence[int],
+        summary_start: int,
+        base_bindings: Sequence[tuple[int, IdentityMask]],
+    ) -> int:
+        if summary_start >= len(summary_states):
+            return state_id
+        history_key = id(summary_states)
+        summary = self._history_summaries.get(history_key)
+        if summary is None or summary.states is not summary_states:
+            summary = _HistorySummary.build(self.states, summary_states)
+            self._history_summaries[history_key] = summary
+        maybe, definitely, taint_epoch = summary.properties(summary_start)
+        state_id = self.states.overlay_summary_properties(
+            state_id,
+            maybe_invalidated_members=maybe,
+            definitely_invalidated_members=definitely,
+            taint_epoch=taint_epoch,
         )
+        updates: list[tuple[int, IdentityMask]] = []
+        for slot, base_binding in base_bindings:
+            future_binding = summary.binding(self.states, summary_start, slot)
+            updates.append((slot, base_binding | future_binding))
+        return self.states.set_bindings(state_id, updates)
 
     def analyze(self, tree: ast.Module) -> PythonBindingIndex:
         declarations = _scope_declarations(tree.body)
@@ -1801,15 +2562,14 @@ class _Analyzer:
         self.module_scope = module
         self.module_slots = list(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
-        module.entry_state_id = 0
+        self.states.set_taint_domain(self.module_slot_mask)
         observed: list[int] = [0]
         self._observed_stack.append(observed)
         try:
             module_exit, _effects = self.exec_statements(tree.body, 0, module)
         finally:
             self._observed_stack.pop()
-        module.exit_state_id = module_exit
-        cursor = 0
+        cursor = 0 if self.policy.analyze_deferred_bodies else len(self.function_jobs)
         while cursor < len(self.function_jobs):
             job = self.function_jobs[cursor]
             cursor += 1
@@ -1819,15 +2579,29 @@ class _Analyzer:
             module_states = job.module_states
             if module_states is None:
                 assert job.module_history_start is not None
-                module_states = tuple(self._module_history[job.module_history_start :])
-            if not module_states:
-                module_states = (module_exit,)
-            module_summary = self.states.join(*module_states)
-            job_outer = self._overlay_module_summary(
-                job.outer_state_id, module_summary
+                module_states = self._module_history
+                module_state_start = min(
+                    job.module_history_start, len(self._module_history)
+                )
+            else:
+                if not module_states:
+                    module_states = (module_exit,)
+                module_state_start = 0
+            job_outer = self._overlay_future_states(
+                job.outer_state_id,
+                module_states,
+                module_state_start,
+                job.module_base_bindings,
             )
+            if job.lexical_history is not None:
+                job_outer = self._overlay_future_states(
+                    job_outer,
+                    job.lexical_history,
+                    job.lexical_history_start,
+                    job.lexical_base_bindings,
+                )
             previous_module_states = self._active_module_states
-            self._active_module_states = module_states
+            self._active_module_states = (job_outer,)
             try:
                 self._analyze_function_job(job, job_outer)
             finally:
@@ -1844,11 +2618,9 @@ class _Analyzer:
                 tuple(
                     sorted(
                         (name, slot)
-                        for name in {
-                            candidate
-                            for visible in self._scope_chain(scope)
-                            for candidate in visible.slots
-                        }
+                        for name in (
+                            set(scope.slots) | set(scope.globals) | set(scope.nonlocals)
+                        )
                         if (slot := self._slot_for_name(scope, name)) is not None
                     )
                 ),
@@ -1903,28 +2675,59 @@ class _Analyzer:
             calls=tuple(sorted(self.calls.values(), key=lambda fact: fact.node)),
             scopes=scope_facts,
             state_count=len(self.states),
+            telemetry=PythonBindingTelemetry(
+                binding_lookups=self.states.binding_lookups,
+                join_calls=self.states.join_calls,
+                join_node_visits=self.states.join_node_visits,
+                join_shared_subtrees_skipped=(
+                    self.states.join_shared_subtrees_skipped
+                ),
+                join_chunk_merges=self.states.join_chunk_merges,
+                structural_diff_cache_entries=0,
+                structural_diff_node_visits=(
+                    self.states.structural_diff_node_visits
+                ),
+                structural_diff_shared_subtrees_skipped=(
+                    self.states.structural_diff_shared_skips
+                ),
+            ),
             slot_names=tuple(self.slot_names),
         )
-
-    @staticmethod
-    def _scope_chain(scope: _Scope) -> tuple[_Scope, ...]:
-        chain: list[_Scope] = []
-        current: _Scope | None = scope
-        while current is not None:
-            chain.append(current)
-            current = current.parent
-        return tuple(chain)
 
 
 @dataclass(slots=True)
 class _PendingAnalysis:
     ready: Event = field(default_factory=Event)
     result: PythonBindingIndex | None = None
-    error: BaseException | None = None
+    error: _AnalysisFailure | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisFailure:
+    exception_type: type[BaseException]
+    args: tuple[object, ...]
+    attributes: tuple[tuple[str, object], ...]
+
+    @classmethod
+    def capture(cls, error: BaseException) -> _AnalysisFailure:
+        return cls(type(error), error.args, tuple(vars(error).items()))
+
+    def instantiate(self) -> BaseException:
+        try:
+            error = self.exception_type(*self.args)
+        except BaseException:
+            error = RuntimeError(
+                f"{self.exception_type.__module__}."
+                f"{self.exception_type.__qualname__}: "
+                + ", ".join(map(str, self.args))
+            )
+        for name, value in self.attributes:
+            setattr(error, name, value)
+        return error
 
 
 class _BindingIndexCache:
-    """Content-addressed, single-flight cache safe for free-threaded callers."""
+    """Free-thread-safe single-flight cache with bounded FIFO completion eviction."""
 
     def __init__(self, max_entries: int = 128) -> None:
         self._max_entries = max_entries
@@ -1950,14 +2753,14 @@ class _BindingIndexCache:
         if not owner:
             pending.ready.wait()
             if pending.error is not None:
-                raise pending.error
+                raise pending.error.instantiate()
             assert pending.result is not None
             return pending.result
         try:
             result = compute()
         except BaseException as exc:
             with self._lock:
-                pending.error = exc
+                pending.error = _AnalysisFailure.capture(exc)
                 self._pending.pop(key, None)
                 pending.ready.set()
             raise

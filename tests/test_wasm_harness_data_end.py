@@ -1,4 +1,6 @@
+import ast
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_harness import BASE_PREAMBLE, IMPORT_HELPERS
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
+from molt._wasm_abi_generated import wasm_runtime_import_name
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,3 +198,34 @@ def test_wasm_harness_exposes_ord_at_import() -> None:
     text = source.read_text()
     assert "ord_at: (objBits, idxBits) => {" in text
     assert "return boxInt(BigInt(chars[pos].codePointAt(0)))" in text
+
+
+def test_wasm_harness_implements_private_thread_intrinsic_family() -> None:
+    thread_source = ROOT / "src/molt/stdlib/_thread.py"
+    tree = ast.parse(thread_source.read_text(encoding="utf-8"))
+    runtime_names = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_require_intrinsic"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    import_names = {
+        import_name
+        for runtime_name in runtime_names
+        if (import_name := wasm_runtime_import_name(runtime_name)) is not None
+    }
+    harness = (ROOT / "tests/wasm_harness.py").read_text(encoding="utf-8")
+    missing = sorted(
+        name
+        for name in import_names
+        if re.search(rf"^\s+{re.escape(name)}:\s*", harness, re.MULTILINE) is None
+    )
+    assert not missing, f"WASM harness lacks _thread runtime imports: {missing}"
+    assert "const mainThreadIdent = 1;" in harness
+    assert "thread_current_ident: () => boxInt(mainThreadIdent)" in harness
+    assert "thread_current_native_id: () => boxInt(mainThreadIdent)" in harness
+    assert harness.count("threads are unavailable in wasm") >= 2

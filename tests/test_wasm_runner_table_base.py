@@ -18,7 +18,13 @@ DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
-def _wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
+def _wasm_from_wat(
+    tmp_path: Path,
+    name: str,
+    wat: str,
+    *,
+    callable_layout: tuple[int, int, int, int] | None = None,
+) -> Path:
     wasm_tools = shutil.which("wasm-tools")
     if wasm_tools is None:
         pytest.skip("wasm-tools is required for runner table-base parser tests")
@@ -36,24 +42,34 @@ def _wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
     if cargo is None:
         pytest.skip("cargo is required for Rust-owned callable-table publication")
     published = wasm_path.with_suffix(".published.wasm")
+    publish_command = [
+        cargo,
+        "run",
+        "--quiet",
+        "--locked",
+        "-p",
+        "molt-backend",
+        "--features",
+        "wasm-backend",
+        "--bin",
+        "molt-backend",
+        "--",
+        "--publish-wasm-link-facts",
+        str(wasm_path),
+        "--output",
+        str(published),
+    ]
+    if callable_layout is not None:
+        publish_command.extend(
+            [
+                "--callable-table-layout",
+                ",".join(str(value) for value in callable_layout),
+                "--callable-table-role",
+                "monolithic",
+            ]
+        )
     result = _run_wasm_test_process(
-        [
-            cargo,
-            "run",
-            "--quiet",
-            "--locked",
-            "-p",
-            "molt-backend",
-            "--features",
-            "wasm-backend",
-            "--bin",
-            "molt-backend",
-            "--",
-            "--publish-wasm-link-facts",
-            str(wasm_path),
-            "--output",
-            str(published),
-        ],
+        publish_command,
         cwd=ROOT,
         env=os.environ,
         timeout=300,
@@ -128,7 +144,7 @@ def test_extract_wasm_table_base_accepts_active_base_one(tmp_path: Path) -> None
     assert _extract_table_base(wasm_path) == 1
 
 
-def test_extract_wasm_table_base_ignores_runtime_prefix_when_app_segment_exists(
+def test_extract_wasm_table_base_uses_published_fixed_runtime_prefix(
     tmp_path: Path,
 ) -> None:
     wasm_path = _wasm_from_wat(
@@ -143,9 +159,49 @@ def test_extract_wasm_table_base_ignores_runtime_prefix_when_app_segment_exists(
           (elem (i32.const 4096) func $app)
         )
         """,
+        callable_layout=(1, 1, 4096, 1),
     )
 
-    assert _extract_table_base(wasm_path) == 4096
+    assert _extract_table_base(wasm_path) == 1
+
+
+def test_extract_wasm_table_base_uses_published_layout_after_segment_coalescing(
+    tmp_path: Path,
+) -> None:
+    wasm_path = _wasm_from_wat(
+        tmp_path,
+        "coalesced_runtime_and_app_segment",
+        """
+        (module
+          (table 4 funcref)
+          (func $runtime)
+          (func $app)
+          (elem (i32.const 1) func $runtime $app)
+        )
+        """,
+        callable_layout=(1, 1, 2, 1),
+    )
+
+    assert _extract_table_base(wasm_path) == 1
+
+
+def test_extract_wasm_table_base_uses_app_base_without_fixed_runtime_prefix(
+    tmp_path: Path,
+) -> None:
+    wasm_path = _wasm_from_wat(
+        tmp_path,
+        "app_only_callable_segment",
+        """
+        (module
+          (table 9 funcref)
+          (func $app)
+          (elem (i32.const 8) func $app)
+        )
+        """,
+        callable_layout=(0, 0, 8, 1),
+    )
+
+    assert _extract_table_base(wasm_path) == 8
 
 
 def test_linked_runner_uses_env_table_base_without_calling_setter(

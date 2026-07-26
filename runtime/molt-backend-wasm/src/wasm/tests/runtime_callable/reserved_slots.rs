@@ -91,3 +91,42 @@ fn reserved_runtime_callable_function_objects_own_final_active_element_slots() {
         "reserved runtime trampoline must consume closure, argv, argc and return one value"
     );
 }
+
+#[test]
+fn relocatable_callable_plan_exports_every_fixed_slot() {
+    let func = wasm_test_function(
+        "molt_main",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: true,
+        table_base: 1,
+        split_runtime_app_table_base: Some(2320),
+        wasm_profile: WasmProfile::Full,
+        ..WasmCompileOptions::default()
+    })
+    .compile(SimpleIR {
+        functions: vec![func],
+        profile: None,
+    });
+
+    let exports = wasm_function_exports(&wasm);
+    let fixed_prefix_len = 1
+        + POLL_TABLE_IMPORTS
+            .iter()
+            .map(|spec| spec.table_slot)
+            .max()
+            .unwrap_or(0) as usize
+        + RESERVED_RUNTIME_CALLABLE_COUNT as usize * 2;
+    let layout_section =
+        crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_SECTION_NAME;
+    for slot in 0..fixed_prefix_len {
+        assert!(
+            exports.contains(&format!("{layout_section}.entry.{slot}")),
+            "relocatable output must export fixed callable slot {slot} for final-link publication"
+        );
+    }
+}

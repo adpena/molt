@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import gc
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from threading import Event
@@ -31,6 +33,67 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+def test_synthetic_node_key_cache_retains_identity_against_id_reuse() -> None:
+    analyzer = python_binding_flow._Analyzer(PythonBindingPolicy(), "synthetic")
+    first = ast.Name(id="first", lineno=1, col_offset=0)
+    first_identity = id(first)
+    first_key = analyzer._node_key(first)
+    retained = weakref.ref(first)
+
+    del first
+    gc.collect()
+
+    retained_node = retained()
+    assert retained_node is not None
+    assert retained_node in analyzer._node_keys
+    second = ast.Name(id="second", lineno=2, col_offset=0)
+    assert id(second) != first_identity
+    assert analyzer._node_key(second) != first_key
+
+
+def test_persistent_binding_tree_grows_and_joins_across_radix_boundaries() -> None:
+    pool = python_binding_flow._StatePool()
+    chunks_per_fixed_depth = 1 << (
+        python_binding_flow._BINDING_TREE_SHIFT * 3
+    )
+    chunk_size = python_binding_flow._BINDING_CHUNK_SIZE
+    below = (chunks_per_fixed_depth - 1) * chunk_size
+    boundary = chunks_per_fixed_depth * chunk_size
+    above = (chunks_per_fixed_depth + 1) * chunk_size
+    import_module = int(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    dunder_import = int(PythonIdentity.BUILTINS_IMPORT)
+
+    left = pool.set_binding(0, below, import_module)
+    left = pool.set_binding(left, boundary, dunder_import)
+    right = pool.set_binding(0, above, import_module)
+    joined = pool.join(left, right)
+
+    assert pool.binding(left, below) == import_module
+    assert pool.binding(left, boundary) == dunder_import
+    assert pool.binding(right, above) == import_module
+    assert pool.binding(joined, below) & import_module
+    assert pool.binding(joined, boundary) & dunder_import
+    assert pool.binding(joined, above) & import_module
+
+
+def test_binding_history_diff_visits_only_changed_trie_branches() -> None:
+    pool = python_binding_flow._StatePool()
+    chunk_size = python_binding_flow._BINDING_CHUNK_SIZE
+    far_chunk = (1 << (python_binding_flow._BINDING_TREE_SHIFT * 4)) - 1
+    far_slot = far_chunk * chunk_size
+    import_module = int(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    dunder_import = int(PythonIdentity.BUILTINS_IMPORT)
+    base = pool.set_binding(0, 0, import_module)
+    base = pool.set_binding(base, far_slot, import_module)
+    left = pool.set_binding(base, 0, dunder_import)
+    right = pool.set_binding(base, far_slot, dunder_import)
+    joined = pool.join(left, right)
+
+    assert pool.changed_slots_between(base, joined) == (0, far_slot)
+    assert pool.structural_diff_shared_skips > 0
+    assert pool.structural_diff_node_visits < far_chunk.bit_length() * 4
+
+
 def _identity_on_line(source: str, line: int, identity: PythonIdentity) -> bool:
     index = analyze_python_source_bindings(source)
     return any(
@@ -48,6 +111,45 @@ def test_alias_chain_preserves_exact_import_module_identity() -> None:
     )
     assert call.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
     assert not call.callee_identities & OTHER_IDENTITY
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def deferred():\n"
+        "    load('pkg.module_late')\n"
+        "from importlib import import_module as load\n",
+        "def outer():\n"
+        "    def deferred():\n"
+        "        load('pkg.enclosing_late')\n"
+        "    from importlib import import_module as load\n",
+        "def outer():\n"
+        "    class DeferredOwner:\n"
+        "        def load_later(self):\n"
+        "            load('pkg.class_enclosing_late')\n"
+        "    from importlib import import_module as load\n",
+        "from importlib import import_module as load\n"
+        "def outer():\n"
+        "    load = print\n"
+        "    def deferred():\n"
+        "        global load\n"
+        "        load('pkg.global')\n",
+    ),
+)
+def test_deferred_import_aliases_use_future_canonical_scope_state(
+    source: str,
+) -> None:
+    call = _last_call(source)
+    assert call.possible_import_call_kinds() == ("import_module",)
+
+
+def test_local_parameter_does_not_inherit_outer_import_identity() -> None:
+    call = _last_call(
+        "from importlib import import_module as load\n"
+        "def deferred(load):\n"
+        "    load('pkg.not_imported')\n"
+    )
+    assert call.possible_import_call_kinds() == ()
 
 
 @pytest.mark.parametrize(
@@ -465,9 +567,14 @@ def test_binding_cache_single_flight_exception_wakes_waiters_and_recovers() -> N
         assert waiter_started.wait(5)
         assert not waiter_returned.wait(0.05)
         release.set()
+        failures: list[ValueError] = []
         for future in (owner, waiter):
-            with pytest.raises(ValueError, match="first analysis failed"):
+            with pytest.raises(ValueError, match="first analysis failed") as caught:
                 future.result()
+            failures.append(caught.value)
+
+    assert failures[0] is not failures[1]
+    assert failures[0].__traceback__ is not failures[1].__traceback__
 
     assert attempts == 1
     assert fetch() is index

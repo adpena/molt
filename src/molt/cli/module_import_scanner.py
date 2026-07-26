@@ -564,7 +564,6 @@ def _collect_imports(
         target_python=target_python.feature_version,
         execution_kind="script" if module_name is None else "imported",
     )
-    import_flow = None
     binding_index = analyze_python_bindings(
         cast(ast.Module, tree),
         source_digest=python_ast_digest(tree),
@@ -576,11 +575,9 @@ def _collect_imports(
             module_execution_kind="script" if module_name is None else "imported",
         ),
     )
+    import_flow = binding_index.module_import_flow
 
     def _import_contexts(node: ast.AST) -> tuple[ModuleImportContext, ...]:
-        nonlocal import_flow
-        if import_flow is None:
-            import_flow = analyze_module_import_flow(tree, base_import_context)
         return tuple(
             base_import_context.with_state(state)
             for state in import_flow.states_for(node)
@@ -595,16 +592,18 @@ def _collect_imports(
     ) -> str | None:
         fact = binding_index.call_fact(call)
         if fact is not None:
-            if fact.callee_is(PythonIdentity.BUILTINS_IMPORT):
+            exact_kind = fact.exact_import_call_kind()
+            if exact_kind == "dunder_import":
                 return "builtins.__import__"
-            if fact.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+            if exact_kind == "import_module":
                 return "importlib.import_module"
             if fact.callee_is(PythonIdentity.IMPORTLIB_FIND_SPEC):
                 return "importlib.util.find_spec"
             if allow_possible:
-                if fact.callee_may_be(PythonIdentity.BUILTINS_IMPORT):
+                possible_kinds = fact.possible_import_call_kinds()
+                if "dunder_import" in possible_kinds:
                     return "builtins.__import__"
-                if fact.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE):
+                if "import_module" in possible_kinds:
                     return "importlib.import_module"
                 if fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC):
                     return "importlib.util.find_spec"
@@ -1025,9 +1024,11 @@ def _collect_imports(
             _sealed_import_modules(request, _import_contexts(node))
         )
 
-    def _collect_import_call(node: ast.Call) -> None:
+    def _collect_import_call(
+        node: ast.Call, *, allow_possible: bool = False
+    ) -> None:
         _record_helper_call_imports(node)
-        target = _static_call_target(node)
+        target = _static_call_target(node, allow_possible=allow_possible)
         if not _is_static_import_target(target):
             return
         assert target is not None
@@ -1170,7 +1171,24 @@ def _collect_imports(
                 _visit(node.body)
             return
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
+            type_alias = cast(ast.TypeAlias, node)
             needs_typing = True
+            if import_scan_mode == "full":
+                deferred_expressions: list[ast.expr] = []
+                for type_param in type_alias.type_params:
+                    for attribute in ("bound", "default_value"):
+                        value = getattr(type_param, attribute, None)
+                        if isinstance(value, ast.expr):
+                            deferred_expressions.append(value)
+                deferred_expressions.append(type_alias.value)
+                for expression in deferred_expressions:
+                    _visit(expression, qualname_prefix)
+                    for child in ast.walk(expression):
+                        if not isinstance(child, ast.Call):
+                            continue
+                        fact = binding_index.call_fact(child)
+                        if fact is not None and fact.exact_import_call_kind() is None:
+                            _collect_import_call(child, allow_possible=True)
             return
         if template_str_cls is not None and isinstance(node, template_str_cls):
             # PEP 750 t-strings desugar to string.templatelib.{Template,Interpolation}

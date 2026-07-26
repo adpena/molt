@@ -656,19 +656,23 @@ def read_wasm_split_runtime_callable_layout(
     slots = set(_collect_wasm_active_table_function_slots(data))
     if not slots:
         raise ValueError("split runtime active callable-table layout is empty")
-    runtime_base = min(slots)
+    first_active_slot = min(slots)
     runtime_occupied_end = max(slots) + 1
     if runtime_occupied_end > 0xFFFF_FFFF:
         raise ValueError("split runtime callable-table occupied boundary overflows u32")
     fixed_prefix_len = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
         WASM_RESERVED_RUNTIME_CALLABLES
     )
+    runtime_base = (
+        1 if first_active_slot == fixed_prefix_len + 1 else first_active_slot
+    )
     missing = [
         slot
         for slot in range(runtime_base, runtime_base + fixed_prefix_len)
         if slot not in slots
     ]
-    if missing:
+    reserved_prefix_gap = first_active_slot == runtime_base + fixed_prefix_len
+    if missing and not reserved_prefix_gap:
         raise ValueError(
             "split runtime callable-table fixed ABI prefix is not fully published: "
             f"first missing slot {missing[0]}"

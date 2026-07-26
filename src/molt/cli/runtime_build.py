@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Collection, Literal, Mapping, NamedTuple, Sequence
 
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+from molt._wasm_abi_generated import (
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+)
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
@@ -2486,6 +2490,7 @@ def _compute_runtime_wasm_build_spec(
         shared_import_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table"
+            f" -C link-arg=--table-base={1 + WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT}"
         )
         link_flags = f"{shared_import_flags}{runtime_exports}"
         cargo_link_response_path = _wasm_link_args_response_file(

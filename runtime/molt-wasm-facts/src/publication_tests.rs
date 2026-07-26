@@ -173,7 +173,7 @@ fn runtime_publication_accepts_owned_entries_beyond_required_fixed_prefix() {
 
 #[test]
 fn app_publication_derives_final_count_after_native_link_growth() {
-    let base = module_with_callable_slots(&[20, 21, 22, 23]);
+    let base = module_with_callable_slots(&[10, 11, 20, 21, 22, 23]);
     let stale_pre_link_layout = CallableTableLayout {
         fixed_prefix_base: 10,
         fixed_prefix_len: 2,
@@ -197,6 +197,56 @@ fn app_publication_derives_final_count_after_native_link_growth() {
             ..stale_pre_link_layout
         })
     );
+}
+
+#[test]
+fn monolithic_publication_derives_final_app_count_after_native_link_growth() {
+    let base = module_with_callable_slots(&[10, 11, 12, 19, 20, 21, 22, 23]);
+    let stale_pre_link_layout = CallableTableLayout {
+        fixed_prefix_base: 10,
+        fixed_prefix_len: 2,
+        finalized_app_base: 20,
+        app_entry_count: 2,
+    };
+    let mut published = Vec::new();
+
+    let facts = scan_and_write_callable_table_attestation(
+        &base,
+        Some(stale_pre_link_layout),
+        CallableTableArtifactRole::Monolithic,
+        &mut published,
+    )
+    .expect("derive final monolithic app count from linked active elements");
+
+    assert_eq!(
+        facts.callable_table_layout,
+        Some(CallableTableLayout {
+            app_entry_count: 4,
+            ..stale_pre_link_layout
+        })
+    );
+}
+
+#[test]
+fn monolithic_publication_accepts_runtime_entries_before_app_without_fixed_prefix() {
+    let base = module_with_callable_slots(&[10, 20]);
+    let layout = CallableTableLayout {
+        fixed_prefix_base: 0,
+        fixed_prefix_len: 0,
+        finalized_app_base: 20,
+        app_entry_count: 1,
+    };
+    let mut published = Vec::new();
+
+    let facts = scan_and_write_callable_table_attestation(
+        &base,
+        Some(layout),
+        CallableTableArtifactRole::Monolithic,
+        &mut published,
+    )
+    .expect("publish runtime-owned entries before the finalized app boundary");
+
+    assert_eq!(facts.callable_table_layout, Some(layout));
 }
 
 #[test]
