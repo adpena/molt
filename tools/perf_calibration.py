@@ -35,13 +35,21 @@ import math
 import os
 import platform
 import statistics
-import subprocess
 import sys
-import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from subprocess import SubprocessError
+from typing import Any, Callable, Optional, Sequence
+
+try:
+    from tools import harness_memory_guard
+    from tools.command_execution import CommandExecutor
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import harness_memory_guard
+    from command_execution import CommandExecutor
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # ---------------------------------------------------------------------------
 # Windows peak-working-set via ctypes (macOS/Linux use stdlib only).
@@ -91,11 +99,8 @@ if sys.platform == "win32":
     _gpmi.restype = wintypes.BOOL
 
     # GetProcessMemoryInfo classically needs QUERY_INFORMATION + VM_READ.
-    # AssignProcessToJobObject also needs SET_QUOTA + TERMINATE on the process.
     _PROCESS_QUERY_INFORMATION = 0x0400
     _PROCESS_VM_READ = 0x0010
-    _PROCESS_SET_QUOTA = 0x0100
-    _PROCESS_TERMINATE = 0x0001
 
     def _win_peak_wset(handle) -> Optional[int]:
         if not handle:
@@ -105,152 +110,6 @@ if sys.platform == "win32":
         if _gpmi(handle, ctypes.byref(pmc), pmc.cb):
             return int(pmc.PeakWorkingSetSize)
         return None
-
-    def _win_current_wset(handle) -> Optional[int]:
-        if not handle:
-            return None
-        pmc = _PROCESS_MEMORY_COUNTERS()
-        pmc.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
-        if _gpmi(handle, ctypes.byref(pmc), pmc.cb):
-            return int(pmc.WorkingSetSize)
-        return None
-
-    def _win_open(pid: int):
-        return (
-            _kernel32.OpenProcess(
-                _PROCESS_QUERY_INFORMATION
-                | _PROCESS_VM_READ
-                | _PROCESS_SET_QUOTA
-                | _PROCESS_TERMINATE,
-                False,
-                pid,
-            )
-            or None
-        )
-
-    def _win_open_query(pid: int):
-        return (
-            _kernel32.OpenProcess(
-                _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ,
-                False,
-                pid,
-            )
-            or None
-        )
-
-    def _win_close(handle) -> None:
-        if handle:
-            _kernel32.CloseHandle(handle)
-
-    # Job object: measures the peak committed memory of the WHOLE process tree
-    # (the child + every descendant, e.g. a launcher/trampoline's grandchild),
-    # survives process exit, and has no polling race.
-    _ULONG_PTR = ctypes.c_size_t
-
-    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_int64),
-            ("PerJobUserTimeLimit", ctypes.c_int64),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", _ULONG_PTR),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class _IO_COUNTERS(ctypes.Structure):
-        _fields_ = [
-            (n, ctypes.c_uint64)
-            for n in (
-                "ReadOperationCount",
-                "WriteOperationCount",
-                "OtherOperationCount",
-                "ReadTransferCount",
-                "WriteTransferCount",
-                "OtherTransferCount",
-            )
-        ]
-
-    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
-            ("IoInfo", _IO_COUNTERS),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    _JOB_PID_CAPACITY = 1024
-
-    class _JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
-        _fields_ = [
-            ("NumberOfAssignedProcesses", wintypes.DWORD),
-            ("NumberOfProcessIdsInList", wintypes.DWORD),
-            ("ProcessIdList", _ULONG_PTR * _JOB_PID_CAPACITY),
-        ]
-
-    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-    _kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    _kernel32.QueryInformationJobObject.restype = wintypes.BOOL
-    _kernel32.QueryInformationJobObject.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.LPDWORD,
-    ]
-    _JobObjectExtendedLimitInformation = 9
-    _JobObjectBasicProcessIdList = 3
-
-    def _win_create_job():
-        return _kernel32.CreateJobObjectW(None, None) or None
-
-    def _win_assign_job(hjob, hprocess) -> bool:
-        return bool(_kernel32.AssignProcessToJobObject(hjob, hprocess))
-
-    def _win_job_peak(hjob) -> Optional[int]:
-        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        if _kernel32.QueryInformationJobObject(
-            hjob,
-            _JobObjectExtendedLimitInformation,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-            None,
-        ):
-            return int(info.PeakJobMemoryUsed) or None
-        return None
-
-    def _win_job_current_rss(hjob) -> Optional[int]:
-        """Current summed working set of every live process in a Job."""
-        if not hjob:
-            return None
-        processes = _JOBOBJECT_BASIC_PROCESS_ID_LIST()
-        if not _kernel32.QueryInformationJobObject(
-            hjob,
-            _JobObjectBasicProcessIdList,
-            ctypes.byref(processes),
-            ctypes.sizeof(processes),
-            None,
-        ):
-            return None
-        count = min(int(processes.NumberOfProcessIdsInList), _JOB_PID_CAPACITY)
-        total = 0
-        observed = False
-        for index in range(count):
-            handle = _win_open_query(int(processes.ProcessIdList[index]))
-            try:
-                current = _win_current_wset(handle)
-                if current is not None:
-                    total += current
-                    observed = True
-            finally:
-                _win_close(handle)
-        return total if observed else None
 
 
 # ---------------------------------------------------------------------------
@@ -295,47 +154,6 @@ def peak_rss_self_bytes() -> Optional[int]:
     return maxrss * 1024 if sys.platform.startswith("linux") else maxrss
 
 
-def _sample_peak_rss(pid: int, handle=None) -> Optional[int]:
-    """One sample of a child's peak RSS so far (bytes). Linux VmHWM and Windows
-    PeakWorkingSetSize are cumulative peaks (monotone), so polling captures the
-    true peak; macOS samples current RSS (peak approximated by the max of samples)."""
-    if sys.platform == "win32":
-        return _win_peak_wset(handle)
-    if sys.platform.startswith("linux"):
-        try:
-            with open(f"/proc/{pid}/status", "r", encoding="utf-8") as fh:
-                for line in fh:
-                    if line.startswith("VmHWM:"):
-                        return int(line.split()[1]) * 1024  # KiB -> bytes
-        except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
-            return None
-        return None
-    # macOS / other unix: sample current RSS via ps (KiB).
-    try:
-        out = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        ).stdout.strip()
-        return int(out) * 1024 if out else None
-    except (subprocess.SubprocessError, ValueError, OSError):
-        return None
-
-
-def _kill_owned_process(proc: subprocess.Popen[bytes]) -> None:
-    """Close exactly one benchmark child through one custody authority."""
-
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            # The exact child exited between poll() and kill(); wait() still
-            # reaps its handle below.
-            pass
-    proc.wait()
-
-
 @dataclass
 class RunMeasurement:
     returncode: int
@@ -356,103 +174,57 @@ def run_and_measure(
     poll_interval: float = 0.003,
     on_spawn: Optional[Callable[[int], None]] = None,
 ) -> RunMeasurement:
-    """Spawn argv, capturing wall time AND cross-platform peak RSS by polling.
+    """Run one benchmark under the repository's process-tree custody authority."""
 
-    Output is captured to temp files (not pipes) so a chatty child cannot deadlock
-    the poll loop by filling a pipe buffer.
-
-    Peak RSS is SAMPLED at `poll_interval`. Real benchmark processes hold their
-    working set for many intervals, so the peak is captured faithfully; a pathological
-    process that allocates and exits within a single interval may under-report (the
-    monotone Linux VmHWM / Windows PeakWorkingSetSize fields mitigate this, but a
-    post-exit read can fail). For sub-millisecond-burst accuracy a Job Object (Windows)
-    / wait4 rusage (Unix) upgrade would be needed; benchmarks do not need it."""
-    full_env = None
+    if poll_interval <= 0:
+        raise ValueError("poll_interval must be positive")
+    full_env = dict(os.environ)
     if env is not None:
-        full_env = dict(os.environ)
-        full_env.update({k: str(v) for k, v in env.items()})
-    t0 = time.perf_counter()
-    with tempfile.TemporaryFile() as ofh, tempfile.TemporaryFile() as efh:
-        proc = subprocess.Popen(
-            list(argv), stdout=ofh, stderr=efh, env=full_env, cwd=cwd
+        full_env.update({key: str(value) for key, value in env.items()})
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_PERF_CALIBRATION",
+        full_env,
+        repo_root=Path(__file__).resolve().parents[1],
+    )
+    context = replace(
+        context,
+        limits=replace(context.limits, poll_interval=poll_interval),
+    )
+    result = context.run(
+        [str(part) for part in argv],
+        cwd=cwd,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+        on_spawn=on_spawn,
+        sampling_scope="owned_tree",
+    )
+    if result.elapsed_s is None:
+        raise RuntimeError("guarded benchmark returned without elapsed-time telemetry")
+    peak = result.peak_total
+    peak_rss_bytes = None if peak is None else peak.rss_kb * 1024
+
+    def decode_output(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        if isinstance(value, str):
+            return value
+        raise TypeError(
+            f"guarded benchmark returned invalid output type {type(value)!r}"
         )
 
-        if on_spawn is not None:
-            try:
-                on_spawn(proc.pid)
-            except BaseException:
-                _kill_owned_process(proc)
-                raise
-        handle = _win_open(proc.pid) if sys.platform == "win32" else None
-        job = _win_create_job() if sys.platform == "win32" else None
-        assigned_job = (
-            job
-            if sys.platform == "win32"
-            and handle
-            and job
-            and _win_assign_job(job, handle)
-            else None
-        )
-        peak_rss = 0
-        peak_job_commit = 0
-        timed_out = False
-        try:
-            while True:
-                try:
-                    proc.wait(timeout=poll_interval)
-                    done = True
-                except subprocess.TimeoutExpired:
-                    done = False
-                rss = (
-                    _win_job_current_rss(assigned_job)
-                    if assigned_job is not None
-                    else _sample_peak_rss(proc.pid, handle)
-                )
-                if rss:
-                    peak_rss = max(peak_rss, rss)
-                committed = (
-                    _win_job_peak(assigned_job) if assigned_job is not None else None
-                )
-                if committed:
-                    peak_job_commit = max(peak_job_commit, committed)
-                if done:
-                    break
-                if timeout is not None and (time.perf_counter() - t0) > timeout:
-                    _kill_owned_process(proc)
-                    timed_out = True
-                    break
-            # Final direct sample may survive root exit on monotone OS fields;
-            # the live loop above captures the Windows Job's summed RSS.
-            rss = (
-                _win_job_current_rss(assigned_job)
-                if assigned_job is not None
-                else _sample_peak_rss(proc.pid, handle)
-            )
-            if rss:
-                peak_rss = max(peak_rss, rss)
-            committed = (
-                _win_job_peak(assigned_job) if assigned_job is not None else None
-            )
-            if committed:
-                peak_job_commit = max(peak_job_commit, committed)
-        finally:
-            if sys.platform == "win32":
-                _win_close(job)
-                _win_close(handle)
-        elapsed = time.perf_counter() - t0
-        ofh.seek(0)
-        out = ofh.read().decode("utf-8", "replace")
-        efh.seek(0)
-        err = efh.read().decode("utf-8", "replace")
-    rc = proc.returncode if proc.returncode is not None else -1
+    out = decode_output(result.stdout)
+    err = decode_output(result.stderr)
     return RunMeasurement(
-        rc,
-        elapsed,
-        peak_rss or None,
-        peak_job_commit or None,
+        result.returncode,
+        result.elapsed_s,
+        peak_rss_bytes,
+        result.peak_job_commit_bytes,
         out,
         err,
-        timed_out,
+        result.timed_out,
     )
 
 
@@ -462,7 +234,7 @@ def run_and_measure(
 _COMPETING = ("cargo", "rustc", "molt-backend", "wasmtime")
 
 
-def _filetime_ticks(value: object) -> int:
+def _filetime_ticks(value: Any) -> int:
     return (int(value.high) << 32) | int(value.low)
 
 
@@ -501,18 +273,21 @@ def _windows_cpu_load(sample_seconds: float = 0.25) -> Optional[float]:
 
 def _competing_build_count() -> int:
     try:
-        if sys.platform == "win32":
-            out = subprocess.run(
-                ["tasklist", "/fo", "csv", "/nh"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            ).stdout
-        else:
-            out = subprocess.run(
-                ["ps", "-axco", "command"], capture_output=True, text=True, timeout=5
-            ).stdout
-    except (subprocess.SubprocessError, OSError):
+        command = (
+            ["tasklist", "/fo", "csv", "/nh"]
+            if sys.platform == "win32"
+            else ["ps", "-axco", "command"]
+        )
+        out = _COMMANDS.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout
+    except (OSError, SubprocessError, ValueError):
+        return -1
+    if not isinstance(out, str):
         return -1
     low = out.lower()
     return sum(low.count(n) for n in _COMPETING)
@@ -535,9 +310,10 @@ def measure_quiescence(max_load_per_core: float = 0.35) -> Quiescence:
         load1 = windows_cpu * cores
         probe = "GetSystemTimes"
     else:
+        getloadavg = getattr(os, "getloadavg", None)
         try:
-            load1 = os.getloadavg()[0]
-        except (OSError, AttributeError):
+            load1 = None if getloadavg is None else getloadavg()[0]
+        except OSError:
             load1 = None
         cores = os.cpu_count() or 1
         probe = "getloadavg"
@@ -673,13 +449,15 @@ def calibrate_cold_budget(
         k = min(len(ordered) - 1, int(round((p / 100.0) * (len(ordered) - 1))))
         return ordered[k]
 
+    p50 = pct(50)
+    p90 = pct(90)
     mx = ordered[-1] if ordered else None
     fp = host_fingerprint()
     return {
         "kind": "cold_budget_calibration",
         "runs": runs,
-        "measured_p50_ms": round(pct(50), 2) if ordered else None,
-        "measured_p90_ms": round(pct(90), 2) if ordered else None,
+        "measured_p50_ms": round(p50, 2) if p50 is not None else None,
+        "measured_p90_ms": round(p90, 2) if p90 is not None else None,
         "measured_max_ms": round(mx, 2) if mx else None,
         "budget_ms": round(mx * (1.0 + margin_frac)) if mx else None,
         "margin_frac": margin_frac,

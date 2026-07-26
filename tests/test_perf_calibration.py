@@ -7,6 +7,7 @@ GetProcessMemoryInfo path that fixes the native board's "RSS=0" gap.
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,11 @@ def test_run_and_measure_captures_output_and_peak():
         f"peak {m.peak_rss_bytes} too low for a held 60 MB allocation"
     )
     assert m.elapsed_s > 0
+    if sys.platform == "win32":
+        assert m.peak_job_commit_bytes is not None
+        assert m.peak_job_commit_bytes > 0
+    else:
+        assert m.peak_job_commit_bytes is None
 
 
 def test_run_and_measure_timeout():
@@ -70,7 +76,10 @@ def test_run_and_measure_timeout():
 
 
 def test_run_and_measure_closes_child_when_spawn_observer_fails():
+    observed_pids: list[int] = []
+
     def reject_spawn(_pid: int) -> None:
+        observed_pids.append(_pid)
         raise RuntimeError("observer rejected child")
 
     with pytest.raises(RuntimeError, match="observer rejected child"):
@@ -78,6 +87,29 @@ def test_run_and_measure_closes_child_when_spawn_observer_fails():
             [sys.executable, "-c", "import time; time.sleep(10)"],
             on_spawn=reject_spawn,
         )
+    assert observed_pids
+    assert (
+        observed_pids[0] not in pc.harness_memory_guard.memory_guard.sample_processes()
+    )
+
+
+def test_run_and_measure_reaps_nested_child_after_root_exit(tmp_path):
+    pid_path = tmp_path / "nested.pid"
+    child_source = (
+        "import pathlib, subprocess, sys; "
+        f"p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid), encoding='utf-8')"
+    )
+
+    measurement = pc.run_and_measure([sys.executable, "-c", child_source])
+
+    assert measurement.returncode == 0
+    nested_pid = int(pid_path.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while nested_pid in pc.harness_memory_guard.memory_guard.sample_processes():
+        if time.monotonic() >= deadline:
+            pytest.fail(f"nested process {nested_pid} survived benchmark custody")
+        time.sleep(0.05)
 
 
 def test_adaptive_samples_converges_on_stable_signal():

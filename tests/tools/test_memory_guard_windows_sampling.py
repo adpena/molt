@@ -189,10 +189,7 @@ def test_darwin_cached_authority_preserves_bound_command_and_identity(
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
-            stdout=(
-                "200 1 200 64 Thu Jul 17 07:15:01 2026 "
-                "node placeholder.js\n"
-            ),
+            stdout=("200 1 200 64 Thu Jul 17 07:15:01 2026 node placeholder.js\n"),
         ),
     )
 
@@ -968,56 +965,6 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
     assert module.INTERNAL_COMMAND_ENV in env
 
 
-def test_child_runner_uses_subprocess_on_windows(monkeypatch) -> None:
-    module = _load_memory_guard()
-    calls: dict[str, object] = {}
-
-    stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
-
-    def fake_run(
-        argv,
-        *,
-        env,
-        check,
-        creationflags=0,
-        stdin=None,  # noqa: ANN001
-        stdout=None,  # noqa: ANN001
-        stderr=None,  # noqa: ANN001
-    ):  # noqa: ANN001
-        calls["argv"] = argv
-        calls["env"] = env
-        calls["check"] = check
-        calls["creationflags"] = creationflags
-        calls["stdin"] = stdin
-        calls["stdout"] = stdout
-        calls["stderr"] = stderr
-        return SimpleNamespace(returncode=23)
-
-    def fail_execvpe(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("Windows child runner must not call execvpe")
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "inherit_stdio_kwargs", lambda: stdio)
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-    monkeypatch.setattr(module.os, "execvpe", fail_execvpe)
-    env = {
-        module.INTERNAL_CHILD_COMMAND_ENV: '["python", "-c", "print(1)"]',
-        module.INTERNAL_CHILD_RLIMIT_KB_ENV: "0",
-    }
-
-    rc = module._run_child_runner(env)
-
-    assert rc == 23
-    assert calls["argv"] == ["python", "-c", "print(1)"]
-    assert calls["check"] is False
-    assert calls["creationflags"] == _windows_guard_creationflags(module)
-    assert calls["stdin"] == "in"
-    assert calls["stdout"] == "out"
-    assert calls["stderr"] == "err"
-    child_env = calls["env"]
-    assert module.INTERNAL_CHILD_COMMAND_ENV not in child_env
-
-
 def test_terminate_watched_processes_windows_kills_owned_descendants(
     monkeypatch,
 ) -> None:
@@ -1139,9 +1086,10 @@ def test_windows_termination_revalidates_identity_between_term_and_kill(
     )
 
     assert sent == [(200, module.signal.SIGTERM)], report.actions
-    assert [
-        action.result for action in report.actions if action.target_id == 200
-    ] == ["still_live", "skipped_identity_mismatch"]
+    assert [action.result for action in report.actions if action.target_id == 200] == [
+        "still_live",
+        "skipped_identity_mismatch",
+    ]
 
 
 def test_terminate_watched_processes_windows_refuses_codex_root(

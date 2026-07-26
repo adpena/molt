@@ -432,13 +432,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "memory guard Windows process snapshot helper with a hard timeout",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
-        "_run_child_runner",
-        "run",
-        "Windows child-runner custody preserves the guarded child under "
-        "tools/memory_guard.py when POSIX exec is unavailable",
-    ),
-    AllowedRawSubprocessUse(
         "tools/pact_witness_oracle.py",
         "_run",
         "run",
@@ -605,33 +598,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "git_rev_is_ancestor_of_origin",
         "run",
         "bounded git ancestry probe for performance-authority freshness",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/perf_calibration.py",
-        "_sample_peak_rss",
-        "run",
-        "bounded ps/tasklist metadata probe for calibration RSS reporting",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/perf_calibration.py",
-        "run_and_measure",
-        "Popen",
-        "calibration workload launcher owns its explicit benchmark child and "
-        "records timing/RSS evidence",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/perf_calibration.py",
-        "_kill_owned_process",
-        "process.kill",
-        "single calibration cleanup authority kills only the exact benchmark "
-        "child handle passed by its spawning owner",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/perf_calibration.py",
-        "_competing_build_count",
-        "run",
-        "bounded tasklist/ps metadata probes for benchmark-noise reporting",
-        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/safe_run.py",
