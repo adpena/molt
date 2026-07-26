@@ -11,9 +11,17 @@ from typing import Mapping, Sequence
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.llvm_wasi_tools import (
+    llvm_linker_candidates,
     llvm_named_tool_candidates,
     llvm_tool_candidates,
     resolve_explicit_tool_command,
+)
+from molt.llvm_linker_roles import (
+    LlvmLinkerRole,
+    executable_entrypoint_name,
+    executable_selects_linker_role,
+    is_llvm_linker_role,
+    llvm_linker_role_for_object_format,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.native_link_plan import (
@@ -52,6 +60,7 @@ def _resolve_available_fast_linker(
     driver_command: Sequence[str] = (),
     *,
     host_platform: str | None = None,
+    linker_role: LlvmLinkerRole | None = None,
 ) -> str | None:
     host_platform = sys.platform if host_platform is None else host_platform
     sibling_directories = _tool_sibling_directories(driver_command)
@@ -59,9 +68,14 @@ def _resolve_available_fast_linker(
         "mold", sibling_directories=sibling_directories
     ):
         return "mold"
-    if llvm_named_tool_candidates(
-        "ld.lld", "lld", "lld-link", sibling_directories=sibling_directories
-    ):
+    if linker_role is None:
+        target = resolve_native_target_spec(
+            None,
+            host_platform=host_platform,
+            host_arch=platform.machine(),
+        )
+        linker_role = llvm_linker_role_for_object_format(target.object_format.value)
+    if llvm_linker_candidates(linker_role, sibling_directories=sibling_directories):
         return "lld"
     return None
 
@@ -70,17 +84,35 @@ def _resolve_dev_linker(
     driver_command: Sequence[str] = (),
     *,
     host_platform: str | None = None,
+    linker_role: LlvmLinkerRole | None = None,
 ) -> str | None:
     raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "none", "disable"}:
         return None
-    if raw in {"mold", "lld"}:
+    if raw == "mold":
         return raw
+    if raw == "lld":
+        if linker_role is None:
+            target = resolve_native_target_spec(
+                None,
+                host_platform=sys.platform if host_platform is None else host_platform,
+                host_arch=platform.machine(),
+            )
+            linker_role = llvm_linker_role_for_object_format(target.object_format.value)
+        return (
+            "lld"
+            if llvm_linker_candidates(
+                linker_role,
+                sibling_directories=_tool_sibling_directories(driver_command),
+            )
+            else None
+        )
     if raw != "auto":
         return None
     return _resolve_available_fast_linker(
         driver_command,
         host_platform=host_platform,
+        linker_role=linker_role,
     )
 
 
@@ -92,6 +124,12 @@ def _resolve_native_linker_hint(
     host_platform: str | None = None,
 ) -> str | None:
     host_platform = sys.platform if host_platform is None else host_platform
+    target = resolve_native_target_spec(
+        target_triple,
+        host_platform=host_platform,
+        host_arch=platform.machine(),
+    )
+    linker_role = llvm_linker_role_for_object_format(target.object_format.value)
     if profile == "dev":
         raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
         is_host_linux = target_triple is None and host_platform.startswith("linux")
@@ -101,6 +139,7 @@ def _resolve_native_linker_hint(
         selected = _resolve_dev_linker(
             driver_command,
             host_platform=host_platform,
+            linker_role=linker_role,
         )
         target_is_linux = (target_triple is not None and "linux" in target_triple) or (
             target_triple is None and host_platform.startswith("linux")
@@ -115,6 +154,7 @@ def _resolve_native_linker_hint(
         return _resolve_available_fast_linker(
             driver_command,
             host_platform=host_platform,
+            linker_role=linker_role,
         )
     return None
 
@@ -216,7 +256,9 @@ def _windows_coff_library_command(
             f"/OUT:{output_path}",
             *[str(path) for path in input_objects],
         ]
-    candidates = llvm_named_tool_candidates("llvm-lib", "lib", "lld-link")
+    candidates = llvm_named_tool_candidates("llvm-lib", "lib")
+    if not candidates:
+        candidates = llvm_linker_candidates("lld-link")
     if candidates:
         tool = candidates[0]
         is_lld_link = tool.stem.lower() == "lld-link"
@@ -271,6 +313,24 @@ def _build_native_link_plan(
         link_cmd,
         hinted=linker_hint,
     )
+    expected_role = llvm_linker_role_for_object_format(target.object_format.value)
+    explicit_selectors = tuple(
+        arg.split("=", 1)[1].strip() for arg in link_cmd if arg.startswith("-fuse-ld=")
+    )
+    for selector in explicit_selectors:
+        # The conventional clang selector names a target-aware linker mode; an
+        # explicit executable path must instead name the exact object-format role.
+        if selector.lower() == "lld":
+            continue
+        selector_entrypoint = executable_entrypoint_name(Path(selector))
+        if (
+            selector_entrypoint == "lld" or is_llvm_linker_role(selector_entrypoint)
+        ) and not executable_selects_linker_role(Path(selector), expected_role):
+            raise RuntimeError(
+                "Native LLVM linker selection crosses object-format roles: "
+                f"expected {expected_role}, found {selector}. The generic lld "
+                "driver is not a role-specific linker entrypoint."
+            )
     capabilities = native_link_capabilities(
         target=target,
         linker_hint=selected_linker_name,

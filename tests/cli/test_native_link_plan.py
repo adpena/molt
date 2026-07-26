@@ -168,6 +168,51 @@ def test_windows_native_link_selects_available_lld_explicitly(
     )
 
 
+@pytest.mark.parametrize(
+    ("host_platform", "expected_role"),
+    (("linux", "ld.lld"), ("darwin", "ld64.lld"), ("win32", "lld-link")),
+)
+def test_explicit_lld_selection_requests_the_target_specific_role(
+    host_platform: str,
+    expected_role: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setenv("MOLT_DEV_LINKER", "lld")
+
+    def linker_candidates(role: str, **_kwargs: object) -> tuple[Path, ...]:
+        seen.append(role)
+        return (Path("/llvm/bin") / role,)
+
+    monkeypatch.setattr(
+        native_link_command, "llvm_linker_candidates", linker_candidates
+    )
+
+    assert (
+        native_link_command._resolve_native_linker_hint(
+            profile="dev",
+            target_triple=None,
+            host_platform=host_platform,
+        )
+        == "lld"
+    )
+    assert seen == [expected_role]
+
+
+def test_explicit_generic_lld_path_cannot_satisfy_elf_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    generic = _managed_tool(tmp_path / "llvm" / "bin", "lld")
+
+    with pytest.raises(RuntimeError, match="generic lld driver"):
+        _plan(
+            monkeypatch,
+            tmp_path,
+            host_platform="linux",
+            cc=f"clang -fuse-ld={generic}",
+        )
+
+
 def test_native_driver_and_linker_prefer_one_managed_llvm_family(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

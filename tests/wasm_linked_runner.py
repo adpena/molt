@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+
+from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from tests import process_guard_common
 
 _MIN_NODE_MAJOR = 18
@@ -226,7 +228,7 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
 def require_wasm_build_toolchain() -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for wasm parity test")
-    if shutil.which("wasm-ld") is None:
+    if not llvm_linker_candidates("wasm-ld"):
         pytest.skip("wasm-ld is required for linked wasm parity test")
 
 

@@ -19,6 +19,13 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from molt.llvm_linker_roles import (
+    executable_entrypoint_name,
+    executable_selects_linker_role,
+    host_llvm_linker_role,
+    is_llvm_linker_role,
+    lexical_executable_path,
+)
 from molt.wasi_sysroot import normalize_wasi_sysroot, wasi_sysroot_llvm_version
 
 
@@ -1160,9 +1167,19 @@ def _link_probe_identity(
     host_linker: Path,
     link_closure: tuple[str, ...],
 ) -> tuple[str, ...]:
+    entrypoint = executable_entrypoint_name(host_linker)
+    if not is_llvm_linker_role(entrypoint) or entrypoint == "wasm-ld":
+        raise LlvmToolchainConfigError(
+            "verified host linker must select ld.lld, ld64.lld, or lld-link; "
+            f"generic lld is not a host linker role: {host_linker}"
+        )
+    resolved_prefix = prefix.resolve()
     try:
+        host_linker.resolve().relative_to(resolved_prefix)
         linker_identity = str(
-            host_linker.resolve().relative_to(prefix.resolve())
+            lexical_executable_path(host_linker).relative_to(
+                lexical_executable_path(prefix)
+            )
         ).replace("\\", "/")
     except ValueError as exc:
         raise LlvmToolchainConfigError(
@@ -1349,6 +1366,10 @@ def _tool_version_fact(
     expected_version: str,
     exact_version: bool,
 ) -> LlvmToolVersionFact:
+    if is_llvm_linker_role(role) and not executable_selects_linker_role(path, role):
+        raise LlvmToolchainConfigError(
+            f"required LLVM linker role {role} cannot use entrypoint {path}"
+        )
     try:
         result = subprocess.run(
             [str(path), "--version"],
@@ -1480,20 +1501,14 @@ def verify_llvm_toolchain_prefix(
             f"built targets are {list(built_targets)}"
         )
     suffix = ".exe" if os.name == "nt" else ""
-    system = platform.system()
-    host_linker = (
-        (f"lld-link{suffix}",)
-        if system == "Windows"
-        else (f"ld64.lld{suffix}",)
-        if system == "Darwin"
-        else (f"ld.lld{suffix}",)
-    )
+    host_linker_role = host_llvm_linker_role(platform.system())
+    host_linker = (f"{host_linker_role}{suffix}",)
     tools = (
         ("llvm-config", llvm_config),
         ("clang", _required_tool(resolved, f"clang{suffix}")),
         ("clang++", _required_tool(resolved, f"clang++{suffix}")),
         (
-            "lld",
+            host_linker_role,
             _required_tool(resolved, *host_linker),
         ),
         ("wasm-ld", _required_tool(resolved, f"wasm-ld{suffix}")),

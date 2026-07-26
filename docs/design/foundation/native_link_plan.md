@@ -125,12 +125,18 @@ otherwise the project-managed pinned LLVM family is preferred as a unit, with
 PATH only as the final fallback. Development worktrees also search their Git
 common checkout's managed target, preventing sibling worktrees from drifting to
 a different system LLVM. Host Windows plans therefore select the pinned
-`clang`/`lld-link`/`llvm-lib` siblings, just as host Linux plans select a managed
-mold/lld when available. The immutable plan records the driver and linker
-capability it will execute instead of depending on an undocumented default.
-macOS retains its platform linker unless the operator makes an explicit
-supported selection. The benchmark verifies the effective executable with the
-driver's dry-run trace and fingerprints every tool's bytes and version;
+`clang`/`lld-link`/`llvm-lib` siblings, just as host Linux plans select managed
+`mold` or `ld.lld` when available. LLVM linker selection has four disjoint
+entrypoint roles: `wasm-ld`, `ld.lld`, `ld64.lld`, and `lld-link`. The shared
+resolver preserves those lexical entrypoints even when they are symlinks or
+hardlinks to the same physical `lld` driver; generic `lld` and sibling roles
+cannot satisfy a role-specific contract. The immutable plan records the driver
+and linker capability it will execute instead of depending on an undocumented
+default. macOS retains its platform linker unless the operator makes an explicit
+supported `ld64.lld` selection. The link cache and benchmark verify the effective
+executable under the same exact-role authority. The hot incremental cache keys
+the lexical path and filesystem mutation identity; the benchmark additionally
+uses the driver's dry-run trace and fingerprints every tool's bytes and version.
 `-print-prog-name` alone is not trusted because it can disagree with the
 executable selected for a complete link command.
 

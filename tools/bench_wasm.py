@@ -37,6 +37,7 @@ from molt.cli.runtime_features import (  # noqa: E402
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
 )
+from molt.cli.llvm_wasi_tools import llvm_linker_candidates  # noqa: E402
 from molt.cli.wasm_link_args import wasm_link_args_response_file  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
@@ -80,7 +81,8 @@ def _wasm_runtime_root() -> Path:
 _RUNTIME_ROOT = _wasm_runtime_root()
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
-WASM_LD = shutil.which("wasm-ld")
+_WASM_LD_CANDIDATES = llvm_linker_candidates("wasm-ld")
+WASM_LD = str(_WASM_LD_CANDIDATES[0]) if _WASM_LD_CANDIDATES else None
 _LINK_WARNED = False
 _LINK_DISABLED = False
 _LAST_BUILD_FAILURE_DETAIL: str | None = None

@@ -46,6 +46,28 @@ def test_toolchain_bootstrap_import_does_not_load_cli_dependency_graph() -> None
     assert completed.returncode == 0, completed.stderr
 
 
+def test_link_probe_preserves_role_alias_and_rejects_generic_lld(
+    tmp_path: Path,
+) -> None:
+    prefix = tmp_path / "llvm"
+    bindir = prefix / "bin"
+    bindir.mkdir(parents=True)
+    driver = bindir / "lld"
+    driver.write_bytes(b"driver")
+    alias = bindir / "ld.lld"
+    try:
+        alias.symlink_to(driver.name)
+    except OSError:
+        os.link(driver, alias)
+
+    assert llvm_toolchain._link_probe_identity(prefix, alias, ()) == (
+        "language:c++17",
+        "linker:bin/ld.lld",
+    )
+    with pytest.raises(LlvmToolchainConfigError, match="generic lld"):
+        llvm_toolchain._link_probe_identity(prefix, driver, ())
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

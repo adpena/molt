@@ -64,7 +64,14 @@ def _nm_symbols(nm: str, artifact: Path) -> list[str]:
 
 def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     clang = _require(_llvm_tool("clang"), "clang (wasm cross-compiler)")
-    wasm_ld = _require(shutil.which("wasm-ld") or _llvm_tool("wasm-ld"), "wasm-ld")
+    try:
+        wasm_linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError:
+        wasm_linker = None
+    wasm_ld = _require(
+        str(wasm_linker.path) if wasm_linker is not None else None,
+        "wasm-ld",
+    )
     nm = _require(_llvm_tool("llvm-nm"), "llvm-nm")
 
     sysroot = wasm_toolchain.resolve_wasi_sysroot()

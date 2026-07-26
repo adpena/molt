@@ -465,6 +465,83 @@ def test_tool_identity_uses_driver_trace_not_print_prog_name_guess(
     assert linker_fact["sha256"] == "hash:lld-link.exe"
 
 
+def test_tool_identity_rejects_traced_generic_lld_for_coff_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = tmp_path / "clang.exe"
+    generic = tmp_path / "lld.exe"
+    for path in (driver, generic):
+        path.write_bytes(path.name.encode())
+    base = _plan(tmp_path)
+    plan = NativeLinkPlan(
+        target=base.target,
+        capabilities=base.capabilities,
+        policy=base.policy,
+        command=(str(driver), *base.command[1:]),
+        linker_hint="lld",
+        normalized_target=None,
+    )
+    monkeypatch.setattr(
+        native_link_tool_identity,
+        "_linker_from_driver_trace",
+        lambda _plan, _driver: generic,
+    )
+    monkeypatch.setattr(
+        native_link_tool_identity,
+        "llvm_linker_candidates",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a different exact-role executable cannot attest the traced generic driver"
+        ),
+    )
+    monkeypatch.setattr(
+        native_link_tool_identity, "llvm_named_tool_candidates", lambda *_a, **_k: ()
+    )
+
+    with pytest.raises(RuntimeError, match="expected lld-link.*generic"):
+        native_link_tool_identity.native_link_tool_facts(plan)
+
+
+def test_link_cache_identity_resolves_exact_object_format_role_without_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = tmp_path / "clang.exe"
+    linker = tmp_path / "lld-link.exe"
+    driver.write_bytes(b"driver")
+    linker.write_bytes(b"linker")
+    base = _plan(tmp_path)
+    plan = NativeLinkPlan(
+        target=base.target,
+        capabilities=base.capabilities,
+        policy=base.policy,
+        command=(str(driver), *base.command[1:]),
+        linker_hint="lld",
+        normalized_target=None,
+    )
+    seen: list[str] = []
+
+    def linker_candidates(role: str, **_kwargs: object) -> tuple[Path, ...]:
+        seen.append(role)
+        return (linker,)
+
+    monkeypatch.setattr(
+        native_link_tool_identity, "llvm_linker_candidates", linker_candidates
+    )
+    monkeypatch.setattr(
+        native_link_tool_identity,
+        "_linker_from_driver_trace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "incremental cache identity must not launch the driver trace"
+        ),
+    )
+
+    facts = native_link_tool_identity.native_link_cache_tool_facts(plan)
+
+    assert seen == ["lld-link"]
+    linker_fact = next(fact for fact in facts if fact["role"] == "linker")
+    assert linker_fact["path"] == str(linker)
+    assert linker_fact["size"] == len(b"linker")
+
+
 def test_link_benchmark_cannot_reconstruct_link_or_publication_policy() -> None:
     source = inspect.getsource(benchmark)
     assert "_build_native_link_plan(" in source
