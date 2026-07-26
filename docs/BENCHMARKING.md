@@ -832,10 +832,13 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   build-state root, and persisted JSON/text/byte/file/archive cache, state,
   diagnostics, deployment, and package sidecars publish through unique atomic
   temp siblings. WASM runtime rebuilds use Cargo-reported artifact provenance
-  plus exact `artifact_sha256` sidecars before hydrating candidate `.wasm`/`.a`
-  bytes, so concurrent warm target roots keep old candidates unless Cargo
-  reports them as the artifact for the current invocation or a byte-digest
-  sidecar proves reuse.
+  plus canonical artifact-content sidecars before hydrating candidate
+  `.wasm`/`.a` outputs. Standalone WASM is identified by exact bytes; static
+  archives are identified by their ordered member names and contents while
+  derived ar/COFF symbol tables, long-name tables, header metadata, and local
+  Molt rustc CGU discriminators are excluded. Concurrent warm target roots keep
+  old candidates unless Cargo reports them for the current invocation or that
+  content identity proves reuse.
 - In multi-agent runs, share cache/target roots under one artifact root to improve reuse:
   - `MOLT_EXT_ROOT=/path/to/artifacts`
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`

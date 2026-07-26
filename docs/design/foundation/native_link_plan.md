@@ -61,6 +61,15 @@ package IDs, `out_dir`, `linked_paths`, and per-script `linked_libs` remain
 canonicalized non-semantic provenance used to validate custody and resolve the
 files named by rustc.
 
+The manifest binds the runtime through the shared semantic static-archive
+identity used by runtime publication, hydration, native link fingerprints, and
+link benchmarks. That identity hashes the ordered linkable member names and
+contents for COFF/GNU/BSD archives. It excludes container-derived symbol and
+long-name tables, non-semantic ar header metadata, and only the structurally
+recognized rustc CGU discriminator positions of local `molt_*` members. Any
+member content, name, order, addition, or removal still invalidates the
+manifest and every consuming cache.
+
 Rustc prints linker tokens, while Molt invokes a compiler driver. On COFF, bare
 `.lib` names and `/defaultlib` options are forwarded one-for-one with Clang's
 `-Wl,` transport so the driver cannot misclassify them as filesystem inputs;

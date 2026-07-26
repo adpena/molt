@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -42,13 +43,20 @@ from molt.cli.native_link_deps import _native_target_is_windows
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
+from molt.cli.file_hashing import (
+    _hash_source_tree_metadata,
+    _iter_source_fingerprint_files,
+)
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
     _read_runtime_fingerprint,
     _stored_fingerprint_matches_source_metadata,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
+from molt.cli.static_archive_identity import (
+    StaticArchiveIdentityError,
+    artifact_content_identity,
+)
 from molt.cli.atomic_io import _write_text_if_changed
 
 
@@ -591,8 +599,23 @@ def _link_fingerprint(
     hasher.update("\0".join(link_cmd).encode("utf-8"))
     hasher.update(b"\0")
     try:
-        _hash_source_tree_paths(inputs, project_root, hasher)
-    except OSError:
+        for path in sorted(inputs, key=lambda item: str(item)):
+            for item in _iter_source_fingerprint_files(path):
+                try:
+                    identity_path = item.relative_to(project_root)
+                except ValueError:
+                    identity_path = item
+                hasher.update(str(identity_path).encode("utf-8"))
+                hasher.update(b"\0")
+                hasher.update(
+                    json.dumps(
+                        artifact_content_identity(item),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                hasher.update(b"\0")
+    except (OSError, StaticArchiveIdentityError):
         return None
     return {
         "hash": hasher.hexdigest(),

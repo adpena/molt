@@ -13,9 +13,9 @@ import subprocess
 import pytest
 
 from molt.cli import native_link_deps
-from molt.cli import native_link_manifest
 from molt.cli import runtime_build
 from molt.cli import runtime_callable_symbols
+from molt.cli import static_archive_identity as archive_identity
 from molt.cli import cargo_execution
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import (
@@ -28,6 +28,7 @@ from molt.cli.native_link_manifest import (
     write_native_link_dependency_manifest,
 )
 from tests.cli.process_guard import run_cli_test_process
+from tests.cli.native_link_test_support import write_test_static_archive
 
 
 _SOURCE_FINGERPRINT = {
@@ -737,7 +738,7 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
 ) -> None:
     runtime = tmp_path / "dev-fast" / "libmolt_runtime.a"
     runtime.parent.mkdir(parents=True)
-    runtime.write_bytes(b"runtime-a")
+    write_test_static_archive(runtime, b"runtime-a")
     write_native_link_dependency_manifest(
         _cargo_output("", "-lc"),
         runtime_lib=runtime,
@@ -747,15 +748,15 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
         source_fingerprint=_SOURCE_FINGERPRINT,
     )
 
-    native_link_manifest._artifact_digest_for_identity.cache_clear()
-    real_sha256_file = native_link_manifest._sha256_file
-    hash_calls: list[Path] = []
+    archive_identity._static_archive_identity_cached.cache_clear()
+    real_hash_exact = archive_identity._hash_exact
+    hash_calls: list[int] = []
 
-    def counting_sha256_file(path: Path) -> str:
-        hash_calls.append(path)
-        return real_sha256_file(path)
+    def counting_hash_exact(stream, size: int) -> str:
+        hash_calls.append(size)
+        return real_hash_exact(stream, size)
 
-    monkeypatch.setattr(native_link_manifest, "_sha256_file", counting_sha256_file)
+    monkeypatch.setattr(archive_identity, "_hash_exact", counting_hash_exact)
     for _ in range(3):
         read_native_link_dependency_manifest(
             runtime,
@@ -763,11 +764,11 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
             source_root=tmp_path,
             source_fingerprint=_SOURCE_FINGERPRINT,
         )
-    assert hash_calls == [runtime.resolve()]
+    assert hash_calls == [9]
 
     original = runtime.stat()
     replacement = runtime.with_suffix(".replacement")
-    replacement.write_bytes(b"runtime-b")
+    write_test_static_archive(replacement, b"runtime-b")
     os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
     os.replace(replacement, runtime)
     with pytest.raises(
@@ -779,8 +780,8 @@ def test_runtime_digest_cache_reuses_identity_and_rejects_same_size_replacement(
             source_root=tmp_path,
             source_fingerprint=_SOURCE_FINGERPRINT,
         )
-    assert hash_calls == [runtime.resolve(), runtime.resolve()]
-    native_link_manifest._artifact_digest_for_identity.cache_clear()
+    assert hash_calls == [9, 9]
+    archive_identity._static_archive_identity_cached.cache_clear()
 
 
 def test_rustc_native_static_lib_order_is_replayed_exactly(tmp_path: Path) -> None:

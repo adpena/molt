@@ -13,6 +13,26 @@ SOURCE_FINGERPRINT = {
 }
 
 
+def static_archive_bytes(payload: bytes = b"object") -> bytes:
+    name = b"object.o/".ljust(16)
+    header = b"".join(
+        (
+            name,
+            b"0".ljust(12),
+            b"0".ljust(6),
+            b"0".ljust(6),
+            b"100644".ljust(8),
+            str(len(payload)).encode("ascii").ljust(10),
+            b"`\n",
+        )
+    )
+    return b"!<arch>\n" + header + payload + (b"\n" if len(payload) & 1 else b"")
+
+
+def write_test_static_archive(path: Path, payload: bytes = b"object") -> None:
+    path.write_bytes(static_archive_bytes(payload))
+
+
 def write_test_native_link_manifest(
     runtime_lib: Path,
     *,

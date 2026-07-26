@@ -13,7 +13,10 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import link_pipeline as cli_link_pipeline
-from tests.cli.native_link_test_support import SOURCE_FINGERPRINT
+from tests.cli.native_link_test_support import (
+    SOURCE_FINGERPRINT,
+    static_archive_bytes,
+)
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -630,7 +633,7 @@ def test_artifact_needs_rebuild_stats_artifact_once(
 
 def test_artifact_needs_rebuild_on_runtime_meta_digest_mismatch(tmp_path: Path) -> None:
     artifact = tmp_path / "libmolt_runtime.a"
-    artifact.write_bytes(b"!<arch>\nfake-staticlib")
+    artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
 
     assert cli._artifact_needs_rebuild(
         artifact,
@@ -643,7 +646,7 @@ def test_runtime_artifact_match_reuses_stored_artifact_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
     artifact = tmp_path / "libmolt_runtime.a"
-    artifact.write_bytes(b"!<arch>\nfake-staticlib")
+    artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     fingerprint = {
         "hash": "runtime-hash",
@@ -665,7 +668,12 @@ def test_runtime_artifact_match_reuses_stored_artifact_identity(
         del path
         raise AssertionError("artifact identity should avoid the staticlib hash")
 
-    monkeypatch.setattr(RUNTIME_FINGERPRINTS, "_sha256_file", fail_hash, raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
+        "artifact_content_identity",
+        fail_hash,
+        raising=True,
+    )
 
     assert RUNTIME_FINGERPRINTS._runtime_artifact_fingerprint_matches(
         artifact,
@@ -679,7 +687,7 @@ def test_runtime_artifact_match_hashes_when_artifact_identity_is_stale(
     tmp_path: Path, monkeypatch
 ) -> None:
     artifact = tmp_path / "libmolt_runtime.a"
-    artifact.write_bytes(b"!<arch>\nfake-staticlib")
+    artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     fingerprint = {
         "hash": "runtime-hash",
@@ -695,8 +703,8 @@ def test_runtime_artifact_match_hashes_when_artifact_identity_is_stale(
     )
     stored = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert stored is not None
-    artifact_digest = stored.get("artifact_sha256")
-    assert isinstance(artifact_digest, str)
+    artifact_digest = stored.get("artifact_content_identity")
+    assert isinstance(artifact_digest, dict)
     hash_calls: list[Path] = []
 
     monkeypatch.setattr(
@@ -706,11 +714,16 @@ def test_runtime_artifact_match_hashes_when_artifact_identity_is_stale(
         raising=True,
     )
 
-    def fake_hash(path: Path) -> str:
+    def fake_hash(path: Path) -> dict[str, object]:
         hash_calls.append(path)
         return artifact_digest
 
-    monkeypatch.setattr(RUNTIME_FINGERPRINTS, "_sha256_file", fake_hash, raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
+        "artifact_content_identity",
+        fake_hash,
+        raising=True,
+    )
 
     assert RUNTIME_FINGERPRINTS._runtime_artifact_fingerprint_matches(
         artifact,
@@ -740,7 +753,7 @@ def test_runtime_fingerprint_metadata_refresh_preserves_artifact_identity(
     )
     before = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert before is not None
-    assert before.get("artifact_sha256")
+    assert before.get("artifact_content_identity")
     assert isinstance(before.get("artifact_identity"), dict)
 
     refreshed = {
@@ -759,7 +772,9 @@ def test_runtime_fingerprint_metadata_refresh_preserves_artifact_identity(
 
     assert after is not None
     assert after.get("source_state") == refreshed["source_state"]
-    assert after.get("artifact_sha256") == before.get("artifact_sha256")
+    assert after.get("artifact_content_identity") == before.get(
+        "artifact_content_identity"
+    )
     assert after.get("artifact_identity") == before.get("artifact_identity")
 
 
@@ -768,7 +783,7 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-    runtime_lib.write_bytes(b"!<arch>\nfull")
+    runtime_lib.write_bytes(static_archive_bytes(b"full"))
     project_root = tmp_path / "repo"
     project_root.mkdir()
     captured_features: list[tuple[str, ...]] = []
@@ -837,7 +852,7 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    runtime_lib.write_bytes(static_archive_bytes(b"fake-staticlib"))
     project_root = tmp_path / "repo"
     project_root.mkdir()
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
@@ -1011,7 +1026,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
         seen_cmds.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(b"!<arch>\nfull")
+        scratch_lib.write_bytes(static_archive_bytes(b"full"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -1102,7 +1117,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
             / RUNTIME_PATHS._runtime_cargo_scratch_lib_name(None)
         )
         scratch.parent.mkdir(parents=True, exist_ok=True)
-        scratch.write_bytes(f"!<arch>\n{profile}".encode("utf-8"))
+        scratch.write_bytes(static_archive_bytes(profile.encode("utf-8")))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -1151,8 +1166,8 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
         RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert cargo_profiles == ["micro", "full"]
-    assert micro_lib.read_bytes() == b"!<arch>\nmicro"
-    assert full_lib.read_bytes() == b"!<arch>\nfull"
+    assert micro_lib.read_bytes() == static_archive_bytes(b"micro")
+    assert full_lib.read_bytes() == static_archive_bytes(b"full")
 
 
 def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
@@ -1545,7 +1560,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-    runtime_lib.write_bytes(b"!<arch>\nstale-profile")
+    runtime_lib.write_bytes(static_archive_bytes(b"stale-profile"))
     source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("pub fn marker() {}\n", encoding="utf-8")
@@ -1625,7 +1640,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
         seen_cmds.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(b"!<arch>\nrebuilt")
+        scratch_lib.write_bytes(static_archive_bytes(b"rebuilt"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -1918,7 +1933,7 @@ def test_runtime_fingerprint_read_reuses_process_cache(
         first
         == second
         == {
-            "version": 2,
+            "version": 3,
             "hash": "abc",
             "rustc": "rustc-test",
             "inputs_digest": "digest",
@@ -1985,7 +2000,7 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
         seen_cmds.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(b"runtime")
+        scratch_lib.write_bytes(static_archive_bytes(b"runtime"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -2079,7 +2094,7 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         seen_cmds.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(b"runtime")
+        scratch_lib.write_bytes(static_archive_bytes(b"runtime"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
@@ -2102,7 +2117,7 @@ def test_ensure_runtime_lib_records_runtime_stage_timings_on_cache_hit(
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    runtime_lib.write_bytes(static_archive_bytes(b"fake-staticlib"))
     project_root = tmp_path / "repo"
     project_root.mkdir()
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
@@ -2174,7 +2189,7 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    runtime_lib.write_bytes(static_archive_bytes(b"fake-staticlib"))
     project_root = tmp_path / "repo"
     project_root.mkdir()
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
@@ -2248,7 +2263,7 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
         seen_cmds.append(list(cmd))
         scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
         scratch_lib.parent.mkdir(parents=True, exist_ok=True)
-        scratch_lib.write_bytes(b"!<arch>\nfake-staticlib")
+        scratch_lib.write_bytes(static_archive_bytes(b"fake-staticlib"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
