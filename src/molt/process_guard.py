@@ -175,6 +175,11 @@ def run_completed_command(
     if stdout == subprocess.DEVNULL:
         result.stdout = None
     if result.timed_out:
+        if timeout is None:
+            raise RuntimeError(
+                "guarded subprocess reported a timeout without a requested "
+                "timeout; timeout custody is inconsistent"
+            )
         raise subprocess.TimeoutExpired(
             command,
             timeout,
