@@ -1342,6 +1342,7 @@ def guarded_completed_process(
     errors: str = "replace",
     operation_role: str | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    sampling_scope: str = "global",
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     env, _cargo_policies = cargo_subprocess_environment(command, env)
@@ -1354,13 +1355,16 @@ def guarded_completed_process(
         env,
     )
     cleanup_tracked_orphans = (
-        not sentinel_is_active if cleanup_orphans is None else cleanup_orphans
+        False
+        if sampling_scope == "owned_tree"
+        else (not sentinel_is_active if cleanup_orphans is None else cleanup_orphans)
     )
-    with _auto_repo_sentinel(
-        prefix=prefix,
-        env=env,
-        limits=resolved_limits,
-    ):
+    sentinel_context = (
+        contextlib.nullcontext(None)
+        if sampling_scope == "owned_tree"
+        else _auto_repo_sentinel(prefix=prefix, env=env, limits=resolved_limits)
+    )
+    with sentinel_context:
         default_progress_label = (
             f"memory_guard: {_normalize_prefix(prefix)}"
             f"{f' {operation_role}' if operation_role else ''} guarded command"
@@ -1403,6 +1407,7 @@ def guarded_completed_process(
             encoding=encoding,
             errors=errors,
             on_spawn=on_spawn,
+            sampling_scope=sampling_scope,
         )
     stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
@@ -2436,6 +2441,7 @@ class HarnessExecutionContext:
         encoding: str = "utf-8",
         errors: str = "replace",
         on_spawn: Callable[[int], None] | None = None,
+        sampling_scope: str = "global",
     ) -> GuardedCompletedProcess:
         command_env = (
             self.env
@@ -2468,6 +2474,7 @@ class HarnessExecutionContext:
             encoding=encoding,
             errors=errors,
             on_spawn=on_spawn,
+            sampling_scope=sampling_scope,
         )
 
     def process_group_kwargs(self) -> dict[str, object]:

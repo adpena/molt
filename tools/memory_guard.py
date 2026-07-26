@@ -237,10 +237,6 @@ GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
 INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
-INTERNAL_CHILD_RUNNER_ENV = "MOLT_MEMORY_GUARD_CHILD_RUNNER"
-INTERNAL_CHILD_COMMAND_ENV = "MOLT_MEMORY_GUARD_CHILD_COMMAND_JSON"
-INTERNAL_CHILD_RLIMIT_KB_ENV = "MOLT_MEMORY_GUARD_CHILD_RLIMIT_KB"
-INTERNAL_CHILD_STARTED_FD_ENV = "MOLT_MEMORY_GUARD_CHILD_STARTED_FD"
 ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
 ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
@@ -250,10 +246,6 @@ ACTIVE_GUARD_MARKER_KEEP = 128
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
-    INTERNAL_CHILD_RUNNER_ENV,
-    INTERNAL_CHILD_COMMAND_ENV,
-    INTERNAL_CHILD_RLIMIT_KB_ENV,
-    INTERNAL_CHILD_STARTED_FD_ENV,
 )
 HOST_CONTROL_PLANE_TOKENS = _process_model.HOST_CONTROL_PLANE_TOKENS
 HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTABLE_NAMES
@@ -496,57 +488,6 @@ def _apply_child_resource_limit(limit_kb: int) -> None:
             continue
 
 
-def _run_child_runner(environ: Mapping[str, str]) -> int:
-    try:
-        command = _load_json_string_list(environ, INTERNAL_CHILD_COMMAND_ENV)
-        raw_limit = environ.get(INTERNAL_CHILD_RLIMIT_KB_ENV, "0")
-        try:
-            limit_kb = int(raw_limit)
-        except ValueError as exc:
-            raise ValueError(f"{INTERNAL_CHILD_RLIMIT_KB_ENV} must be an int") from exc
-    except ValueError as exc:
-        print(f"memory_guard child_runner: {exc}", file=sys.stderr)
-        return 2
-    _apply_child_resource_limit(limit_kb)
-    child_env = _child_env_without_internal_keys(environ)
-    _write_child_started_timestamp(environ)
-    if _is_windows_process_model():
-        try:
-            completed = subprocess.run(
-                command,
-                env=child_env,
-                check=False,
-                **inherit_stdio_kwargs(),
-                **_guarded_popen_process_isolation_kwargs(),
-            )
-        except OSError as exc:
-            print(f"memory_guard child_runner: spawn failed: {exc}", file=sys.stderr)
-            return 127
-        return completed.returncode
-    try:
-        os.execvpe(command[0], command, child_env)
-    except OSError as exc:
-        print(f"memory_guard child_runner: exec failed: {exc}", file=sys.stderr)
-        return 127
-    return 127
-
-
-def _write_child_started_timestamp(environ: Mapping[str, str]) -> None:
-    raw_fd = environ.get(INTERNAL_CHILD_STARTED_FD_ENV)
-    if not raw_fd:
-        return
-    try:
-        fd = int(raw_fd)
-    except ValueError:
-        return
-    try:
-        os.write(fd, f"{time.monotonic_ns()}\n".encode("ascii"))
-    except OSError:
-        pass
-    with contextlib.suppress(OSError):
-        os.close(fd)
-
-
 def _write_child_started_fd(fd: int | None) -> None:
     if fd is None:
         return
@@ -556,22 +497,6 @@ def _write_child_started_fd(fd: int | None) -> None:
         pass
     with contextlib.suppress(OSError):
         os.close(fd)
-
-
-def _child_runner_env(
-    environ: Mapping[str, str],
-    command: Sequence[str],
-    *,
-    child_rlimit_kb: int,
-    child_started_fd: int | None = None,
-) -> dict[str, str]:
-    runner_env = dict(environ)
-    runner_env[INTERNAL_CHILD_RUNNER_ENV] = "1"
-    runner_env[INTERNAL_CHILD_COMMAND_ENV] = json.dumps(list(command))
-    runner_env[INTERNAL_CHILD_RLIMIT_KB_ENV] = str(child_rlimit_kb)
-    if child_started_fd is not None:
-        runner_env[INTERNAL_CHILD_STARTED_FD_ENV] = str(child_started_fd)
-    return runner_env
 
 
 def _resolve_relative_executable(command: Sequence[str]) -> list[str]:
@@ -615,8 +540,8 @@ def _guarded_launch(
     child_rlimit_kb: int | None,
 ) -> GuardedLaunch:
     # Normalize a relative path-bearing executable against the parent cwd before
-    # any spawn path (POSIX rlimit, POSIX no-rlimit, or the Windows child-runner
-    # env encoding) so none of them mis-resolve it against the child's `cwd=`.
+    # direct spawn path (POSIX rlimit, POSIX no-rlimit, or Windows Job custody)
+    # so none of them mis-resolve it against the child's `cwd=`.
     command = _resolve_relative_executable(command)
     if child_rlimit_kb is None or child_rlimit_kb <= 0:
         return GuardedLaunch(command=list(command), env=env)
@@ -643,18 +568,13 @@ def _guarded_launch(
             started_read_fd=started_read_fd,
             preexec_fn=apply_posix_limits,
         )
-    return GuardedLaunch(
-        command=[sys.executable, str(Path(__file__).resolve())],
-        env=_child_runner_env(
-            base_env,
-            command,
-            child_rlimit_kb=child_rlimit_kb,
-            child_started_fd=started_write_fd,
-        ),
-        pass_fds=pass_fds,
-        close_fds=close_fds,
-        started_read_fd=started_read_fd,
-    )
+    # Windows has no POSIX rlimit implementation. The outer guard assigns the
+    # real command to a suspended KILL_ON_JOB_CLOSE Job before it can execute,
+    # then enforces the process/tree memory contract from that same kernel
+    # object. The former Python child-runner added startup and a second process
+    # without enforcing an additional limit, so direct launch is the sole
+    # Windows authority.
+    return GuardedLaunch(command=list(command), env=base_env)
 
 
 def _close_fds(fds: Sequence[int | None]) -> None:
@@ -825,6 +745,7 @@ def run_guarded(
     running_summary_environ: Mapping[str, str] | None = None,
     running_summary_max_global_rss_kb: int | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    sampling_scope: str = "global",
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -832,6 +753,8 @@ def run_guarded(
         sampler = sample_processes
     if poll_interval <= 0:
         raise ValueError("poll interval must be greater than 0")
+    if sampling_scope not in {"global", "owned_tree"}:
+        raise ValueError("sampling_scope must be 'global' or 'owned_tree'")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
     if keepalive_interval is not None and keepalive_interval <= 0:
@@ -954,7 +877,8 @@ def run_guarded(
         try:
             proc = subprocess.Popen(launch.command, **popen_kwargs)
         except Exception as exc:
-            _win_job.close_job(guard_job)
+            if guard_job is not None:
+                _win_job.close_job(guard_job)
             guard_job = None
             _update_active_guard_marker(
                 guard_marker,
@@ -987,6 +911,29 @@ def run_guarded(
             started_at=_utc_timestamp(),
         )
         tracker = ProcessTreeTracker(proc.pid)
+        if sampling_scope == "owned_tree" and guard_job is not None:
+            # A Windows Job already provides race-free ownership for the entire
+            # descendant tree. Query that kernel object directly for benchmark
+            # telemetry instead of paying for a whole-host process snapshot on
+            # every sample. The synthetic root row represents the aggregate
+            # Job working set; Job close remains the cleanup authority.
+            cleanup_orphans = False
+            job_command = " ".join(command)
+
+            def _sample_owned_job() -> Mapping[int, ProcessSample]:
+                rss_bytes = _win_job.current_working_set_bytes(guard_job)
+                return {
+                    proc.pid: ProcessSample(
+                        pid=proc.pid,
+                        ppid=os.getpid(),
+                        rss_kb=(rss_bytes + 1023) // 1024,
+                        command=job_command,
+                        pgid=child_process.pgid,
+                        started_at_ns=None,
+                    )
+                }
+
+            sampler = _sample_owned_job
         root_started_at_ns = (
             windows_process_handle_started_at_ns(getattr(proc, "_handle", None))
             if _is_windows_process_model()
@@ -1034,6 +981,14 @@ def run_guarded(
             watched: set[int] | None = None,
             grace: float,
         ) -> None:
+            if guard_job is not None:
+                # The Job is the exact Windows ownership boundary established
+                # before the child was resumed.  Do not duplicate that authority
+                # with PID-table termination, whose identities can race process
+                # exit and wrapper descendants.
+                _win_job.terminate_job(guard_job)
+                _win_job.wait_until_empty(guard_job, timeout=termination_wait_s)
+                return
             termination_reports.append(
                 _validated_termination_report(
                     terminate_watched_processes(
@@ -2216,6 +2171,11 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
     )
 
     def cleanup_truth(default: str) -> str:
+        if (
+            result.windows_job_cleanup is not None
+            and result.windows_job_cleanup.completed
+        ):
+            return default
         if not incomplete_orphan_actions and not incomplete_primary_actions:
             return default
         return (
@@ -2231,10 +2191,14 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
             payload["termination_reports"] = termination_reports_payload(
                 result.termination_reports
             )
-        if incomplete_orphan_actions:
+        exact_job_completed = (
+            result.windows_job_cleanup is not None
+            and result.windows_job_cleanup.completed
+        )
+        if incomplete_orphan_actions and not exact_job_completed:
             payload["orphan_cleanup_status"] = "incomplete"
             payload["orphan_cleanup_candidate_pids"] = candidate_pids
-        if incomplete_primary_actions:
+        if incomplete_primary_actions and not exact_job_completed:
             payload["process_tree_cleanup_status"] = "incomplete"
             payload["process_tree_cleanup_candidate_pids"] = primary_candidate_pids
         return payload
@@ -2747,8 +2711,6 @@ def main(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     current_env = os.environ if environ is None else environ
-    if current_env.get(INTERNAL_CHILD_RUNNER_ENV) == "1":
-        return _run_child_runner(current_env)
     args = _parser().parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
