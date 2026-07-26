@@ -228,7 +228,7 @@ def test_rust_facts_provider_attests_scan_cost_and_content_cache(
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link.CommandExecutor, "run", fake_run)
     metrics: dict[str, float] = {}
     provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(scanner, tmp_path, metrics)
 
@@ -806,7 +806,9 @@ def test_install_callable_table_layout_requires_complete_export_authority() -> N
         )
 
 
-def test_install_callable_table_layout_can_publish_app_region_without_fixed_exports() -> None:
+def test_install_callable_table_layout_can_publish_app_region_without_fixed_exports() -> (
+    None
+):
     name = wasm_link._callable_entry_export_name(1)
     sections = wasm_link._parse_sections(_build_exported_runtime_module(name))
     sections.insert(2, (4, b"\x01\x70\x00\x10"))

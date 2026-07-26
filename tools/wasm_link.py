@@ -28,6 +28,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import artifact_publish  # noqa: E402
+from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt  # noqa: E402
 from wasm_metrics import wasm_metrics  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
@@ -65,6 +66,8 @@ from molt.wasm_artifact import (  # noqa: E402
     read_wasm_split_runtime_callable_layout,
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -234,8 +237,7 @@ def _run_external_tool(
             response_path = Path(handle.name)
             handle.write(
                 "\n".join(
-                    subprocess.list2cmdline([argument])
-                    for argument in guarded_cmd[1:]
+                    subprocess.list2cmdline([argument]) for argument in guarded_cmd[1:]
                 )
             )
             handle.write("\n")
@@ -3243,7 +3245,7 @@ def _make_rust_wasm_facts_provider(
         artifact.write_bytes(data)
         scan_start = time.perf_counter()
         try:
-            process = subprocess.run(
+            process = _COMMANDS.run(
                 [str(scanner), "--scan-wasm-link-facts", str(artifact)],
                 text=True,
                 encoding="utf-8",
@@ -3307,7 +3309,7 @@ def _publish_rust_wasm_link_facts(
     if role != "monolithic" and layout is None:
         raise ValueError(f"callable-table {role} publication requires a layout")
     command.extend(["--callable-table-role", role])
-    process = subprocess.run(
+    process = _COMMANDS.run(
         command,
         text=True,
         encoding="utf-8",
@@ -3431,7 +3433,9 @@ def _install_callable_table_layout(
     def resolve_entry(slot: int) -> int:
         name = _callable_entry_export_name(slot)
         function_index = exports.get(name)
-        symbol_name = entry_symbol_names[slot] if entry_symbol_names is not None else None
+        symbol_name = (
+            entry_symbol_names[slot] if entry_symbol_names is not None else None
+        )
         if function_index is None and symbol_name is not None:
             function_index = exports.get(symbol_name)
         if function_index is None and symbol_name is not None:
@@ -3476,9 +3480,13 @@ def _install_callable_table_layout(
         and override_reserved_direct
         and len(fixed_indices) >= reserved_end
     ):
-        for index, runtime_name, _import_name, _arity, dispatch in (
-            WASM_RESERVED_RUNTIME_CALLABLES
-        ):
+        for (
+            index,
+            runtime_name,
+            _import_name,
+            _arity,
+            dispatch,
+        ) in WASM_RESERVED_RUNTIME_CALLABLES:
             if dispatch != "direct":
                 continue
             logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
@@ -3494,7 +3502,9 @@ def _install_callable_table_layout(
             fixed_indices[logical_slot] = runtime_function_index
     sections = _parse_sections(data)
     element_indices = [
-        index for index, (section_id, _payload) in enumerate(sections) if section_id == 9
+        index
+        for index, (section_id, _payload) in enumerate(sections)
+        if section_id == 9
     ]
     if len(element_indices) != 1:
         raise ValueError(
@@ -3899,14 +3909,8 @@ def _run_wasm_ld_with_custodied_inputs(
             ),
             (f"--export={sym}" for sym in required_native_direct_symbols),
             (f"--export={sym}" for sym in user_export_symbol_names),
-            (
-                f"--export-if-defined={name}"
-                for name in callable_entry_symbol_names
-            ),
-            (
-                f"--export-if-defined={name}"
-                for name in reserved_runtime_link_exports
-            ),
+            (f"--export-if-defined={name}" for name in callable_entry_symbol_names),
+            (f"--export-if-defined={name}" for name in reserved_runtime_link_exports),
         )
     )
     cmd += [
@@ -4044,13 +4048,9 @@ def _run_wasm_ld_with_custodied_inputs(
         if output_callable_layout is not None:
             try:
                 raw_linked_facts = facts_provider(linked_bytes)
-                raw_callable_entries = raw_linked_facts.get(
-                    "callable_table_entries"
-                )
+                raw_callable_entries = raw_linked_facts.get("callable_table_entries")
                 if not isinstance(raw_callable_entries, list):
-                    raise ValueError(
-                        "linked WASM facts omitted callable-table entries"
-                    )
+                    raise ValueError("linked WASM facts omitted callable-table entries")
                 raw_occupied_end = max(
                     (
                         int(entry[0]) + 1
@@ -4330,9 +4330,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 assert split_callable_layout is not None
                 try:
                     raw_split_facts = facts_provider(rewritten_data)
-                    raw_split_entries = raw_split_facts.get(
-                        "callable_table_entries"
-                    )
+                    raw_split_entries = raw_split_facts.get("callable_table_entries")
                     if not isinstance(raw_split_entries, list):
                         raise ValueError(
                             "split-app WASM facts omitted callable-table entries"
