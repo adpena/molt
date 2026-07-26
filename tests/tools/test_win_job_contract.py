@@ -32,7 +32,9 @@ def test_assignment_failure_terminates_child_while_suspended(monkeypatch) -> Non
             calls.append("terminate_process")
             return 1
 
-    proc = SimpleNamespace(_handle=111, pid=222, wait=lambda timeout: calls.append("wait"))
+    proc = SimpleNamespace(
+        _handle=111, pid=222, wait=lambda timeout: calls.append("wait")
+    )
     monkeypatch.setattr(win_job, "_k32", lambda: Kernel32())
     monkeypatch.setattr(
         win_job,
@@ -108,6 +110,112 @@ def test_process_ids_grows_query_buffer_without_fixed_ceiling(monkeypatch) -> No
 
     assert win_job.process_ids(444) == (101, 202, 303)
     assert capacities == [16, 33]
+
+
+def test_complete_job_custody_terminates_and_waits_for_exact_members(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    accounting = iter(
+        (
+            win_job.WindowsJobAccounting(8, 3, 5, 4096),
+            win_job.WindowsJobAccounting(8, 0, 8, 4096),
+        )
+    )
+    resources = iter(
+        (
+            win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1),
+            win_job.WindowsSystemResources(97, 770, 3900, 30, 1, 2, 2, 3, 1),
+        )
+    )
+    monkeypatch.setattr(win_job, "job_accounting", lambda _job: next(accounting))
+    monkeypatch.setattr(win_job, "system_resources", lambda: next(resources))
+    monkeypatch.setattr(
+        win_job,
+        "terminate_job",
+        lambda _job: calls.append("terminate"),
+    )
+    monkeypatch.setattr(
+        win_job,
+        "wait_until_empty",
+        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
+    )
+
+    cleanup = win_job.complete_job_custody(777, timeout=2.5)
+
+    assert cleanup is not None
+    assert cleanup.completed
+    assert cleanup.terminated_remaining_processes
+    assert cleanup.before.active_processes == 3
+    assert cleanup.after.active_processes == 0
+    assert calls == ["terminate", "wait:2.5"]
+
+
+def test_complete_job_custody_does_not_terminate_an_empty_job(monkeypatch) -> None:
+    empty = win_job.WindowsJobAccounting(1, 0, 1, 2048)
+    resources = win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1)
+    calls: list[str] = []
+    monkeypatch.setattr(win_job, "job_accounting", lambda _job: empty)
+    monkeypatch.setattr(win_job, "system_resources", lambda: resources)
+    monkeypatch.setattr(
+        win_job,
+        "terminate_job",
+        lambda _job: calls.append("terminate"),
+    )
+    monkeypatch.setattr(
+        win_job,
+        "wait_until_empty",
+        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
+    )
+
+    cleanup = win_job.complete_job_custody(777, timeout=1.0)
+
+    assert cleanup is not None
+    assert cleanup.completed
+    assert not cleanup.terminated_remaining_processes
+    assert calls == ["wait:1.0"]
+
+
+def test_system_resources_converts_page_counts_without_open_handles(
+    monkeypatch,
+) -> None:
+    class Psapi:
+        def GetPerformanceInfo(self, info_pointer, _size) -> int:
+            info = info_pointer._obj
+            info.PageSize = 4096
+            info.CommitTotal = 10
+            info.CommitLimit = 20
+            info.CommitPeak = 15
+            info.PhysicalTotal = 30
+            info.PhysicalAvailable = 12
+            info.HandleCount = 400
+            info.ProcessCount = 50
+            info.ThreadCount = 600
+            return 1
+
+    class Kernel32:
+        def GetCurrentProcess(self) -> int:
+            return 999
+
+        def GetProcessHandleCount(self, _process, count_pointer) -> int:
+            count_pointer._obj.value = 33
+            return 1
+
+    monkeypatch.setattr(win_job, "_psapi", lambda: Psapi())
+    monkeypatch.setattr(win_job, "_k32", lambda: Kernel32())
+
+    resources = win_job.system_resources()
+
+    assert resources.process_count == 50
+    assert resources.thread_count == 600
+    assert resources.system_handle_count == 400
+    assert resources.guard_handle_count == 33
+    assert resources.commit_total_bytes == 10 * 4096
+    assert resources.commit_limit_bytes == 20 * 4096
+    assert resources.commit_peak_bytes == 15 * 4096
+    assert resources.physical_total_bytes == 30 * 4096
+    assert resources.physical_available_bytes == 12 * 4096
+    assert resources.errors == ()
 
 
 @pytest.mark.parametrize("operation", ["terminate", "close"])

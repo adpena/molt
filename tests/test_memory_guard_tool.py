@@ -16,6 +16,17 @@ import pytest
 import tools.memory_guard as memory_guard
 
 
+@pytest.fixture
+def fake_popen_without_windows_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep synthetic Popen models independent of the real Windows kernel."""
+
+    monkeypatch.setattr(
+        memory_guard._win_job,
+        "create_kill_on_close_job",
+        lambda: None,
+    )
+
+
 def _guard_termination_report(
     *,
     reason: str = "test_cleanup",
@@ -545,9 +556,7 @@ def test_process_tree_tracker_stale_pid_cannot_admit_unrelated_child() -> None:
 def test_process_tree_tracker_identity_ignores_mutable_command_and_group() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     initial = {
-        100: memory_guard.ProcessSample(
-            100, 1, 10, "guard", pgid=100, started_at_ns=1
-        ),
+        100: memory_guard.ProcessSample(100, 1, 10, "guard", pgid=100, started_at_ns=1),
         200: memory_guard.ProcessSample(
             200, 100, 20, "python worker.py", pgid=100, started_at_ns=2
         ),
@@ -575,9 +584,7 @@ def test_process_tree_tracker_identity_ignores_mutable_command_and_group() -> No
 def test_process_tree_tracker_revokes_same_command_pid_reuse() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     initial = {
-        100: memory_guard.ProcessSample(
-            100, 1, 10, "guard", pgid=100, started_at_ns=1
-        ),
+        100: memory_guard.ProcessSample(100, 1, 10, "guard", pgid=100, started_at_ns=1),
         200: memory_guard.ProcessSample(
             200, 100, 20, "worker", pgid=200, started_at_ns=2
         ),
@@ -596,9 +603,7 @@ def test_process_tree_tracker_revokes_same_command_pid_reuse() -> None:
 
 def test_process_tree_tracker_weak_reused_parent_cannot_admit_child() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
-    root = memory_guard.ProcessSample(
-        100, 1, 10, "guard", started_at_ns=100
-    )
+    root = memory_guard.ProcessSample(100, 1, 10, "guard", started_at_ns=100)
     tracker.update({100: root})
 
     weak_reused_root = memory_guard.ProcessSample(
@@ -1793,6 +1798,7 @@ def test_run_guarded_interrupt_during_sampling_terminates_child_tree() -> None:
 
 def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 4242
     child_pid = 4243
@@ -1883,6 +1889,7 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
 
 def test_run_guarded_sampler_failure_cleans_then_reraises(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 5252
     child_pid = 5253
@@ -1964,6 +1971,7 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
 
 def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6060
 
@@ -2014,6 +2022,7 @@ def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
 
 def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6161
 
@@ -2078,6 +2087,7 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
 
 def test_run_guarded_binds_root_identity_before_first_sampler(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6262
 
@@ -2134,6 +2144,7 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
 
 def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6363
 
@@ -2216,6 +2227,7 @@ def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
 
 def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6464
     unrelated_pid = 7474
@@ -2316,6 +2328,7 @@ def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
 
 def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     root_pid = 6565
     unrelated_pid = 7575
@@ -2478,12 +2491,8 @@ def test_cleanup_tracked_orphans_does_not_report_failed_actions_as_cleaned(
 ) -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     initial = {
-        100: memory_guard.ProcessSample(
-            100, 1, 10, "guard.exe", started_at_ns=1
-        ),
-        200: memory_guard.ProcessSample(
-            200, 100, 20, "worker.exe", started_at_ns=2
-        ),
+        100: memory_guard.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=1),
+        200: memory_guard.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=2),
     }
     tracker.update(initial)
     live = {200: initial[200]}
@@ -2533,10 +2542,13 @@ def test_cleanup_group_completion_requires_every_detected_member() -> None:
         error="access denied",
     )
 
-    assert memory_guard._fully_completed_process_groups(
-        {777: {200, 201}},
-        (completed, failed),
-    ) == set()
+    assert (
+        memory_guard._fully_completed_process_groups(
+            {777: {200, 201}},
+            (completed, failed),
+        )
+        == set()
+    )
     assert memory_guard._fully_completed_process_groups(
         {777: {200, 201}},
         (
@@ -2886,12 +2898,8 @@ def test_windows_cleanup_sampler_failure_never_signals_remembered_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
-    root = memory_guard.ProcessSample(
-        100, 1, 10, "guard.exe", started_at_ns=100
-    )
-    child = memory_guard.ProcessSample(
-        200, 100, 20, "worker.exe", started_at_ns=200
-    )
+    root = memory_guard.ProcessSample(100, 1, 10, "guard.exe", started_at_ns=100)
+    child = memory_guard.ProcessSample(200, 100, 20, "worker.exe", started_at_ns=200)
     remembered = {100: root, 200: child}
     tracker.update(remembered)
     sent: list[tuple[int, int]] = []
@@ -3088,6 +3096,7 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
 
 def test_run_guarded_observes_child_exit_before_timeout_race(
     monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
 ) -> None:
     class FakePopen:
         pid = 4242
@@ -3262,7 +3271,10 @@ def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
     assert "timeout after" in result.stderr
 
 
-def test_run_command_timeout_teardown_uses_bounded_wait(monkeypatch) -> None:
+def test_run_command_timeout_teardown_uses_bounded_wait(
+    monkeypatch,
+    fake_popen_without_windows_job: None,
+) -> None:
     waits: list[float | None] = []
 
     class FakeProc:

@@ -40,6 +40,12 @@ _CHILD = (
     "time.sleep(120)"
 )
 
+_EXITING_CHILD = (
+    "import subprocess,sys;"
+    "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
+    "open(sys.argv[1],'w').write(str(gc.pid))"
+)
+
 
 def _alive(pid: int) -> bool:
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -109,3 +115,60 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
             )
         with contextlib.suppress(OSError):
             os.unlink(pidfile.name)
+
+
+def test_completion_waits_for_descendant_release_before_returning() -> None:
+    pidfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pid")
+    pidfile.close()
+    proc = None
+    job = None
+    gc_pid = None
+    try:
+        job = win_job.create_kill_on_close_job()
+        assert job
+        proc = start_owned_test_process(
+            [sys.executable, "-c", _EXITING_CHILD, pidfile.name],
+            creationflags=(
+                win_job.suspended_creationflag() | subprocess.CREATE_NO_WINDOW
+            ),
+        )
+        win_job.assign_and_resume(job, proc)
+        proc.wait(timeout=10)
+        gc_pid = int(open(pidfile.name).read().strip())
+        assert _alive(gc_pid)
+        assert win_job.active_process_count(job) >= 1
+
+        cleanup = win_job.complete_job_custody(job, timeout=5.0)
+
+        assert cleanup is not None
+        assert cleanup.completed
+        assert cleanup.terminated_remaining_processes
+        assert cleanup.before.active_processes >= 1
+        assert cleanup.after.active_processes == 0
+        assert cleanup.system_before.process_count is not None
+        assert cleanup.system_after.process_count is not None
+        assert not _alive(gc_pid)
+    finally:
+        if job is not None:
+            with contextlib.suppress(win_job.WinJobError):
+                win_job.close_job(job)
+        if proc is not None and proc.poll() is None:
+            close_owned_test_process(proc)
+        if gc_pid is not None and _alive(gc_pid):
+            run_guarded_test_process(
+                ["taskkill", "/PID", str(gc_pid), "/F"], capture_output=True
+            )
+        with contextlib.suppress(OSError):
+            os.unlink(pidfile.name)
+
+
+def test_system_resource_sampling_does_not_leak_guard_handles() -> None:
+    before = win_job.system_resources()
+    assert before.guard_handle_count is not None
+
+    for _ in range(100):
+        sampled = win_job.system_resources()
+        assert not sampled.errors
+
+    after = win_job.system_resources()
+    assert after.guard_handle_count <= before.guard_handle_count
