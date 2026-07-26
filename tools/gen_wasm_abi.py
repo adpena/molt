@@ -30,6 +30,7 @@ from wasm_abi_gen.manifest import (
     CPYTHON_ABI_LINK_IMPORT_CLASS,
     generator_cpython_abi_link_import_kinds,
     generator_cpython_abi_link_import_names,
+    generator_cpython_abi_link_import_signatures,
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
@@ -2535,6 +2536,16 @@ def render_py(data: dict) -> str:
     lines.append("WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {\n")
     for name, symbol_kind in sorted(external_native_link_import_symbol_kinds.items()):
         lines.append(f'    "{name}": "{symbol_kind}",\n')
+    lines.append("}\n\n")
+    lines.append(
+        "WASM_EXTERNAL_NATIVE_LINK_IMPORT_FUNCTION_SIGNATURES: "
+        "dict[str, dict[str, object]] = {\n"
+    )
+    for name, params, results in generator_cpython_abi_link_import_signatures():
+        result = "nil" if not results else ", ".join(results)
+        lines.append(
+            f'    "{name}": {{"params": {list(params)!r}, "result": {result!r}}},\n'
+        )
     lines.append("}\n\n")
     lines.append("WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (\n")
     for entry in data.get("strip_import_rule", []):

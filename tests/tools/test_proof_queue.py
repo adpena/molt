@@ -40,7 +40,7 @@ _TEST_GIT_SNAPSHOT = {
     "ignored_status_count": 0,
 }
 _REAL_GIT_SNAPSHOT_TESTS = {
-    "test_proof_queue_git_snapshot_ignores_generated_wasm_checksums",
+    "test_proof_queue_git_snapshot_tracks_runtime_generation_changes",
     "test_proof_queue_git_snapshot_expands_untracked_directories",
 }
 
@@ -248,7 +248,7 @@ def test_proof_queue_pid_alive_detects_current_process() -> None:
     assert not custody._pid_alive(0)
 
 
-def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
+def test_proof_queue_git_snapshot_tracks_runtime_generation_changes(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
@@ -264,29 +264,17 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     git("config", "user.name", "Test User")
     (tmp_path / "wasm").mkdir()
     (tmp_path / "src").mkdir()
-    (tmp_path / "wasm" / "molt_runtime.wasm.sha256").write_text(
-        "old\n", encoding="utf-8"
-    )
-    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.sha256").write_text(
-        "old\n", encoding="utf-8"
-    )
-    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.wasm-release.sha256").write_text(
-        "old\n", encoding="utf-8"
-    )
+    generation = tmp_path / "wasm" / "molt_runtime.generation.json"
+    generation.write_text('{"pair_digest":"old"}\n', encoding="utf-8")
     (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "init")
 
-    (tmp_path / "wasm" / "molt_runtime.wasm.sha256").write_text(
-        "new\n", encoding="utf-8"
-    )
-    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.wasm-release.sha256").write_text(
-        "new\n", encoding="utf-8"
-    )
+    generation.write_text('{"pair_digest":"new"}\n', encoding="utf-8")
     snapshot = state._git_snapshot(tmp_path)
-    assert snapshot["dirty"] is False
-    assert snapshot["status"] == []
-    assert snapshot["ignored_status_count"] == 2
+    assert snapshot["dirty"] is True
+    assert any("wasm/molt_runtime.generation.json" in line for line in snapshot["status"])
+    assert snapshot["ignored_status_count"] == 0
 
     (tmp_path / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
     snapshot = state._git_snapshot(tmp_path)

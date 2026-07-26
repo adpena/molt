@@ -124,14 +124,14 @@ without requiring a real browser GPU in CI.
 
 ## Artifact Distribution
 
-Current source builds produce `molt_runtime.wasm` beside the app artifact. The
-checked-in `wasm/*.wasm.sha256` files are integrity pins, not shipped runtime
-payloads. A downstream no-source-build deployment needs a release artifact,
-wheel payload, or CDN object that publishes `molt_runtime.wasm` with matching
-integrity metadata. Until that release lane exists, the honest path is:
+Current source builds publish `molt_runtime.wasm`, `molt_runtime_reloc.wasm`,
+and `molt_runtime.generation.json` as one atomic runtime generation. A
+downstream no-source-build deployment needs a release artifact, wheel payload,
+or CDN object that preserves that pair and its caller-trusted expected build
+identity. Until that release lane exists, the honest path is:
 
 1. Build once on a machine allowed to run the Rust/WASM toolchain.
-2. Publish `output.wasm` and `molt_runtime.wasm` together.
+2. Publish `output.wasm` with the complete shared+reloc runtime generation.
 3. Publish the complete role-checked loader asset closure from
    `molt.browser_asset_closure`; do not select dependencies by filename. The
    generated graph follows transitive ES/CommonJS imports, dynamic imports,

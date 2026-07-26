@@ -255,8 +255,6 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         profile="release",
         runtime_context=SimpleNamespace(
             runtime_state=object(),
-            ensure_runtime_wasm_shared=lambda _modules: True,
-            ensure_runtime_wasm_reloc=lambda _modules: True,
             ensure_runtime_wasm_both=lambda _modules: True,
         ),
         build_config=SimpleNamespace(

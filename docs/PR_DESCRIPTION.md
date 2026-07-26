@@ -18,7 +18,7 @@ Monty-inspired resource controls, audit logging, quality harness, formal verific
 - `--type-gate` CLI flag for typed capability enforcement
 - `--audit-log` and `--io-mode` CLI flags wired to build and run subcommands
 - SSRF prevention hardening in capability gates
-- SHA-256 integrity pin on `molt_runtime.wasm` for supply chain verification
+- Atomic shared+reloc runtime generation with caller-trusted build identities
 
 ### WASM Codegen & Backend
 - `resource_check_time` emitted at loop backedges (`MOLT_WASM_RESOURCE_CHECKS=1`)

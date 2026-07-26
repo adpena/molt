@@ -142,10 +142,13 @@ cache publication while the real relink authority remains intact. The live
 4.442 GiB; applying the measured ratio projects 2.380 GiB retained and 2.062
 GiB reclaimed.
 
-The former dual-profile smell is closed by making the keyed integrity sidecar
-the single live contract for a published filename. A new publication deletes
-the retired unkeyed pin and every sibling keyed pin; profile variants remain
-separate only in the content-addressed runtime cache.
+The former dual-profile smell is closed by making one source-attested pair
+pointer the live contract for shared and reloc runtime publication. The atomic
+pointer binds the full source/config/toolchain identity to two immutable,
+content-named members. Fixed filenames are derived consumer projections, never
+validation authority; cache hydration validates and copies only the immutable
+members and rechecks their staged hashes before advancing the destination
+pointer.
 
 Task #22 retains the code/data optimization frontier. Its measured map is
 20,032,474 B code, 5,275,490 B data, 416,470 B exports, and 52,230 B elements.

@@ -1889,12 +1889,13 @@ static inline int PyType_Ready(PyTypeObject *type) {
     return molt_type_ready(_molt_py_handle((PyObject *)type));
 }
 
-static inline void PyType_Modified(PyTypeObject *type) {
-    /* In CPython this invalidates internal caches (method resolution order,
-       attribute lookup caches) after a type object is mutated.  Molt does not
-       maintain MRO caches at the C-API level, so this is a no-op. */
-    (void)type;
-}
+typedef int (*PyType_WatchCallback)(PyObject *type);
+extern void PyType_Modified(PyTypeObject *type);
+extern int PyType_AddWatcher(PyType_WatchCallback callback);
+extern int PyType_ClearWatcher(int watcher_id);
+extern int PyType_Watch(int watcher_id, PyObject *type);
+extern int PyType_Unwatch(int watcher_id, PyObject *type);
+extern int PyUnstable_Type_AssignVersionTag(PyTypeObject *type);
 
 static inline int _molt_dict_set_utf8_key(
     MoltHandle dict_bits,

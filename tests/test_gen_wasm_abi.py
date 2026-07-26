@@ -52,6 +52,13 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
     )
+    assert manifest.CPYTHON_ABI_VARIADIC_SHIM.resolve() in input_files
+    assert (
+        manifest.CPYTHON_ABI_SOURCE_ROOT.parent / "include" / "Python.h"
+    ).resolve() in input_files
+    assert {
+        path.resolve() for path in manifest.CPYTHON_ABI_SOURCE_ROOT.rglob("*.rs")
+    } <= input_files
 
     runtime_exports = manifest.generator_runtime_export_signature_rows()
     assert runtime_exports == tuple(sorted(runtime_exports))

@@ -58,14 +58,7 @@ def _emit_backend_pipeline_outputs(
     bolt_training_cmd: str | None = None,
 ) -> int:
     runtime_lib = prepared_backend_runtime_context.runtime_lib
-    runtime_wasm = prepared_backend_runtime_context.runtime_wasm
-    runtime_reloc_wasm = prepared_backend_runtime_context.runtime_reloc_wasm
-    ensure_runtime_wasm_shared = (
-        prepared_backend_runtime_context.ensure_runtime_wasm_shared
-    )
-    ensure_runtime_wasm_reloc = (
-        prepared_backend_runtime_context.ensure_runtime_wasm_reloc
-    )
+    runtime_state = prepared_backend_runtime_context.runtime_state
     ensure_runtime_wasm_both = prepared_backend_runtime_context.ensure_runtime_wasm_both
     cache = prepared_backend_compile.cache_enabled
     cache_hit = prepared_backend_compile.cache_hit
@@ -114,10 +107,7 @@ def _emit_backend_pipeline_outputs(
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
-                runtime_wasm=runtime_wasm,
-                runtime_reloc_wasm=runtime_reloc_wasm,
-                ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
-                ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                runtime_state=runtime_state,
                 ensure_runtime_wasm_both=ensure_runtime_wasm_both,
                 runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 molt_root=prepared_build_roots.molt_root,

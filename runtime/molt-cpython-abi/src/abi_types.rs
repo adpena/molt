@@ -1641,6 +1641,20 @@ pub unsafe fn init_static_types() {
         // numpy's `_DTypeMeta` (tp_base = &PyType_Type) inherits this via
         // PyType_Ready slot inheritance.
         PyType_Type.tp_hash = Some(crate::api::typeobj::molt_type_identity_hash);
+        // CPython `type.tp_is_gc = type_is_gc`: only heap type objects are GC
+        // candidates, even though the static `type` object itself carries
+        // HAVE_GC. numpy's `dtypemeta_is_gc` calls this slot directly through
+        // `PyType_Type`; a NULL slot becomes a wasm `call_indirect` through
+        // table entry zero and traps before `_multiarray_umath` can initialize.
+        // Metatypes that leave the slot empty inherit this same authority in
+        // `PyType_Ready`.
+        PyType_Type.tp_is_gc = Some(crate::api::typeobj::molt_type_is_gc);
+        // The HAVE_GC contract is a sibling family: CPython's type object also
+        // owns type_traverse/type_clear. Publishing only type_is_gc makes heap
+        // metatypes collectible in name but leaves their dict/MRO/module cycles
+        // invisible and uncleared.
+        PyType_Type.tp_traverse = Some(crate::api::typeobj::molt_type_traverse);
+        PyType_Type.tp_clear = Some(crate::api::typeobj::molt_type_clear);
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");

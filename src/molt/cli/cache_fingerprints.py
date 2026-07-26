@@ -27,7 +27,7 @@ from molt.cli.python_import_resolution import (
     PythonImportPolicy,
     local_import_dependencies,
 )
-from molt.cli.runtime_fingerprints import _runtime_source_paths
+from molt.cli.runtime_source_closure import runtime_source_paths
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -636,9 +636,9 @@ def _cache_fingerprint(
     source_paths = _backend_source_paths(root, selected_backend_features)
     if include_runtime_sources:
         if runtime_features is None:
-            source_paths += _runtime_source_paths(root)
+            source_paths += runtime_source_paths(root)
         else:
-            source_paths += _runtime_source_paths(
+            source_paths += runtime_source_paths(
                 root,
                 runtime_features=_selected_source_features(runtime_features),
             )

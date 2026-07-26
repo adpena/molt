@@ -8,7 +8,7 @@ Verifies the combined-compile design invariants that make the dedup correct:
 * the combined cargo invocation selects exactly ``staticlib,cdylib`` at Cargo
   level (so no dependency-only rlib is emitted) and routes the shared cdylib
   link args through a ``-C link-arg=@response`` file (not RUSTFLAGS);
-* the ``MOLT_RUNTIME_WASM_SINGLE_COMPILE`` kill switch is honoured.
+* app routing has exactly one atomic pair ensure and no dual-compile fallback.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from molt.cli.models import (
     _ExternalNativeAbiSymbol,
     _ExternalNativeCapiSymbol,
     _ExternalPackageNativeArtifactPlan,
+    _RuntimeArtifactState,
 )
 from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
@@ -56,16 +57,6 @@ def _specs(root: Path):
         root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
     )
     return shared, reloc
-
-
-def test_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
-    assert rb._single_compile_split_runtime_enabled() is True
-    for off in ("0", "false", "no", "off", "OFF"):
-        monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", off)
-        assert rb._single_compile_split_runtime_enabled() is False
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", "1")
-    assert rb._single_compile_split_runtime_enabled() is True
 
 
 def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> None:
@@ -205,8 +196,6 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     linked: list[tuple[Path, str]] = []
     monkeypatch.setattr(rb, "_compute_runtime_wasm_build_spec", lambda *a, **k: final)
     monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
-    monkeypatch.setattr(rb, "_hydrate_runtime_wasm_from_shared_cache", lambda **k: False)
-    monkeypatch.setattr(rb, "_build_reuse_compatible_enabled", lambda: False)
     monkeypatch.setattr(
         rb,
         "_run_runtime_wasm_cargo_build",
@@ -227,15 +216,16 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         del json_output, link_timeout, long_double_required
         linked.append((staticlib_path, export_link_args))
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"\0asm\x01\0\0\0relinked")
+        output_path.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
     monkeypatch.setattr(rb, "_link_runtime_staticlib_to_reloc_wasm", _relink)
     monkeypatch.setattr(
         rb,
-        "_write_runtime_wasm_integrity_sidecar",
-        lambda _path, *, integrity_key: None,
+        "_runtime_missing_exports_for_mode",
+        lambda _path, _required, *, reloc: set(),
     )
+    monkeypatch.setattr(rb, "_is_valid_runtime_wasm_artifact", lambda _path: True)
     output = tmp_path / "molt_runtime_reloc.wasm"
     assert rb._ensure_runtime_wasm(
         output,
@@ -556,7 +546,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
 # App-path routing: the split-runtime app build (`molt build --target wasm
 # --split-runtime`, the witness) must route the reloc staticlib + shared cdylib
 # through ONE combined ensure so the runtime builds ONCE, not twice, per app
-# build -- while honouring the dual-compile kill switch.
+# build, with no dual-compile compatibility lane.
 # ---------------------------------------------------------------------------
 
 import molt.cli.non_native_output as nno  # noqa: E402
@@ -576,8 +566,6 @@ def _run_app_ensure_routing(
     *,
     freestanding: bool,
     both_callable: bool,
-    reloc_ret: bool,
-    shared_ret: bool,
     both_ret: bool,
 ) -> list[str]:
     """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
@@ -612,10 +600,12 @@ def _run_app_ensure_routing(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_wasm=runtime_shared_missing,
-        runtime_reloc_wasm=runtime_reloc,
-        ensure_runtime_wasm_shared=_record_ensure("shared", shared_ret, log),
-        ensure_runtime_wasm_reloc=_record_ensure("reloc", reloc_ret, log),
+        runtime_state=_RuntimeArtifactState(
+            runtime_wasm=runtime_shared_missing,
+            runtime_reloc_wasm=runtime_reloc,
+            runtime_wasm_selected=runtime_shared_missing,
+            runtime_reloc_wasm_selected=runtime_reloc,
+        ),
         ensure_runtime_wasm_both=(
             _record_ensure("both", both_ret, log) if both_callable else None
         ),
@@ -632,105 +622,38 @@ def _run_app_ensure_routing(
 def test_app_path_default_routes_through_combined_ensure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
     log = _run_app_ensure_routing(
         monkeypatch,
         tmp_path,
         freestanding=False,
         both_callable=True,
-        reloc_ret=True,
-        shared_ret=True,
         both_ret=True,
     )
     # ONE combined ensure; the standalone reloc/shared ensures are NOT invoked.
     assert log == ["both"]
 
 
-def test_app_path_dual_compile_kill_switch_forces_two_ensures(
+def test_app_path_fails_closed_when_combined_authority_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", "1")
-    log = _run_app_ensure_routing(
-        monkeypatch,
-        tmp_path,
-        freestanding=False,
-        both_callable=True,
-        reloc_ret=True,
-        shared_ret=True,
-        both_ret=True,
-    )
-    # Kill switch -> separate reloc + shared ensures; combined is NOT invoked.
-    assert log == ["reloc", "shared"]
-
-
-def test_app_path_single_compile_off_forces_two_ensures(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", "0")
-    log = _run_app_ensure_routing(
-        monkeypatch,
-        tmp_path,
-        freestanding=False,
-        both_callable=True,
-        reloc_ret=True,
-        shared_ret=True,
-        both_ret=True,
-    )
-    assert log == ["reloc", "shared"]
-
-
-def test_app_path_legacy_fallback_when_combined_absent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
     log = _run_app_ensure_routing(
         monkeypatch,
         tmp_path,
         freestanding=False,
         both_callable=False,
-        reloc_ret=True,
-        shared_ret=True,
         both_ret=True,
     )
-    # No combined callable supplied -> proven sequential reloc + shared.
-    assert log == ["reloc", "shared"]
+    assert log == []
 
 
-def test_app_path_freestanding_routes_reloc_only(
+def test_app_path_freestanding_also_requires_atomic_pair(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
     log = _run_app_ensure_routing(
         monkeypatch,
         tmp_path,
         freestanding=True,
         both_callable=True,
-        reloc_ret=False,  # False -> _fail immediately after the reloc ensure
-        shared_ret=True,
-        both_ret=True,
+        both_ret=False,
     )
-    # Freestanding needs only the reloc runtime -- never the combined/shared.
-    assert log == ["reloc"]
-
-
-def test_app_dual_compile_forced_env_parsing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
-    assert nno._app_split_runtime_dual_compile_forced() is False
-    for on in ("1", "true", "yes", "on", "ON"):
-        monkeypatch.setenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", on)
-        assert nno._app_split_runtime_dual_compile_forced() is True
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
-    # The landed single-compile authority OFF also forces the dual route.
-    for off in ("0", "false", "no", "off"):
-        monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", off)
-        assert nno._app_split_runtime_dual_compile_forced() is True
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", "1")
-    assert nno._app_split_runtime_dual_compile_forced() is False
+    assert log == ["both"]

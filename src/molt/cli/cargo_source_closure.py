@@ -18,12 +18,15 @@ def _dedupe_source_paths(paths: Sequence[Path]) -> list[Path]:
     return deduped
 
 
-def _crate_source_paths(crate_root: Path) -> tuple[Path, Path, Path]:
-    return (
-        crate_root / "src",
-        crate_root / "Cargo.toml",
-        crate_root / "build.rs",
-    )
+def _crate_source_paths(crate_root: Path) -> tuple[Path, ...]:
+    """Return the whole local crate as Cargo/build.rs input authority.
+
+    Build scripts may consume headers, vendored sources, schemas, and other
+    non-``src`` files. Enumerating three conventional paths silently excluded
+    those inputs; the crate root is the systematic fail-closed closure.
+    """
+
+    return (crate_root,)
 
 
 def _cargo_manifest_stamp(manifest: Path) -> str:

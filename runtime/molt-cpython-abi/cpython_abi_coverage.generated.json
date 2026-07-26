@@ -15,14 +15,14 @@
     }
   ],
   "counts": {
-    "molt-private": 37,
+    "molt-private": 40,
     "private": 61,
     "private-representation": 1,
-    "public-version-specific": 144,
+    "public-version-specific": 148,
     "stable-abi": 437,
     "stable-values-version-specific-layout": 1,
-    "total": 691,
-    "unstable": 8,
+    "total": 699,
+    "unstable": 9,
     "version-specific-public": 2
   },
   "future_divergences": [
@@ -3479,7 +3479,21 @@
       "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
       "stability": "public-version-specific",
       "surface": "function",
+      "symbol": "PyType_AddWatcher",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
       "symbol": "PyType_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_ClearWatcher",
       "verified_at": "3.12"
     },
     {
@@ -3599,6 +3613,20 @@
       "stability": "stable-abi",
       "surface": "type-object",
       "symbol": "PyType_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_Unwatch",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_Watch",
       "verified_at": "3.12"
     },
     {
@@ -3942,6 +3970,13 @@
       "stability": "unstable",
       "surface": "function",
       "symbol": "PyUnstable_SetImmortal",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Type_AssignVersionTag",
       "verified_at": "3.12"
     },
     {
@@ -4900,7 +4935,28 @@
       "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
       "stability": "molt-private",
       "surface": "function",
+      "symbol": "molt_type_clear",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
       "symbol": "molt_type_identity_hash",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_type_is_gc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_type_traverse",
       "verified_at": "3.12"
     },
     {

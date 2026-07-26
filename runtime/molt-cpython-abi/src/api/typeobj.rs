@@ -1,18 +1,160 @@
 //! Type object API — PyType_Ready, PyType_GenericAlloc, Py_TYPE checks.
 
 use crate::abi_types::{
-    Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_READY, Py_ssize_t, PyMethodDef, PyObject, PyType_Spec,
-    PyTypeObject,
+    Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_READY, Py_ssize_t, PyHeapTypeObject,
+    PyMethodDef, PyObject, PyType_Spec, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_longlong, c_ulong, c_ulonglong};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static ABI_LOCAL_TYPES: Lazy<Mutex<HashMap<u32, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TypeIdentity {
+    address: usize,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct SubclassIdentities {
+    order: Vec<TypeIdentity>,
+    members: HashSet<TypeIdentity>,
+}
+
+#[derive(Default)]
+struct TypeSubclassRegistry {
+    live: HashMap<usize, u64>,
+    subclasses: HashMap<TypeIdentity, SubclassIdentities>,
+    bases_by_subclass: HashMap<TypeIdentity, HashSet<TypeIdentity>>,
+}
+
+static TYPE_SUBCLASSES: Lazy<Mutex<TypeSubclassRegistry>> =
+    Lazy::new(|| Mutex::new(TypeSubclassRegistry::default()));
+static NEXT_TYPE_IDENTITY_GENERATION: AtomicU64 = AtomicU64::new(1);
+type PyTypeWatchCallback = unsafe extern "C" fn(*mut PyObject) -> c_int;
+const TYPE_MAX_WATCHERS: usize = 8;
+const CANONICAL_INTERPRETER_ID: i64 = 0;
+struct TypeWatcherState {
+    interpreter_id: i64,
+    callbacks: [Option<PyTypeWatchCallback>; TYPE_MAX_WATCHERS],
+}
+
+// Molt exposes one canonical interpreter (ID 0), with no subinterpreter
+// creation surface. The mutex is the free-threaded watcher-state boundary.
+static TYPE_WATCHER_STATE: Lazy<Mutex<TypeWatcherState>> = Lazy::new(|| {
+    Mutex::new(TypeWatcherState {
+        interpreter_id: CANONICAL_INTERPRETER_ID,
+        callbacks: [None; TYPE_MAX_WATCHERS],
+    })
+});
+static NEXT_TYPE_VERSION_TAG: AtomicU32 = AtomicU32::new(1);
+
+fn type_identity(
+    registry: &mut TypeSubclassRegistry,
+    tp: *mut PyTypeObject,
+) -> Option<TypeIdentity> {
+    if tp.is_null() {
+        return None;
+    }
+    let address = tp.addr();
+    let generation = if let Some(generation) = registry.live.get(&address) {
+        *generation
+    } else {
+        let generation = NEXT_TYPE_IDENTITY_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .ok()?;
+        registry.live.insert(address, generation);
+        generation
+    };
+    Some(TypeIdentity {
+        address,
+        generation,
+    })
+}
+
+unsafe fn register_subclass(base: *mut PyTypeObject, subclass: *mut PyTypeObject) {
+    if base.is_null() || subclass.is_null() || ptr::eq(base, subclass) {
+        return;
+    }
+    let mut registry = TYPE_SUBCLASSES.lock();
+    let Some(base_identity) = type_identity(&mut registry, base) else {
+        return;
+    };
+    let Some(subclass_identity) = type_identity(&mut registry, subclass) else {
+        return;
+    };
+    let subclasses = registry.subclasses.entry(base_identity).or_default();
+    if subclasses.members.insert(subclass_identity) {
+        subclasses.order.push(subclass_identity);
+        registry
+            .bases_by_subclass
+            .entry(subclass_identity)
+            .or_default()
+            .insert(base_identity);
+    }
+}
+
+/// Remove a non-owning type identity before its allocation is returned.
+///
+/// Every object-domain free routes here. Non-type addresses are absent and
+/// cost one map probe; heap types lose both outgoing and incoming subclass
+/// edges before address reuse can create a new generation.
+pub(crate) fn unregister_type_address(address: usize) {
+    if address == 0 {
+        return;
+    }
+    let mut registry = TYPE_SUBCLASSES.lock();
+    let Some(generation) = registry.live.remove(&address) else {
+        return;
+    };
+    let identity = TypeIdentity {
+        address,
+        generation,
+    };
+    if let Some(children) = registry.subclasses.remove(&identity) {
+        for child in children.order {
+            if let Some(bases) = registry.bases_by_subclass.get_mut(&child) {
+                bases.remove(&identity);
+                if bases.is_empty() {
+                    registry.bases_by_subclass.remove(&child);
+                }
+            }
+        }
+    }
+    if let Some(bases) = registry.bases_by_subclass.remove(&identity) {
+        for base in bases {
+            if let Some(children) = registry.subclasses.get_mut(&base) {
+                children.members.remove(&identity);
+                // Keep the ordered slot as a tombstone. Repeated sibling
+                // teardown is O(1) per base edge; the next deterministic
+                // traversal compacts all dead slots in one linear pass.
+            }
+        }
+    }
+}
+
+unsafe fn register_type_subclasses(tp: *mut PyTypeObject) {
+    let bases = unsafe { (*tp).tp_bases };
+    if !bases.is_null() {
+        let count = unsafe { crate::api::sequences::PyTuple_Size(bases) };
+        if count >= 0 {
+            for index in 0..count {
+                let base = unsafe { crate::api::sequences::PyTuple_GetItem(bases, index) }
+                    .cast::<PyTypeObject>();
+                unsafe { register_subclass(base, tp) };
+            }
+            return;
+        }
+    }
+    unsafe { register_subclass((*tp).tp_base, tp) };
+}
 
 unsafe fn reject_type_layout(message: &'static std::ffi::CStr) -> c_int {
     unsafe {
@@ -141,6 +283,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     // via `pyobj_to_handle` instead of failing the bridge lookup.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
         unsafe {
+            register_type_subclasses(tp);
             crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(tp.cast::<PyObject>());
             install_metatype_getattro(tp);
         }
@@ -276,7 +419,13 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             (*meta).tp_call = Some(molt_type_call);
         }
 
-        // (6) Mark ready.
+        // (6) Register every direct base before publishing READY. This is the
+        // recursive invalidation graph consumed by PyType_Modified; keeping it
+        // as non-owning raw identities mirrors CPython's weakref subclass dict
+        // without adding a strong type cycle to the GC graph.
+        register_type_subclasses(tp);
+
+        // (7) Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
 
@@ -1276,6 +1425,97 @@ unsafe fn inherit_slots_from_base(tp: *mut PyTypeObject, base: *mut PyTypeObject
     }
 }
 
+/// CPython 3.12 `type_is_gc` — the `tp_is_gc` slot of `PyType_Type`.
+///
+/// `type` itself advertises `Py_TPFLAGS_HAVE_GC`, but only heap-allocated type
+/// objects may participate in cycles and be traversed by the collector.  This
+/// predicate is therefore deliberately keyed on the candidate type object's
+/// `Py_TPFLAGS_HEAPTYPE` bit, not on `Py_TPFLAGS_HAVE_GC`.  C extensions call
+/// this slot directly (numpy's `_DTypeMeta` does so while deciding whether a
+/// dtype metaclass instance is GC-tracked), so the canonical `PyType_Type`
+/// must publish a real callable rather than relying on the bridge's optional-
+/// slot fallback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_type_is_gc(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let ty = op.cast::<PyTypeObject>();
+    (unsafe { (*ty).tp_flags } & Py_TPFLAGS_HEAPTYPE) as c_int
+}
+
+type TypeVisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
+
+/// CPython 3.12 ``type_traverse`` for heap type objects.
+///
+/// ``type_is_gc`` prevents the collector from invoking this slot for static
+/// types. Heap types own references through the common type header plus
+/// ``PyHeapTypeObject.ht_module``; visiting this exact family is what makes
+/// class/dict/MRO/module cycles observable to the collector.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_type_traverse(
+    op: *mut PyObject,
+    visit_raw: *mut c_void,
+    arg: *mut c_void,
+) -> c_int {
+    if op.is_null() || visit_raw.is_null() {
+        return 0;
+    }
+    let type_ = op.cast::<PyTypeObject>();
+    if unsafe { (*type_).tp_flags } & Py_TPFLAGS_HEAPTYPE == 0 {
+        return 0;
+    }
+    let visit: TypeVisitProc = unsafe { std::mem::transmute(visit_raw) };
+    let heap = type_.cast::<PyHeapTypeObject>();
+    let references = unsafe {
+        [
+            (*type_).tp_dict,
+            (*type_).tp_cache,
+            (*type_).tp_mro,
+            (*type_).tp_bases,
+            (*type_).tp_base.cast::<PyObject>(),
+            (*heap).ht_module,
+        ]
+    };
+    for reference in references {
+        if reference.is_null() {
+            continue;
+        }
+        let rc = unsafe { visit(reference, arg) };
+        if rc != 0 {
+            return rc;
+        }
+    }
+    0
+}
+
+/// CPython 3.12 ``type_clear`` for heap type objects.
+///
+/// Invalidate method-cache authority before clearing the type dict, then break
+/// the two hard ownership cycles CPython clears here: ``ht_module`` and
+/// ``tp_mro``. Bases/cache/subclasses/slot-name tuples are deliberately retained
+/// for the same ownership reasons as CPython's implementation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_type_clear(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let type_ = op.cast::<PyTypeObject>();
+    if unsafe { (*type_).tp_flags } & Py_TPFLAGS_HEAPTYPE == 0 {
+        return 0;
+    }
+    unsafe {
+        PyType_Modified(type_);
+        if !(*type_).tp_dict.is_null() {
+            crate::api::mapping::PyDict_Clear((*type_).tp_dict);
+        }
+        let heap = type_.cast::<PyHeapTypeObject>();
+        crate::api::refcount::Py_CLEAR(&raw mut (*heap).ht_module);
+        crate::api::refcount::Py_CLEAR(&raw mut (*type_).tp_mro);
+    }
+    0
+}
+
 /// CPython 3.12 `type_call` — the `tp_call` slot of `PyType_Type`. Verified
 /// verbatim against the primary source (python/cpython v3.12.13
 /// `Objects/typeobject.c::type_call`): the `type(x)` one-argument special case
@@ -1837,7 +2077,220 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_Modified(_tp: *mut PyTypeObject) {}
+pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
+    fn live_subclasses(tp: *mut PyTypeObject) -> Vec<TypeIdentity> {
+        let subclasses = {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            let Some(tp_identity) = type_identity(&mut registry, tp) else {
+                return Vec::new();
+            };
+            let order = registry
+                .subclasses
+                .get(&tp_identity)
+                .map(|entry| entry.order.clone())
+                .unwrap_or_default();
+            let members = registry
+                .subclasses
+                .get(&tp_identity)
+                .map(|entry| entry.members.clone())
+                .unwrap_or_default();
+            let live_order: Vec<_> = order
+                .into_iter()
+                .filter(|identity| {
+                    members.contains(identity)
+                        && registry.live.get(&identity.address) == Some(&identity.generation)
+                })
+                .collect();
+            if let Some(entry) = registry.subclasses.get_mut(&tp_identity) {
+                entry.order.clone_from(&live_order);
+                entry.members = live_order.iter().copied().collect();
+            }
+            live_order
+        };
+        subclasses
+    }
+
+    unsafe fn invalidate_one(tp: *mut PyTypeObject) {
+        let watched = unsafe { (*tp).tp_watched };
+        if watched != 0 {
+            let watcher_state = TYPE_WATCHER_STATE.lock();
+            debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
+            let watchers = watcher_state.callbacks;
+            drop(watcher_state);
+            for (watcher_id, callback) in watchers.into_iter().enumerate() {
+                if watched & (1 << watcher_id) == 0 {
+                    continue;
+                }
+                if let Some(callback) = callback {
+                    if unsafe { callback(tp.cast::<PyObject>()) } < 0 {
+                        unsafe { crate::api::errors::PyErr_WriteUnraisable(tp.cast()) };
+                    }
+                }
+            }
+        }
+        unsafe {
+            (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
+            (*tp).tp_version_tag = 0;
+            if (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE != 0 {
+                (*tp.cast::<PyHeapTypeObject>())._spec_cache.getitem = ptr::null_mut();
+            }
+        }
+    }
+    if tp.is_null() {
+        return;
+    }
+    // Explicit post-order traversal preserves CPython's subclass-before-base
+    // callback order without consuming one Rust stack frame per hierarchy
+    // level. Children are pushed in reverse so their registration order is
+    // observed deterministically.
+    let mut seen = HashSet::new();
+    let mut work = vec![(tp, false)];
+    while let Some((current, expanded)) = work.pop() {
+        if current.is_null() {
+            continue;
+        }
+        if expanded {
+            unsafe { invalidate_one(current) };
+            continue;
+        }
+        if !seen.insert(current.addr())
+            || unsafe { (*current).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0
+        {
+            continue;
+        }
+        work.push((current, true));
+        for child in live_subclasses(current).into_iter().rev() {
+            work.push((
+                ptr::with_exposed_provenance_mut::<PyTypeObject>(child.address),
+                false,
+            ));
+        }
+    }
+}
+
+unsafe fn validate_type_watcher_id(watcher_id: c_int) -> bool {
+    if watcher_id < 0 || watcher_id as usize >= TYPE_MAX_WATCHERS {
+        unsafe { reject_type_layout(c"invalid type watcher ID") };
+        return false;
+    }
+    if TYPE_WATCHER_STATE.lock().callbacks[watcher_id as usize].is_none() {
+        unsafe { reject_type_layout(c"no type watcher is registered for this ID") };
+        return false;
+    }
+    true
+}
+
+unsafe fn assign_type_version_tag(tp: *mut PyTypeObject, seen: &mut HashSet<usize>) -> bool {
+    if tp.is_null() {
+        return false;
+    }
+    if unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG != 0 {
+        return true;
+    }
+    if !seen.insert(tp as usize) {
+        return false;
+    }
+    if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY == 0 {
+        return false;
+    }
+    let bases = unsafe { (*tp).tp_bases };
+    if !bases.is_null() {
+        let count = unsafe { crate::api::sequences::PyTuple_Size(bases) };
+        if count < 0 {
+            return false;
+        }
+        for index in 0..count {
+            let base = unsafe { crate::api::sequences::PyTuple_GetItem(bases, index) }
+                .cast::<PyTypeObject>();
+            if !unsafe { assign_type_version_tag(base, seen) } {
+                return false;
+            }
+        }
+    }
+    let Some(tag) = allocate_type_version_tag(&NEXT_TYPE_VERSION_TAG) else {
+        return false;
+    };
+    unsafe {
+        (*tp).tp_version_tag = tag as c_ulong;
+        (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
+    }
+    true
+}
+
+fn allocate_type_version_tag(counter: &AtomicU32) -> Option<u32> {
+    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    }) {
+        Ok(tag) if tag != 0 => Some(tag),
+        _ => None,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_AddWatcher(callback: Option<PyTypeWatchCallback>) -> c_int {
+    let Some(callback) = callback else {
+        unsafe { reject_type_layout(c"type watcher callback must not be NULL") };
+        return -1;
+    };
+    let mut watcher_state = TYPE_WATCHER_STATE.lock();
+    debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
+    if let Some((index, slot)) = watcher_state
+        .callbacks
+        .iter_mut()
+        .enumerate()
+        .find(|(_, slot)| slot.is_none())
+    {
+        *slot = Some(callback);
+        return index as c_int;
+    }
+    unsafe { reject_type_layout(c"no more type watcher IDs available") };
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_ClearWatcher(watcher_id: c_int) -> c_int {
+    if !unsafe { validate_type_watcher_id(watcher_id) } {
+        return -1;
+    }
+    TYPE_WATCHER_STATE.lock().callbacks[watcher_id as usize] = None;
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_Watch(watcher_id: c_int, obj: *mut PyObject) -> c_int {
+    if obj.is_null() || unsafe { PyType_Check(obj) } == 0 {
+        unsafe { reject_type_layout(c"cannot watch a non-type object") };
+        return -1;
+    }
+    if !unsafe { validate_type_watcher_id(watcher_id) } {
+        return -1;
+    }
+    let tp = obj.cast::<PyTypeObject>();
+    if !unsafe { assign_type_version_tag(tp, &mut HashSet::new()) } {
+        unsafe { reject_type_layout(c"cannot assign a version tag to this type") };
+        return -1;
+    }
+    unsafe { (*tp).tp_watched |= 1 << watcher_id };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_Unwatch(watcher_id: c_int, obj: *mut PyObject) -> c_int {
+    if obj.is_null() || unsafe { PyType_Check(obj) } == 0 {
+        unsafe { reject_type_layout(c"cannot unwatch a non-type object") };
+        return -1;
+    }
+    if !unsafe { validate_type_watcher_id(watcher_id) } {
+        return -1;
+    }
+    unsafe { (*obj.cast::<PyTypeObject>()).tp_watched &= !(1 << watcher_id) };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_Type_AssignVersionTag(tp: *mut PyTypeObject) -> c_int {
+    unsafe { assign_type_version_tag(tp, &mut HashSet::new()) as c_int }
+}
 
 /// Resolve `name` on `tp` by walking its MRO and returning the first matching
 /// `tp_dict` entry, mirroring CPython's `_PyType_Lookup`. Returns a *borrowed*
@@ -3862,5 +4315,247 @@ mod class2_decode_tests {
             crate::bridge::GLOBAL_BRIDGE.release_pyobj(&raw mut obj),
             crate::bridge::PyObjRelease::Untracked
         );
+    }
+}
+
+#[cfg(test)]
+mod subclass_registry_tests {
+    use super::*;
+    use crate::abi_types::{
+        Py_TPFLAGS_VALID_VERSION_TAG, PyTuple_Type, PyTupleObject, PyVarObject,
+    };
+
+    #[repr(C)]
+    struct RawTuple2 {
+        base: PyTupleObject,
+        second: *mut PyObject,
+    }
+
+    fn raw_tuple(items: &[*mut PyTypeObject]) -> RawTuple2 {
+        assert!(!items.is_empty() && items.len() <= 2);
+        RawTuple2 {
+            base: PyTupleObject {
+                ob_base: PyVarObject {
+                    ob_base: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut PyTuple_Type,
+                    },
+                    ob_size: items.len() as Py_ssize_t,
+                },
+                ob_item: [items[0].cast()],
+            },
+            second: items.get(1).copied().unwrap_or(ptr::null_mut()).cast(),
+        }
+    }
+
+    fn blank_type(refcnt: isize) -> Box<PyTypeObject> {
+        let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+        ty.ob_base.ob_base.ob_refcnt = refcnt;
+        ty.tp_flags = Py_TPFLAGS_READY | Py_TPFLAGS_VALID_VERSION_TAG;
+        ty.tp_version_tag = 41;
+        ty
+    }
+
+    #[test]
+    fn subclass_registry_is_non_owning_and_address_reuse_gets_new_generation() {
+        let mut base = blank_type(17);
+        let mut child = blank_type(23);
+        let base_ptr = &raw mut *base;
+        let child_ptr = &raw mut *child;
+
+        unsafe { register_subclass(base_ptr, child_ptr) };
+        assert_eq!(base.ob_base.ob_base.ob_refcnt, 17);
+        assert_eq!(child.ob_base.ob_base.ob_refcnt, 23);
+        let old_identity = {
+            let registry = TYPE_SUBCLASSES.lock();
+            TypeIdentity {
+                address: child_ptr.addr(),
+                generation: registry.live[&child_ptr.addr()],
+            }
+        };
+
+        unregister_type_address(child_ptr.addr());
+        let new_identity = {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            type_identity(&mut registry, child_ptr).expect("re-registered type identity")
+        };
+
+        assert_ne!(new_identity, old_identity);
+        assert_eq!(base.ob_base.ob_base.ob_refcnt, 17);
+        assert_eq!(child.ob_base.ob_base.ob_refcnt, 23);
+        unregister_type_address(child_ptr.addr());
+        unregister_type_address(base_ptr.addr());
+    }
+
+    #[test]
+    fn dead_heavy_subclass_registry_compacts_in_one_linear_pass() {
+        const WIDTH: usize = 2048;
+        let mut base = blank_type(1);
+        let base_ptr = &raw mut *base;
+        let mut children: Vec<_> = (0..WIDTH).map(|_| blank_type(1)).collect();
+        for child in &mut children {
+            unsafe { register_subclass(base_ptr, &raw mut **child) };
+        }
+        for child in children.iter_mut().step_by(2) {
+            unregister_type_address((&raw mut **child).addr());
+        }
+
+        unsafe { PyType_Modified(base_ptr) };
+
+        for (index, child) in children.iter().enumerate() {
+            let is_valid = child.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG != 0;
+            assert_eq!(is_valid, index % 2 == 0);
+        }
+        let base_identity = {
+            let registry = TYPE_SUBCLASSES.lock();
+            TypeIdentity {
+                address: base_ptr.addr(),
+                generation: registry.live[&base_ptr.addr()],
+            }
+        };
+        assert_eq!(
+            TYPE_SUBCLASSES.lock().subclasses[&base_identity]
+                .order
+                .len(),
+            WIDTH / 2
+        );
+        for child in &mut children {
+            unregister_type_address((&raw mut **child).addr());
+        }
+        unregister_type_address(base_ptr.addr());
+    }
+
+    #[test]
+    fn deep_hierarchy_invalidation_is_iterative_in_registry_width() {
+        const DEPTH: usize = 16_384;
+        let mut types: Vec<_> = (0..DEPTH).map(|_| blank_type(1)).collect();
+        for index in 1..types.len() {
+            let base = &raw mut *types[index - 1];
+            let child = &raw mut *types[index];
+            unsafe { register_subclass(base, child) };
+        }
+        unsafe { PyType_Modified(&raw mut *types[0]) };
+        assert!(
+            types
+                .iter()
+                .all(|ty| ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG == 0)
+        );
+        for ty in &mut types {
+            unregister_type_address((&raw mut **ty).addr());
+        }
+    }
+
+    #[test]
+    fn concurrent_subclass_registration_has_one_edge_per_child() {
+        const WIDTH: usize = 1024;
+        const THREADS: usize = 8;
+        let mut base = blank_type(1);
+        let base_address = (&raw mut *base).addr();
+        let mut children: Vec<_> = (0..WIDTH).map(|_| blank_type(1)).collect();
+        let child_addresses: Vec<_> = children
+            .iter_mut()
+            .map(|child| (&raw mut **child).addr())
+            .collect();
+        std::thread::scope(|scope| {
+            for shard in 0..THREADS {
+                let addresses = &child_addresses;
+                scope.spawn(move || {
+                    for child_address in addresses.iter().skip(shard).step_by(THREADS) {
+                        unsafe {
+                            register_subclass(
+                                ptr::with_exposed_provenance_mut(base_address),
+                                ptr::with_exposed_provenance_mut(*child_address),
+                            )
+                        };
+                    }
+                });
+            }
+        });
+        let registry = TYPE_SUBCLASSES.lock();
+        let base_identity = TypeIdentity {
+            address: base_address,
+            generation: registry.live[&base_address],
+        };
+        assert_eq!(registry.subclasses[&base_identity].order.len(), WIDTH);
+        drop(registry);
+        for address in child_addresses {
+            unregister_type_address(address);
+        }
+        unregister_type_address(base_address);
+    }
+
+    #[test]
+    fn version_tags_accept_diamonds_reject_cycles_and_never_wrap() {
+        let mut root = blank_type(1);
+        let mut left = blank_type(1);
+        let mut right = blank_type(1);
+        let mut diamond = blank_type(1);
+        for ty in [&mut root, &mut left, &mut right, &mut diamond] {
+            ty.tp_flags &= !Py_TPFLAGS_VALID_VERSION_TAG;
+            ty.tp_version_tag = 0;
+        }
+        let mut left_bases = raw_tuple(&[&raw mut *root]);
+        let mut right_bases = raw_tuple(&[&raw mut *root]);
+        let mut diamond_bases = raw_tuple(&[&raw mut *left, &raw mut *right]);
+        left.tp_bases = (&raw mut left_bases).cast();
+        right.tp_bases = (&raw mut right_bases).cast();
+        diamond.tp_bases = (&raw mut diamond_bases).cast();
+        assert!(unsafe { assign_type_version_tag(&raw mut *diamond, &mut HashSet::new()) });
+        assert!(
+            [&root, &left, &right, &diamond]
+                .into_iter()
+                .all(|ty| ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG != 0)
+        );
+
+        let mut cycle_a = blank_type(1);
+        let mut cycle_b = blank_type(1);
+        cycle_a.tp_flags &= !Py_TPFLAGS_VALID_VERSION_TAG;
+        cycle_b.tp_flags &= !Py_TPFLAGS_VALID_VERSION_TAG;
+        let mut a_bases = raw_tuple(&[&raw mut *cycle_b]);
+        let mut b_bases = raw_tuple(&[&raw mut *cycle_a]);
+        cycle_a.tp_bases = (&raw mut a_bases).cast();
+        cycle_b.tp_bases = (&raw mut b_bases).cast();
+        assert!(!unsafe { assign_type_version_tag(&raw mut *cycle_a, &mut HashSet::new()) });
+
+        let local_counter = AtomicU32::new(u32::MAX);
+        assert_eq!(allocate_type_version_tag(&local_counter), None);
+        assert_eq!(local_counter.load(Ordering::SeqCst), u32::MAX);
+    }
+
+    #[test]
+    fn wide_subclass_teardown_is_linear_and_returns_registry_to_baseline() {
+        const WIDTH: usize = 8192;
+        let mut base = blank_type(1);
+        let base_address = (&raw mut *base).addr();
+        let mut children: Vec<_> = (0..WIDTH).map(|_| blank_type(1)).collect();
+        let addresses: Vec<_> = children
+            .iter_mut()
+            .map(|child| (&raw mut **child).addr())
+            .collect();
+        for address in &addresses {
+            unsafe {
+                register_subclass(
+                    ptr::with_exposed_provenance_mut(base_address),
+                    ptr::with_exposed_provenance_mut(*address),
+                )
+            };
+        }
+        let started = std::time::Instant::now();
+        for address in &addresses {
+            unregister_type_address(*address);
+        }
+        let teardown = started.elapsed();
+        assert!(
+            teardown < std::time::Duration::from_secs(5),
+            "8192-wide teardown exceeded linear receipt: {teardown:?}"
+        );
+        let registry = TYPE_SUBCLASSES.lock();
+        assert!(
+            addresses
+                .iter()
+                .all(|address| !registry.live.contains_key(address))
+        );
+        drop(registry);
+        unregister_type_address(base_address);
     }
 }

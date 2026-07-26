@@ -52,11 +52,15 @@ def _is_cpython_abi_link_import(name: str) -> bool:
 
 def _runtime_export_name_or_fail(name: str) -> str:
     name = wasm_split_runtime_canonical_import_name(name)
+    # Relocatable runtime artifacts expose CPython ABI link imports under
+    # their canonical C names.  The generated runtime export map also records
+    # the public ``molt_`` names used by the split shared artifact, so this
+    # distinction must be resolved before consulting that map.
+    if _is_cpython_abi_link_import(name):
+        return name
     export_name = wasm_runtime_export_name(name)
     if export_name is not None:
         return export_name
-    if _is_cpython_abi_link_import(name):
-        return name
     raise ValueError(f"unknown WASM runtime import/export name: {name}")
 
 
@@ -309,6 +313,57 @@ def wasm_runtime_required_export_names(
         export_names.add(name)
         export_names.update(fallback_exports.get(name, ()))
     return tuple(sorted(export_names))
+
+
+def _runtime_import_symbol_kind(name: str) -> str:
+    """Generated symbol-kind authority for one canonical runtime import."""
+    canonical = wasm_split_runtime_canonical_import_name(name)
+    kind = WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS.get(canonical)
+    if kind is None:
+        # Manifest runtime imports and dynamic runtime-owned intrinsics are
+        # callable functions. CPython-ABI native link imports are the only
+        # family that can be generated as address-bearing data symbols.
+        return "function"
+    if kind not in {"function", "data"}:
+        raise ValueError(
+            f"unsupported generated WASM runtime symbol kind {kind!r} for {canonical}"
+        )
+    return kind
+
+
+def wasm_runtime_required_export_symbol_kinds(
+    required_runtime_imports: Iterable[str] | None,
+) -> dict[str, str]:
+    if not required_runtime_imports:
+        return {}
+    kinds: dict[str, str] = {}
+    for raw_name in required_runtime_imports:
+        try:
+            export_name = _runtime_export_name_or_fail(raw_name)
+        except ValueError:
+            continue
+        kinds[export_name] = _runtime_import_symbol_kind(raw_name)
+        for fallback in _runtime_import_fallback_exports().get(export_name, ()):
+            kinds[fallback] = "function"
+    return kinds
+
+
+def wasm_split_runtime_required_export_symbol_kinds(
+    required_runtime_imports: Iterable[str] | None,
+) -> dict[str, str]:
+    if not required_runtime_imports:
+        return {}
+    kinds: dict[str, str] = {}
+    for raw_name in required_runtime_imports:
+        try:
+            split_name = _split_runtime_export_name_or_fail(raw_name)
+            fallback_key = _runtime_export_name_or_fail(raw_name)
+        except ValueError:
+            continue
+        kinds[split_name] = _runtime_import_symbol_kind(raw_name)
+        for fallback in _runtime_import_fallback_exports().get(fallback_key, ()):
+            kinds[fallback] = "function"
+    return kinds
 
 
 def wasm_runtime_missing_required_exports(

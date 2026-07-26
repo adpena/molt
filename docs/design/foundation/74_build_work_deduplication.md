@@ -29,8 +29,9 @@ frontend lowering, app link, wasm-opt, witness E2E) MUST satisfy:
    by a `full`-stdlib artifact whose feature set is a superset) when semantics
    are identical for the consumer. Lattice reuse is opt-in per consumer
    (`MOLT_BUILD_REUSE_COMPATIBLE=1` for heavy dev environments) until proven
-   safe per edge, then default-on. Acceptance/proof lanes always pin exact
-   identity (M05).
+   safe per edge, then default-on. Runtime WASM publication is explicitly not a
+   lattice consumer: its integrity receipt and every reuse/hydration path pin
+   exact source/config/toolchain identity (M05).
 
 4. **Attested.** Every step emits `{key, hit|miss, reason-if-miss, wall}` into
    the build diagnostics (MOLT_BUILD_DIAGNOSTICS). "Configured ≠ effective" is
