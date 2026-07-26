@@ -92,7 +92,15 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
 | `wasm-ld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `wasm-tools` | `^wasm-tools 1\.253\.0$` | `.` | `1.253.0` | 1 |
+| `wasm-tools` | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
+
+## Proof environment contracts
+
+Environment policy is applied by the canonical command executor after command overrides, so every matching proof family receives the same fail-closed compiler environment.
+
+| Policy | Required toolchains | Match | Set |
+|---|---|---|---|
+| `sccache-disables-incremental` | `rustc`, `cargo` | `RUSTC_WRAPPER=(?i)(?:^|.*[/\\])sccache(?:\.exe)?$` | `CARGO_INCREMENTAL=0` |
 
 ## Executable partitions
 

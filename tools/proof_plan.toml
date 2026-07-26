@@ -255,9 +255,19 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 name = "wasm-tools"
 executable = "wasm-tools"
 version_args = ["--version"]
-version_pattern = '^wasm-tools 1\.253\.0$'
+version_pattern = '^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
 setup_value = "1.253.0"
 setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"]
+
+# Rust compiler wrappers and incremental compilation are mutually exclusive.
+# The executor applies this after command-local overrides to every command that
+# declares both compiler toolchains, so no proof family can inherit the invalid
+# hosted-runner combination.
+[[environment_policy]]
+name = "sccache-disables-incremental"
+toolchains = ["rustc", "cargo"]
+match_environment = { RUSTC_WRAPPER = '(?i)(?:^|.*[/\\])sccache(?:\.exe)?$' }
+set_environment = { CARGO_INCREMENTAL = "0" }
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"

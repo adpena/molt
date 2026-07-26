@@ -1194,7 +1194,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in wasm_text
     assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
-    assert 'CARGO_INCREMENTAL: "1"' in wasm_text
+    assert "CARGO_INCREMENTAL:" not in wasm_text
     assert 'CARGO_BUILD_JOBS: "1"' not in wasm_text
     assert "Configure adaptive Rust parallelism" in wasm_text
     assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in wasm_text
