@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence, cast
 
@@ -13,10 +14,16 @@ from molt.cli.models import (
     _FrontendModuleResultTimings,
     _FrontendParallelConfig,
     _FrontendParallelLayerState,
+    _FrontendWorkerResourceDecision,
     _WorkerTimingSummary,
 )
 from molt.cli.module_source import _ModuleSourceCatalog
 from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
+from molt.dx import _memory_bounded_worker_count_from_samples, _system_memory_bytes
+
+
+_FRONTEND_WORKER_MEMORY_BYTES = 768 * 1024 * 1024
+_FRONTEND_WORKER_MEMORY_HEADROOM_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
@@ -29,22 +36,65 @@ def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, 
     return dict(known_classes)
 
 
-def _resolve_frontend_parallel_module_workers() -> int:
+def _resolve_frontend_parallel_worker_resources() -> _FrontendWorkerResourceDecision:
     raw = os.environ.get("MOLT_FRONTEND_PARALLEL_MODULES", "").strip().lower()
-    if not raw:
-        return 0
     if raw in {"0", "false", "no", "off"}:
-        return 0
+        return _FrontendWorkerResourceDecision(
+            workers=0,
+            selection_source="environment_disabled",
+            requested_workers=0,
+            cpu_count=0,
+            total_memory_bytes=None,
+            available_memory_bytes=None,
+            memory_ceiling=0,
+        )
+    if not raw:
+        raw = "auto"
+        selection_source = "default_auto"
+    else:
+        selection_source = "environment_auto"
     if raw in {"auto", "1", "true", "yes", "on"}:
-        cpu_count = os.cpu_count() or 1
-        return max(2, cpu_count)
-    try:
-        parsed = int(raw)
-    except ValueError:
-        return 0
-    if parsed < 2:
-        return 0
-    return parsed
+        requested_workers = None
+    else:
+        try:
+            parsed = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "MOLT_FRONTEND_PARALLEL_MODULES must be auto, a boolean, 0, or an integer >= 2"
+            ) from exc
+        if parsed < 2:
+            raise ValueError(
+                "MOLT_FRONTEND_PARALLEL_MODULES integer must be 0, 1 (auto), or >= 2"
+            )
+        requested_workers = parsed
+        selection_source = "environment_explicit"
+    cpu_count = max(1, os.cpu_count() or 1)
+    total_memory_bytes, available_memory_bytes = _system_memory_bytes()
+    memory_ceiling = _memory_bounded_worker_count_from_samples(
+        bytes_per_worker=_FRONTEND_WORKER_MEMORY_BYTES,
+        headroom_bytes=_FRONTEND_WORKER_MEMORY_HEADROOM_BYTES,
+        total_memory_bytes=total_memory_bytes,
+        available_memory_bytes=available_memory_bytes,
+        cpu_count=cpu_count,
+    )
+    selected = (
+        memory_ceiling
+        if requested_workers is None
+        else min(requested_workers, memory_ceiling)
+    )
+    return _FrontendWorkerResourceDecision(
+        workers=selected if selected >= 2 else 0,
+        selection_source=selection_source,
+        requested_workers=requested_workers,
+        cpu_count=cpu_count,
+        total_memory_bytes=total_memory_bytes,
+        available_memory_bytes=available_memory_bytes,
+        memory_ceiling=memory_ceiling,
+    )
+
+
+def _resolve_frontend_parallel_module_workers() -> int:
+    return _resolve_frontend_parallel_worker_resources().workers
 
 
 def _resolve_frontend_parallel_min_modules() -> int:
@@ -341,7 +391,9 @@ def _resolve_frontend_parallel_config(
     *,
     module_count: int,
 ) -> _FrontendParallelConfig:
-    workers = _resolve_frontend_parallel_module_workers()
+    worker_resources = _resolve_frontend_parallel_worker_resources()
+    workers = min(worker_resources.workers, max(1, module_count))
+    worker_resources = replace(worker_resources, workers=workers)
     min_modules = _resolve_frontend_parallel_min_modules()
     min_predicted_cost = _resolve_frontend_parallel_min_predicted_cost()
     target_cost_per_worker = _resolve_frontend_parallel_target_cost_per_worker()
@@ -370,6 +422,7 @@ def _resolve_frontend_parallel_config(
         stdlib_min_cost_scale=stdlib_min_cost_scale,
         enabled=enabled,
         reason=reason,
+        worker_resources=worker_resources,
     )
 
 
@@ -381,6 +434,16 @@ def _frontend_parallel_policy_payload(
         "min_predicted_cost": round(config.min_predicted_cost, 3),
         "target_cost_per_worker": round(config.target_cost_per_worker, 3),
         "stdlib_min_cost_scale": round(config.stdlib_min_cost_scale, 3),
+        "worker_memory_bytes": _FRONTEND_WORKER_MEMORY_BYTES,
+        "worker_memory_headroom_bytes": _FRONTEND_WORKER_MEMORY_HEADROOM_BYTES,
+        "worker_selection": config.worker_resources.selection_source,
+        "worker_requested": config.worker_resources.requested_workers,
+        "worker_cpu_count": config.worker_resources.cpu_count,
+        "worker_memory_ceiling": config.worker_resources.memory_ceiling,
+        "system_total_memory_bytes": config.worker_resources.total_memory_bytes,
+        "system_available_memory_bytes": (
+            config.worker_resources.available_memory_bytes
+        ),
     }
 
 
@@ -405,9 +468,7 @@ def _frontend_layer_plan(
     # across parallel workers would lower each member against a frozen snapshot
     # that omits its cyclic peers, changing results. So force serial here rather
     # than letting the per-layer cost heuristic parallelize it.
-    layer_is_serial_scc_unit = any(
-        name in scc_serial_modules for name in candidates
-    )
+    layer_is_serial_scc_unit = any(name in scc_serial_modules for name in candidates)
     policy = _choose_frontend_parallel_layer_workers(
         candidates=list(candidates),
         module_source_catalog=module_source_catalog,

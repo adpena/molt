@@ -407,6 +407,17 @@ class _FrontendParallelLayerState:
 
 
 @dataclass(frozen=True)
+class _FrontendWorkerResourceDecision:
+    workers: int
+    selection_source: str
+    requested_workers: int | None
+    cpu_count: int
+    total_memory_bytes: int | None
+    available_memory_bytes: int | None
+    memory_ceiling: int
+
+
+@dataclass(frozen=True)
 class _FrontendParallelConfig:
     workers: int
     min_modules: int
@@ -415,6 +426,7 @@ class _FrontendParallelConfig:
     stdlib_min_cost_scale: float
     enabled: bool
     reason: str
+    worker_resources: _FrontendWorkerResourceDecision
 
 
 @dataclass(frozen=True)

@@ -606,7 +606,7 @@ falls back to the host process version when a target is selected.
 |----------|-------------|
 | `MOLT_FRONTEND_TIMINGS` | Enable frontend phase timing output. |
 | `MOLT_FRONTEND_PHASE_TIMEOUT` | Timeout for individual frontend phases. |
-| `MOLT_FRONTEND_PARALLEL_MODULES` | Enable parallel module compilation (`0` or `1`). |
+| `MOLT_FRONTEND_PARALLEL_MODULES` | Maximum parallel module workers (`auto` by default; `0` disables, `1` selects auto, explicit counts start at `2`). Auto and numeric values are capped by CPU count and live available memory, including Linux container/cgroup limits; invalid values fail closed. |
 | `MOLT_FRONTEND_PARALLEL_MIN_MODULES` | Minimum module count to trigger parallelism. |
 | `MOLT_MIDEND_PROFILE` | Override midend optimization profile. |
 | `MOLT_MIDEND_BUDGET_MS` | Midend telemetry budget in milliseconds; never controls pass selection. |

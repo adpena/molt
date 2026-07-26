@@ -207,44 +207,272 @@ _BYTES_PER_CARGO_JOB = 2 * 1024 * 1024 * 1024
 _CARGO_JOB_MEMORY_HEADROOM = 2 * 1024 * 1024 * 1024
 
 
+def _windows_system_memory_bytes() -> tuple[int | None, int | None]:
+    if os.name != "nt":
+        return None, None
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GlobalMemoryStatusEx.restype = ctypes.c_int
+        kernel32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(_MemoryStatusEx)]
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys), int(status.ullAvailPhys)
+    except (OSError, AttributeError, ValueError):
+        pass
+    return None, None
+
+
+def _read_memory_integer(path: Path, *, allow_zero: bool = False) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    return value if value > 0 or (allow_zero and value == 0) else None
+
+
+def _darwin_sysctl_integer(name: str) -> int | None:
+    """Read an integer sysctl without spawning the ``sysctl`` executable."""
+
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        sysctlbyname = libc.sysctlbyname
+        sysctlbyname.restype = ctypes.c_int
+        sysctlbyname.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        encoded = name.encode("ascii")
+        size = ctypes.c_size_t()
+        if sysctlbyname(encoded, None, ctypes.byref(size), None, 0) != 0:
+            return None
+        if size.value <= 0 or size.value > ctypes.sizeof(ctypes.c_uint64):
+            return None
+        storage = ctypes.create_string_buffer(size.value)
+        if sysctlbyname(encoded, storage, ctypes.byref(size), None, 0) != 0:
+            return None
+    except (AttributeError, OSError, ValueError):
+        return None
+    return int.from_bytes(storage.raw[: size.value], byteorder=sys.byteorder)
+
+
+def _darwin_system_memory_bytes() -> tuple[int | None, int | None]:
+    """Sample macOS physical capacity and immediately reclaimable memory."""
+
+    total = _darwin_sysctl_integer("hw.memsize")
+    page_size = _darwin_sysctl_integer("hw.pagesize")
+    page_counts = (
+        _darwin_sysctl_integer("vm.page_free_count"),
+        _darwin_sysctl_integer("vm.page_inactive_count"),
+        _darwin_sysctl_integer("vm.page_speculative_count"),
+    )
+    if page_size is None or any(value is None for value in page_counts):
+        return total, None
+    available = page_size * sum(value for value in page_counts if value is not None)
+    return total, available
+
+
+def _read_cgroup_inactive_file_bytes(path: Path) -> int:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        name, separator, raw = line.partition(" ")
+        if separator and name in {"inactive_file", "total_inactive_file"}:
+            return int(raw) if raw.isdigit() else 0
+    return 0
+
+
+def _linux_cgroup_memory_directories(
+    *,
+    cgroup_root: Path,
+    membership_path: Path,
+) -> tuple[Path, Path]:
+    unified_relative: Path | None = None
+    legacy_relative: Path | None = None
+    try:
+        memberships = membership_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        memberships = []
+    for line in memberships:
+        _hierarchy, separator, suffix = line.partition(":")
+        controllers, separator2, relative = suffix.partition(":")
+        if not separator or not separator2:
+            continue
+        candidate = Path(relative.lstrip("/"))
+        if not controllers:
+            unified_relative = candidate
+        elif "memory" in controllers.split(","):
+            legacy_relative = candidate
+    unified = cgroup_root / (unified_relative or Path())
+    if not (unified / "memory.max").exists():
+        unified = cgroup_root
+    legacy_base = cgroup_root / "memory"
+    legacy = legacy_base / (legacy_relative or Path())
+    if not (legacy / "memory.limit_in_bytes").exists():
+        legacy = legacy_base
+    return unified, legacy
+
+
+def _linux_system_memory_bytes(
+    *,
+    meminfo_path: Path = Path("/proc/meminfo"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+    cgroup_membership_path: Path = Path("/proc/self/cgroup"),
+) -> tuple[int | None, int | None]:
+    """Sample Linux host memory constrained by the active cgroup, if any."""
+
+    fields: dict[str, int] = {}
+    try:
+        meminfo = meminfo_path.read_text(encoding="utf-8")
+    except OSError:
+        meminfo = ""
+    for line in meminfo.splitlines():
+        name, separator, value = line.partition(":")
+        if not separator or name not in {"MemTotal", "MemAvailable"}:
+            continue
+        parts = value.split()
+        if parts and parts[0].isdigit():
+            fields[name] = int(parts[0]) * 1024
+
+    total = fields.get("MemTotal")
+    available = fields.get("MemAvailable")
+    unified, legacy = _linux_cgroup_memory_directories(
+        cgroup_root=cgroup_root,
+        membership_path=cgroup_membership_path,
+    )
+    cgroup_limit = _read_memory_integer(unified / "memory.max")
+    cgroup_usage = _read_memory_integer(unified / "memory.current", allow_zero=True)
+    cgroup_inactive_file = _read_cgroup_inactive_file_bytes(unified / "memory.stat")
+    if cgroup_limit is None:
+        cgroup_limit = _read_memory_integer(legacy / "memory.limit_in_bytes")
+        cgroup_usage = _read_memory_integer(
+            legacy / "memory.usage_in_bytes", allow_zero=True
+        )
+        cgroup_inactive_file = _read_cgroup_inactive_file_bytes(legacy / "memory.stat")
+    if cgroup_limit is not None:
+        total = cgroup_limit if total is None else min(total, cgroup_limit)
+        if cgroup_usage is not None:
+            reclaimable = min(cgroup_usage, cgroup_inactive_file)
+            cgroup_available = max(0, cgroup_limit - cgroup_usage + reclaimable)
+            available = (
+                cgroup_available
+                if available is None
+                else min(available, cgroup_available)
+            )
+    return total, available
+
+
+def _system_memory_bytes() -> tuple[int | None, int | None]:
+    """Sample total and live available physical memory as one host snapshot."""
+
+    if os.name == "nt":
+        return _windows_system_memory_bytes()
+    if sys.platform.startswith("linux"):
+        total, available = _linux_system_memory_bytes()
+        if total is not None or available is not None:
+            return total, available
+    if sys.platform == "darwin":
+        total, available = _darwin_system_memory_bytes()
+        if total is not None or available is not None:
+            return total, available
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        total_pages = os.sysconf("SC_PHYS_PAGES")
+        available_pages = os.sysconf("SC_AVPHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return None, None
+    if page_size <= 0:
+        return None, None
+    total = int(page_size) * int(total_pages) if total_pages > 0 else None
+    available = int(page_size) * int(available_pages) if available_pages > 0 else None
+    return total, available
+
+
 def _total_system_memory_bytes() -> int | None:
     """Best-effort total physical memory in bytes, or ``None`` if unknown.
 
     Uses only stdlib probes so the resource authority does not depend on
     ``psutil`` or the ``tools/`` memory-guard package (a layering boundary).
     """
-    if os.name == "nt":
-        import ctypes
+    return _system_memory_bytes()[0]
 
-        class _MemoryStatusEx(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
 
-        status = _MemoryStatusEx()
-        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        try:
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.ullTotalPhys)
-        except (OSError, AttributeError, ValueError):
-            return None
-        return None
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        phys_pages = os.sysconf("SC_PHYS_PAGES")
-    except (ValueError, OSError, AttributeError):
-        return None
-    if page_size <= 0 or phys_pages <= 0:
-        return None
-    return int(page_size) * int(phys_pages)
+def _available_system_memory_bytes() -> int | None:
+    """Best-effort currently available physical memory in bytes."""
+
+    return _system_memory_bytes()[1]
+
+
+def _memory_bounded_worker_count(
+    *,
+    bytes_per_worker: int,
+    headroom_bytes: int,
+    cpu_count: int | None = None,
+) -> int:
+    """CPU and live-memory bounded worker ceiling shared by build phases."""
+
+    if bytes_per_worker <= 0 or headroom_bytes < 0:
+        raise ValueError("worker memory policy must be positive")
+    total_memory_bytes, available_memory_bytes = _system_memory_bytes()
+    return _memory_bounded_worker_count_from_samples(
+        bytes_per_worker=bytes_per_worker,
+        headroom_bytes=headroom_bytes,
+        total_memory_bytes=total_memory_bytes,
+        available_memory_bytes=available_memory_bytes,
+        cpu_count=cpu_count,
+    )
+
+
+def _memory_bounded_worker_count_from_samples(
+    *,
+    bytes_per_worker: int,
+    headroom_bytes: int,
+    total_memory_bytes: int | None,
+    available_memory_bytes: int | None,
+    cpu_count: int | None = None,
+) -> int:
+    """Compute a worker ceiling from one coherent resource snapshot."""
+
+    if bytes_per_worker <= 0 or headroom_bytes < 0:
+        raise ValueError("worker memory policy must be positive")
+    cpus = max(1, cpu_count if cpu_count is not None else (os.cpu_count() or 1))
+    memory_samples = [
+        sample
+        for sample in (total_memory_bytes, available_memory_bytes)
+        if sample is not None
+    ]
+    if not memory_samples:
+        return cpus
+    usable = max(0, min(memory_samples) - headroom_bytes)
+    memory_workers = max(1, usable // bytes_per_worker)
+    return max(1, min(cpus, memory_workers))
 
 
 def _memory_bounded_cargo_jobs() -> int | None:
@@ -254,13 +482,15 @@ def _memory_bounded_cargo_jobs() -> int | None:
     RAM, never exceeding the CPU count. Returns ``None`` when memory can't be
     probed so callers leave cargo's default job count untouched.
     """
-    total = _total_system_memory_bytes()
-    if total is None:
+    total_memory_bytes, available_memory_bytes = _system_memory_bytes()
+    if total_memory_bytes is None and available_memory_bytes is None:
         return None
-    cpu_count = os.cpu_count() or 1
-    usable = max(0, total - _CARGO_JOB_MEMORY_HEADROOM)
-    mem_jobs = max(1, usable // _BYTES_PER_CARGO_JOB)
-    return max(1, min(cpu_count, mem_jobs))
+    return _memory_bounded_worker_count_from_samples(
+        bytes_per_worker=_BYTES_PER_CARGO_JOB,
+        headroom_bytes=_CARGO_JOB_MEMORY_HEADROOM,
+        total_memory_bytes=total_memory_bytes,
+        available_memory_bytes=available_memory_bytes,
+    )
 
 
 # Fire the SSD janitor at most once per this many hours per artifact root, so the
