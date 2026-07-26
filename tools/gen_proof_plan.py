@@ -76,6 +76,7 @@ def _json_projection(plan: ProofPlan) -> str:
         "matrix_cells": [cell.data for cell in plan.matrix_cells],
         "commands": [command.data for command in plan.commands],
         "toolchain_policies": [policy.data for policy in plan.toolchain_policies],
+        "environment_policies": [policy.data for policy in plan.environment_policies],
         "local": {
             "always": list(plan.always),
             "always_command_ids": [
@@ -197,6 +198,32 @@ def _markdown_projection(plan: ProofPlan) -> str:
             f"| `{policy.name}` | `{data['version_pattern']}` | "
             f"`{data.get('probe_cwd', '.')}` | `{data['setup_value']}` | "
             f"{len(data['setup_evidence'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Proof environment contracts",
+            "",
+            "Environment policy is applied by the canonical command executor after "
+            "command overrides, so every matching proof family receives the same "
+            "fail-closed compiler environment.",
+            "",
+            "| Policy | Required toolchains | Match | Set |",
+            "|---|---|---|---|",
+        ]
+    )
+    for policy in plan.environment_policies:
+        data = policy.data
+        matches = ", ".join(
+            f"`{name}={pattern}`" for name, pattern in data["match_environment"].items()
+        )
+        settings = ", ".join(
+            f"`{name}={value}`" for name, value in data["set_environment"].items()
+        )
+        lines.append(
+            f"| `{policy.name}` | "
+            f"{', '.join(f'`{name}`' for name in data['toolchains'])} | "
+            f"{matches} | {settings} |"
         )
     lines.extend(
         [
