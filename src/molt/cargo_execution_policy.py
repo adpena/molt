@@ -23,6 +23,11 @@ CARGO_WRAPPER_ENV_NAMES = (
     "CARGO_BUILD_RUSTC_WRAPPER",
     "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
 )
+PROOF_COMMAND_TIMEOUT_ENV = "MOLT_PROOF_COMMAND_TIMEOUT_SEC"
+NESTED_PROCESS_BUDGET_BY_ROLE = {
+    "build": "cold",
+    "execution": "warm",
+}
 
 
 def _wrapper_is_sccache(wrapper: str) -> bool:
@@ -108,6 +113,57 @@ def cargo_subprocess_environment(
         environ,
         default_incremental=default_incremental,
     )
+
+
+def proof_command_timeout_seconds(
+    environ: Mapping[str, str],
+) -> float | None:
+    raw = environ.get(PROOF_COMMAND_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{PROOF_COMMAND_TIMEOUT_ENV} must be a positive finite number"
+        ) from exc
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(
+            f"{PROOF_COMMAND_TIMEOUT_ENV} must be a positive finite number"
+        )
+    return value
+
+
+def default_nested_process_timeout_seconds(role: str) -> float:
+    try:
+        budget_class = NESTED_PROCESS_BUDGET_BY_ROLE[role]
+    except KeyError as exc:
+        choices = ", ".join(sorted(NESTED_PROCESS_BUDGET_BY_ROLE))
+        raise ValueError(
+            f"unknown nested process role {role!r}; expected {choices}"
+        ) from exc
+    return float(load_ci_cargo_policy().execution_budgets.timeout_seconds(budget_class))
+
+
+def enforce_owning_proof_timeout(
+    environ: Mapping[str, str],
+    selected_timeout: float | None,
+) -> float | None:
+    """Keep a default/env-selected inner guard from undercutting its owner.
+
+    Callers resolve an explicit function argument before invoking this helper;
+    those deliberately narrow operation bounds remain authoritative. All
+    default and environment-selected nested budgets inherit the proof command's
+    calibrated envelope as a floor, while still remaining bounded by that outer
+    command owner.
+    """
+
+    owner_timeout = proof_command_timeout_seconds(environ)
+    if owner_timeout is None:
+        return selected_timeout
+    if selected_timeout is None:
+        return owner_timeout
+    return max(selected_timeout, owner_timeout)
 
 
 @dataclass(frozen=True, slots=True)

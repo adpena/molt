@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 50 |
+| Hashed executable authority inputs | 1 | 53 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -96,7 +96,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 
 ## Cargo execution contracts
 
-Cargo wrapper and incremental policy is applied at the canonical subprocess boundary, including metadata and toolchain probes. Compiler build partitions select a named timeout budget derived from the shared receipt-calibrated CI Cargo policy.
+Cargo wrapper and incremental policy is applied at the canonical subprocess boundary, including metadata and toolchain probes. Compiler build partitions select a named timeout budget derived from the shared receipt-calibrated CI Cargo policy. Nested native/WASM test guards inherit that envelope through `MOLT_PROOF_COMMAND_TIMEOUT_SEC` so a private default cannot terminate progressing work first.
 
 The wrapper conflict was reconfirmed by native CI run `30211145633` job `89817499999` at commit `66c042c7ba51bc8606f34b27cfc6af90783cec61`.
 

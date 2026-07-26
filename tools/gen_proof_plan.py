@@ -10,7 +10,10 @@ import sys
 
 from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
 from generator_io import generated_file_matches, write_generated_text
-from molt.cargo_execution_policy import load_ci_cargo_policy
+from molt.cargo_execution_policy import (
+    PROOF_COMMAND_TIMEOUT_ENV,
+    load_ci_cargo_policy,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +92,7 @@ def _json_projection(plan: ProofPlan) -> str:
             "incident_command": shared_cargo_policy.environment.incident_command,
         },
         "cargo_execution_policy": {
+            "owning_proof_timeout_environment": PROOF_COMMAND_TIMEOUT_ENV,
             "timeout_seconds_by_class": dict(cargo_policy.timeout_seconds_by_class),
             "observed_cold_timeout_seconds": (
                 cargo_policy.observed_cold_timeout_seconds
@@ -233,7 +237,9 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "Cargo wrapper and incremental policy is applied at the canonical "
             "subprocess boundary, including metadata and toolchain probes. Compiler "
             "build partitions select a named timeout budget derived from the shared "
-            "receipt-calibrated CI Cargo policy.",
+            "receipt-calibrated CI Cargo policy. Nested native/WASM test guards "
+            f"inherit that envelope through `{PROOF_COMMAND_TIMEOUT_ENV}` so a "
+            "private default cannot terminate progressing work first.",
             "",
             "The wrapper conflict was reconfirmed by native CI run "
             f"`{shared_cargo_policy.environment.incident_run_id}` job "

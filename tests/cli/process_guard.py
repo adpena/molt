@@ -12,7 +12,6 @@ from tools import harness_memory_guard
 from tests import process_guard_common
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CLI_TEST_TIMEOUT_SEC = process_guard_common.DEFAULT_TEST_PROCESS_TIMEOUT_SEC
 
 
 def run_cli_test_process(
@@ -32,7 +31,6 @@ def run_cli_test_process(
         cwd=cwd,
         env=env,
         timeout=timeout,
-        default_timeout=DEFAULT_CLI_TEST_TIMEOUT_SEC,
         capture_output=capture_output,
         text=text,
         check=check,

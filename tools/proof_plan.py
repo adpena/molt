@@ -33,6 +33,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from molt.cargo_execution_policy import (  # noqa: E402
+    PROOF_COMMAND_TIMEOUT_ENV,
     cargo_subprocess_environment,
     load_ci_cargo_policy,
     normalize_cargo_environment,
@@ -695,6 +696,10 @@ class ProofPlan:
                 for name, value in environment.items()
             ):
                 errors.append(f"{command.id}: env must be a string map")
+            elif PROOF_COMMAND_TIMEOUT_ENV in environment:
+                errors.append(
+                    f"{command.id}: env cannot override {PROOF_COMMAND_TIMEOUT_ENV}"
+                )
             timeout = command.data.get("timeout_seconds")
             if not isinstance(timeout, int) or timeout <= 0:
                 errors.append(f"{command.id}: timeout_seconds must be positive")
@@ -1532,6 +1537,7 @@ def _command_environment(
     child_env.update(
         {str(name): str(value) for name, value in command.data.get("env", {}).items()}
     )
+    child_env[PROOF_COMMAND_TIMEOUT_ENV] = str(timeout)
     if "cargo" not in command.toolchains:
         return child_env, ()
     return normalize_cargo_environment(child_env)

@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tests import process_guard_common
 
 
@@ -81,10 +82,9 @@ def test_build_role_preserves_family_custody_and_uses_shared_default(
 
     assert captured["kwargs"]["prefix"] == "MOLT_WASM_TEST"
     assert captured["kwargs"]["operation_role"] == "build"
-    assert (
-        captured["kwargs"]["timeout"]
-        == process_guard_common.DEFAULT_BUILD_PROCESS_TIMEOUT_SEC
-    )
+    assert captured["kwargs"][
+        "timeout"
+    ] == process_guard_common.default_nested_process_timeout_seconds("build")
 
 
 @pytest.mark.parametrize(
@@ -114,6 +114,82 @@ def test_build_timeout_policy_is_compositional(
         ["cargo", "build"], prefix="MOLT_WASM_TEST", env=env
     )
     assert captured["kwargs"]["timeout"] == expected
+
+
+@pytest.mark.parametrize(
+    ("prefix", "command"),
+    [
+        ("MOLT_NATIVE_TEST", ["python3", "tools/bench.py"]),
+        ("MOLT_WASM_TEST", ["cargo", "build", "--locked"]),
+        ("MOLT_CLI_TEST", ["python3", "tool.py"]),
+        ("MOLT_RUST_TEST", ["rustc", "probe.rs"]),
+        ("MOLT_COMPLIANCE", ["python3", "probe.py"]),
+        ("MOLT_MUTATION", ["python3", "probe.py"]),
+        ("MOLT_SURFACE_TEST", ["python3", "probe.py"]),
+    ],
+)
+def test_nested_guard_defaults_cannot_undercut_owning_proof_budget(
+    monkeypatch,
+    prefix: str,
+    command: list[str],
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    process_guard_common.run_guarded_test_process(
+        command,
+        prefix=prefix,
+        env={
+            PROOF_COMMAND_TIMEOUT_ENV: "1200",
+            f"{prefix}_TIMEOUT_SEC": "300",
+        },
+    )
+
+    assert captured["kwargs"]["timeout"] == 1200
+
+
+def test_explicit_nested_operation_timeout_remains_narrower_than_owner(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    process_guard_common.run_guarded_test_process(
+        ["node", "probe.js"],
+        prefix="MOLT_WASM_TEST",
+        env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
+        timeout=10,
+    )
+
+    assert captured["kwargs"]["timeout"] == 10
+
+
+@pytest.mark.parametrize("raw", ["0", "nan", "invalid"])
+def test_invalid_owning_proof_timeout_fails_closed(raw: str) -> None:
+    with pytest.raises(ValueError, match=PROOF_COMMAND_TIMEOUT_ENV):
+        process_guard_common._timeout_from_role_env(
+            "MOLT_NATIVE_TEST",
+            process_guard_common.GuardedProcessRole.EXECUTION,
+            {PROOF_COMMAND_TIMEOUT_ENV: raw},
+            explicit=None,
+            default=None,
+        )
 
 
 def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None:

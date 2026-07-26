@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tests import native_process_guard
 
 
@@ -78,6 +79,27 @@ def test_run_native_test_process_uses_custom_default_timeout(monkeypatch) -> Non
     native_process_guard.run_native_test_process(["true"], default_timeout=600)
 
     assert captured["kwargs"]["timeout"] == 600
+
+
+def test_native_nested_default_inherits_owning_proof_budget(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+    monkeypatch.setattr(
+        native_process_guard.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    native_process_guard.run_native_test_process(
+        ["python3", "tools/bench.py"],
+        env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
+    )
+
+    assert captured["kwargs"]["timeout"] == 1200
 
 
 def test_run_native_test_process_preserves_check_semantics(monkeypatch) -> None:

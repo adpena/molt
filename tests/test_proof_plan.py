@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
@@ -80,6 +81,10 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "warm": 300,
     }
     assert projection["cargo_execution_policy"]["measurement_job_id"] == 89_813_773_652
+    assert (
+        projection["cargo_execution_policy"]["owning_proof_timeout_environment"]
+        == PROOF_COMMAND_TIMEOUT_ENV
+    )
     assert projection["cargo_environment_policy"] == {
         "wrapper_environment_names": [
             "RUSTC_WRAPPER",
@@ -383,6 +388,13 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
         "llvm.build.backend": ("cold", 1200),
         "mlir.test.backend": ("warm", 300),
     }
+    for command in compiler_commands:
+        environment, _applied = proof_plan._command_environment(
+            PLAN, command, int(command.data["timeout_seconds"])
+        )
+        assert environment[PROOF_COMMAND_TIMEOUT_ENV] == str(
+            command.data["timeout_seconds"]
+        )
 
 
 def test_compiler_build_command_cannot_restore_an_explicit_timeout_lane() -> None:
@@ -403,6 +415,25 @@ def test_compiler_build_command_cannot_restore_an_explicit_timeout_lane() -> Non
     errors = replace(PLAN, commands=commands).validate()
 
     assert "wasm.build.host: compiler-build-resource requires timeout_budget" in errors
+
+
+def test_command_cannot_override_owning_proof_timeout_environment() -> None:
+    commands = tuple(
+        replace(
+            current,
+            data={
+                **current.data,
+                "env": {PROOF_COMMAND_TIMEOUT_ENV: "1"},
+            },
+        )
+        if current.id == "wasm.build.host"
+        else current
+        for current in PLAN.commands
+    )
+
+    errors = replace(PLAN, commands=commands).validate()
+
+    assert f"wasm.build.host: env cannot override {PROOF_COMMAND_TIMEOUT_ENV}" in errors
 
 
 def test_command_direct_rustc_override_does_not_apply_sccache_policy(

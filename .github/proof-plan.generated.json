@@ -47,12 +47,15 @@
     "tools/run_cargo_test_truth.py",
     "tools/pytest_truth_plugin.py",
     "tests/test_proof_plan.py",
+    "tests/process_guard_common.py",
+    "tests/native_process_guard.py",
+    "tests/wasm_linked_runner.py",
     "tests/test_ci_workflow_topology.py",
     "tests/test_generator_manifest.py",
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "70813e63d7bd3c5b5c680d5f0069716984e1058baa5637d788beded4dae4226c",
+  "authority_sha256": "0726dc9f0cc3a30bfaed0c6fbd15f9cd362a88c8cd9cdd083e4073334501b755",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -72,6 +75,7 @@
     "measurement_run_id": 30209686001,
     "minimum_cold_headroom_multiplier": 3.0,
     "observed_cold_timeout_seconds": 300.51,
+    "owning_proof_timeout_environment": "MOLT_PROOF_COMMAND_TIMEOUT_SEC",
     "timeout_seconds_by_class": {
       "cold": 1200,
       "cross-check": 240,
