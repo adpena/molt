@@ -19,8 +19,8 @@ from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeObjectFormat,
-    native_dead_strip_identity_flags,
     native_link_capabilities,
+    native_link_policy_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
     resolve_native_target_spec,
@@ -292,7 +292,12 @@ def _build_native_link_plan(
                 str(output_binary),
             ]
         )
+    elif target.object_format is NativeObjectFormat.COFF:
+        link_inputs.extend([runtime_lib_str, "-o", str(output_binary)])
     else:
+        # ld64 has no ELF-style archive group.  Preserve its explicit second
+        # archive pass until the Mach-O runtime is represented as one acyclic
+        # archive graph or a measured -force_load policy replaces it.
         link_inputs.extend([runtime_lib_str, runtime_lib_str, "-o", str(output_binary)])
     link_cmd.extend(link_inputs)
 
@@ -346,7 +351,7 @@ def _build_native_link_plan(
             _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
             link_cmd.append(f"-Wl,/DEF:{def_path}")
     link_cmd.extend(
-        native_dead_strip_identity_flags(
+        native_link_policy_flags(
             target=target,
             capabilities=capabilities,
             dead_strip=policy.dead_strip,
