@@ -110,6 +110,7 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
         guard_signal: int | None = None,
         peak_job_commit_bytes: int | None = None,
+        windows_job_cleanup: memory_guard.WindowsJobCleanup | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -126,6 +127,7 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         self.termination_reports = tuple(termination_reports)
         self.guard_signal = guard_signal
         self.peak_job_commit_bytes = peak_job_commit_bytes
+        self.windows_job_cleanup = windows_job_cleanup
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -986,6 +988,7 @@ def _append_guarded_command_profile(
     termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
     guard_signal: int | None = None,
     peak_job_commit_bytes: int | None = None,
+    windows_job_cleanup: memory_guard.WindowsJobCleanup | None = None,
     operation_role: str | None = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
@@ -1035,6 +1038,9 @@ def _append_guarded_command_profile(
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
         "peak_job_commit_bytes": peak_job_commit_bytes,
+        "windows_job_cleanup": memory_guard.windows_job_cleanup_payload(
+            windows_job_cleanup
+        ),
         "orphaned_process_groups": list(orphaned_process_groups),
         "child_process": memory_guard.guarded_child_process_payload(child_process),
         "termination_reports": memory_guard.termination_reports_payload(
@@ -1516,6 +1522,7 @@ def guarded_completed_process(
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
+        windows_job_cleanup=guarded.windows_job_cleanup,
         operation_role=operation_role,
     )
     if profile_error:
@@ -1537,6 +1544,7 @@ def guarded_completed_process(
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
+        windows_job_cleanup=guarded.windows_job_cleanup,
     )
 
 
@@ -1758,6 +1766,7 @@ def guarded_completed_process_to_tempfiles(
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
+        windows_job_cleanup=guarded.windows_job_cleanup,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1778,6 +1787,7 @@ def guarded_completed_process_to_tempfiles(
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
+        windows_job_cleanup=guarded.windows_job_cleanup,
     )
 
 

@@ -111,6 +111,7 @@ from tools.memory_guard_core.payloads import (  # noqa: E402
     termination_action_payload as termination_action_payload,
     termination_report_payload as termination_report_payload,
     termination_reports_payload as termination_reports_payload,
+    windows_job_cleanup_payload as windows_job_cleanup_payload,
 )
 from tools.memory_guard_core.sample_records import (  # noqa: E402
     DEFAULT_SAMPLES_MAX_MB as DEFAULT_SAMPLES_MAX_MB,
@@ -158,6 +159,8 @@ from tools.process_spawn import (  # noqa: E402
     inherit_stdio_kwargs,
 )
 from tools import win_job as _win_job  # noqa: E402
+
+WindowsJobCleanup = _win_job.WindowsJobCleanup
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
@@ -322,8 +325,7 @@ def _validated_termination_report(
 ) -> GuardTerminationReport:
     if not isinstance(report, GuardTerminationReport):
         raise TypeError(
-            f"{caller} must return GuardTerminationReport, "
-            f"got {type(report).__name__}"
+            f"{caller} must return GuardTerminationReport, got {type(report).__name__}"
         )
     return report
 
@@ -884,6 +886,7 @@ def run_guarded(
 
     proc: subprocess.Popen[Any] | None = None
     guard_job: int | None = None
+    windows_job_cleanup: _win_job.WindowsJobCleanup | None = None
     launch: GuardedLaunch | None = None
     child_process: GuardedChildProcess | None = None
     tracker: ProcessTreeTracker | None = None
@@ -1264,9 +1267,7 @@ def run_guarded(
                     watched=remembered_watched,
                     grace=0.0,
                 )
-                terminate_direct_child_handle(
-                    reason=f"{reason}_direct_child_handle"
-                )
+                terminate_direct_child_handle(reason=f"{reason}_direct_child_handle")
                 return
             termination_reports.append(
                 _validated_termination_report(
@@ -1572,7 +1573,6 @@ def run_guarded(
                     break
                 except subprocess.TimeoutExpired:
                     pass
-        finished = time.monotonic()
         if violation is None and child_exit_usage is not None:
             current_limits = last_limits or resolve_memory_limits(
                 max_process_rss_kb=max_rss_kb,
@@ -1630,9 +1630,7 @@ def run_guarded(
                         # Reap that one child without extending authority to
                         # any unverified descendant.
                         terminate_direct_child_handle(
-                            reason=(
-                                "post_loop_unreaped_child_direct_child_handle"
-                            )
+                            reason=("post_loop_unreaped_child_direct_child_handle")
                         )
             if cleanup_orphans and not guard_interrupted:
                 try:
@@ -1673,6 +1671,18 @@ def run_guarded(
                         exc,
                         attempt_already_counted=False,
                     )
+            if guard_job is not None:
+                _update_active_guard_marker(
+                    guard_marker,
+                    guard_token,
+                    status="windows_job_draining",
+                    child_process=guarded_child_process_payload(child_process),
+                    child_returncode=proc.returncode,
+                )
+                windows_job_cleanup = _win_job.complete_job_custody(
+                    guard_job,
+                    timeout=termination_wait_s,
+                )
             if stdin_thread is not None:
                 stdin_thread.join(timeout=1.0)
             if stdout_capture is not None:
@@ -1686,6 +1696,7 @@ def run_guarded(
                 stdout_capture.close()
             if stderr_capture is not None:
                 stderr_capture.close()
+        finished = time.monotonic()
         child_started = _read_child_started_at(launch.started_read_fd)
         elapsed_start = child_started if child_started is not None else start
         elapsed_s = max(0.0, finished - elapsed_start)
@@ -1777,8 +1788,8 @@ def run_guarded(
                 )
         peak_job_commit_bytes = (
             None
-            if guard_job is None
-            else _win_job.peak_job_memory_bytes(guard_job)
+            if windows_job_cleanup is None
+            else windows_job_cleanup.after.peak_job_commit_bytes
         )
         result = GuardResult(
             returncode=final_returncode,
@@ -1797,6 +1808,7 @@ def run_guarded(
             termination_reports=tuple(termination_reports),
             sampling_telemetry=final_sampling_telemetry,
             peak_job_commit_bytes=peak_job_commit_bytes,
+            windows_job_cleanup=windows_job_cleanup,
         )
         _update_active_guard_marker(
             guard_marker,
@@ -1814,9 +1826,8 @@ def run_guarded(
             cargo_incremental_quarantine=_cargo_incremental_quarantine_payload(
                 result.cargo_incremental_quarantine
             ),
-            sampling_telemetry=_sampling_telemetry_payload(
-                result.sampling_telemetry
-            ),
+            sampling_telemetry=_sampling_telemetry_payload(result.sampling_telemetry),
+            windows_job_cleanup=windows_job_cleanup_payload(result.windows_job_cleanup),
             limit_at_violation=(
                 None
                 if result.limit_at_violation is None
@@ -1891,10 +1902,8 @@ def run_guarded(
         if launch is not None:
             _close_fds((launch.started_read_fd,))
         _restore_guard_signal_handlers()
-        # Drop the job handle last: by now the child has exited and been reaped,
-        # so KILL_ON_JOB_CLOSE is a no-op here. Its whole purpose is the case
-        # where the guard dies BEFORE reaching this line — then the OS closes the
-        # handle for us and reaps the subtree.
+        # Drop the job handle last. Successful execution has already proven the
+        # exact Job empty; KILL_ON_JOB_CLOSE remains the crash-only safety net.
         _win_job.close_job(guard_job)
 
 
@@ -2157,9 +2166,7 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
         "tracked_orphan_cleanup",
         "repo_scoped_orphan_cleanup",
     }
-    final_orphan_actions: dict[
-        tuple[str, int], GuardTerminationAction
-    ] = {}
+    final_orphan_actions: dict[tuple[str, int], GuardTerminationAction] = {}
     final_primary_actions: dict[tuple[str, int], GuardTerminationAction] = {}
     for report in result.termination_reports:
         for action in report.actions:
@@ -2393,13 +2400,12 @@ def _write_summary_json(
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
         "peak_job_commit_bytes": result.peak_job_commit_bytes,
+        "windows_job_cleanup": windows_job_cleanup_payload(result.windows_job_cleanup),
         "timed_out": result.timed_out,
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),
         "termination_reports": termination_reports_payload(result.termination_reports),
-        "sampling_telemetry": _sampling_telemetry_payload(
-            result.sampling_telemetry
-        ),
+        "sampling_telemetry": _sampling_telemetry_payload(result.sampling_telemetry),
         "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(
             result.cargo_incremental_quarantine
         ),
@@ -2458,7 +2464,10 @@ def _write_worker_exit_summary_json(
     if not isinstance(payload, dict):
         return False
     status = payload.get("status")
-    if status not in {"running", "child_running"} or payload.get("returncode") is not None:
+    if (
+        status not in {"running", "child_running"}
+        or payload.get("returncode") is not None
+    ):
         return False
 
     recorded_at = _utc_timestamp()

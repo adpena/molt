@@ -9,7 +9,10 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tools.win_job import WindowsJobCleanup
 
 from tools.memory_guard_core import process_model as _process_model
 from tools.memory_guard_core.cargo_quarantine import CargoIncrementalQuarantine
@@ -92,6 +95,7 @@ class GuardResult:
     termination_reports: tuple[GuardTerminationReport, ...] = ()
     sampling_telemetry: GuardSamplingTelemetry | None = None
     peak_job_commit_bytes: int | None = None
+    windows_job_cleanup: WindowsJobCleanup | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage
@@ -1301,8 +1305,7 @@ def _fully_completed_process_groups(
     completed_processes = {
         action.target_id
         for action in actions
-        if action.target_kind == "process"
-        and action.result == "completed_or_missing"
+        if action.target_kind == "process" and action.result == "completed_or_missing"
     }
     completed_groups = {
         action.target_id
@@ -1510,11 +1513,7 @@ def cleanup_repo_scoped_orphans_since_baseline(
                 )
             )
         if fresh_group.pgid in _fully_completed_process_groups(
-            {
-                fresh_group.pgid: {
-                    sample.pid for sample in fresh_group.samples
-                }
-            },
+            {fresh_group.pgid: {sample.pid for sample in fresh_group.samples}},
             actions,
         ):
             terminated.append(fresh_group.pgid)

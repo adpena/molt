@@ -73,6 +73,44 @@ def termination_reports_payload(
     return [termination_report_payload(report) for report in reports]
 
 
+def _windows_system_resources_payload(resources: Any) -> dict[str, object]:
+    return {
+        "process_count": resources.process_count,
+        "thread_count": resources.thread_count,
+        "system_handle_count": resources.system_handle_count,
+        "guard_handle_count": resources.guard_handle_count,
+        "commit_total_bytes": resources.commit_total_bytes,
+        "commit_limit_bytes": resources.commit_limit_bytes,
+        "commit_peak_bytes": resources.commit_peak_bytes,
+        "physical_total_bytes": resources.physical_total_bytes,
+        "physical_available_bytes": resources.physical_available_bytes,
+        "errors": list(resources.errors),
+    }
+
+
+def _windows_job_accounting_payload(accounting: Any) -> dict[str, object]:
+    return {
+        "total_processes": accounting.total_processes,
+        "active_processes": accounting.active_processes,
+        "total_terminated_processes": accounting.total_terminated_processes,
+        "peak_job_commit_bytes": accounting.peak_job_commit_bytes,
+    }
+
+
+def windows_job_cleanup_payload(cleanup: Any | None) -> dict[str, object] | None:
+    if cleanup is None:
+        return None
+    return {
+        "completed": cleanup.completed,
+        "terminated_remaining_processes": cleanup.terminated_remaining_processes,
+        "elapsed_s": cleanup.elapsed_s,
+        "before": _windows_job_accounting_payload(cleanup.before),
+        "after": _windows_job_accounting_payload(cleanup.after),
+        "system_before": _windows_system_resources_payload(cleanup.system_before),
+        "system_after": _windows_system_resources_payload(cleanup.system_after),
+    }
+
+
 def memory_limits_payload(limits: ResolvedMemoryLimits) -> dict[str, object]:
     budget = limits.adaptive_budget
     return {

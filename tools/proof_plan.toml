@@ -50,18 +50,27 @@ authority_inputs = [
   "tools/harness_memory_guard.py",
   "tools/import_file.py",
   "tools/memory_guard.py",
+  "tools/memory_guard_core/payloads.py",
+  "tools/memory_guard_core/process_custody.py",
   "tools/process_sentinel.py",
   "tools/process_spawn.py",
+  "tools/win_job.py",
   "tools/run_cargo_test_truth.py",
   "tools/pytest_truth_plugin.py",
   "tests/test_proof_plan.py",
+  "tests/test_harness_memory_guard.py",
+  "tests/test_memory_guard_tool.py",
   "tests/process_guard_common.py",
   "tests/native_process_guard.py",
   "tests/wasm_linked_runner.py",
   "tests/test_ci_workflow_topology.py",
   "tests/test_generator_manifest.py",
   "tests/tools/test_cargo_test_truth.py",
+  "tests/tools/test_guarded_exec.py",
+  "tests/tools/test_memory_guard_spawn_callback.py",
   "tests/tools/test_pytest_truth_plugin.py",
+  "tests/tools/test_win_job.py",
+  "tests/tools/test_win_job_contract.py",
 ]
 
 # Gates that run for any non-empty local integration change.
@@ -615,7 +624,7 @@ dependencies = []
 [[ci_family]]
 name = "platform_portability"
 description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/verify_ir_suite.py", "tests/differential/basic/arith.py", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py"]
+inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/memory_guard_core/**", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/verify_ir_suite.py", "tools/win_job.py", "tests/differential/basic/arith.py", "tests/test_harness_memory_guard.py", "tests/test_memory_guard_tool.py", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py"]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
 job = "platform-portability"
