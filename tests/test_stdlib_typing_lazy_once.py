@@ -151,6 +151,19 @@ def test_recursive_type_alias_evaluation_raises_and_next_read_retries(
     assert calls == recursive_calls + 1
 
 
+def test_applied_type_alias_repr_formats_concrete_argument_sequence(
+    molt_typing,
+) -> None:
+    alias = molt_typing._molt_type_alias(
+        "Pair",
+        lambda _format: {"__value__": tuple},
+        (),
+    )
+
+    assert repr(alias[int]) == "Pair[int]"
+    assert repr(alias[int, str]) == "Pair[int, str]"
+
+
 @pytest.mark.parametrize("shift", [0, 4, 12, 20, 32, 40, 48, 56])
 def test_lazy_type_lock_mix_distributes_address_and_handle_families(
     molt_typing, shift: int
