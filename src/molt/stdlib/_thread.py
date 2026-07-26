@@ -7,9 +7,8 @@ CPython fallback is used.
 
 from __future__ import annotations
 
-from typing import Any
-
 from _intrinsics import require_intrinsic as _require_intrinsic
+import sys as _sys
 
 # ---------------------------------------------------------------------------
 # Load intrinsics (require_intrinsic raises RuntimeError if unavailable)
@@ -20,6 +19,14 @@ _lock_acquire = _require_intrinsic("molt_lock_acquire")
 _lock_release = _require_intrinsic("molt_lock_release")
 _lock_locked = _require_intrinsic("molt_lock_locked")
 _lock_drop = _require_intrinsic("molt_lock_drop")
+_rlock_new = _require_intrinsic("molt_rlock_new")
+_rlock_acquire = _require_intrinsic("molt_rlock_acquire")
+_rlock_release = _require_intrinsic("molt_rlock_release")
+_rlock_locked = _require_intrinsic("molt_rlock_locked")
+_rlock_is_owned = _require_intrinsic("molt_rlock_is_owned")
+_rlock_release_save = _require_intrinsic("molt_rlock_release_save")
+_rlock_acquire_restore = _require_intrinsic("molt_rlock_acquire_restore")
+_rlock_drop = _require_intrinsic("molt_rlock_drop")
 
 _thread_spawn_shared = _require_intrinsic("molt_thread_spawn_shared")
 _thread_ident = _require_intrinsic("molt_thread_ident")
@@ -49,6 +56,7 @@ _THREAD_TOKEN_COUNTER: int = 0
 
 __all__ = [
     "LockType",
+    "RLock",
     "TIMEOUT_MAX",
     "_count",
     "allocate",
@@ -71,11 +79,33 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _validate_lock_timeout(timeout: float, blocking: bool) -> float:
+    if timeout is None:
+        raise TypeError(
+            "'NoneType' object cannot be interpreted as an integer or float"
+        )
+    try:
+        timeout_val = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"'{type(timeout).__name__}' object cannot be "
+            "interpreted as an integer or float"
+        ) from exc
+    if not blocking:
+        if timeout_val != -1.0:
+            raise ValueError("can't specify a timeout for a non-blocking call")
+    elif timeout_val < 0.0 and timeout_val != -1.0:
+        raise ValueError("timeout value must be a non-negative number")
+    if blocking and timeout_val != -1.0 and timeout_val > TIMEOUT_MAX:
+        raise OverflowError("timestamp out of range for platform time_t")
+    return timeout_val
+
+
 class LockType:
     """Low-level lock object backed by Molt runtime intrinsics."""
 
     def __init__(self, _lock_new_intrinsic=_lock_new) -> None:
-        self._handle: Any | None = _lock_new_intrinsic()
+        self._handle: object | None = _lock_new_intrinsic()
 
     # -- acquire / release / locked -----------------------------------------
 
@@ -91,25 +121,7 @@ class LockType:
         only meaningful when *blocking* is ``True``; a value of ``-1`` means
         wait forever.
         """
-        if timeout is None:
-            raise TypeError(
-                "'NoneType' object cannot be interpreted as an integer or float"
-            )
-        try:
-            timeout_val = float(timeout)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                f"'{type(timeout).__name__}' object cannot be "
-                f"interpreted as an integer or float"
-            ) from exc
-        if not blocking:
-            if timeout_val != -1.0:
-                raise ValueError("can't specify a timeout for a non-blocking call")
-        elif timeout_val < 0.0 and timeout_val != -1.0:
-            raise ValueError("timeout value must be a non-negative number")
-        if blocking and timeout_val != -1.0:
-            if timeout_val > TIMEOUT_MAX:
-                raise OverflowError("timestamp out of range for platform time_t")
+        timeout_val = _validate_lock_timeout(timeout, blocking)
         if self._handle is None:
             raise RuntimeError("lock is not initialized")
         return bool(_lock_acquire_intrinsic(self._handle, bool(blocking), timeout_val))
@@ -131,7 +143,7 @@ class LockType:
     def __enter__(self) -> bool:
         return self.acquire()
 
-    def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         self.release()
 
     # -- handle lifecycle ---------------------------------------------------
@@ -161,6 +173,79 @@ LockType.__qualname__ = "lock"
 lock = LockType
 
 
+class RLock:
+    """Low-level reentrant lock backed by Molt runtime intrinsics."""
+
+    def __init__(self, _rlock_new_intrinsic=_rlock_new) -> None:
+        self._handle: object | None = _rlock_new_intrinsic()
+
+    def acquire(
+        self,
+        blocking: bool = True,
+        timeout: float = -1.0,
+        _rlock_acquire_intrinsic=_rlock_acquire,
+    ) -> bool:
+        timeout_val = _validate_lock_timeout(timeout, blocking)
+        if self._handle is None:
+            raise RuntimeError("rlock is not initialized")
+        return bool(_rlock_acquire_intrinsic(self._handle, bool(blocking), timeout_val))
+
+    def release(self, _rlock_release_intrinsic=_rlock_release) -> None:
+        if self._handle is None:
+            raise RuntimeError("rlock is not initialized")
+        _rlock_release_intrinsic(self._handle)
+
+    def _is_owned(self, _rlock_is_owned_intrinsic=_rlock_is_owned) -> bool:
+        if self._handle is None:
+            return False
+        return bool(_rlock_is_owned_intrinsic(self._handle))
+
+    if _sys.version_info >= (3, 14):
+
+        def locked(self, _rlock_locked_intrinsic=_rlock_locked) -> bool:
+            if self._handle is None:
+                return False
+            return bool(_rlock_locked_intrinsic(self._handle))
+
+    def _release_save(
+        self, _rlock_release_save_intrinsic=_rlock_release_save
+    ) -> tuple[int, int]:
+        if self._handle is None:
+            raise RuntimeError("rlock is not initialized")
+        count = int(_rlock_release_save_intrinsic(self._handle))
+        return (count, get_ident())
+
+    def _acquire_restore(
+        self,
+        state: tuple[int, int],
+        _rlock_acquire_restore_intrinsic=_rlock_acquire_restore,
+    ) -> None:
+        if self._handle is None:
+            raise RuntimeError("rlock is not initialized")
+        if not isinstance(state, tuple) or len(state) != 2:
+            raise TypeError("internal lock state must be a 2-tuple")
+        _rlock_acquire_restore_intrinsic(self._handle, int(state[0]))
+
+    def __enter__(self) -> RLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> bool:
+        self.release()
+        return False
+
+    def _drop(self, _rlock_drop_intrinsic=_rlock_drop) -> None:
+        if self._handle is None:
+            return
+        _rlock_drop_intrinsic(self._handle)
+        self._handle = None
+
+    def __del__(self) -> None:
+        if getattr(self, "_handle", None) is None:
+            return
+        self._drop()
+
+
 # ---------------------------------------------------------------------------
 # Module-level functions
 # ---------------------------------------------------------------------------
@@ -182,9 +267,9 @@ def _next_thread_token() -> int:
 
 
 def start_new_thread(
-    function: Any,
-    args: tuple[Any, ...] = (),
-    kwargs: dict[str, Any] | None = None,
+    function: object,
+    args: tuple[object, ...] = (),
+    kwargs: dict[str, object] | None = None,
     _thread_spawn_shared_intrinsic=_thread_spawn_shared,
     _thread_ident_intrinsic=_thread_ident,
 ) -> int:
@@ -204,10 +289,9 @@ def start_new_thread(
     token = _next_thread_token()
     handle = _thread_spawn_shared_intrinsic(token, function, args, kwargs)
     ident = _thread_ident_intrinsic(handle)
-    if ident is not None:
-        return int(ident)
-    # Fallback: use the token as ident if the runtime cannot provide one yet.
-    return token
+    if ident is None:
+        raise RuntimeError("thread started without publishing an identity")
+    return int(ident)
 
 
 # Aliases matching CPython's _thread module.
@@ -273,15 +357,20 @@ def interrupt_main(
 # ---------------------------------------------------------------------------
 # Namespace cleanup — remove names that are not part of CPython's _thread API.
 # ---------------------------------------------------------------------------
-for _name in ("Any",):
-    globals().pop(_name, None)
-
 for _name in (
     "_lock_new",
     "_lock_acquire",
     "_lock_release",
     "_lock_locked",
     "_lock_drop",
+    "_rlock_new",
+    "_rlock_acquire",
+    "_rlock_release",
+    "_rlock_locked",
+    "_rlock_is_owned",
+    "_rlock_release_save",
+    "_rlock_acquire_restore",
+    "_rlock_drop",
     "_thread_spawn_shared",
     "_thread_ident",
     "_thread_current_ident",
@@ -294,3 +383,4 @@ for _name in (
     globals().pop(_name, None)
 
 globals().pop("_require_intrinsic", None)
+globals().pop("_sys", None)

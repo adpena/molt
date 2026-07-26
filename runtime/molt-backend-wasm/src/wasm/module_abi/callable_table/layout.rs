@@ -275,9 +275,7 @@ impl WasmBackend {
             poll_table.emit_import_wrappers(self, reloc_enabled, user_type_map);
         let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS
             .iter()
-            .filter(|spec| {
-                spec.import.is_some() && builtin_trampoline_specs.contains_key(spec.runtime_name)
-            })
+            .filter(|spec| spec.import.is_some())
             .count();
         let layout = CallableTableRegionLayout::build(
             table_base,
@@ -367,10 +365,7 @@ impl WasmBackend {
                 .import
                 .map(|import| self.import_ids[import])
                 .unwrap_or(sentinel_func_idx);
-            let reachable_as_builtin = builtin_trampoline_specs.contains_key(spec.runtime_name);
-            let reachable_as_direct = direct_import_call_specs.contains_key(spec.runtime_name);
             let direct_target_idx = if spec.dispatch == ReservedRuntimeCallableDispatch::Direct
-                && (reachable_as_builtin || reachable_as_direct)
                 && spec.import.is_some()
             {
                 if import_idx == u32::MAX {
@@ -445,9 +440,7 @@ impl WasmBackend {
                 spec.index,
             );
             func_to_trampoline_idx.insert(runtime_name.clone(), trampoline_table_idx);
-            if let Some(import) = spec.import
-                && let Some(arity) = builtin_trampoline_specs.get(spec.runtime_name)
-            {
+            if let Some(import) = spec.import {
                 let import_idx = self.import_ids[import];
                 if import_idx == u32::MAX {
                     panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
@@ -478,7 +471,7 @@ impl WasmBackend {
                             WasmCallableTableRole::Trampoline,
                         ),
                         spec: TrampolineSpec {
-                            arity: *arity,
+                            arity: spec.arity,
                             has_closure: false,
                             kind: spec.trampoline_abi.trampoline_kind(),
                             closure_size: 0,

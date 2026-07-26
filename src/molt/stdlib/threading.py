@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import sys
+import _thread as _thread_module
 from _intrinsics import require_intrinsic as _require_intrinsic
-
-Any = object  # type: ignore[assignment]
-Callable = object  # type: ignore[assignment]
 
 
 _MOLT_THREAD_JOIN = _require_intrinsic("molt_thread_join")
@@ -30,19 +28,6 @@ _MOLT_THREAD_REGISTRY_CURRENT = _require_intrinsic("molt_thread_registry_current
 _MOLT_THREAD_REGISTRY_ACTIVE_COUNT = _require_intrinsic(
     "molt_thread_registry_active_count"
 )
-_MOLT_LOCK_NEW = _require_intrinsic("molt_lock_new")
-_MOLT_LOCK_ACQUIRE = _require_intrinsic("molt_lock_acquire")
-_MOLT_LOCK_RELEASE = _require_intrinsic("molt_lock_release")
-_MOLT_LOCK_LOCKED = _require_intrinsic("molt_lock_locked")
-_MOLT_LOCK_DROP = _require_intrinsic("molt_lock_drop")
-_MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new")
-_MOLT_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire")
-_MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
-_MOLT_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked")
-_MOLT_RLOCK_IS_OWNED = _require_intrinsic("molt_rlock_is_owned")
-_MOLT_RLOCK_RELEASE_SAVE = _require_intrinsic("molt_rlock_release_save")
-_MOLT_RLOCK_ACQUIRE_RESTORE = _require_intrinsic("molt_rlock_acquire_restore")
-_MOLT_RLOCK_DROP = _require_intrinsic("molt_rlock_drop")
 _MOLT_CONDITION_NEW = _require_intrinsic("molt_condition_new")
 _MOLT_CONDITION_WAIT = _require_intrinsic("molt_condition_wait")
 _MOLT_CONDITION_WAIT_FOR = _require_intrinsic("molt_condition_wait_for")
@@ -94,19 +79,6 @@ _ALL_INTRINSICS = [
     _MOLT_THREAD_REGISTRY_SNAPSHOT,
     _MOLT_THREAD_REGISTRY_CURRENT,
     _MOLT_THREAD_REGISTRY_ACTIVE_COUNT,
-    _MOLT_LOCK_NEW,
-    _MOLT_LOCK_ACQUIRE,
-    _MOLT_LOCK_RELEASE,
-    _MOLT_LOCK_LOCKED,
-    _MOLT_LOCK_DROP,
-    _MOLT_RLOCK_NEW,
-    _MOLT_RLOCK_ACQUIRE,
-    _MOLT_RLOCK_RELEASE,
-    _MOLT_RLOCK_LOCKED,
-    _MOLT_RLOCK_IS_OWNED,
-    _MOLT_RLOCK_RELEASE_SAVE,
-    _MOLT_RLOCK_ACQUIRE_RESTORE,
-    _MOLT_RLOCK_DROP,
     _MOLT_CONDITION_NEW,
     _MOLT_CONDITION_WAIT,
     _MOLT_CONDITION_WAIT_FOR,
@@ -203,19 +175,6 @@ else:
     _thread_registry_forget = _MOLT_THREAD_REGISTRY_FORGET
     _thread_registry_snapshot = _MOLT_THREAD_REGISTRY_SNAPSHOT
     _thread_registry_current = _MOLT_THREAD_REGISTRY_CURRENT
-    _lock_new = _MOLT_LOCK_NEW
-    _lock_acquire = _MOLT_LOCK_ACQUIRE
-    _lock_release = _MOLT_LOCK_RELEASE
-    _lock_locked = _MOLT_LOCK_LOCKED
-    _lock_drop = _MOLT_LOCK_DROP
-    _rlock_new = _MOLT_RLOCK_NEW
-    _rlock_acquire = _MOLT_RLOCK_ACQUIRE
-    _rlock_release = _MOLT_RLOCK_RELEASE
-    _rlock_locked = _MOLT_RLOCK_LOCKED
-    _rlock_is_owned = _MOLT_RLOCK_IS_OWNED
-    _rlock_release_save = _MOLT_RLOCK_RELEASE_SAVE
-    _rlock_acquire_restore = _MOLT_RLOCK_ACQUIRE_RESTORE
-    _rlock_drop = _MOLT_RLOCK_DROP
     _condition_new = _MOLT_CONDITION_NEW
     _condition_wait = _MOLT_CONDITION_WAIT
     _condition_wait_for = _MOLT_CONDITION_WAIT_FOR
@@ -325,23 +284,6 @@ else:
 
     _BAD_TIMEOUT_MSG = "' object cannot be interpreted as an integer or float"
 
-    def _validate_lock_timeout(timeout: float, blocking: bool) -> float:
-        """Validate timeout for Lock/RLock acquire."""
-        if timeout is None:
-            raise TypeError("'NoneType" + _BAD_TIMEOUT_MSG)
-        try:
-            timeout_val = float(timeout)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG) from exc
-        if not blocking:
-            if timeout_val != -1.0:
-                raise ValueError("can't specify a timeout for a non-blocking call")
-        elif timeout_val < 0.0 and timeout_val != -1.0:
-            raise ValueError("timeout value must be a non-negative number")
-        if blocking and timeout_val != -1.0:
-            _check_timeout_max(timeout_val)
-        return timeout_val
-
     def _validate_wait_timeout(timeout: float | None) -> float | None:
         """Validate optional timeout for wait-style methods."""
         if timeout is None:
@@ -419,105 +361,8 @@ else:
         thread._handle = None
         return thread
 
-    class Lock:
-        def __init__(self) -> None:
-            self._handle: Any | None = _lock_new()
-
-        def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-            timeout_val = _validate_lock_timeout(timeout, blocking)
-            if self._handle is None:
-                raise RuntimeError("lock is not initialized")
-            return bool(_lock_acquire(self._handle, bool(blocking), timeout_val))
-
-        def release(self) -> None:
-            if self._handle is None:
-                raise RuntimeError("lock is not initialized")
-            _lock_release(self._handle)
-
-        def locked(self) -> bool:
-            if self._handle is None:
-                return False
-            return bool(_lock_locked(self._handle))
-
-        def _is_owned(self) -> bool:
-            return self.locked()
-
-        def _release_save(self) -> None:
-            self.release()
-
-        def _acquire_restore(self, _state: Any) -> None:
-            self.acquire()
-
-        def __enter__(self) -> Lock:
-            self.acquire()
-            return self
-
-        def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> bool:
-            self.release()
-            return False
-
-        def _drop(self) -> None:
-            if self._handle is None:
-                return
-            _lock_drop(self._handle)
-            self._handle = None
-
-        def __del__(self) -> None:
-            if getattr(self, "_handle", None) is None:
-                return
-            self._drop()
-
-    class RLock:
-        def __init__(self) -> None:
-            self._handle: Any | None = _rlock_new()
-
-        def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-            timeout_val = _validate_lock_timeout(timeout, blocking)
-            if self._handle is None:
-                raise RuntimeError("rlock is not initialized")
-            return bool(_rlock_acquire(self._handle, bool(blocking), timeout_val))
-
-        def release(self) -> None:
-            if self._handle is None:
-                raise RuntimeError("rlock is not initialized")
-            _rlock_release(self._handle)
-
-        def _is_owned(self) -> bool:
-            if self._handle is None:
-                return False
-            return bool(_rlock_is_owned(self._handle))
-
-        def _release_save(self) -> int:
-            if self._handle is None:
-                raise RuntimeError("rlock is not initialized")
-            return int(_rlock_release_save(self._handle))
-
-        def _acquire_restore(self, count: int | None) -> None:
-            if self._handle is None:
-                raise RuntimeError("rlock is not initialized")
-            if count is None:
-                _rlock_acquire_restore(self._handle, 1)
-                return
-            _rlock_acquire_restore(self._handle, int(count))
-
-        def __enter__(self) -> RLock:
-            self.acquire()
-            return self
-
-        def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> bool:
-            self.release()
-            return False
-
-        def _drop(self) -> None:
-            if self._handle is None:
-                return
-            _rlock_drop(self._handle)
-            self._handle = None
-
-        def __del__(self) -> None:
-            if getattr(self, "_handle", None) is None:
-                return
-            self._drop()
+    Lock = _thread_module.LockType
+    RLock = _thread_module.RLock
 
     class Condition:
         def __init__(self, lock: Any | None = None) -> None:

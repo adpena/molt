@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import types
 class _State:
     next_lock = 0
     locks = {{}}
+    rlocks = {{}}
     next_thread = 100
     stack_size = 0
 
@@ -47,6 +49,38 @@ def _lock_drop(handle):
     _State.locks.pop(handle, None)
 
 
+def _rlock_new():
+    _State.next_lock += 1
+    handle = _State.next_lock
+    _State.rlocks[handle] = 0
+    return handle
+
+
+def _rlock_acquire(handle, blocking, timeout):
+    _State.rlocks[handle] += 1
+    return True
+
+
+def _rlock_release(handle):
+    if _State.rlocks[handle] == 0:
+        raise RuntimeError("cannot release un-acquired lock")
+    _State.rlocks[handle] -= 1
+
+
+def _rlock_release_save(handle):
+    count = _State.rlocks[handle]
+    _State.rlocks[handle] = 0
+    return count
+
+
+def _rlock_acquire_restore(handle, count):
+    _State.rlocks[handle] = count
+
+
+def _rlock_drop(handle):
+    _State.rlocks.pop(handle, None)
+
+
 def _thread_spawn_shared(token, fn, args, kwargs):
     _State.next_thread += 1
     fn(*args, **kwargs)
@@ -64,6 +98,14 @@ builtins._molt_intrinsics = {{
     "molt_lock_release": _lock_release,
     "molt_lock_locked": _lock_locked,
     "molt_lock_drop": _lock_drop,
+    "molt_rlock_new": _rlock_new,
+    "molt_rlock_acquire": _rlock_acquire,
+    "molt_rlock_release": _rlock_release,
+    "molt_rlock_locked": lambda handle: _State.rlocks[handle] > 0,
+    "molt_rlock_is_owned": lambda handle: _State.rlocks[handle] > 0,
+    "molt_rlock_release_save": _rlock_release_save,
+    "molt_rlock_acquire_restore": _rlock_acquire_restore,
+    "molt_rlock_drop": _rlock_drop,
     "molt_thread_spawn_shared": _thread_spawn_shared,
     "molt_thread_ident": lambda handle: handle,
     "molt_thread_current_ident": lambda: 1,
@@ -114,11 +156,36 @@ box = []
 lock = _private.allocate_lock()
 lock.acquire()
 lock.release()
+rlock = _private.RLock()
+rlock.acquire()
+rlock.acquire()
+saved = rlock._release_save()
+rlock._acquire_restore(saved)
+rlock.release()
+rlock.release()
+
+
+def _captured_error(call):
+    try:
+        call()
+    except Exception as exc:
+        return (type(exc).__name__, str(exc))
+    return None
+
+
+rlock_errors = [
+    _captured_error(lambda: rlock.acquire(timeout=None)),
+    _captured_error(lambda: rlock.acquire(False, 0)),
+    _captured_error(lambda: rlock.acquire(timeout=-2)),
+    _captured_error(rlock.release),
+]
 thread_id = _private.start_new_thread(lambda bucket, value: bucket.append(value), (box, "ok"))
 checks = {{
     "behavior": (
         type(lock).__name__ == "lock"
         and lock.locked() is False
+        and saved == (2, 1)
+        and rlock._is_owned() is False
         and thread_id == 101
         and box == ["ok"]
         and _private.get_ident() == 1
@@ -126,12 +193,32 @@ checks = {{
         and _private.stack_size() == 0
         and _private.stack_size(4096) == 4096
     ),
+    "rlock_errors": rlock_errors
+    == [
+        (
+            "TypeError",
+            "'NoneType' object cannot be interpreted as an integer or float",
+        ),
+        ("ValueError", "can't specify a timeout for a non-blocking call"),
+        ("ValueError", "timeout value must be a non-negative number"),
+        ("RuntimeError", "cannot release un-acquired lock"),
+    ],
+    "rlock_locked_gated": hasattr(_private.RLock, "locked")
+    == (sys.version_info >= (3, 14)),
     "private_handles_hidden": (
         "_lock_new" not in _private.__dict__
         and "_lock_acquire" not in _private.__dict__
         and "_lock_release" not in _private.__dict__
         and "_lock_locked" not in _private.__dict__
         and "_lock_drop" not in _private.__dict__
+        and "_rlock_new" not in _private.__dict__
+        and "_rlock_acquire" not in _private.__dict__
+        and "_rlock_release" not in _private.__dict__
+        and "_rlock_locked" not in _private.__dict__
+        and "_rlock_is_owned" not in _private.__dict__
+        and "_rlock_release_save" not in _private.__dict__
+        and "_rlock_acquire_restore" not in _private.__dict__
+        and "_rlock_drop" not in _private.__dict__
         and "_thread_spawn_shared" not in _private.__dict__
         and "_thread_ident" not in _private.__dict__
         and "_thread_current_ident" not in _private.__dict__
@@ -170,6 +257,7 @@ def test__thread_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [
         ("LockType", "type", "True"),
+        ("RLock", "type", "True"),
         ("TIMEOUT_MAX", "float", "False"),
         ("allocate", "function", "True"),
         ("allocate_lock", "function", "True"),
@@ -184,4 +272,23 @@ def test__thread_public_surface_matches_expected_shape() -> None:
         ("start_new", "function", "True"),
         ("start_new_thread", "function", "True"),
     ]
-    assert checks == {"behavior": "True", "private_handles_hidden": "True"}
+    assert checks == {
+        "behavior": "True",
+        "private_handles_hidden": "True",
+        "rlock_errors": "True",
+        "rlock_locked_gated": "True",
+    }
+
+
+def test__thread_bootstrap_has_no_runtime_typing_dependency() -> None:
+    source = (STDLIB_ROOT / "_thread.py").read_text(encoding="utf-8")
+    assert "from typing import" not in source
+    assert "return token" not in source
+
+
+def test_threading_facade_reuses_private_lock_authority() -> None:
+    tree = ast.parse((STDLIB_ROOT / "threading.py").read_text(encoding="utf-8"))
+    class_names = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    }
+    assert not ({"Lock", "RLock"} & class_names)

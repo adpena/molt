@@ -37,6 +37,11 @@ def expression_evaluation_children(node: ast.AST) -> tuple[ast.expr, ...]:
 
     if isinstance(node, ast.Call):
         return (node.func, *node.args, *(keyword.value for keyword in node.keywords))
+    if isinstance(node, ast.Lambda):
+        return (
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
+        )
     if isinstance(node, ast.Dict):
         return tuple(
             expression
@@ -85,7 +90,9 @@ def expression_effect_mask(
     if isinstance(node, (ast.Constant, ast.Name)):
         return NO_EFFECTS
     if isinstance(node, ast.Lambda):
-        return ALLOCATES
+        return ALLOCATES | _joined_child_effects(
+            node, proven_pure_calls=proven_pure_calls
+        )
     if isinstance(node, ast.NamedExpr):
         return expression_effect_mask(node.value, proven_pure_calls=proven_pure_calls)
     if isinstance(node, ast.Starred):

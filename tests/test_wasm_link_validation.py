@@ -27,6 +27,33 @@ wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
 
 
+def test_external_wasm_ld_uses_response_file_beyond_windows_command_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if wasm_link.os.name != "nt":
+        pytest.skip("Windows command-length response-file authority")
+    observed: dict[str, object] = {}
+
+    def guarded(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed["command"] = command
+        observed["response"] = Path(command[1][1:]).read_text(encoding="utf-8")
+        return wasm_link.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(
+        wasm_link.harness_memory_guard,
+        "guarded_completed_process",
+        guarded,
+    )
+    arguments = ["--export-if-defined=" + "x" * 100 for _ in range(400)]
+
+    result = wasm_link._run_external_tool(["wasm-ld.exe", *arguments])
+
+    assert result.returncode == 0
+    assert observed["command"][0] == "wasm-ld.exe"
+    assert observed["command"][1].startswith("@")
+    assert "\n".join(arguments) in observed["response"]
+
+
 def _rust_facts_fixture(data: bytes) -> dict[str, object]:
     sections = wasm_link._parse_sections(data)
     import_count = wasm_link._count_func_imports(sections)
@@ -728,6 +755,82 @@ def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
     sections.append((10, bytes(code_payload)))
 
     return wasm_link._build_sections(sections)
+
+
+def test_install_callable_table_layout_appends_final_active_override() -> None:
+    names = [wasm_link._callable_entry_export_name(slot) for slot in range(2)]
+    sections = wasm_link._parse_sections(_build_exported_runtime_module_many(names))
+    table_payload = (
+        wasm_link._write_varuint(1)
+        + b"\x70"
+        + wasm_link._write_varuint(0)
+        + wasm_link._write_varuint(8)
+    )
+    sections.insert(2, (4, table_payload))
+    sections.insert(-1, (9, wasm_link._write_varuint(0)))
+    module = wasm_link._build_sections(sections)
+    layout = wasm_link.CallableTableLayout(3, 2, 8, 0)
+
+    updated = wasm_link._install_callable_table_layout(module, layout)
+    element_payload = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(updated)
+        if section_id == 9
+    )
+    segment_count, offset = wasm_link._read_varuint(element_payload, 0)
+    flags, offset = wasm_link._read_varuint(element_payload, offset)
+    assert (segment_count, flags) == (1, 0)
+    assert element_payload[offset] == 0x41
+    base, offset = wasm_link._read_varsint(element_payload, offset + 1)
+    assert base == 3
+    assert element_payload[offset] == 0x0B
+    entry_count, offset = wasm_link._read_varuint(element_payload, offset + 1)
+    function_indices = []
+    for _ in range(entry_count):
+        function_index, offset = wasm_link._read_varuint(element_payload, offset)
+        function_indices.append(function_index)
+    assert function_indices == [0, 1]
+    assert offset == len(element_payload)
+
+
+def test_install_callable_table_layout_requires_complete_export_authority() -> None:
+    name = wasm_link._callable_entry_export_name(0)
+    sections = wasm_link._parse_sections(_build_exported_runtime_module(name))
+    sections.insert(2, (4, b"\x01\x70\x00\x08"))
+    sections.insert(-1, (9, b"\x00"))
+
+    with pytest.raises(ValueError, match="entry export.*entry.1"):
+        wasm_link._install_callable_table_layout(
+            wasm_link._build_sections(sections),
+            wasm_link.CallableTableLayout(3, 2, 8, 0),
+        )
+
+
+def test_install_callable_table_layout_can_publish_app_region_without_fixed_exports() -> None:
+    name = wasm_link._callable_entry_export_name(1)
+    sections = wasm_link._parse_sections(_build_exported_runtime_module(name))
+    sections.insert(2, (4, b"\x01\x70\x00\x10"))
+    sections.insert(-1, (9, b"\x00"))
+
+    updated = wasm_link._install_callable_table_layout(
+        wasm_link._build_sections(sections),
+        wasm_link.CallableTableLayout(3, 1, 8, 1),
+        include_fixed_prefix=False,
+    )
+    element_payload = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(updated)
+        if section_id == 9
+    )
+    segment_count, offset = wasm_link._read_varuint(element_payload, 0)
+    flags, offset = wasm_link._read_varuint(element_payload, offset)
+    assert (segment_count, flags) == (1, 0)
+    base, offset = wasm_link._read_varsint(element_payload, offset + 1)
+    assert base == 8
+    assert element_payload[offset] == 0x0B
+    entry_count, offset = wasm_link._read_varuint(element_payload, offset + 1)
+    function_index, offset = wasm_link._read_varuint(element_payload, offset)
+    assert (entry_count, function_index, offset) == (1, 0, len(element_payload))
 
 
 def _build_host_call_indirect_module(

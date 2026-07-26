@@ -55,7 +55,10 @@ from molt._wasm_runtime_exports import (  # noqa: E402
     wasm_split_runtime_import_name_for_export,
 )
 from molt._wasm_abi_generated import (  # noqa: E402
+    WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLES,
 )
 from molt.wasm_artifact import (  # noqa: E402
     WasmSplitRuntimeCallableLayout,
@@ -213,25 +216,56 @@ def _run_external_tool(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = cast(
-        subprocess.CompletedProcess[str],
-        harness_memory_guard.guarded_completed_process(
-            list(cmd),
-            prefix="MOLT_WASM_LINK",
-            cwd=cwd,
-            env=env,
-            capture_output=capture_output,
-            text=text,
-            timeout=timeout,
-        ),
-    )
+    guarded_cmd = list(cmd)
+    response_path: Path | None = None
+    if (
+        os.name == "nt"
+        and Path(guarded_cmd[0]).stem.casefold() == "wasm-ld"
+        and len(subprocess.list2cmdline(guarded_cmd)) >= 30_000
+    ):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".rsp",
+            prefix="molt-wasm-ld-",
+            delete=False,
+        )
+        try:
+            response_path = Path(handle.name)
+            handle.write(
+                "\n".join(
+                    subprocess.list2cmdline([argument])
+                    for argument in guarded_cmd[1:]
+                )
+            )
+            handle.write("\n")
+        finally:
+            handle.close()
+        guarded_cmd = [guarded_cmd[0], f"@{response_path}"]
+    try:
+        result = cast(
+            subprocess.CompletedProcess[str],
+            harness_memory_guard.guarded_completed_process(
+                guarded_cmd,
+                prefix="MOLT_WASM_LINK",
+                cwd=cwd,
+                env=env,
+                capture_output=capture_output,
+                text=text,
+                timeout=timeout,
+            ),
+        )
+    finally:
+        if response_path is not None:
+            with contextlib.suppress(OSError):
+                response_path.unlink()
     if (
         timeout is not None
         and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
         and "memory_guard: timeout after" in (result.stderr or "")
     ):
         raise subprocess.TimeoutExpired(
-            list(cmd),
+            guarded_cmd,
             timeout,
             output=result.stdout,
             stderr=result.stderr,
@@ -3346,6 +3380,149 @@ def _reconcile_split_callable_layout(
     return reconciled
 
 
+def _callable_entry_export_name(slot: int) -> str:
+    return f"{WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME}.entry.{slot}"
+
+
+def _write_varsint32(value: int) -> bytes:
+    if value < -(1 << 31) or value >= 1 << 31:
+        raise ValueError("callable-table fixed prefix base must fit i32")
+    out = bytearray()
+    remaining = value
+    while True:
+        byte = remaining & 0x7F
+        remaining >>= 7
+        done = (remaining == 0 and byte & 0x40 == 0) or (
+            remaining == -1 and byte & 0x40 != 0
+        )
+        out.append(byte if done else byte | 0x80)
+        if done:
+            return bytes(out)
+
+
+def _install_callable_table_layout(
+    data: bytes,
+    layout: CallableTableLayout,
+    *,
+    entry_symbol_names: Sequence[str] | None = None,
+    include_fixed_prefix: bool = True,
+    override_reserved_direct: bool = True,
+) -> bytes:
+    total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
+    if total_entry_count == 0:
+        return data
+    if entry_symbol_names is not None and len(entry_symbol_names) != total_entry_count:
+        raise ValueError(
+            "callable-table entry symbol count disagrees with the published layout: "
+            f"symbols={len(entry_symbol_names)}, entries={total_entry_count}"
+        )
+    exports = _collect_function_exports(data)
+    named_indices: dict[str, set[int]] = {}
+    if entry_symbol_names is not None:
+        function_import_index = 0
+        for _module, import_name, import_kind, _description in _collect_imports(data):
+            if import_kind != 0:
+                continue
+            named_indices.setdefault(import_name, set()).add(function_import_index)
+            function_import_index += 1
+        for function_index, function_name in _collect_func_names(data).items():
+            named_indices.setdefault(function_name, set()).add(function_index)
+
+    def resolve_entry(slot: int) -> int:
+        name = _callable_entry_export_name(slot)
+        function_index = exports.get(name)
+        symbol_name = entry_symbol_names[slot] if entry_symbol_names is not None else None
+        if function_index is None and symbol_name is not None:
+            function_index = exports.get(symbol_name)
+        if function_index is None and symbol_name is not None:
+            candidates = named_indices.get(symbol_name, set())
+            if len(candidates) > 1:
+                raise ValueError(
+                    "linked wasm has ambiguous callable-table function identity "
+                    f"for {symbol_name}: {candidates}"
+                )
+            if candidates:
+                function_index = next(iter(candidates))
+        if function_index is None:
+            suffix = (
+                f" or retained linker symbol {symbol_name}"
+                if symbol_name is not None
+                else ""
+            )
+            raise ValueError(
+                f"linked wasm is missing callable-table entry export {name}{suffix}"
+            )
+        return function_index
+
+    fixed_indices = (
+        [resolve_entry(slot) for slot in range(layout.fixed_prefix_len)]
+        if include_fixed_prefix
+        else []
+    )
+    app_indices = [
+        resolve_entry(slot)
+        for slot in range(layout.fixed_prefix_len, total_entry_count)
+    ]
+    reserved_end = WASM_RESERVED_RUNTIME_CALLABLE_BASE + len(
+        WASM_RESERVED_RUNTIME_CALLABLES
+    )
+    if (
+        include_fixed_prefix
+        and WASM_RESERVED_RUNTIME_CALLABLE_BASE < len(fixed_indices) < reserved_end
+    ):
+        raise ValueError("callable table truncates reserved runtime callable region")
+    if (
+        include_fixed_prefix
+        and override_reserved_direct
+        and len(fixed_indices) >= reserved_end
+    ):
+        for index, runtime_name, _import_name, _arity, dispatch in (
+            WASM_RESERVED_RUNTIME_CALLABLES
+        ):
+            if dispatch != "direct":
+                continue
+            logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
+            runtime_function_index = exports.get(runtime_name)
+            if runtime_function_index is None:
+                candidates = named_indices.get(runtime_name, set())
+                if len(candidates) == 1:
+                    runtime_function_index = next(iter(candidates))
+            if runtime_function_index is None:
+                raise ValueError(
+                    f"linked wasm is missing reserved runtime export {runtime_name}"
+                )
+            fixed_indices[logical_slot] = runtime_function_index
+    sections = _parse_sections(data)
+    element_indices = [
+        index for index, (section_id, _payload) in enumerate(sections) if section_id == 9
+    ]
+    if len(element_indices) != 1:
+        raise ValueError(
+            "linked wasm must contain exactly one element section before fixed-prefix publication"
+        )
+    section_index = element_indices[0]
+    section_id, payload = sections[section_index]
+    segment_count, segment_offset = _read_varuint(payload, 0)
+    added_segment_count = int(bool(fixed_indices)) + int(bool(app_indices))
+    appended = bytearray(_write_varuint(segment_count + added_segment_count))
+    appended.extend(payload[segment_offset:])
+    for base, indices in (
+        (layout.fixed_prefix_base, fixed_indices),
+        (layout.finalized_app_base, app_indices),
+    ):
+        if not indices:
+            continue
+        appended.extend(_write_varuint(0))
+        appended.append(0x41)
+        appended.extend(_write_varsint32(base))
+        appended.append(0x0B)
+        appended.extend(_write_varuint(len(indices)))
+        for function_index in indices:
+            appended.extend(_write_varuint(function_index))
+    sections[section_index] = (section_id, bytes(appended))
+    return _build_sections(sections)
+
+
 def _run_wasm_ld_with_custodied_inputs(
     wasm_ld: str,
     runtime: Path,
@@ -3445,7 +3622,26 @@ def _run_wasm_ld_with_custodied_inputs(
         return 1
     output_memory_min = _memory_import_min(output_data)
     output_table_min = _table_import_min(output_data)
+    callable_entry_export_names = (
+        tuple(
+            _callable_entry_export_name(slot)
+            for slot in range(
+                output_callable_layout.fixed_prefix_len
+                + output_callable_layout.app_entry_count
+            )
+        )
+        if output_callable_layout is not None
+        else ()
+    )
+    reserved_runtime_link_exports = tuple(
+        runtime_name
+        for _index, runtime_name, _import_name, _arity, dispatch in (
+            WASM_RESERVED_RUNTIME_CALLABLES
+        )
+        if dispatch == "direct"
+    )
     split_callable_layout: CallableTableLayout | None = None
+    monolithic_callable_layout = output_callable_layout
     deploy_runtime_path: Path | None = None
     if split_runtime:
         if output_callable_layout is None:
@@ -3499,6 +3695,27 @@ def _run_wasm_ld_with_custodied_inputs(
         )
     )
     export_symbol_map = _collect_output_export_symbol_map(output_data)
+    callable_entry_export_map = {
+        name: export_symbol_map[name]
+        for name in callable_entry_export_names
+        if name in export_symbol_map
+    }
+    if len(callable_entry_export_map) != len(callable_entry_export_names):
+        missing_callable_exports = sorted(
+            set(callable_entry_export_names) - callable_entry_export_map.keys()
+        )
+        print(
+            "Wasm link failed: callable-table entry exports are missing linker symbols: "
+            + ", ".join(missing_callable_exports),
+            file=sys.stderr,
+        )
+        return 1
+    callable_entry_symbol_names = tuple(
+        dict.fromkeys(callable_entry_export_map.values())
+    )
+    callable_entry_symbol_names_by_slot = tuple(
+        callable_entry_export_map[name] for name in callable_entry_export_names
+    )
     preserved_output_exports = list(
         dict.fromkeys(
             [
@@ -3658,6 +3875,15 @@ def _run_wasm_ld_with_custodied_inputs(
         "--export-if-defined=__indirect_function_table",
         "--export-if-defined=molt_set_wasm_table_base",
     ]
+    if (
+        output_callable_layout is not None
+        and output_callable_layout.fixed_prefix_len > 0
+    ):
+        fixed_prefix_end = (
+            output_callable_layout.fixed_prefix_base
+            + output_callable_layout.fixed_prefix_len
+        )
+        cmd.insert(cmd.index("--import-table") + 1, f"--table-base={fixed_prefix_end}")
     # Force-export symbols that were rewritten but missing from the
     # non-relocatable runtime â€” they exist in the relocatable runtime
     # and wasm-ld needs to know to keep them in the linked output.
@@ -3673,6 +3899,14 @@ def _run_wasm_ld_with_custodied_inputs(
             ),
             (f"--export={sym}" for sym in required_native_direct_symbols),
             (f"--export={sym}" for sym in user_export_symbol_names),
+            (
+                f"--export-if-defined={name}"
+                for name in callable_entry_symbol_names
+            ),
+            (
+                f"--export-if-defined={name}"
+                for name in reserved_runtime_link_exports
+            ),
         )
     )
     cmd += [
@@ -3743,7 +3977,7 @@ def _run_wasm_ld_with_custodied_inputs(
             if part == "--stack-first"
             else part
             for part in cmd[: cmd.index("-o")]
-            if part != "--export=molt_main"
+            if part != "--export=molt_main" and not part.startswith("--table-base=")
         ]
         try:
             split_app_link_args = _split_app_native_link_args(split_native_inputs)
@@ -3807,6 +4041,48 @@ def _run_wasm_ld_with_custodied_inputs(
         if canonical_linked_bytes != linked_bytes:
             work_linked.write_bytes(canonical_linked_bytes)
             linked_bytes = canonical_linked_bytes
+        if output_callable_layout is not None:
+            try:
+                raw_linked_facts = facts_provider(linked_bytes)
+                raw_callable_entries = raw_linked_facts.get(
+                    "callable_table_entries"
+                )
+                if not isinstance(raw_callable_entries, list):
+                    raise ValueError(
+                        "linked WASM facts omitted callable-table entries"
+                    )
+                raw_occupied_end = max(
+                    (
+                        int(entry[0]) + 1
+                        for entry in raw_callable_entries
+                        if isinstance(entry, list)
+                        and len(entry) == 4
+                        and isinstance(entry[0], int)
+                    ),
+                    default=output_callable_layout.finalized_app_base,
+                )
+                monolithic_callable_layout = CallableTableLayout(
+                    output_callable_layout.fixed_prefix_base,
+                    output_callable_layout.fixed_prefix_len,
+                    max(
+                        output_callable_layout.finalized_app_base,
+                        raw_occupied_end,
+                    ),
+                    output_callable_layout.app_entry_count,
+                )
+                monolithic_callable_layout.validate()
+                linked_bytes = _install_callable_table_layout(
+                    linked_bytes,
+                    monolithic_callable_layout,
+                    entry_symbol_names=callable_entry_symbol_names_by_slot,
+                )
+            except ValueError as exc:
+                print(
+                    f"Failed to publish linked callable table: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            work_linked.write_bytes(linked_bytes)
         public_export_map = _public_output_export_symbol_map(
             output_data,
             preserved_output_exports=preserved_output_exports,
@@ -4051,6 +4327,49 @@ def _run_wasm_ld_with_custodied_inputs(
                 if canonical_rewritten_data != rewritten_data:
                     split_linked_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
+                assert split_callable_layout is not None
+                try:
+                    raw_split_facts = facts_provider(rewritten_data)
+                    raw_split_entries = raw_split_facts.get(
+                        "callable_table_entries"
+                    )
+                    if not isinstance(raw_split_entries, list):
+                        raise ValueError(
+                            "split-app WASM facts omitted callable-table entries"
+                        )
+                    raw_split_occupied_end = max(
+                        (
+                            int(entry[0]) + 1
+                            for entry in raw_split_entries
+                            if isinstance(entry, list)
+                            and len(entry) == 4
+                            and isinstance(entry[0], int)
+                        ),
+                        default=split_callable_layout.finalized_app_base,
+                    )
+                    split_callable_layout = CallableTableLayout(
+                        split_callable_layout.fixed_prefix_base,
+                        split_callable_layout.fixed_prefix_len,
+                        max(
+                            split_callable_layout.finalized_app_base,
+                            raw_split_occupied_end,
+                        ),
+                        split_callable_layout.app_entry_count,
+                    )
+                    split_callable_layout.validate()
+                    rewritten_data = _install_callable_table_layout(
+                        rewritten_data,
+                        split_callable_layout,
+                        entry_symbol_names=callable_entry_symbol_names_by_slot,
+                        override_reserved_direct=False,
+                    )
+                except ValueError as exc:
+                    print(
+                        f"Failed to publish split-app callable table: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                split_linked_app_path.write_bytes(rewritten_data)
                 try:
                     restored_rewritten_data = _restore_split_runtime_contract_exports(
                         rewritten_data,
@@ -4132,6 +4451,24 @@ def _run_wasm_ld_with_custodied_inputs(
                 operation_counts=operation_counts,
                 facts_provider=facts_provider,
             )
+            assert split_callable_layout is not None
+            required_split_app_table_min = (
+                split_callable_layout.finalized_app_base
+                + split_callable_layout.app_entry_count
+            )
+            try:
+                updated = _rewrite_table_import_min(
+                    optimized_app,
+                    required_split_app_table_min,
+                )
+            except ValueError as exc:
+                print(
+                    f"Failed to rewrite split app table min: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if updated is not None:
+                optimized_app = updated
             if output_memory_min is not None:
                 try:
                     updated = _rewrite_memory_min(optimized_app, output_memory_min)
@@ -4287,6 +4624,7 @@ def _run_wasm_ld_with_custodied_inputs(
             _publish_rust_wasm_link_facts(
                 wasm_facts_scanner,
                 work_linked,
+                layout=monolithic_callable_layout,
             )
         except ValueError as exc:
             print(

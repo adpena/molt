@@ -279,6 +279,16 @@ impl WasmBackend {
         let fixed_prefix_len = plan.split_runtime_shared_abi_slot_end;
         let app_entries = &plan.table_entries[fixed_prefix_len..];
         if reloc_enabled {
+            for (slot, entry) in plan.table_entries.iter().enumerate() {
+                self.exports.export(
+                    &format!(
+                        "{}.entry.{slot}",
+                        crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_SECTION_NAME
+                    ),
+                    ExportKind::Func,
+                    entry.func_index,
+                );
+            }
             let main_index = self
                 .molt_main_index
                 .unwrap_or_else(|| panic!("molt_main missing for entry wrapper"));

@@ -635,6 +635,11 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 self.names.add(node.name)
                 return
 
+            def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+                if isinstance(node.name, ast.Name):
+                    self.names.add(node.name.id)
+                return
+
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return
 

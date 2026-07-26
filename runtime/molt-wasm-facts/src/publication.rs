@@ -48,8 +48,16 @@ pub fn scan_and_write_callable_table_attestation(
     // executable-runtime boundary while replacing the stale count from the
     // final app itself; the runtime then consumes that published final layout.
     let layout = match (layout, role) {
+        (Some(mut layout), CallableTableArtifactRole::Monolithic) => {
+            let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
+            let app_count = entries.len() - app_start;
+            layout.app_entry_count = u32::try_from(app_count)
+                .map_err(|_| "callable-table app entry count exceeds u32")?;
+            layout
+        }
         (Some(mut layout), CallableTableArtifactRole::App) => {
-            layout.app_entry_count = u32::try_from(entries.len())
+            let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
+            layout.app_entry_count = u32::try_from(entries.len() - app_start)
                 .map_err(|_| "callable-table entry count exceeds u32")?;
             layout
         }

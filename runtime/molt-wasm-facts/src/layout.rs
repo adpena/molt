@@ -23,26 +23,22 @@ pub(crate) fn validate_callable_table_layout(
     if fixed_end > layout.finalized_app_base {
         return Err("callable-table fixed and app regions overlap".to_string());
     }
-    if role == CallableTableArtifactRole::Monolithic && layout.fixed_prefix_len != 0 {
-        let fixed_count = usize::try_from(layout.fixed_prefix_len)
-            .map_err(|_| "callable-table fixed prefix exceeds host usize")?;
-        let app_count = usize::try_from(layout.app_entry_count)
+    if matches!(
+        role,
+        CallableTableArtifactRole::Monolithic | CallableTableArtifactRole::App
+    ) {
+        let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
+        let (runtime_entries, app_entries) = entries.split_at(app_start);
+        validate_runtime_entries(layout, runtime_entries)?;
+        let expected_app_count = usize::try_from(layout.app_entry_count)
             .map_err(|_| "callable-table app region exceeds host usize")?;
-        let expected_count = fixed_count
-            .checked_add(app_count)
-            .ok_or("callable-table monolithic entry count exceeds host usize")?;
-        if entries.len() != expected_count {
+        if app_entries.len() != expected_app_count {
             return Err(format!(
-                "callable-table monolithic entry count does not match fixed+app layout: layout={expected_count}, final={}",
-                entries.len()
+                "callable-table monolithic app entry count does not match final active elements: layout={expected_app_count}, final={}",
+                app_entries.len()
             ));
         }
-        validate_contiguous_entries(
-            &entries[..fixed_count],
-            layout.fixed_prefix_base,
-            "runtime fixed prefix",
-        )?;
-        validate_contiguous_entries(&entries[fixed_count..], layout.finalized_app_base, "app")?;
+        validate_contiguous_entries(app_entries, layout.finalized_app_base, "app")?;
         return Ok(());
     }
     if role == CallableTableArtifactRole::Runtime {
@@ -74,6 +70,13 @@ fn validate_runtime_entries(
         ));
     }
     if layout.fixed_prefix_len == 0 {
+        return Ok(());
+    }
+    let fixed_end = layout
+        .fixed_prefix_base
+        .checked_add(layout.fixed_prefix_len)
+        .ok_or("callable-table fixed prefix overflows u32")?;
+    if entries.first().map(|entry| entry.slot) == Some(fixed_end) {
         return Ok(());
     }
     if entries.first().map(|entry| entry.slot) != Some(layout.fixed_prefix_base) {

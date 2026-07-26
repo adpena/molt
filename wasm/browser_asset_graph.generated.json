@@ -166,7 +166,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "ce5b3e2ab1b3bfacfed6ca6ad3b44bb1d96e5ea5104729e1c0bb6f3ac85a3713",
+      "sha256": "03dcdb9c6c248c5762f975eb09481211c2b1d82d82d5cbd2ca5f915e1e527ce7",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -299,7 +299,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "16bdd3552bbaf4181d8c398e5c79ae048fad3f1ba2e4a9b239a589407de98d23",
+      "sha256": "dce8fd8869d4d0c49ed3fee0193818b799666a81f0f948a92a0c6942a0848f2c",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {

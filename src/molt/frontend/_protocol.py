@@ -1122,6 +1122,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue: ...
 
+    def _emit_lazy_type_value_evaluator(
+        self, expression: ast.expr, *, key: str, module_override: str | None = None
+    ) -> MoltValue: ...
+
     def _emit_line_marker(
         self,
         lineno: int,
@@ -1417,6 +1421,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue: ...
 
+    def _emit_type_alias_value(
+        self,
+        node: ast.TypeAlias,
+        *,
+        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
+        module_override: str | None = None,
+    ) -> MoltValue: ...
+
     def _emit_type_error(self, message: str | MoltValue) -> None: ...
 
     def _emit_type_error_value(
@@ -1426,7 +1438,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_type_name(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_type_params_values(
-        self, type_params: Sequence[ast.AST | ast.type_param] | None
+        self,
+        type_params: Sequence[ast.AST | ast.type_param] | None,
+        *,
+        expression_rewriter: Callable[[ast.expr], ast.expr] | None = None,
+        module_override: str | None = None,
     ) -> tuple[list[MoltValue], dict[str, MoltValue]]: ...
 
     def _emit_unbound_free_guard(self, value: MoltValue, name: str) -> None: ...

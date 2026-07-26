@@ -190,6 +190,41 @@ def test_literal_dynamic_import_forms_and_aliases_join_closure(tmp_path: Path) -
     }
 
 
+def test_assigned_and_deferred_dynamic_aliases_join_persistent_closure(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "tools"
+    package = tmp_path / "src" / "pkg"
+    tools.mkdir(parents=True)
+    package.mkdir(parents=True)
+    seed = tools / "entry.py"
+    seed.write_text(
+        "import importlib\n"
+        "assigned = importlib.import_module\n"
+        "assigned('pkg.assigned')\n"
+        "def module_late():\n"
+        "    load('pkg.module_late')\n"
+        "def outer():\n"
+        "    def enclosing_late():\n"
+        "        nested('pkg.enclosing_late')\n"
+        "    from importlib import import_module as nested\n"
+        "from importlib import import_module as load\n",
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("\n", encoding="utf-8")
+    for name in ("assigned", "module_late", "enclosing_late"):
+        (package / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    closure = local_python_import_closure(tmp_path, (seed,))
+
+    paths = _relative_paths(tmp_path, closure)
+    assert {
+        "src/pkg/assigned.py",
+        "src/pkg/module_late.py",
+        "src/pkg/enclosing_late.py",
+    } <= paths
+
+
 @pytest.mark.parametrize(
     "source",
     [

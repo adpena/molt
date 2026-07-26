@@ -1407,7 +1407,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         class_ns_scope = _ClassNsScope(
             ns=dynamic_namespace,
             attr_values=class_attr_values,
-            names=set(class_attr_values) | set(methods),
+            names=(
+                set(class_attr_values)
+                | set(methods)
+                | self._collect_assigned_names(node.body)
+            ),
         )
 
         def bind_class_name(name: str, value: MoltValue) -> None:
@@ -1451,6 +1455,23 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                             f"'{item.name}'",
                         )
                     bind_class_name(item.name, nested_val)
+                    continue
+                if isinstance(item, ast.TypeAlias):
+                    if not isinstance(item.name, ast.Name):
+                        raise FrontendRejection(
+                            Diagnostic.TYPE_FORM, "Unsupported type alias target"
+                        )
+                    class_scope_names = set(class_scope) | class_ns_scope.names
+                    alias_value = self._emit_type_alias_value(
+                        item,
+                        expression_rewriter=lambda expression: self._rewrite_class_annotation_expr(
+                            expression,
+                            node.name,
+                            class_scope_names,
+                        ),
+                        module_override=module_name,
+                    )
+                    bind_class_name(item.name.id, alias_value)
                     continue
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _, _, kwonly, _, _ = self._split_function_args(item.args)

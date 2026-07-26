@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Literal
 
 from molt.compiler_analysis.python_effects import (
@@ -12,12 +13,16 @@ from molt.compiler_analysis.python_effects import (
     expression_evaluation_children,
     expression_may_execute_python,
 )
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+)
 
 
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
-ImportNodeKey = tuple[int, int, int, int, str]
+ImportNodeKey = PythonSourceKey
 ImportResolutionError = Literal[
     "no_parent",
     "beyond_top",
@@ -200,26 +205,27 @@ class ModuleImportFlow:
     final_states: tuple[ModuleImportState, ...]
     all_states: tuple[ModuleImportState, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "states_by_node",
+            MappingProxyType(
+                {key: tuple(states) for key, states in self.states_by_node.items()}
+            ),
+        )
+        object.__setattr__(self, "final_states", tuple(self.final_states))
+        object.__setattr__(self, "all_states", tuple(self.all_states))
+
     def states_for(self, node: ast.AST) -> tuple[ModuleImportState, ...]:
         # An unrecorded execution phase (deferred annotations, lambda/generator
         # bodies, or a newly introduced AST form) must never inherit the final
         # module snapshot. Unioning the observed source-order states is the
         # conservative runtime anchor until that phase has an explicit event.
-        return self.states_by_node.get(_import_node_key(node), self.all_states)
+        return self.states_by_node.get(python_node_source_key(node), self.all_states)
 
 
 def module_spec_parent(spec_name: str, is_package: bool) -> str:
     return spec_name if is_package else spec_name.rpartition(".")[0]
-
-
-def _import_node_key(node: ast.AST) -> ImportNodeKey:
-    return (
-        int(getattr(node, "lineno", 0)),
-        int(getattr(node, "col_offset", 0)),
-        int(getattr(node, "end_lineno", getattr(node, "lineno", 0))),
-        int(getattr(node, "end_col_offset", getattr(node, "col_offset", 0))),
-        type(node).__name__,
-    )
 
 
 def loader_module_import_state(context: ModuleImportContext) -> ModuleImportState:
@@ -580,6 +586,7 @@ def _analyze_module_import_flow_uncached(
     by_node: dict[ImportNodeKey, tuple[ModuleImportState, ...]] = {}
     all_states: set[ModuleImportState] = set(initial)
     deferred_bodies: list[tuple[Sequence[ast.stmt], bool]] = []
+    deferred_expressions: list[ast.expr] = []
     metadata_mutator_functions: set[str] = set()
     future_annotations = any(
         isinstance(statement, ast.ImportFrom)
@@ -590,7 +597,7 @@ def _analyze_module_import_flow_uncached(
 
     def record(node: ast.AST, states: tuple[ModuleImportState, ...]) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
-            key = _import_node_key(node)
+            key = python_node_source_key(node)
             previous = by_node.get(key, ())
             by_node[key] = _merge_states(previous, states)
         if isinstance(
@@ -602,17 +609,29 @@ def _analyze_module_import_flow_uncached(
             record(child, states)
 
     def assign_states(
-        states: tuple[ModuleImportState, ...], targets: Sequence[ast.AST], value: ast.AST
+        states: tuple[ModuleImportState, ...],
+        targets: Sequence[ast.AST],
+        value: ast.AST,
+        *,
+        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
     ) -> tuple[ModuleImportState, ...]:
         current = states
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
                 if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
                     for element, element_value in zip(target.elts, value.elts):
-                        current = assign_states(current, (element,), element_value)
-                elif any(target_writes_metadata(element) for element in target.elts):
+                        current = assign_states(
+                            current,
+                            (element,),
+                            element_value,
+                            direct_metadata_names=direct_metadata_names,
+                        )
+                elif any(
+                    target_writes_metadata(element, direct_metadata_names)
+                    for element in target.elts
+                ):
                     current = unknown_states(current)
-            else:
+            elif target_writes_metadata(target, direct_metadata_names):
                 current = _merge_states(
                     update_module_import_state(state, target, value)
                     for state in current
@@ -694,6 +713,25 @@ def _analyze_module_import_flow_uncached(
         all_states.update(current)
         return current
 
+    def expression_may_be_metadata_mutator(value: ast.AST) -> bool:
+        if isinstance(value, ast.Name):
+            return value.id in metadata_mutator_functions
+        if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+            return any(expression_may_be_metadata_mutator(item) for item in value.elts)
+        if isinstance(value, ast.Dict):
+            return any(
+                expression_may_be_metadata_mutator(item) for item in value.values
+            )
+        if isinstance(value, ast.IfExp):
+            return expression_may_be_metadata_mutator(
+                value.body
+            ) or expression_may_be_metadata_mutator(value.orelse)
+        if isinstance(value, ast.NamedExpr):
+            return expression_may_be_metadata_mutator(value.value)
+        if isinstance(value, ast.Subscript):
+            return expression_may_be_metadata_mutator(value.value)
+        return False
+
     def update_mutator_bindings(
         targets: Sequence[ast.AST],
         value: ast.AST,
@@ -701,29 +739,56 @@ def _analyze_module_import_flow_uncached(
         target_names = {
             target.id for target in targets if isinstance(target, ast.Name)
         }
-        source_name = value.id if isinstance(value, ast.Name) else None
-        source_is_mutator = source_name in metadata_mutator_functions
+        source_is_mutator = expression_may_be_metadata_mutator(value)
         for name in target_names:
             metadata_mutator_functions.discard(name)
             if source_is_mutator:
                 metadata_mutator_functions.add(name)
 
-    def target_writes_metadata(target: ast.AST) -> bool:
-        if import_metadata_target_name(target) in _IMPORT_METADATA_NAMES:
+    def target_writes_metadata(
+        target: ast.AST,
+        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+    ) -> bool:
+        target_name = import_metadata_target_name(target)
+        if target_name in _IMPORT_METADATA_NAMES and (
+            not isinstance(target, ast.Name) or target_name in direct_metadata_names
+        ):
             return True
         if isinstance(target, (ast.Tuple, ast.List)):
-            return any(target_writes_metadata(element) for element in target.elts)
+            return any(
+                target_writes_metadata(element, direct_metadata_names)
+                for element in target.elts
+            )
         return False
+
+    def scope_global_metadata_names(statements: Sequence[ast.stmt]) -> frozenset[str]:
+        names: set[str] = set()
+        pending: list[ast.AST] = list(statements)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.Global):
+                names.update(node.names)
+                continue
+            if isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            pending.extend(ast.iter_child_nodes(node))
+        return frozenset(names & _IMPORT_METADATA_NAMES)
 
     def function_mutates_metadata(
         statement: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> bool:
-        global_names: set[str] = set()
-        for child in ast.walk(statement):
-            if isinstance(child, ast.Global):
-                global_names.update(child.names)
-        relevant_globals = global_names & _IMPORT_METADATA_NAMES
-        for child in ast.walk(statement):
+        relevant_globals = scope_global_metadata_names(statement.body)
+        pending: list[ast.AST] = list(statement.body)
+        while pending:
+            child = pending.pop()
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
             if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 targets = (
                     child.targets
@@ -762,6 +827,7 @@ def _analyze_module_import_flow_uncached(
                     and child.args[1].value in _IMPORT_METADATA_NAMES
                 ):
                     return True
+            pending.extend(ast.iter_child_nodes(child))
         return False
 
     def expression_effects(
@@ -792,14 +858,16 @@ def _analyze_module_import_flow_uncached(
             assert isinstance(target_name, str)
             synthetic_target = ast.Name(id=target_name)
             return assign_states(current, (synthetic_target,), expression.args[1])
-        if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name) and (
-            expression.func.id in {"exec", "eval"}
-            or expression.func.id in metadata_mutator_functions
+        if isinstance(expression, ast.Call) and (
+            isinstance(expression.func, ast.Name)
+            and expression.func.id in {"exec", "eval"}
+            or expression_may_be_metadata_mutator(expression.func)
         ):
             return unknown_states(current)
         if (
             isinstance(expression, ast.Call)
-            and _import_node_key(expression) not in metadata_preserving_globals_calls
+            and python_node_source_key(expression)
+            not in metadata_preserving_globals_calls
             and _call_receives_module_globals(expression)
         ):
             return unknown_states(current)
@@ -849,6 +917,7 @@ def _analyze_module_import_flow_uncached(
         states: tuple[ModuleImportState, ...],
         *,
         mutate_metadata: bool,
+        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
     ) -> tuple[ModuleImportState, ...]:
         current = states
         for statement in statements:
@@ -859,7 +928,12 @@ def _analyze_module_import_flow_uncached(
                 record(statement.value, current)
                 current = expression_effects(statement.value, current)
                 if mutate_metadata:
-                    current = assign_states(current, statement.targets, statement.value)
+                    current = assign_states(
+                        current,
+                        statement.targets,
+                        statement.value,
+                        direct_metadata_names=direct_metadata_names,
+                    )
                 current = invalidate_proven_call_bindings(current, statement.targets)
                 update_mutator_bindings(statement.targets, statement.value)
             elif isinstance(statement, ast.AnnAssign):
@@ -868,14 +942,21 @@ def _analyze_module_import_flow_uncached(
                     record(statement.value, current)
                     current = expression_effects(statement.value, current)
                     if mutate_metadata:
-                        current = assign_states(current, (statement.target,), statement.value)
+                        current = assign_states(
+                            current,
+                            (statement.target,),
+                            statement.value,
+                            direct_metadata_names=direct_metadata_names,
+                        )
                     current = invalidate_proven_call_bindings(
                         current, (statement.target,)
                     )
                     update_mutator_bindings((statement.target,), statement.value)
             elif isinstance(statement, ast.AugAssign):
                 record(statement, current)
-                if mutate_metadata:
+                if mutate_metadata and target_writes_metadata(
+                    statement.target, direct_metadata_names
+                ):
                     current = _merge_states(
                         invalidate_module_import_state(state, statement.target)
                         for state in current
@@ -887,6 +968,10 @@ def _analyze_module_import_flow_uncached(
                 )
                 if mutate_metadata:
                     for target in statement.targets:
+                        if not target_writes_metadata(
+                            target, direct_metadata_names
+                        ):
+                            continue
                         current = _merge_states(
                             invalidate_module_import_state(state, target, deleted=True)
                             for state in current
@@ -895,8 +980,22 @@ def _analyze_module_import_flow_uncached(
             elif isinstance(statement, ast.If):
                 record(statement.test, current)
                 current = expression_effects(statement.test, current)
-                body = flow_statements(statement.body, current, mutate_metadata=mutate_metadata)
-                alternate = flow_statements(statement.orelse, current, mutate_metadata=mutate_metadata) if statement.orelse else current
+                body = flow_statements(
+                    statement.body,
+                    current,
+                    mutate_metadata=mutate_metadata,
+                    direct_metadata_names=direct_metadata_names,
+                )
+                alternate = (
+                    flow_statements(
+                        statement.orelse,
+                        current,
+                        mutate_metadata=mutate_metadata,
+                        direct_metadata_names=direct_metadata_names,
+                    )
+                    if statement.orelse
+                    else current
+                )
                 current = _merge_states(body, alternate)
                 all_states.update(current)
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
@@ -909,12 +1008,24 @@ def _analyze_module_import_flow_uncached(
                     # Iteration itself invokes __iter__/__next__ independently
                     # of evaluating the iterable expression.
                     current = unknown_states(current)
-                    if mutate_metadata and target_writes_metadata(statement.target):
+                    if mutate_metadata and target_writes_metadata(
+                        statement.target, direct_metadata_names
+                    ):
                         current = unknown_states(current)
-                body = flow_statements(statement.body, current, mutate_metadata=mutate_metadata)
+                body = flow_statements(
+                    statement.body,
+                    current,
+                    mutate_metadata=mutate_metadata,
+                    direct_metadata_names=direct_metadata_names,
+                )
                 current = _merge_states(current, body)
                 if statement.orelse:
-                    current = flow_statements(statement.orelse, current, mutate_metadata=mutate_metadata)
+                    current = flow_statements(
+                        statement.orelse,
+                        current,
+                        mutate_metadata=mutate_metadata,
+                        direct_metadata_names=direct_metadata_names,
+                    )
                 all_states.update(current)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 current = invalidate_proven_call_bindings(
@@ -959,15 +1070,32 @@ def _analyze_module_import_flow_uncached(
                 current = invalidate_proven_call_bindings(
                     current, (ast.Name(id=statement.name),)
                 )
-                for expression in (*statement.decorator_list, *statement.bases):
+                for expression in (
+                    *statement.decorator_list,
+                    *statement.bases,
+                    *(keyword.value for keyword in statement.keywords),
+                ):
                     record(expression, current)
                     current = expression_effects(expression, current)
-                current = flow_statements(statement.body, current, mutate_metadata=False)
+                class_global_metadata = scope_global_metadata_names(statement.body)
+                current = flow_statements(
+                    statement.body,
+                    current,
+                    mutate_metadata=bool(class_global_metadata),
+                    direct_metadata_names=class_global_metadata,
+                )
                 if any(
                     dotted_expression_name(decorator) in metadata_mutator_functions
                     for decorator in statement.decorator_list
                 ):
                     current = unknown_states(current)
+            elif isinstance(statement, getattr(ast, "TypeAlias", ())):
+                deferred_expressions.append(statement.value)
+                for type_param in statement.type_params:
+                    for attribute in ("bound", "default_value"):
+                        value = getattr(type_param, attribute, None)
+                        if isinstance(value, ast.expr):
+                            deferred_expressions.append(value)
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
                 for item in statement.items:
                     record(item.context_expr, current)
@@ -976,14 +1104,26 @@ def _analyze_module_import_flow_uncached(
                     if (
                         mutate_metadata
                         and item.optional_vars is not None
-                        and target_writes_metadata(item.optional_vars)
+                        and target_writes_metadata(
+                            item.optional_vars, direct_metadata_names
+                        )
                     ):
                         current = unknown_states(current)
-                current = flow_statements(statement.body, current, mutate_metadata=mutate_metadata)
+                current = flow_statements(
+                    statement.body,
+                    current,
+                    mutate_metadata=mutate_metadata,
+                    direct_metadata_names=direct_metadata_names,
+                )
                 current = unknown_states(current)
             elif isinstance(statement, ast.Try):
                 states_before_try = set(all_states)
-                body = flow_statements(statement.body, current, mutate_metadata=mutate_metadata)
+                body = flow_statements(
+                    statement.body,
+                    current,
+                    mutate_metadata=mutate_metadata,
+                    direct_metadata_names=direct_metadata_names,
+                )
                 branches = [body]
                 handler_states = _merge_states(
                     current,
@@ -996,12 +1136,29 @@ def _analyze_module_import_flow_uncached(
                     body_states = handler_states
                     if handler.name in _IMPORT_METADATA_NAMES:
                         body_states = unknown_states(body_states)
-                    branches.append(flow_statements(handler.body, body_states, mutate_metadata=mutate_metadata))
+                    branches.append(
+                        flow_statements(
+                            handler.body,
+                            body_states,
+                            mutate_metadata=mutate_metadata,
+                            direct_metadata_names=direct_metadata_names,
+                        )
+                    )
                 current = _merge_states(*branches)
                 if statement.orelse:
-                    current = flow_statements(statement.orelse, current, mutate_metadata=mutate_metadata)
+                    current = flow_statements(
+                        statement.orelse,
+                        current,
+                        mutate_metadata=mutate_metadata,
+                        direct_metadata_names=direct_metadata_names,
+                    )
                 if statement.finalbody:
-                    current = flow_statements(statement.finalbody, current, mutate_metadata=mutate_metadata)
+                    current = flow_statements(
+                        statement.finalbody,
+                        current,
+                        mutate_metadata=mutate_metadata,
+                        direct_metadata_names=direct_metadata_names,
+                    )
             elif isinstance(statement, ast.Match):
                 record(statement.subject, current)
                 current = expression_effects(statement.subject, current)
@@ -1021,13 +1178,14 @@ def _analyze_module_import_flow_uncached(
                         for pattern in ast.walk(case.pattern)
                         if isinstance(pattern, ast.MatchStar) and (name := pattern.name) is not None
                     )
-                    if mutate_metadata and pattern_names & _IMPORT_METADATA_NAMES:
+                    if mutate_metadata and pattern_names & set(direct_metadata_names):
                         case_states = unknown_states(case_states)
                     branches.append(
                         flow_statements(
                             case.body,
                             case_states,
                             mutate_metadata=mutate_metadata,
+                            direct_metadata_names=direct_metadata_names,
                         )
                     )
                 current = _merge_states(*branches)
@@ -1047,7 +1205,15 @@ def _analyze_module_import_flow_uncached(
             if mutates_metadata
             else deferred_states
         )
-        flow_statements(deferred_body, body_states, mutate_metadata=False)
+        flow_statements(
+            deferred_body,
+            body_states,
+            mutate_metadata=mutates_metadata,
+            direct_metadata_names=scope_global_metadata_names(deferred_body),
+        )
+    for deferred_expression in deferred_expressions:
+        record(deferred_expression, deferred_states)
+        expression_effects(deferred_expression, deferred_states)
     return ModuleImportFlow(by_node, final_states, _merge_states(all_states, final_states))
 
 

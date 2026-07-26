@@ -17,6 +17,8 @@
   const WASM_VERSION = 0x1;
   const CALLABLE_TABLE_SECTION_NAME = callableTableAbi.section_name;
   const CALLABLE_TABLE_SECTION_VERSION = callableTableAbi.version;
+  const CALLABLE_TABLE_LAYOUT_SECTION_NAME = callableTableAbi.layout_section_name;
+  const CALLABLE_TABLE_LAYOUT_VERSION = callableTableAbi.layout_version;
   const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = callableTableAbi.active_element_role;
   const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
@@ -147,6 +149,27 @@
     return offset;
   };
 
+  const parseCallableTableLayoutPayload = (view, offset, end) => {
+    const values = [];
+    for (let idx = 0; idx < 5; idx += 1) {
+      const value = readVarUint(view, offset);
+      values.push(value.value);
+      offset = value.offset;
+    }
+    if (offset !== end || values[0] !== CALLABLE_TABLE_LAYOUT_VERSION) {
+      throw new Error('Invalid callable-table layout publication');
+    }
+    const [, fixedPrefixBase, fixedPrefixLen, finalizedAppBase, appEntryCount] = values;
+    if (
+      (fixedPrefixLen === 0 && fixedPrefixBase !== 0) ||
+      fixedPrefixBase + fixedPrefixLen > finalizedAppBase ||
+      finalizedAppBase + appEntryCount > 0xffffffff
+    ) {
+      throw new Error('Invalid callable-table layout bounds');
+    }
+    return { fixedPrefixBase, fixedPrefixLen, finalizedAppBase, appEntryCount };
+  };
+
   const extractWasmTableBase = (buffer) => {
     if (!buffer) return null;
     try {
@@ -156,6 +179,7 @@
       }
       let offset = 8;
       const activeTableBases = [];
+      let callableTableLayout = null;
       while (offset < bytes.length) {
         const sectionId = bytes[offset++];
         const sizeRes = readVarUint(bytes, offset);
@@ -165,7 +189,20 @@
         if (sectionEnd > bytes.length) {
           return null;
         }
-        if (sectionId === 9) {
+        if (sectionId === 0) {
+          const name = readString(bytes, offset);
+          if (name.value === CALLABLE_TABLE_LAYOUT_SECTION_NAME) {
+            if (callableTableLayout !== null) {
+              throw new Error('Duplicate callable-table layout publication');
+            }
+            callableTableLayout = parseCallableTableLayoutPayload(
+              bytes,
+              name.offset,
+              sectionEnd,
+            );
+          }
+          offset = sectionEnd;
+        } else if (sectionId === 9) {
           let count;
           ({ value: count, offset } = readVarUint(bytes, offset));
           for (let idx = 0; idx < count; idx += 1) {
@@ -208,6 +245,11 @@
         }
       }
 
+      if (callableTableLayout) {
+        return callableTableLayout.fixedPrefixLen > 0
+          ? callableTableLayout.fixedPrefixBase
+          : callableTableLayout.finalizedAppBase;
+      }
       if (activeTableBases.length > 0) {
         const appActiveTableBases = activeTableBases.filter((base) => base > 1);
         if (appActiveTableBases.length > 0) {
