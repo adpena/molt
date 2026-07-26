@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from molt.cargo_execution_policy import cargo_subprocess_environment
+from .cargo_execution_policy import cargo_subprocess_environment
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"

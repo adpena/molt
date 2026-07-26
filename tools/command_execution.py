@@ -7,7 +7,7 @@ environment, timeout custody, and subprocess-compatible check/output behavior.
 
 from __future__ import annotations
 
-import importlib.util
+import hashlib
 import re
 import subprocess
 import sys
@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+try:
+    from tools.import_file import load_sibling_package_module_from_path
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    from import_file import load_sibling_package_module_from_path  # type: ignore
 
 
 def _harness_memory_guard() -> Any:
@@ -44,12 +49,12 @@ def _prefix(source_file: str | Path, root: Path) -> str:
 @lru_cache(maxsize=None)
 def _process_guard_authority(repo_root: str) -> Any:
     path = Path(repo_root) / "src" / "molt" / "process_guard.py"
-    spec = importlib.util.spec_from_file_location("_molt_process_guard_authority", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load process guard authority from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    root_identity = hashlib.sha256(str(Path(repo_root).resolve()).encode()).hexdigest()
+    package_name = f"_molt_process_guard_authority_{root_identity[:16]}"
+    return load_sibling_package_module_from_path(
+        f"{package_name}.process_guard",
+        path,
+    )
 
 
 _READ_ONLY_GIT_SUBCOMMANDS = frozenset(
