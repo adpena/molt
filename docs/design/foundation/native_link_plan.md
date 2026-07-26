@@ -125,6 +125,15 @@ driver's dry-run trace and fingerprints every tool's bytes and version;
 `-print-prog-name` alone is not trusted because it can disagree with the
 executable selected for a complete link command.
 
+The shared candidate resolver memoizes its complete deterministic search ladder
+by tool names, explicit commands, sibling and target roots, PATH/PATHEXT, Rust
+toolchain environment, current directory, checkout identity, and the portable
+identity of every searched directory. Directory creation or mutation selects a
+new snapshot automatically, while selected paths are existence-checked on every
+hit as a coarse-timestamp backstop. Tool bytes and versions remain separately
+fingerprinted, so this removes repeated filesystem discovery without weakening
+executable custody.
+
 Every native rebuild links to a private candidate. Ordinary and BOLT builds
 share one finalizer that applies target stripping when planned, validates the
 final candidate, and atomically publishes it. A failed link, strip, or
