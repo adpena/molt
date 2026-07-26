@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt.cli.models import _RuntimeArtifactState
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 
 
 CARGO = importlib.import_module("molt.cli.cargo_execution")
@@ -90,6 +91,22 @@ def test_existing_sccache_wrapper_is_normalized_before_nested_build(
 
     CARGO._maybe_enable_sccache(env)
 
+    assert env["CARGO_INCREMENTAL"] == "0"
+
+
+@pytest.mark.parametrize("wrapper_env", CARGO_WRAPPER_ENV_NAMES)
+def test_every_cargo_wrapper_alias_disables_incremental(
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_env: str,
+) -> None:
+    for name in CARGO_WRAPPER_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(wrapper_env, r"C:\tools\sccache.exe")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+
+    env = CARGO._cargo_build_env()
+
+    assert env[wrapper_env] == r"C:\tools\sccache.exe"
     assert env["CARGO_INCREMENTAL"] == "0"
 
 
@@ -216,6 +233,33 @@ def test_explicit_wrapper_failure_retries_once_and_retains_both_attempts(
     assert attempts[0]["failure_kind"] == reason
     assert stderr in attempts[0]["stderr"]
     assert "retry reached rustc" in attempts[1]["stderr"]
+
+
+def test_sccache_retry_removes_every_sccache_wrapper_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = ["cargo", "build"]
+    calls: list[dict[str, str]] = []
+
+    def run(_cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
+        calls.append(dict(kwargs["env"]))  # type: ignore[arg-type]
+        if len(calls) == 1:
+            return _completed(command, 2, stderr="sccache: error: transport reset")
+        return _completed(command, 0)
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    result = CARGO._run_cargo_with_sccache_retry(
+        command,
+        cwd=Path.cwd(),
+        env={name: "sccache" for name in CARGO_WRAPPER_ENV_NAMES},
+        timeout=1.0,
+        json_output=True,
+        label="Runtime build",
+    )
+
+    assert result.returncode == 0
+    assert all(name in calls[0] for name in CARGO_WRAPPER_ENV_NAMES)
+    assert all(name not in calls[1] for name in CARGO_WRAPPER_ENV_NAMES)
 
 
 def test_tempfile_cargo_path_uses_same_retry_and_evidence_authority(

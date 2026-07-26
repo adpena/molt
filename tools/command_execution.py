@@ -170,6 +170,11 @@ class CommandExecutor:
         command = [str(part) for part in args]
         if not command:
             raise ValueError("command argv must not be empty")
+        harness_memory_guard = _harness_memory_guard()
+        env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
+            command,
+            env,
+        )
         return subprocess.Popen(
             command,
             cwd=cwd,
@@ -208,6 +213,10 @@ class CommandExecutor:
         if not command:
             raise ValueError("command argv must not be empty")
         harness_memory_guard = _harness_memory_guard()
+        env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
+            command,
+            env,
+        )
         context = harness_memory_guard.HarnessExecutionContext.from_env(
             self.prefix,
             env,

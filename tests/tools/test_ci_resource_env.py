@@ -152,7 +152,7 @@ def test_policy_rejects_unattested_memory_shape(tmp_path: Path) -> None:
     policy_path = tmp_path / "ci_resource_policy.toml"
     policy_path.write_text(
         """
-schema = "molt.ci-resource-policy.v1"
+schema = "molt.ci-resource-policy.v2"
 [cargo_build]
 max_jobs = 4
 measured_peak_rss_bytes = 2347479040
@@ -160,12 +160,66 @@ headroom_ratio = 0.0
 measurement_run_id = 29646901351
 measurement_commit = "4002a0956af24736d39bc6b077045a1c278f0adc"
 measurement_command = "python3 tools/run_cargo_test_truth.py"
+
+[cargo_environment]
+incident_run_id = 30211145633
+incident_job_id = 89817499999
+incident_commit = "66c042c7ba51bc8606f34b27cfc6af90783cec61"
+incident_command = "cargo metadata --locked --format-version 1"
+
+[cargo_execution]
+cross_check_timeout_seconds = 240
+warm_timeout_seconds = 300
+integration_timeout_seconds = 600
+cold_timeout_seconds = 1200
+suite_timeout_seconds = 1800
+observed_cold_timeout_seconds = 300.51
+minimum_cold_headroom_multiplier = 3.0
+measurement_run_id = 30209686001
+measurement_job_id = 89813773652
+measurement_commit = "88f2c1ae305e78bbbf4ad2b86aa8d620825d9523"
+measurement_command = "cargo build --locked --profile dev-fast -p molt-wasm-host"
 """.strip(),
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="headroom_ratio"):
         module.load_ci_resource_policy(policy_path)
+
+
+def test_cargo_execution_budget_is_receipt_calibrated() -> None:
+    module = _load_ci_resource_env()
+
+    policy = module.load_ci_cargo_policy().execution_budgets
+
+    assert dict(policy.timeout_seconds_by_class) == {
+        "cross-check": 240,
+        "warm": 300,
+        "integration": 600,
+        "cold": 1200,
+        "suite": 1800,
+    }
+    assert policy.observed_cold_timeout_seconds == pytest.approx(300.51)
+    assert policy.minimum_cold_headroom_multiplier == pytest.approx(3.0)
+    assert policy.measurement_run_id == 30_209_686_001
+    assert policy.measurement_job_id == 89_813_773_652
+
+
+def test_cargo_environment_policy_retains_native_incident_receipt() -> None:
+    module = _load_ci_resource_env()
+
+    policy = module.load_ci_cargo_policy().environment
+
+    assert policy.wrapper_environment_names == (
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    )
+    assert policy.incident_run_id == 30_211_145_633
+    assert policy.incident_job_id == 89_817_499_999
+    assert policy.incident_commit == "66c042c7ba51bc8606f34b27cfc6af90783cec61"
+    assert policy.incident_command == "cargo metadata --locked --format-version 1"
 
 
 @pytest.mark.parametrize(

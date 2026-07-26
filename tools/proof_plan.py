@@ -27,12 +27,22 @@ import time
 import tomllib
 from typing import Any, Iterable, Mapping
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.cargo_execution_policy import (  # noqa: E402
+    cargo_subprocess_environment,
+    load_ci_cargo_policy,
+    normalize_cargo_environment,
+)
+
 try:
     from tools.artifact_publish import atomic_write_json
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from artifact_publish import atomic_write_json
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "tools" / "proof_plan.toml"
 NULL_SHA = "0" * 40
 REQUIRED_FAMILY_FIELDS = (
@@ -55,7 +65,6 @@ REQUIRED_COMMAND_FIELDS = (
     "cell",
     "tiers",
     "resource_class",
-    "timeout_seconds",
     "cache_domain",
     "dependencies",
     "argv",
@@ -67,11 +76,6 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "version_pattern",
     "setup_value",
     "setup_evidence",
-)
-REQUIRED_ENVIRONMENT_POLICY_FIELDS = (
-    "toolchains",
-    "match_environment",
-    "set_environment",
 )
 RECEIPT_SCHEMA = "molt.proof-receipt.v2"
 
@@ -121,12 +125,6 @@ class ToolchainPolicy:
 
 
 @dataclass(frozen=True, slots=True)
-class EnvironmentPolicy:
-    name: str
-    data: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
 class ResourcePolicy:
     name: str
     max_parallel: int
@@ -156,7 +154,6 @@ class ProofPlan:
     families: tuple[ProofFamily, ...]
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
-    environment_policies: tuple[EnvironmentPolicy, ...]
     executor_max_workers: int
     resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
@@ -284,6 +281,21 @@ class ProofPlan:
             ProofFamily(str(entry.get("name", "")), dict(entry))
             for entry in data.get("ci_family", [])
         )
+        cargo_budgets = load_ci_cargo_policy().execution_budgets
+        commands: list[ProofCommand] = []
+        for entry in data.get("command", []):
+            command_data = dict(entry)
+            budget_class = command_data.get("timeout_budget")
+            if budget_class is not None:
+                if "timeout_seconds" in command_data:
+                    raise ValueError(
+                        f"{command_data.get('id', '<unknown>')}: declare timeout_budget "
+                        "or timeout_seconds, not both"
+                    )
+                command_data["timeout_seconds"] = cargo_budgets.timeout_seconds(
+                    str(budget_class)
+                )
+            commands.append(ProofCommand(str(command_data.get("id", "")), command_data))
         plan = cls(
             path=path,
             authority_inputs=tuple(data.get("authority_inputs", [])),
@@ -293,17 +305,10 @@ class ProofPlan:
                 for entry in data.get("matrix_cell", [])
             ),
             families=families,
-            commands=tuple(
-                ProofCommand(str(entry.get("id", "")), dict(entry))
-                for entry in data.get("command", [])
-            ),
+            commands=tuple(commands),
             toolchain_policies=tuple(
                 ToolchainPolicy(str(entry.get("name", "")), dict(entry))
                 for entry in data.get("toolchain_policy", [])
-            ),
-            environment_policies=tuple(
-                EnvironmentPolicy(str(entry.get("name", "")), dict(entry))
-                for entry in data.get("environment_policy", [])
             ),
             executor_max_workers=int(data.get("executor_max_workers", 0)),
             resource_policies=tuple(
@@ -451,63 +456,6 @@ class ProofPlan:
                         errors.append(
                             f"{policy.name}: setup evidence token missing from {relative}"
                         )
-        environment_policy_names = [policy.name for policy in self.environment_policies]
-        if not environment_policy_names or any(
-            not name for name in environment_policy_names
-        ):
-            errors.append("environment policies must have non-empty names")
-        if len(environment_policy_names) != len(set(environment_policy_names)):
-            errors.append("environment policy names must be unique")
-        known_toolchains = set(policy_names)
-        for policy in self.environment_policies:
-            for field in REQUIRED_ENVIRONMENT_POLICY_FIELDS:
-                if field not in policy.data:
-                    errors.append(f"{policy.name}: missing environment field {field}")
-            toolchains = policy.data.get("toolchains")
-            if (
-                not isinstance(toolchains, list)
-                or not toolchains
-                or not all(isinstance(name, str) and name for name in toolchains)
-            ):
-                errors.append(f"{policy.name}: toolchains must be a non-empty list")
-            elif len(toolchains) != len(set(toolchains)):
-                errors.append(f"{policy.name}: toolchains must be unique")
-            elif unknown_toolchains := set(toolchains) - known_toolchains:
-                errors.append(
-                    f"{policy.name}: unknown toolchains {sorted(unknown_toolchains)!r}"
-                )
-            match_environment = policy.data.get("match_environment")
-            if not isinstance(match_environment, dict) or not match_environment:
-                errors.append(
-                    f"{policy.name}: match_environment must be a non-empty string map"
-                )
-            elif not all(
-                isinstance(name, str) and name and isinstance(pattern, str) and pattern
-                for name, pattern in match_environment.items()
-            ):
-                errors.append(
-                    f"{policy.name}: match_environment must be a non-empty string map"
-                )
-            else:
-                for name, pattern in match_environment.items():
-                    try:
-                        re.compile(pattern)
-                    except re.error as exc:
-                        errors.append(
-                            f"{policy.name}: invalid environment pattern for {name}: {exc}"
-                        )
-            set_environment = policy.data.get("set_environment")
-            if (
-                not isinstance(set_environment, dict)
-                or not set_environment
-                or not all(
-                    isinstance(name, str) and name and isinstance(value, str)
-                    for name, value in set_environment.items()
-                )
-            ):
-                errors.append(
-                    f"{policy.name}: set_environment must be a non-empty string map"
-                )
         cell_ids = [cell.id for cell in self.matrix_cells]
         if not cell_ids or any(not cell_id for cell_id in cell_ids):
             errors.append("matrix_cell IDs must be non-empty")
@@ -763,6 +711,19 @@ class ProofPlan:
                     errors.append(f"{command.id}: tiers must be a non-empty list")
                 elif not set(tiers).issubset(set(family.data["tiers"])):
                     errors.append(f"{command.id}: command tiers escape family tiers")
+            timeout_budget = command.data.get("timeout_budget")
+            is_compiler_build = resource_class == "compiler-build-resource"
+            if is_compiler_build and not isinstance(timeout_budget, str):
+                errors.append(
+                    f"{command.id}: compiler-build-resource requires timeout_budget"
+                )
+            elif timeout_budget is not None:
+                if not isinstance(timeout_budget, str) or not timeout_budget:
+                    errors.append(f"{command.id}: timeout_budget must be non-empty")
+                if "cargo" not in command.toolchains:
+                    errors.append(
+                        f"{command.id}: timeout_budget requires the cargo toolchain"
+                    )
             if isinstance(argv, list) and all(isinstance(part, str) for part in argv):
                 for part in argv:
                     candidate = part.split("::", 1)[0]
@@ -1376,6 +1337,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=5,
+                env=cargo_subprocess_environment(content_path_command, os.environ)[0],
             )
             candidates = tuple(
                 line.strip() for line in resolved.stdout.splitlines() if line.strip()
@@ -1391,14 +1353,16 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             content_path = Path("unavailable")
     executable_sha256 = content_hash(content_path)
     try:
+        version_argv = [path, *policy.data["version_args"]]
         completed = subprocess.run(
-            [path, *policy.data["version_args"]],
+            version_argv,
             cwd=probe_directory,
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             timeout=5,
+            env=cargo_subprocess_environment(version_argv, os.environ)[0],
         )
         version = completed.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1545,6 +1509,7 @@ def _base_command_record(command: ProofCommand) -> dict[str, Any]:
         "dependencies": list(command.dependencies),
         "tiers": list(command.data["tiers"]),
         "resource_class": command.data["resource_class"],
+        "timeout_budget": command.data.get("timeout_budget"),
         "timeout_seconds": int(command.data["timeout_seconds"]),
         "timeout_env": list(command.data.get("timeout_env", [])),
         "environment_overrides": dict(command.data.get("env", {})),
@@ -1556,7 +1521,7 @@ def _command_environment(
     command: ProofCommand,
     timeout: int,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
-    """Resolve one command environment through the manifest-owned invariants."""
+    """Resolve one command environment through shared Cargo invariants."""
     child_env = dict(os.environ)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = os.pathsep.join(
@@ -1567,26 +1532,9 @@ def _command_environment(
     child_env.update(
         {str(name): str(value) for name, value in command.data.get("env", {}).items()}
     )
-    command_toolchains = set(command.toolchains)
-    applied: list[str] = []
-    for policy in plan.environment_policies:
-        required_toolchains = set(policy.data["toolchains"])
-        if not required_toolchains.issubset(command_toolchains):
-            continue
-        match_environment = policy.data["match_environment"]
-        if not all(
-            re.fullmatch(str(pattern), child_env.get(str(name), "")) is not None
-            for name, pattern in match_environment.items()
-        ):
-            continue
-        child_env.update(
-            {
-                str(name): str(value)
-                for name, value in policy.data["set_environment"].items()
-            }
-        )
-        applied.append(policy.name)
-    return child_env, tuple(applied)
+    if "cargo" not in command.toolchains:
+        return child_env, ()
+    return normalize_cargo_environment(child_env)
 
 
 def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
@@ -2080,6 +2028,7 @@ def verify_receipts(
                 "dependencies": list(command.dependencies),
                 "tiers": list(command.data["tiers"]),
                 "resource_class": command.data["resource_class"],
+                "timeout_budget": command.data.get("timeout_budget"),
                 "timeout_seconds": command.data["timeout_seconds"],
                 "timeout_env": list(command.data.get("timeout_env", [])),
                 "environment_overrides": dict(command.data.get("env", {})),

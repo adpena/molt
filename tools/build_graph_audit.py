@@ -63,6 +63,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
+SRC = ROOT_DEFAULT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+
 GRAPH_TOML_REL = "runtime/crate_graph.toml"
 BASELINE_PATH_REL = "tools/build_graph_baseline.json"
 BOARD_PATH_REL = "docs/design/foundation/BUILD_GRAPH_BOARD.md"
@@ -184,13 +190,15 @@ def _normalize_kind(raw: object) -> str:
 
 
 def run_cargo_metadata(root: Path) -> dict:
+    command = ["cargo", "metadata", "--no-deps", "--format-version", "1"]
     try:
         proc = subprocess.run(
-            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            command,
             cwd=str(root),
             capture_output=True,
             text=True,
             check=False,
+            env=cargo_subprocess_environment(command, None)[0],
         )
     except FileNotFoundError as exc:  # pragma: no cover - environment-specific
         raise BuildGraphError("cargo not found on PATH") from exc

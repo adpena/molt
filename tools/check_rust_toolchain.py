@@ -19,6 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+
 RUST_EDITION = "2024"
 RUST_VERSION = "1.96.1"
 RUST_TARGETS = ["wasm32-wasip1"]
@@ -54,6 +60,7 @@ class CheckReport:
 
 
 def _run(args: list[str], *, timeout: float = 15.0) -> subprocess.CompletedProcess[str]:
+    env, _cargo_policies = cargo_subprocess_environment(args, None)
     return subprocess.run(
         args,
         cwd=ROOT,
@@ -62,6 +69,7 @@ def _run(args: list[str], *, timeout: float = 15.0) -> subprocess.CompletedProce
         text=True,
         check=False,
         timeout=timeout,
+        env=env,
     )
 
 
@@ -155,21 +163,23 @@ def check_repository_contract() -> CheckReport:
             if fragment in text:
                 errors.append(f"{path}: stale Rust toolchain fragment {fragment!r}")
 
-    sanitizer = (ROOT / ".github/workflows/sanitizers.yml").read_text(
-        encoding="utf-8"
-    )
-    setup_project = (ROOT / ".github/actions/setup-project/normalize-inputs.sh").read_text(
-        encoding="utf-8"
-    )
+    sanitizer = (ROOT / ".github/workflows/sanitizers.yml").read_text(encoding="utf-8")
+    setup_project = (
+        ROOT / ".github/actions/setup-project/normalize-inputs.sh"
+    ).read_text(encoding="utf-8")
     runtime_safety = (ROOT / "tools/runtime_safety.py").read_text(encoding="utf-8")
     if sanitizer.count("rust-toolchain: sanitizer-nightly") != 2:
-        errors.append("sanitizers workflow must project the canonical nightly alias twice")
+        errors.append(
+            "sanitizers workflow must project the canonical nightly alias twice"
+        )
     if sanitizer.count("steps.project.outputs.rust-toolchain") != 4:
         errors.append(
             "every sanitizer command must consume setup-project's exact toolchain output"
         )
     if "toolchain=$(< config/rust_nightly_toolchain.txt)" not in setup_project:
-        errors.append("setup-project must resolve sanitizer-nightly from the config authority")
+        errors.append(
+            "setup-project must resolve sanitizer-nightly from the config authority"
+        )
     if '"config" / "rust_nightly_toolchain.txt"' not in runtime_safety:
         errors.append("runtime_safety must read the canonical dated-nightly authority")
 
@@ -250,9 +260,9 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "ok": not errors,
                     "rust_version": RUST_VERSION,
-                    "rust_nightly": (ROOT / RUST_NIGHTLY_CONFIG).read_text(
-                        encoding="utf-8"
-                    ).strip(),
+                    "rust_nightly": (ROOT / RUST_NIGHTLY_CONFIG)
+                    .read_text(encoding="utf-8")
+                    .strip(),
                     "edition": RUST_EDITION,
                     "targets": RUST_TARGETS,
                     "errors": errors,
