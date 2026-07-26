@@ -68,6 +68,11 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "setup_value",
     "setup_evidence",
 )
+REQUIRED_ENVIRONMENT_POLICY_FIELDS = (
+    "toolchains",
+    "match_environment",
+    "set_environment",
+)
 RECEIPT_SCHEMA = "molt.proof-receipt.v2"
 
 
@@ -116,6 +121,12 @@ class ToolchainPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class EnvironmentPolicy:
+    name: str
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class ResourcePolicy:
     name: str
     max_parallel: int
@@ -145,6 +156,7 @@ class ProofPlan:
     families: tuple[ProofFamily, ...]
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
+    environment_policies: tuple[EnvironmentPolicy, ...]
     executor_max_workers: int
     resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
@@ -288,6 +300,10 @@ class ProofPlan:
             toolchain_policies=tuple(
                 ToolchainPolicy(str(entry.get("name", "")), dict(entry))
                 for entry in data.get("toolchain_policy", [])
+            ),
+            environment_policies=tuple(
+                EnvironmentPolicy(str(entry.get("name", "")), dict(entry))
+                for entry in data.get("environment_policy", [])
             ),
             executor_max_workers=int(data.get("executor_max_workers", 0)),
             resource_policies=tuple(
@@ -435,6 +451,63 @@ class ProofPlan:
                         errors.append(
                             f"{policy.name}: setup evidence token missing from {relative}"
                         )
+        environment_policy_names = [policy.name for policy in self.environment_policies]
+        if not environment_policy_names or any(
+            not name for name in environment_policy_names
+        ):
+            errors.append("environment policies must have non-empty names")
+        if len(environment_policy_names) != len(set(environment_policy_names)):
+            errors.append("environment policy names must be unique")
+        known_toolchains = set(policy_names)
+        for policy in self.environment_policies:
+            for field in REQUIRED_ENVIRONMENT_POLICY_FIELDS:
+                if field not in policy.data:
+                    errors.append(f"{policy.name}: missing environment field {field}")
+            toolchains = policy.data.get("toolchains")
+            if (
+                not isinstance(toolchains, list)
+                or not toolchains
+                or not all(isinstance(name, str) and name for name in toolchains)
+            ):
+                errors.append(f"{policy.name}: toolchains must be a non-empty list")
+            elif len(toolchains) != len(set(toolchains)):
+                errors.append(f"{policy.name}: toolchains must be unique")
+            elif unknown_toolchains := set(toolchains) - known_toolchains:
+                errors.append(
+                    f"{policy.name}: unknown toolchains {sorted(unknown_toolchains)!r}"
+                )
+            match_environment = policy.data.get("match_environment")
+            if not isinstance(match_environment, dict) or not match_environment:
+                errors.append(
+                    f"{policy.name}: match_environment must be a non-empty string map"
+                )
+            elif not all(
+                isinstance(name, str) and name and isinstance(pattern, str) and pattern
+                for name, pattern in match_environment.items()
+            ):
+                errors.append(
+                    f"{policy.name}: match_environment must be a non-empty string map"
+                )
+            else:
+                for name, pattern in match_environment.items():
+                    try:
+                        re.compile(pattern)
+                    except re.error as exc:
+                        errors.append(
+                            f"{policy.name}: invalid environment pattern for {name}: {exc}"
+                        )
+            set_environment = policy.data.get("set_environment")
+            if (
+                not isinstance(set_environment, dict)
+                or not set_environment
+                or not all(
+                    isinstance(name, str) and name and isinstance(value, str)
+                    for name, value in set_environment.items()
+                )
+            ):
+                errors.append(
+                    f"{policy.name}: set_environment must be a non-empty string map"
+                )
         cell_ids = [cell.id for cell in self.matrix_cells]
         if not cell_ids or any(not cell_id for cell_id in cell_ids):
             errors.append("matrix_cell IDs must be non-empty")
@@ -1478,6 +1551,44 @@ def _base_command_record(command: ProofCommand) -> dict[str, Any]:
     }
 
 
+def _command_environment(
+    plan: ProofPlan,
+    command: ProofCommand,
+    timeout: int,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Resolve one command environment through the manifest-owned invariants."""
+    child_env = dict(os.environ)
+    existing_pythonpath = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(ROOT / "src"), existing_pythonpath) if part
+    )
+    for name in command.data.get("timeout_env", []):
+        child_env[str(name)] = str(timeout)
+    child_env.update(
+        {str(name): str(value) for name, value in command.data.get("env", {}).items()}
+    )
+    command_toolchains = set(command.toolchains)
+    applied: list[str] = []
+    for policy in plan.environment_policies:
+        required_toolchains = set(policy.data["toolchains"])
+        if not required_toolchains.issubset(command_toolchains):
+            continue
+        match_environment = policy.data["match_environment"]
+        if not all(
+            re.fullmatch(str(pattern), child_env.get(str(name), "")) is not None
+            for name, pattern in match_environment.items()
+        ):
+            continue
+        child_env.update(
+            {
+                str(name): str(value)
+                for name, value in policy.data["set_environment"].items()
+            }
+        )
+        applied.append(policy.name)
+    return child_env, tuple(applied)
+
+
 def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
     """Terminate one guarded-exec owner; its existing custody reaps descendants.
 
@@ -1500,6 +1611,7 @@ def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
 
 
 def _run_command(
+    plan: ProofPlan,
     command: ProofCommand,
     metrics_path: Path,
     cancel_event: threading.Event | None = None,
@@ -1508,6 +1620,9 @@ def _run_command(
     cache = _cache_disposition(command)
     started_at = dt.datetime.now(dt.UTC).isoformat()
     timeout = int(command.data["timeout_seconds"])
+    child_env, applied_environment_policies = _command_environment(
+        plan, command, timeout
+    )
     if cancel_event is not None and cancel_event.is_set():
         return {
             **_base_command_record(command),
@@ -1520,6 +1635,7 @@ def _run_command(
             "guard_metrics_schema": None,
             "cancelled_by_fail_fast": True,
             "termination_escalated": False,
+            "environment_policies_applied": list(applied_environment_policies),
         }
     wrapped = [
         sys.executable,
@@ -1534,16 +1650,6 @@ def _run_command(
     if relative_cwd != ".":
         wrapped.extend(("--cwd", relative_cwd))
     wrapped.extend(("--", *command.argv))
-    child_env = dict(os.environ)
-    existing_pythonpath = child_env.get("PYTHONPATH", "")
-    child_env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(ROOT / "src"), existing_pythonpath) if part
-    )
-    for name in command.data.get("timeout_env", []):
-        child_env[str(name)] = str(timeout)
-    child_env.update(
-        {str(name): str(value) for name, value in command.data.get("env", {}).items()}
-    )
     process = subprocess.Popen(
         wrapped,
         cwd=ROOT,
@@ -1601,6 +1707,7 @@ def _run_command(
         "guard_metrics_schema": metrics.get("schema"),
         "cancelled_by_fail_fast": cancelled,
         "termination_escalated": termination_escalated,
+        "environment_policies_applied": list(applied_environment_policies),
     }
 
 
@@ -1764,7 +1871,7 @@ def execute_commands(
                         f".{receipt_path.name}.{command.id}.metrics.json"
                     )
                     future = executor.submit(
-                        _run_command, command, metrics_path, cancel_event
+                        _run_command, plan, command, metrics_path, cancel_event
                     )
                     active[future] = command
                     active_by_resource[resource] += 1

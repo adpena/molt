@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+import re
 import sys
 import threading
 import time
@@ -30,6 +31,9 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.commands) >= 69
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
+    assert [policy.name for policy in PLAN.environment_policies] == [
+        "sccache-disables-incremental"
+    ]
     assert PLAN.executor_max_workers == 4
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
         "compiler-build-resource": 1,
@@ -69,6 +73,9 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
     assert projection["toolchain_policies"] == [
         policy.data for policy in PLAN.toolchain_policies
+    ]
+    assert projection["environment_policies"] == [
+        policy.data for policy in PLAN.environment_policies
     ]
     assert projection["executor"]["max_workers"] == 4
     assert projection["executor"]["resource_policies"] == [
@@ -263,6 +270,62 @@ def test_toolchain_setup_projection_drift_is_rejected() -> None:
     )
     errors = replace(PLAN, toolchain_policies=policies).validate()
     assert any("uv: setup evidence token missing" in error for error in errors)
+
+
+def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> None:
+    policy = next(
+        policy for policy in PLAN.toolchain_policies if policy.name == "wasm-tools"
+    )
+    pattern = str(policy.data["version_pattern"])
+
+    assert re.fullmatch(pattern, "wasm-tools 1.253.0")
+    assert re.fullmatch(pattern, "wasm-tools 1.253.0 (c799bb87b 2026-07-07)")
+    assert not re.fullmatch(pattern, "wasm-tools 1.253.1")
+    assert not re.fullmatch(pattern, "wasm-tools 1.253.0 (local build)")
+
+
+def test_sccache_environment_policy_covers_every_rust_proof_family(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    rust_commands = [
+        command
+        for command in PLAN.commands
+        if {"rustc", "cargo"}.issubset(command.toolchains)
+        and command.data.get("env", {}).get("RUSTC_WRAPPER") != ""
+    ]
+
+    assert {command.family for command in rust_commands} == {
+        "llvm",
+        "native_integration",
+        "platform_portability",
+        "rust",
+        "rust_security",
+        "wasm",
+    }
+    for command in rust_commands:
+        environment, applied = proof_plan._command_environment(PLAN, command, 30)
+        assert environment["CARGO_INCREMENTAL"] == "0", command.id
+        assert applied == ("sccache-disables-incremental",), command.id
+
+
+def test_command_direct_rustc_override_does_not_apply_sccache_policy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.data.get("env", {}).get("RUSTC_WRAPPER") == ""
+    )
+
+    environment, applied = proof_plan._command_environment(PLAN, command, 30)
+
+    assert environment["RUSTC_WRAPPER"] == ""
+    assert environment["CARGO_INCREMENTAL"] == "1"
+    assert applied == ()
 
 
 @pytest.mark.parametrize(
@@ -904,7 +967,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda current, _metrics, _cancel: _successful_synthetic_record(current),
+        lambda _plan, current, _metrics, _cancel: _successful_synthetic_record(current),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
 
@@ -1014,6 +1077,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
     lock = threading.Lock()
 
     def fake_run(
+        _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
         _metrics: Path,
         _cancel: threading.Event,
@@ -1069,6 +1133,7 @@ def test_executor_failure_cancels_live_siblings_and_skips_unscheduled_dependents
     )
 
     def fake_run(
+        _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
         _metrics: Path,
         cancel: threading.Event,
@@ -1118,6 +1183,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
     )
 
     def interrupt(
+        _plan: proof_plan.ProofPlan,
         _command: proof_plan.ProofCommand,
         _metrics: Path,
         _cancel: threading.Event,
@@ -1223,7 +1289,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda command, _metrics, _cancel: {
+        lambda _plan, command, _metrics, _cancel: {
             "id": command.id,
             "status": "success",
             "returncode": 0,

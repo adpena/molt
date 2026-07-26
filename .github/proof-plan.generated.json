@@ -48,7 +48,7 @@
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_pytest_truth_plugin.py"
   ],
-  "authority_sha256": "8565654ed81f0795a906f856148cb84d33559e6bbe8fb00b8fc0723728163932",
+  "authority_sha256": "26e91c662ff02f17b946a31984b800e837982aa54704c779a65a580b286951ef",
   "ci_families": [
     {
       "admission_job": "docs-gates",
@@ -2671,6 +2671,21 @@
       ]
     }
   ],
+  "environment_policies": [
+    {
+      "match_environment": {
+        "RUSTC_WRAPPER": "(?i)(?:^|.*[/\\\\])sccache(?:\\.exe)?$"
+      },
+      "name": "sccache-disables-incremental",
+      "set_environment": {
+        "CARGO_INCREMENTAL": "0"
+      },
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    }
+  ],
   "executor": {
     "github_job_timeout_envelopes": {
       "llvm": {
@@ -4085,7 +4100,7 @@
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.253\\.0$"
+      "version_pattern": "^wasm-tools 1\\.253\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }
