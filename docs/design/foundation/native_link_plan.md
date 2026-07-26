@@ -134,6 +134,14 @@ hit as a coarse-timestamp backstop. Tool bytes and versions remain separately
 fingerprinted, so this removes repeated filesystem discovery without weakening
 executable custody.
 
+Archive scheduling is object-format policy, not a shared fallback. ELF uses one
+explicit archive group, COFF presents the runtime archive once, and Mach-O alone
+retains the measured second archive pass required by ld64's order-sensitive
+extraction. COFF also carries the linker-native `/Brepro` flag through the Clang
+driver so PE/COFF timestamps and build metadata are deterministic. The policy is
+constructed once in `native_link_plan.py`; the command builder does not grow a
+second target classifier.
+
 Every native rebuild links to a private candidate. Ordinary and BOLT builds
 share one finalizer that applies target stripping when planned, validates the
 final candidate, and atomically publishes it. A failed link, strip, or
@@ -161,13 +169,20 @@ output bytes)`. The report records:
   peak traced allocation;
 - cold-first, warm, and relink child wall time plus guard/orchestration wall;
   portable child user/system CPU; peak linker-process and complete process-tree
-  RSS;
+  RSS; and Windows Job peak commit charge for the whole linker tree;
 - ordered input count/bytes/content identities, output size/hash, symbol,
   section, and relocation counts, and pre/post-strip byte delta;
 - resolved driver, selected linker, strip, inspection, and BOLT tool versions
   and executable hashes;
 - BOLT instrument, train, merge, and optimize phase times plus training fragment
   count/bytes.
+
+Schema version 2 requires every linker child executed on a Windows host to
+report whole-Job peak commit charge from the shared memory guard. Missing Job
+telemetry fails before publication, and stored Windows-host reports without it
+are rejected during validation. Other hosts retain the same portable tree-RSS
+contract and record Job commit as unavailable; the profiler never creates a
+second process owner or memory sampler.
 
 Cold-first means the first forced link to a fresh private candidate. Warm means
 an unchanged repeated plan/input link. Relink means the same plan with an

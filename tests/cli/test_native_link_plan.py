@@ -86,6 +86,8 @@ def test_link_plan_is_immutable_and_preserves_elf_function_identity(
     assert plan.policy.preserve_function_identity
     assert "-Wl,--icf=none" in plan.command
     assert "-Wl,--strip-all" not in plan.command
+    assert "-Wl,/Brepro" not in plan.command
+    assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 1
     assert plan.policy.strip_after_link
     with pytest.raises(FrozenInstanceError):
         plan.linker_hint = None  # type: ignore[misc]
@@ -100,6 +102,10 @@ def test_macho_plan_preserves_identity_without_suppressing_warnings(
     assert "-Wl,-w" not in plan.command
     assert "-Wl,-x" not in plan.command
     assert "-Wl,-S" not in plan.command
+    assert "-Wl,/Brepro" not in plan.command
+    # ld64 archive extraction is order-sensitive; the deliberate second pass
+    # is confined to Mach-O rather than leaking into COFF.
+    assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 2
 
 
 def test_explicit_driver_linker_selection_gets_matching_capability_policy(
@@ -246,6 +252,8 @@ def test_coff_plan_explicitly_disables_icf(
 
     assert "-Wl,/OPT:REF" in plan.command
     assert "-Wl,/OPT:NOICF" in plan.command
+    assert "-Wl,/Brepro" in plan.command
+    assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 1
     assert not plan.policy.strip_after_link
 
 
@@ -479,7 +487,11 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
 @pytest.mark.parametrize(
     ("host_platform", "cc", "expected"),
     [
-        ("win32", ("clang-cl",), ("/link", "/OPT:REF", "/OPT:NOICF")),
+        (
+            "win32",
+            ("clang-cl",),
+            ("/link", "/Brepro", "/OPT:REF", "/OPT:NOICF"),
+        ),
         (
             "linux",
             ("clang", "-fuse-ld=lld"),

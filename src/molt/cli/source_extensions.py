@@ -25,8 +25,8 @@ from molt.cli.extension_scan_surface import _parse_preprocessor_argument_definit
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_link_plan import (
-    native_dead_strip_identity_flags,
     native_link_capabilities,
+    native_link_policy_flags,
     native_linker_name_from_driver_command,
     resolve_native_target_spec,
 )
@@ -1694,7 +1694,7 @@ def _source_extension_link_policy_args(
         linker_hint=selected_linker,
     )
     return list(
-        native_dead_strip_identity_flags(
+        native_link_policy_flags(
             target=target,
             capabilities=capabilities,
             msvc_driver=tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"},
