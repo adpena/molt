@@ -100,7 +100,9 @@ def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> d
     }
 
 
-def test_input_fingerprint_is_ordered_by_role_and_content_addressed(tmp_path: Path) -> None:
+def test_input_fingerprint_is_ordered_by_role_and_content_addressed(
+    tmp_path: Path,
+) -> None:
     left = tmp_path / "left.o"
     right = tmp_path / "right.a"
     left.write_bytes(b"left")
@@ -150,7 +152,9 @@ def test_explicit_search_directory_libraries_are_content_inputs(tmp_path: Path) 
     assert inputs == {"plan_library_0_codec": library.resolve()}
 
 
-def test_plan_fingerprint_normalizes_workspace_and_fixture_paths(tmp_path: Path) -> None:
+def test_plan_fingerprint_normalizes_workspace_and_fixture_paths(
+    tmp_path: Path,
+) -> None:
     obj = tmp_path / "program.obj"
     obj.write_bytes(b"obj")
     output = tmp_path / "program.exe"
@@ -404,7 +408,9 @@ def test_bolt_telemetry_schema_is_fail_closed(tmp_path: Path) -> None:
         benchmark._read_bolt_telemetry(path)
 
 
-def test_named_llvm_tool_uses_canonical_managed_resolution(tmp_path: Path, monkeypatch) -> None:
+def test_named_llvm_tool_uses_canonical_managed_resolution(
+    tmp_path: Path, monkeypatch
+) -> None:
     managed = tmp_path / "target" / "toolchains" / "llvm-22.1.8" / "bin"
     managed.mkdir(parents=True)
     suffix = ".exe" if llvm_wasi_tools.os.name == "nt" else ""

@@ -44,6 +44,7 @@ from molt.cli.native_link_manifest import (  # noqa: E402
     read_native_link_dependency_manifest,
 )
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
+from molt.cli.static_archive_identity import artifact_content_identity  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
 
 try:
@@ -120,6 +121,7 @@ def implementation_source_facts() -> dict[str, object]:
         "native_link_command.py",
         "native_link_deps.py",
         "native_link_manifest.py",
+        "static_archive_identity.py",
         "link_pipeline.py",
         "build_results.py",
         "runtime_build.py",
@@ -167,7 +169,7 @@ def collect_input_facts(inputs: Mapping[str, Path]) -> dict[str, object]:
         if not resolved.is_file():
             raise LinkBenchmarkError(f"link input is not a file: {resolved}")
         before = resolved.stat()
-        sha256 = _sha256_file(resolved)
+        content_identity = artifact_content_identity(resolved)
         after = resolved.stat()
         if (before.st_size, before.st_mtime_ns) != (
             after.st_size,
@@ -179,11 +181,11 @@ def collect_input_facts(inputs: Mapping[str, Path]) -> dict[str, object]:
                 "role": role,
                 "path": str(resolved),
                 "size_bytes": after.st_size,
-                "sha256": sha256,
+                "content_identity": content_identity,
             }
         )
     identity = [
-        {key: fact[key] for key in ("role", "size_bytes", "sha256")} for fact in files
+        {key: fact[key] for key in ("role", "content_identity")} for fact in files
     ]
     return {
         "count": len(files),
