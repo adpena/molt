@@ -770,6 +770,13 @@ def _simple_active_function_segments(data: bytes) -> list[tuple[int, list[int]]]
 def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> None:
     layout = wasm_link.CallableTableLayout(0, 0, 8, 2)
     module = _build_native_growth_callable_module()
+    entry_plan = wasm_link._resolve_callable_table_entry_plan(
+        module,
+        layout,
+        entry_symbol_names=None,
+        include_fixed_prefix=False,
+        override_reserved_direct=False,
+    )
     code_before = next(
         payload
         for section_id, payload in wasm_link._parse_sections(module)
@@ -777,13 +784,18 @@ def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> 
     )
 
     assert (
-        wasm_link._linked_callable_occupied_end(
-            [[10, 2, 0, 0]], layout
+        wasm_link._merge_linked_callable_table(
+            [[10, 2, 0, 0], [8, 0, 0, 0], [9, 1, 0, 0]],
+            layout,
+            entry_plan,
         )
         == 11
     )
     published = wasm_link._install_callable_table_layout(
-        module, layout, include_fixed_prefix=False
+        module,
+        layout,
+        include_fixed_prefix=False,
+        entry_plan=entry_plan,
     )
 
     code_after = next(
@@ -799,13 +811,130 @@ def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> 
     ]
 
 
-def test_linked_callable_growth_rejects_compiler_owned_slot_overlap() -> None:
-    layout = wasm_link.CallableTableLayout(3, 2, 8, 2)
+def test_monolithic_callable_merge_preserves_realistic_runtime_gap_and_app() -> None:
+    layout = wasm_link.CallableTableLayout(1, 81, 2794, 2)
+    entry_plan = wasm_link._CallableTableEntryPlan(
+        tuple(range(1, 82)),
+        (5000, 5001),
+        owns_runtime_region=True,
+    )
+    final_rows = [
+        *([slot, slot, 0, 0] for slot in range(1, 1850)),
+        [2794, 5000, 0, 0],
+        [2795, 5001, 0, 0],
+        [2796, 6000, 0, 0],
+        [2797, 6001, 0, 0],
+    ]
 
-    with pytest.raises(ValueError, match="pre-link callable region"):
-        wasm_link._linked_callable_occupied_end([[9, 0, 0, 0]], layout)
-    with pytest.raises(ValueError, match="pre-link callable region"):
-        wasm_link._linked_callable_occupied_end([[3, 0, 0, 0]], layout)
+    assert (
+        wasm_link._merge_linked_callable_table(
+            list(reversed(final_rows)),
+            layout,
+            entry_plan,
+        )
+        == 2798
+    )
+
+
+def test_monolithic_callable_merge_accepts_prelink_stub_then_publishes_direct_runtime() -> (
+    None
+):
+    sections = wasm_link._parse_sections(
+        _build_exported_runtime_module_many(["compiler_stub", "runtime_direct"])
+    )
+    sections.insert(2, (4, b"\x01\x70\x00\x08"))
+    sections.insert(-1, (9, b"\x00"))
+    module = wasm_link._build_sections(sections)
+    layout = wasm_link.CallableTableLayout(1, 1, 8, 0)
+    entry_plan = wasm_link._CallableTableEntryPlan(
+        (1,),
+        (),
+        owns_runtime_region=True,
+        preserved_fixed_indices=(0,),
+    )
+
+    assert (
+        wasm_link._merge_linked_callable_table(
+            [[1, 0, 0, 0]], layout, entry_plan
+        )
+        == 8
+    )
+    assert (
+        wasm_link._merge_linked_callable_table(
+            [[1, 1, 0, 0]], layout, entry_plan
+        )
+        == 8
+    )
+    with pytest.raises(ValueError, match="changed compiler-owned.*slot=1"):
+        wasm_link._merge_linked_callable_table(
+            [[1, 2, 0, 0]], layout, entry_plan
+        )
+    published = wasm_link._install_callable_table_layout(
+        module, layout, entry_plan=entry_plan
+    )
+    assert _simple_active_function_segments(published) == [(1, [1])]
+
+
+def test_linked_callable_merge_rejects_identity_change_and_unowned_overlap() -> None:
+    layout = wasm_link.CallableTableLayout(1, 2, 8, 2)
+    entry_plan = wasm_link._CallableTableEntryPlan(
+        (10, 11), (80, 81), owns_runtime_region=True
+    )
+    owned_rows = [[1, 10, 0, 0], [2, 11, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]]
+
+    with pytest.raises(ValueError, match="changed compiler-owned.*slot=1"):
+        wasm_link._merge_linked_callable_table(
+            [[1, 100, 0, 0], *owned_rows[1:]], layout, entry_plan
+        )
+    with pytest.raises(ValueError, match="without compiler identity.*slot=0"):
+        wasm_link._merge_linked_callable_table(
+            [*owned_rows, [0, 0, 0, 0]], layout, entry_plan
+        )
+
+
+def test_linked_callable_merge_rejects_missing_owned_slot_and_sparse_growth() -> None:
+    layout = wasm_link.CallableTableLayout(1, 2, 8, 2)
+    entry_plan = wasm_link._CallableTableEntryPlan(
+        (10, 11), (80, 81), owns_runtime_region=True
+    )
+    owned_rows = [[1, 10, 0, 0], [2, 11, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]]
+
+    with pytest.raises(ValueError, match="dropped compiler-owned.*slot=8"):
+        wasm_link._merge_linked_callable_table(
+            [*owned_rows[:2], owned_rows[3]], layout, entry_plan
+        )
+    with pytest.raises(ValueError, match="suffix callable-table growth is not contiguous"):
+        wasm_link._merge_linked_callable_table(
+            [*owned_rows, [10, 100, 0, 0], [12, 120, 0, 0]],
+            layout,
+            entry_plan,
+        )
+    with pytest.raises(ValueError, match="runtime callable-table growth is not contiguous"):
+        wasm_link._merge_linked_callable_table(
+            [*owned_rows, [4, 40, 0, 0]], layout, entry_plan
+        )
+
+
+def test_split_callable_merge_owns_only_app_region() -> None:
+    layout = wasm_link.CallableTableLayout(1, 2, 8, 2)
+    app_plan = wasm_link._CallableTableEntryPlan(
+        (), (80, 81), owns_runtime_region=False
+    )
+
+    assert (
+        wasm_link._merge_linked_callable_table(
+            [[8, 80, 0, 0], [9, 81, 0, 0], [10, 100, 0, 0]],
+            layout,
+            app_plan,
+        )
+        == 11
+    )
+    with pytest.raises(ValueError, match="without compiler identity.*slot=1"):
+        wasm_link._merge_linked_callable_table(
+            [[1, 10, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]],
+            layout,
+            app_plan,
+        )
 
 
 def _build_host_call_indirect_module(
