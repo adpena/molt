@@ -1,6 +1,6 @@
 use super::rust_ident;
 use crate::{FunctionIR, OpIR};
-use molt_tir::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
+use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Return every Python binding defined by one SimpleIR operation.
@@ -11,11 +11,16 @@ pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
     if op.kind.starts_with("nop") {
         return Vec::new();
     }
-    simple_ir_defined_names(op)
-        .into_iter()
-        .filter(|name| !name.is_empty())
-        .map(|name| rust_ident(&name))
-        .collect()
+    let mut definitions = Vec::new();
+    visit_simple_ir_defined_names(op, |name| {
+        if !name.is_empty() {
+            let name = rust_ident(name);
+            if !definitions.contains(&name) {
+                definitions.push(name);
+            }
+        }
+    });
+    definitions
 }
 
 /// Return the variable operands read by one operation.
@@ -24,10 +29,14 @@ pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
 /// outputs as operands creates false scope dependencies and masks missing
 /// declarations in generated Rust.
 fn op_operand_vars(op: &OpIR) -> Vec<String> {
-    simple_ir_read_names(op)
-        .into_iter()
-        .map(|name| rust_ident(&name))
-        .collect()
+    let mut operands = Vec::new();
+    visit_simple_ir_reads(op, |source| {
+        let name = rust_ident(source.name);
+        if !operands.contains(&name) {
+            operands.push(name);
+        }
+    });
+    operands
 }
 
 // ── IR lowering passes (shared logic, simpler than Luau variants) ─────────────

@@ -222,3 +222,22 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
     assert "`const_bool` | `compile-error`" in output
     assert "`vec_fixture_*` | `not-admitted`" in output
     assert "ignored_test_only" not in output
+
+
+def test_observable_frame_state_siblings_are_all_rejected_before_source() -> None:
+    mod = _load_module()
+    source = r'''
+    fn emit_op(&mut self, op: &OpIR) {
+        match op.kind.as_str() {
+            "frame_locals_set" | "line" | "trace_enter_slot" | "trace_exit" => {
+                self.emit_line("-- legacy silent drop");
+            }
+        }
+    }
+    '''
+
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+
+    for kind in ("frame_locals_set", "line", "trace_enter_slot", "trace_exit"):
+        assert rows[kind].status == "not-admitted"
+        assert "target contract rejects" in rows[kind].note

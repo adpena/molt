@@ -18,6 +18,7 @@ use crate::ir::OpIR;
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::cfg::CFG;
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite, TirOp};
+use super::simple_def_use::visit_simple_ir_defined_names;
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
 
@@ -413,20 +414,25 @@ impl<'a> SsaContext<'a> {
 
                 let tir_op = self.translate_op(op_idx, op, &var_stacks);
 
-                for (idx, var) in self.get_def_vars(op).iter().enumerate() {
+                let mut result_idx = 0;
+                visit_simple_ir_defined_names(op, |var| {
+                    if !variables::is_variable(var) {
+                        return;
+                    }
                     let vid = tir_op
                         .results
-                        .get(idx)
+                        .get(result_idx)
                         .copied()
                         .unwrap_or_else(|| self.fresh_value_typed());
-                    var_stacks.entry(var.clone()).or_default().push(vid);
+                    result_idx += 1;
+                    var_stacks.entry(var.to_string()).or_default().push(vid);
                     let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
                     if let Some((_, c)) = entry {
                         *c += 1;
                     } else {
-                        block_pushed.push((var.clone(), 1));
+                        block_pushed.push((var.to_string(), 1));
                     }
-                }
+                });
 
                 // Push any inline constant ops generated for this op's args
                 for const_op in self.pending_inline_consts.drain(..) {
@@ -569,14 +575,19 @@ impl<'a> SsaContext<'a> {
                     let op = &self.ops[op_idx];
                     let tir_op = self.translate_op(op_idx, op, &local_stacks);
 
-                    for (idx, var) in self.get_def_vars(op).iter().enumerate() {
+                    let mut result_idx = 0;
+                    visit_simple_ir_defined_names(op, |var| {
+                        if !variables::is_variable(var) {
+                            return;
+                        }
                         let vid = tir_op
                             .results
-                            .get(idx)
+                            .get(result_idx)
                             .copied()
                             .unwrap_or_else(|| self.fresh_value_typed());
-                        local_stacks.entry(var.clone()).or_default().push(vid);
-                    }
+                        result_idx += 1;
+                        local_stacks.entry(var.to_string()).or_default().push(vid);
+                    });
 
                     for const_op in self.pending_inline_consts.drain(..) {
                         tir_blocks[bid].ops.push(const_op);

@@ -3,7 +3,7 @@ use super::purity::{
     simple_ir_op_needs_scalar_plan_for_nonthrowing,
 };
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::tir::simple_def_use::{simple_ir_result_names, simple_ir_var_field_is_read};
+use crate::tir::simple_def_use::{visit_simple_ir_reads, visit_simple_ir_result_names};
 use crate::{OpIR, SimpleIR};
 use std::collections::HashSet;
 
@@ -92,22 +92,15 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
 
     for func in &mut ir.functions {
         for _round in 0..5 {
-            // Build a set of all consumed names. `args` are always data
-            // inputs; `var` is input for read/copy/return-like ops but is a
-            // target definition for store_var and iter_next_unboxed.
+            // Build a set of all consumed names from the canonical field-role
+            // visitor. In particular, unpack_sequence trailing args are
+            // definitions, not self-consumption that pins dead unpack ops.
             let mut consumed: HashSet<String> = HashSet::new();
 
             for op in &func.ops {
-                if let Some(args) = &op.args {
-                    for arg in args {
-                        consumed.insert(arg.clone());
-                    }
-                }
-                if let Some(v) = &op.var
-                    && simple_ir_var_field_is_read(op)
-                {
-                    consumed.insert(v.clone());
-                }
+                visit_simple_ir_reads(op, |source| {
+                    consumed.insert(source.name.to_string());
+                });
                 // s_value can reference function names or variable names
                 // in certain ops — conservatively keep anything it references.
                 if let Some(sv) = &op.s_value {
@@ -124,11 +117,16 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
 
             let before = func.ops.len();
             let needs_scalar_plan = func.ops.iter().any(|op| {
-                simple_ir_op_needs_scalar_plan_for_nonthrowing(op)
-                    && !simple_ir_result_names(op).is_empty()
-                    && simple_ir_result_names(op)
-                        .iter()
-                        .all(|name| !consumed.contains(*name))
+                if !simple_ir_op_needs_scalar_plan_for_nonthrowing(op) {
+                    return false;
+                }
+                let mut has_result = false;
+                let mut any_consumed = false;
+                visit_simple_ir_result_names(op, |name| {
+                    has_result = true;
+                    any_consumed |= consumed.contains(name);
+                });
+                has_result && !any_consumed
             });
             let scalar_plan =
                 needs_scalar_plan.then(|| ScalarRepresentationPlan::for_function_ir(func));
@@ -147,9 +145,14 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                     return true;
                 }
 
-                let defined = simple_ir_result_names(op);
-                if !defined.is_empty() {
-                    return defined.iter().any(|name| consumed.contains(*name));
+                let mut has_result = false;
+                let mut any_consumed = false;
+                visit_simple_ir_result_names(op, |name| {
+                    has_result = true;
+                    any_consumed |= consumed.contains(name);
+                });
+                if has_result {
+                    return any_consumed;
                 }
 
                 // Ops without a result variable but with no side effects

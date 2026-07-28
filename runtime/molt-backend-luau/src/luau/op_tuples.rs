@@ -19,10 +19,15 @@ impl LuauBackend {
                 self.emit_line(&format!("local {out} = molt_pack_tuple({items})"));
             }
             "unpack_sequence" => {
-                let reads = molt_tir::tir::simple_def_use::simple_ir_read_names(op);
-                let outputs = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-                if let Some(src_name) = reads.first() {
-                    let expected = outputs.len();
+                let mut src_name = None;
+                molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+                    src_name.get_or_insert(read.name);
+                });
+                if let Some(src_name) = src_name {
+                    let mut expected = 0;
+                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |_| {
+                        expected += 1;
+                    });
                     let src = sanitize_ident(src_name);
                     let shape = match self.scalar_plan.name_container_kind(src_name) {
                         Some(ContainerKind::List | ContainerKind::Tuple) => "sequence",
@@ -35,10 +40,12 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "local {unpacked} = molt_unpack_sequence({src}, {expected}, \"{shape}\")"
                     ));
-                    for (i, out_name) in outputs.iter().enumerate() {
+                    let mut index = 0;
+                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |out_name| {
                         let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {unpacked}[{}]", i + 1));
-                    }
+                        index += 1;
+                        self.emit_line(&format!("local {out} = {unpacked}[{index}]"));
+                    });
                 }
             }
             _ => return false,

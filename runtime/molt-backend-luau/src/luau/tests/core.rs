@@ -2529,53 +2529,54 @@ fn test_compile_checked_lowers_luau_process_target_facts() {
 }
 
 #[test]
-fn test_compile_checked_lowers_trace_markers_as_luau_noops() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "trace_marker_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                OpIR {
-                    kind: "trace_enter_slot".to_string(),
-                    value: Some(7),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "trace_exit".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("ok".to_string()),
-                    value: Some(1),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec!["ok".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
+fn compile_checked_rejects_every_observable_frame_state_sibling_before_source() {
+    for kind in ["trace_enter_slot", "trace_exit", "line", "frame_locals_set"] {
+        let mut op = OpIR {
+            kind: kind.to_string(),
+            ..OpIR::default()
+        };
+        match kind {
+            "trace_enter_slot" | "line" => op.value = Some(7),
+            "frame_locals_set" => op.args = Some(vec!["locals".to_string()]),
+            _ => {}
+        }
+        let params = (kind == "frame_locals_set")
+            .then(|| vec!["locals".to_string()])
+            .unwrap_or_default();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("frame_state_{kind}"),
+                params,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![op],
+            }],
+            profile: None,
+        };
 
-    assert!(
-        source.contains("trace_marker_test"),
-        "compiled trace marker function should be emitted, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[internal: trace_enter_slot]")
-            && !source.contains("[internal: trace_exit]")
-            && !source.contains("[unsupported op: trace_enter_slot]")
-            && !source.contains("[unsupported op: trace_exit]"),
-        "trace markers must not leave semantic stub markers, got:\n{source}"
-    );
+        let error = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect_err("Luau has no exact Python frame-state authority");
+        assert!(
+            error.contains("rejected before source generation"),
+            "{kind}: {error}"
+        );
+        assert!(
+            error.contains("frame stack, locals, and traceback line"),
+            "{kind}: {error}"
+        );
+
+        let mut unchecked_backend = LuauBackend::new();
+        let unchecked = unchecked_backend.compile(&ir);
+        assert!(
+            unchecked_backend
+                .unsupported_ops
+                .iter()
+                .any(|unsupported| unsupported.contains(&format!("`{kind}`"))),
+            "the private emitter must retain a second fail-closed record for {kind}: {unchecked}"
+        );
+    }
 }
 
 #[test]
@@ -2634,7 +2635,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
 }
 
 #[test]
-fn test_compile_checked_lowers_code_slot_metadata_to_reachable_luau_state() {
+fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "code_frame_metadata_test".to_string(),
@@ -2684,6 +2685,11 @@ fn test_compile_checked_lowers_code_slot_metadata_to_reachable_luau_state() {
         }],
         profile: None,
     };
+    let error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("frame_locals_set must reject before source generation");
+    assert!(error.contains("frame stack, locals, and traceback line"));
+
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
@@ -2698,9 +2704,15 @@ fn test_compile_checked_lowers_code_slot_metadata_to_reachable_luau_state() {
             && !source.contains("[internal: code_slot_set]")
             && !source.contains("[internal: frame_locals_set]")
             && !source.contains("[unsupported op: code_slots_init]")
-            && !source.contains("[unsupported op: code_slot_set]")
-            && !source.contains("[unsupported op: frame_locals_set]"),
-        "code/frame metadata must not leave semantic stub markers, got:\n{source}"
+            && !source.contains("[unsupported op: code_slot_set]"),
+        "code-slot state may emit without stub markers, got:\n{source}"
+    );
+    assert!(
+        backend
+            .unsupported_ops
+            .iter()
+            .any(|unsupported| unsupported.contains("`frame_locals_set`")),
+        "the private emitter must retain frame_locals_set as an unsupported record"
     );
 }
 

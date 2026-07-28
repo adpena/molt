@@ -1092,6 +1092,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         ("simpleir_async_runtime_semantics_kinds", "ASYNC_RUNTIME"),
         ("simpleir_unstructured_control_semantics_kinds", "UNSTRUCTURED_CONTROL"),
         ("simpleir_host_capability_semantics_kinds", "HOST_CAPABILITY"),
+        ("simpleir_frame_state_semantics_kinds", "FRAME_STATE"),
     )
     registered = set()
     for row in data.get("kind", []):
@@ -1116,6 +1117,9 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         lines.append(f"    pub const {constant}: Self = Self(1 << {bit});\n")
     lines.extend(
         [
+            "    pub const fn is_empty(self) -> bool {\n",
+            "        self.0 == 0\n",
+            "    }\n",
             "    pub const fn contains(self, requirement: Self) -> bool {\n",
             "        self.0 & requirement.0 != 0\n",
             "    }\n",

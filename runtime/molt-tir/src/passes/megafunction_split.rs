@@ -1,5 +1,5 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
-use crate::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
+use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,12 +26,12 @@ fn split_live_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
     let mut live_before = vec![BTreeSet::new(); ops.len() + 1];
     live_before[ops.len()] = live.clone();
     for idx in (0..ops.len()).rev() {
-        for name in simple_ir_defined_names(&ops[idx]) {
-            live.remove(&name);
-        }
-        for name in simple_ir_read_names(&ops[idx]) {
-            live.insert(name);
-        }
+        visit_simple_ir_defined_names(&ops[idx], |name| {
+            live.remove(name);
+        });
+        visit_simple_ir_reads(&ops[idx], |source| {
+            live.insert(source.name.to_string());
+        });
         live_before[idx] = live.clone();
     }
     live_before
@@ -79,9 +79,9 @@ fn split_defined_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
     let mut defined_before = vec![BTreeSet::new(); ops.len() + 1];
     defined_before[0] = defined.clone();
     for (idx, op) in ops.iter().enumerate() {
-        for name in simple_ir_defined_names(op) {
-            defined.insert(name);
-        }
+        visit_simple_ir_defined_names(op, |name| {
+            defined.insert(name.to_string());
+        });
         defined_before[idx + 1] = defined.clone();
     }
     defined_before
@@ -91,14 +91,14 @@ fn split_suffix_external_reads(ops: &[OpIR]) -> BTreeSet<String> {
     let mut defined = BTreeSet::new();
     let mut external_reads = BTreeSet::new();
     for op in ops {
-        for name in simple_ir_read_names(op) {
-            if !defined.contains(&name) {
-                external_reads.insert(name);
+        visit_simple_ir_reads(op, |source| {
+            if !defined.contains(source.name) {
+                external_reads.insert(source.name.to_string());
             }
-        }
-        for name in simple_ir_defined_names(op) {
-            defined.insert(name);
-        }
+        });
+        visit_simple_ir_defined_names(op, |name| {
+            defined.insert(name.to_string());
+        });
     }
     external_reads
 }
@@ -117,9 +117,9 @@ fn split_available_names_for_suffix_clone(
         .collect();
     available.extend(live_before[start].iter().cloned());
     for op in &ops[start..end] {
-        for name in simple_ir_defined_names(op) {
+        visit_simple_ir_defined_names(op, |name| {
             available.insert(name.to_string());
-        }
+        });
     }
     available
 }
@@ -131,12 +131,12 @@ fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
         .cloned()
         .collect();
     for op in ops {
-        for name in simple_ir_read_names(op) {
-            names.insert(name);
-        }
-        for name in simple_ir_defined_names(op) {
-            names.insert(name);
-        }
+        visit_simple_ir_reads(op, |source| {
+            names.insert(source.name.to_string());
+        });
+        visit_simple_ir_defined_names(op, |name| {
+            names.insert(name.to_string());
+        });
     }
     names
 }
@@ -239,17 +239,21 @@ fn split_rewrite_void_terminals_to_status(
 pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), String> {
     let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
     for (idx, op) in func.ops.iter().enumerate() {
-        for name in simple_ir_read_names(op) {
-            if !defined.contains(&name) {
-                return Err(format!(
-                    "function `{}` op {} `{}` reads `{}` before definition",
-                    func.name, idx, op.kind, name
-                ));
+        let mut undefined = None;
+        visit_simple_ir_reads(op, |source| {
+            if undefined.is_none() && !defined.contains(source.name) {
+                undefined = Some(source.name.to_string());
             }
+        });
+        if let Some(name) = undefined {
+            return Err(format!(
+                "function `{}` op {} `{}` reads `{}` before definition",
+                func.name, idx, op.kind, name
+            ));
         }
-        for name in simple_ir_defined_names(op) {
-            defined.insert(name);
-        }
+        visit_simple_ir_defined_names(op, |name| {
+            defined.insert(name.to_string());
+        });
     }
     Ok(())
 }

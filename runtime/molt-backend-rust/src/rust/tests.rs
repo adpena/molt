@@ -479,13 +479,12 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
                 OpIR {
                     kind: "inc_ref".to_string(),
                     args: Some(vec!["code".to_string()]),
-                    out: Some("owned_code".to_string()),
                     ..OpIR::default()
                 },
                 OpIR {
                     kind: "code_slot_set".to_string(),
                     value: Some(2),
-                    args: Some(vec!["owned_code".to_string()]),
+                    args: Some(vec!["code".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -538,7 +537,7 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
                 },
                 OpIR {
                     kind: "dec_ref".to_string(),
-                    args: Some(vec!["owned_code".to_string()]),
+                    args: Some(vec!["code".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {

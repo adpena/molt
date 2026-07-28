@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use super::super::is_structural;
 use super::variables::is_variable;
 use super::*;
-use crate::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
+use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
 impl<'a> SsaContext<'a> {
     /// Scan the raw linear op stream for iter_next → index(pair,1) →
@@ -93,17 +93,19 @@ impl<'a> SsaContext<'a> {
                     op_indices.push(idx);
                 }
 
-                for name in simple_ir_read_names(op) {
-                    if is_variable(&name) && !defs.contains(&name) {
-                        uses.insert(name);
+                visit_simple_ir_reads(op, |source| {
+                    let name = source.name;
+                    if is_variable(name) && !defs.contains(name) {
+                        uses.insert(name.to_string());
                     }
-                }
-                for name in simple_ir_defined_names(op) {
-                    if is_variable(&name) {
+                });
+                visit_simple_ir_defined_names(op, |name| {
+                    if is_variable(name) {
+                        let name = name.to_string();
                         defs.insert(name.clone());
                         self.all_vars.insert(name);
                     }
-                }
+                });
             }
 
             // Function parameters are implicit definitions in the entry block.

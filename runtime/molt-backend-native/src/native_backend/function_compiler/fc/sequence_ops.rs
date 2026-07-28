@@ -247,15 +247,23 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             // Generated SimpleIR field authority separates the sole sequence
             // source from every output binding.
             // op.value holds the expected element count.
-            let reads = crate::tir::simple_def_use::simple_ir_read_names(op);
-            let outputs = crate::tir::simple_def_use::simple_ir_result_names(op);
+            let mut source = None;
+            let mut read_count = 0;
+            crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+                read_count += 1;
+                source.get_or_insert(read.name);
+            });
+            let mut output_count = 0;
+            crate::tir::simple_def_use::visit_simple_ir_result_names(op, |_| {
+                output_count += 1;
+            });
             let raw_expected = op
                 .value
                 .expect("unpack_sequence must carry an exact result count");
             let expected_count = usize::try_from(raw_expected)
                 .expect("unpack_sequence result count must fit the active target");
             assert_eq!(
-                (reads.len(), outputs.len()),
+                (read_count, output_count),
                 (1, expected_count),
                 "unpack_sequence must carry one source and its exact result count"
             );
@@ -266,7 +274,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                &reads[0],
+                source.expect("verified unpack source"),
                 representation_plan,
             )
             .expect("Unpack sequence source not found");
@@ -303,15 +311,17 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 .call(unpack_local, &[*seq_val, expected_val, out_ptr]);
 
             // Load each element from the output array into its named variable.
-            for i in 0..expected_count {
+            let mut index: usize = 0;
+            crate::tir::simple_def_use::visit_simple_ir_result_names(op, |output| {
                 let elem = builder.ins().stack_load(
                     types::I64,
                     out_slot,
-                    i32::try_from(i.checked_mul(8).expect("unpack offset overflow"))
+                    i32::try_from(index.checked_mul(8).expect("unpack offset overflow"))
                         .expect("unpack offset exceeds Cranelift's i32 limit"),
                 );
-                def_var_named(&mut *builder, vars, outputs[i], elem);
-            }
+                def_var_named(&mut *builder, vars, output, elem);
+                index += 1;
+            });
         }
         "tuple_count" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -483,8 +493,15 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Iter not found");
-            let val_name = op.var.clone().unwrap_or_default();
-            let done_name = op.out.clone().unwrap_or_default();
+            let mut results = [None, None];
+            let mut result_count = 0;
+            crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                results[result_count] = Some(name);
+                result_count += 1;
+            });
+            let [val_name, done_name] = results;
+            let val_name = val_name.unwrap_or_default();
+            let done_name = done_name.unwrap_or_default();
 
             // Peephole: check if the value output feeds directly into
             // an unpack_sequence with count=2 (e.g., `for k, v in d.items()`).
@@ -556,7 +573,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         vars,
                         representation_plan,
                         nbc,
-                        &done_name,
+                        done_name,
                         done_bits,
                     );
                 }
@@ -570,7 +587,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         vars,
                         representation_plan,
                         nbc,
-                        &val_name,
+                        val_name,
                         loaded_key,
                     );
                 }
@@ -635,7 +652,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         vars,
                         representation_plan,
                         nbc,
-                        &done_name,
+                        done_name,
                         done_bits,
                     );
                 }
@@ -648,7 +665,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         vars,
                         representation_plan,
                         nbc,
-                        &val_name,
+                        val_name,
                         loaded_val,
                     );
                 }
