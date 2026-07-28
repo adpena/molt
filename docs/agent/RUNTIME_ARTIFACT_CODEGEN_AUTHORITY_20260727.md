@@ -65,12 +65,49 @@ unused codegen. It still exceeded the CI envelope by roughly 1.5 GB and did not
 finish inside 20 minutes. Exact artifact selection is therefore a valid
 structural landing, but it does **not** close the CI OOM.
 
-The next distinct aperture is the shipping codegen policy in root `Cargo.toml`:
-`release-output` combines fat LTO with one codegen unit (also inherited by the
-runtime package). That single LLVM merge remains larger than the CI process
-budget even after unused crate types are removed. Changing it requires a
-separate measured native+WASM profile matrix; lowering optimization or adding a
-CI-only fallback here would be an unproven workaround.
+The next distinct aperture was the shipping codegen policy in root `Cargo.toml`:
+`release-output` combined fat LTO, one codegen unit, and inherited `debug = 1`.
+The matrix below closes that authority rather than adding a CI-only alias or
+retry.
+
+## Shipping codegen policy matrix
+
+Every native row used the exact full-feature staticlib producer, a fresh target
+directory, one guarded Cargo process tree, and the same source revision. The
+fat/1 timeout peak is a lower bound because rustc had not completed.
+
+| release-output policy | wall | process RSS | tree RSS | Job commit | archive | result |
+|---|---:|---:|---:|---:|---:|---|
+| fat / 1 / debug=1 | 1,201.031 s | 5,493,481,472 B | 5,642,506,240 B | 5,674,582,016 B | none | timeout |
+| thin / 4 / debug=1 | 316.391 s | 6,907,158,528 B | 7,075,172,352 B | 7,240,884,224 B | 156,364,450 B | pass |
+| thin / 16 / debug=1 | 198.875 s | 4,457,263,104 B | 4,622,839,808 B | 4,674,871,296 B | 160,247,186 B | pass |
+| thin / 32 / debug=1 | 181.219 s | 4,286,345,216 B | 4,451,274,752 B | 4,491,722,752 B | 162,616,328 B | pass |
+| **thin / 16 / debug=0** | **168.391 s** | **2,810,617,856 B** | **2,977,423,360 B** | **3,118,239,744 B** | **63,665,544 B** | **pass** |
+
+Evidence:
+
+- `tmp/runtime-codegen-policy-matrix-20260728/native-thin4.metrics.json`
+- `tmp/runtime-codegen-policy-matrix-20260728/native-thin16.metrics.json`
+- `tmp/runtime-codegen-policy-matrix-20260728/native-thin32.metrics.json`
+- `tmp/runtime-codegen-policy-matrix-20260728/native-thin16-nodebug.metrics.json`
+
+The selected shipping authority is ThinLTO, 16 codegen units, and no debug
+metadata. Relative to thin/16 with inherited debug metadata, removing debug cut
+wall by 15.3%, process RSS by 36.9%, tree RSS by 35.6%, and the static archive by
+60.3%. It is 1.18 GB below the earlier Linux CI rustc failure frontier. CGU32's
+small wall/RSS improvement under debug=1 did not justify its extra member and
+archive fragmentation once the actual debug-metadata cause was removed.
+
+`release-output`, `release-size`, and `wasm-release` now share that codegen and
+debug policy. Profile scope owns LTO/codegen units; package overrides own only
+the hot-crate opt level. `dev-release` remains the explicit symbol-bearing
+profile. Invalid WASM output fails closed under the one primary profile; the old
+isolated-target and alternate-profile retry chain is deleted. The combined
+`staticlib,cdylib` producer is likewise mandatory for split-runtime `both` builds:
+its two legacy environment kill switches and automatic sequential dual-compile
+retry are deleted. Atomic generation custody remains authoritative for every
+split-runtime build, including freestanding consumers that select only the reloc
+member downstream.
 
 ## Proof contract
 
@@ -85,4 +122,6 @@ The landing proof must show:
    artifact names and sizes;
 5. native and WASM runtime execution/determinism checks remain unchanged; and
 6. CI-shaped scheduling does not overlap the load-bearing runtime rustc with a
-   broad truth lane merely to trade one OOM for another.
+   broad truth lane merely to trade one OOM for another; and
+7. split-runtime `both` fails closed after a combined-producer/finalization
+   failure and never launches a per-artifact Cargo retry.

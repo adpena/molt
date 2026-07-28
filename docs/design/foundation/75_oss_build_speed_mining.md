@@ -11,6 +11,12 @@ against the tree (§7). Windows-primary dev box (14 cores); wasm32-wasip1 target
 
 # 75 — Mining OSS Build-Speed Practice for Molt's Iteration Loop
 
+> Historical research record. The V2/V3 config-lattice and environment-knob
+> descriptions below are retained with the 2026-07-10 evidence they explain;
+> immutable atomic runtime generations and exact pair identities now supersede
+> that runtime-WASM cache authority. Current shipping policy lives in
+> `Cargo.toml` and `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
+
 **Status:** research directive + ranked plan, 2026-07-10. Owner: DX arc.
 Doc-only landing. Implements the operator mandate: *a world-class compiler mines
 all the best from OSS — no waste, no duplicated work, EVER* (74 four laws;
@@ -34,8 +40,8 @@ lowering cache. The remaining wall-clock is therefore NOT "we lack fast profiles
 or a daemon." It is two precise gaps:
 
 1. **Configured ≠ effective (74 law 4 / M34 / M55).** The fast profile + lattice
-   reuse EXIST but are OPT-IN. The attested ~150–230s "fat LTO + cgu=1" runtime
-   compile (§1) is `wasm-release` — the SHIP profile — still landing on the
+   reuse EXIST but are OPT-IN. The historical ~150–230s fat-LTO/one-CGU runtime
+   compile (§1) was `wasm-release` — the SHIP profile — landing on the
    iteration path by default, because `dev-fast` reuse is gated behind
    `MOLT_RUNTIME_BUILD_PROFILE`/`MOLT_BUILD_REUSE_COMPATIBLE=1`. The lever is
    **prove-safe-per-edge → default-on + attest**, not a new profile.
@@ -61,7 +67,7 @@ generic "Rust is slow" folklore.
 | `module_graph` (frontend) | ~99s | every build (cold per process) | ~1 (serial-ish) |
 | `backend_prepare` | ~125s | every build | partial |
 | `backend_subprocess_compile` | ~95s | every build (Molt's OWN wasm codegen of app+stdlib) | partial |
-| runtime cargo compile | ~150–230s | **only when a runtime `.rs` changes** | **~1 of 14 (`wasm-release`: fat LTO + cgu=1)** |
+| runtime cargo compile | historical ~150–230s | **only when a runtime `.rs` changes** | **shipping policy is now ThinLTO/cgu=16/debug=0; see runtime codegen authority evidence** |
 | wasm-opt + wasm-ld | untimed-but-real | every app change | 1 (wasm-opt default single-thread; dev default `Oz`) |
 | uv provisioning | ~minutes | cold only | n/a |
 | proof-queue | overhead | per proof | n/a |
@@ -73,7 +79,7 @@ Effort S/M/L. Risk = correctness/regression risk. "Status" flags whether the
 
 | # | Lever | Expected win on OUR numbers | Effort | Risk | Status vs tree (§7) | Evidence (primary) | Windows caveat |
 |---|---|---|---|---|---|---|---|
-| **L1** | **Default-on the already-built `dev-fast` runtime profile + config-lattice reuse for the ITERATION runtime.wasm; keep `wasm-release`/`release-output` (fat LTO/cgu=1) only on ship/acceptance** | runtime-touch path **~150–230s → ~40–90s** (reclaims 13 idle cores via cgu=256; drops whole-program LTO). Pure 74-law-3 reuse: dev wasm is semantically identical, only fatter/slower | **S** | **Low** — LTO/cgu never change semantics; ship/acceptance still pins exact identity (74 non-negotiable) | **Mechanism LANDED** (`dev-fast`, V2/V3); gap = it's OPT-IN. Default resolves to `wasm-release` | our Cargo.toml (`[profile.dev-fast] lto="off" cgu=256`) + `runtime_build.py` precedence; 74 law 3 "opt-in until proven safe per edge, then default-on"; perf-book LTO/cgu [2] | None. cgu parallelism *helps* on 14 cores |
+| **L1** | **Default-on the already-built `dev-fast` runtime profile + config-lattice reuse for the ITERATION runtime.wasm; keep the measured ThinLTO/cgu=16/debug=0 `wasm-release`/`release-output` policy on ship/acceptance** | avoids shipping-profile work in the edit loop while final artifacts retain cross-crate optimization. Pure 74-law-3 reuse: dev wasm is semantically identical, only fatter/slower | **S** | **Low** — ship/acceptance still pins exact identity (74 non-negotiable) | **Mechanism LANDED** (`dev-fast`, V2/V3); gap = it's OPT-IN. Default resolves to `wasm-release` | Cargo profiles + `runtime_build.py` precedence; 74 law 3 | None. cgu parallelism helps on multi-core hosts |
 | **L2** | **Extend resident-daemon warm state to the FRONTEND module-graph + analysis** (backend daemon already warm); fine-grained per-top-level-def invalidation, NOT whole-module | `module_graph` **~99s → sub-5s** warm; large slice of `backend_prepare` warmed. Biggest structural win across ALL iterations | **L** | **Med** — stale warm cache = silent-wrong-answer class (M34) | **Partial:** backend daemon exists; FRONTEND phases still cold per-process | mypy `dmypy` fine-grained deps + `astdiff`/`aststrip` [3]; salsa red/green early-cutoff (rust-analyzer, Ruff Red-Knot) [4][5]; esbuild immutable-shared warm AST cache [6]; Zig in-process incremental ~125× / <300ms [7] | file-watch = `ReadDirectoryChangesW`, mtime/size is NTFS-lossy (M35); bind to `MOLT_SESSION_ID` + collision oracle (56 DX-2/3) |
 | **L3** | **Tighten + ATTEST the existing `function_cache_key`** to mypy per-def grain + full-input key + hit-rate gate | `backend_subprocess_compile` **~95s → proportional-to-changed-fns** | **M** | **Med** — key must include ALL true inputs or silent stale codegen (M34/M36) | **Mechanism LANDED** (`function_cache_key` in `backend_process`); gap = grain + attestation | mypy grain = "module top level or top-level fn/method" [3]; salsa early-cutoff [4]; Turborepo/Buck2 action key = hash(cmd+inputs+upstream) [8][9] | None specific |
 | **L4** | **Default the DEV/iteration wasm-opt to `-O1`; keep `Oz`/`O2`/`O3` for ship** | the untimed wasm-opt step drops to "quick & useful" dev level; ship size/perf unchanged | **S** | **Low** — pure config-lattice; dev wasm not shipped | **Knob exists** (`wasm_opt_level`, defaults `Oz` even for dev) — gap = dev default | Binaryen: `-O1` = "quick & useful opts, useful for iteration builds"; `-O3/-O4` "spends potentially a lot of time" [10] | None |
@@ -91,7 +97,7 @@ Ordered by leverage. Each is a hypothesis with an attestation gate (74 law 4).
 ### DO-1 (highest leverage) — cash the already-built `dev-fast` runtime profile into the DEFAULT iteration path
 The fast profile is DONE (`[profile.dev-fast] lto="off" codegen-units=256`, plus
 per-package opt layering); the config-lattice reuse (V3) and stable dep-cache
-(V2) are DONE but OPT-IN. The attested ~150–230s (fat LTO + cgu=1) proves the
+(V2) are DONE but OPT-IN. The historical ~150–230s fat-LTO/one-CGU result proved the
 SHIP profile `wasm-release` is still what lands on the runtime-touch iteration
 path by default — a textbook "configured ≠ effective" miss (74 law 4). This is
 **not** new mechanism; it is flipping proven capability to default-on:
@@ -185,7 +191,7 @@ layering that usually pairs with this is **already landed** (dev + dev-fast
   daemon.** It has a long-standing stale-cache-invalidation class (dependency/type
   changes not invalidating; manual delete required) [19]. Match mypy's fine-grained
   per-definition bar (DO-2), not whole-file.
-- **DON'T run `wasm-release`/fat-LTO+cgu=1 on the iteration path.** That is a
+- **DON'T run the shipping `wasm-release` profile on the iteration path.** That is a
   ship-size setting; on iteration it serializes 13 of 14 cores for zero iteration
   value (this is exactly what DO-1 removes).
 - **DON'T ship dynamic-linked / side-module runtime to "avoid relink" without
@@ -210,7 +216,7 @@ converts sunk, already-landed capability into a default-path win.
 ## 6. Surprising / liftable-wholesale findings
 
 - **We are paying a SHIP setting on the DEV path — and the fix is already built.**
-  The 150–230s runtime compile is `wasm-release` (fat LTO + cgu=1, opt-z, a 3MB-
+  The historical 150–230s runtime compile was `wasm-release` (then fat LTO + cgu=1, opt-z, a 3MB-
   ceiling concern) charged to iteration, which neither ships nor cares about size.
   The `dev-fast` profile that fixes it (lto=off, cgu=256) is ALREADY in Cargo.toml
   and the reuse plumbing already landed (V2/V3) — it is merely opt-in. The single
@@ -243,12 +249,14 @@ Verified against the worktree tree at `origin/main` HEAD `18ed35b063`:
 - **Fast-iteration Cargo profiles — LANDED.** `Cargo.toml` `[profile.dev-fast]`
   `inherits="dev"`, `codegen-units=256`, `lto="off"`; `[profile.release-fast]`
   (backend-daemon iteration). Ship profiles `[profile.release-output]` and
-  `[profile.wasm-release]` are `lto="fat"`, `codegen-units=1`, `opt-level="z"`.
+  `[profile.wasm-release]` now uses measured ThinLTO, 16 codegen units, debug=0,
+  and `opt-level="z"`.
 - **Per-package opt-level layering — LANDED.** Extensive `[profile.dev.package.*]`
   and `[profile.dev-fast.package.*]` overrides (molt-backend=1, molt-runtime=2,
   cranelift-codegen=1, …) + hot-crate opt policy for the shipped runtime.
 - **Config-lattice reuse + stable dep-cache — LANDED (opt-in).** V1
-  (018d83e104/8bc067ee27 single combined compile), V2 (7e248d384b stable dep-cache
+  (018d83e104/8bc067ee27 single combined compile, now the sole split-runtime
+  `both` producer with no dual-compile kill switch/retry), V2 (7e248d384b stable dep-cache
   default-on for iteration profiles), V3 (4644a2c4d1 `MOLT_BUILD_REUSE_COMPATIBLE`
   config-lattice reuse) per CLAIMS BUILD-DEDUP-B rows.
 - **Runtime wasm profile resolver — LANDED.** `src/molt/cli/runtime_build.py`

@@ -1907,10 +1907,6 @@ def _reported_cpython_abi_staticlib_from_cargo_stdout(
     return reported
 
 
-def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
-    return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
-
-
 def _runtime_wasm_incremental_enabled() -> bool:
     """Whether to build the runtime wasm into a stable, incremental target dir.
 
@@ -2695,6 +2691,7 @@ def _ensure_runtime_wasm(
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
+    build_if_missing: bool = True,
 ) -> bool:
     validate_exports = not reloc
 
@@ -3041,6 +3038,14 @@ def _ensure_runtime_wasm(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
             )
+        if not build_if_missing:
+            if not json_output:
+                print(
+                    "Combined runtime wasm artifacts could not be finalized; "
+                    "refusing a redundant per-artifact Cargo compile.",
+                    file=sys.stderr,
+                )
+            return False
         if wasm_toolchain.rust_target_libdir("wasm32-wasip1") is None:
             if not json_output:
                 print(
@@ -3101,9 +3106,7 @@ def _ensure_runtime_wasm(
                 target_root_override=target_root,
                 json_output=json_output,
                 artifact_kind=(
-                    RuntimeCrateType.STATICLIB
-                    if reloc
-                    else RuntimeCrateType.CDYLIB
+                    RuntimeCrateType.STATICLIB if reloc else RuntimeCrateType.CDYLIB
                 ),
             )
         except subprocess.TimeoutExpired:
@@ -3201,129 +3204,11 @@ def _ensure_runtime_wasm(
         if src_state != "valid":
             if not json_output:
                 print(
-                    f"Runtime wasm build produced invalid artifact: {src}; retrying with isolated target dir.",
+                    "Runtime wasm build produced an invalid artifact and failed "
+                    f"closed: {src}.",
                     file=sys.stderr,
                 )
-            recovery_target_root = _wasm_runtime_recovery_target_root(
-                _cargo_target_root(root)
-            )
-            try:
-                build, recovery_src = _run_runtime_wasm_cargo_build(
-                    cmd=cmd,
-                    root=root,
-                    env=env,
-                    cargo_timeout=cargo_timeout,
-                    profile_dir=profile_dir,
-                    target_root_override=recovery_target_root,
-                    json_output=json_output,
-                )
-            except subprocess.TimeoutExpired:
-                if not json_output:
-                    timeout_note = (
-                        f"Runtime wasm recovery build timed out after {cargo_timeout:.1f}s."
-                        if cargo_timeout is not None
-                        else "Runtime wasm recovery build timed out."
-                    )
-                    print(timeout_note, file=sys.stderr)
-                return False
-            if build.returncode != 0:
-                if not json_output:
-                    detail = _runtime_wasm_build_error_detail(build)
-                    msg = "Runtime wasm recovery build failed"
-                    if detail:
-                        msg = f"{msg}: {detail}"
-                    print(msg, file=sys.stderr)
-                return False
-            recovery_state = _inspect_wasm_binary(recovery_src)
-            if recovery_state == "missing":
-                if not json_output:
-                    print(
-                        "Runtime wasm recovery build succeeded but artifact is missing.",
-                        file=sys.stderr,
-                    )
-                return False
-            if recovery_state != "valid":
-                # The wasm fallback MUST preserve wasm-release's size + panic
-                # contract (opt size, panic=abort, strip). The previous default
-                # `release-fast` (opt-3, panic=unwind) re-introduced wasm unwind
-                # tables and inflated the runtime past the 3 MB Cloudflare
-                # ceiling - a workaround, not a recovery. `wasm-release-fallback`
-                # (Cargo.toml) keeps opt-"s"/abort/strip and only relaxes the
-                # codegen knobs (thin LTO + 16 codegen-units) to escape the
-                # fat-LTO single-CGU corruption class a fallback recovers from.
-                fallback_profile = os.environ.get(
-                    "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback"
-                ).strip()
-                can_try_fallback_profile = (
-                    requested_cargo_profile == "release"
-                    and fallback_profile
-                    and fallback_profile != cargo_profile
-                    and _CARGO_PROFILE_NAME_RE.match(fallback_profile) is not None
-                )
-                if not can_try_fallback_profile:
-                    if not json_output:
-                        print(
-                            f"Runtime wasm recovery build produced invalid artifact: {recovery_src}",
-                            file=sys.stderr,
-                        )
-                    return False
-                if not json_output:
-                    print(
-                        "Runtime wasm release profile produced invalid artifacts; "
-                        f"retrying with fallback profile {fallback_profile}.",
-                        file=sys.stderr,
-                    )
-                fallback_profile_dir = _cargo_profile_dir(fallback_profile)
-                fallback_cmd = cmd.copy()
-                fallback_cmd[5] = fallback_profile
-                fallback_target_root = recovery_target_root.parent / (
-                    f"{recovery_target_root.name}-{fallback_profile}"
-                )
-                try:
-                    build, fallback_src = _run_runtime_wasm_cargo_build(
-                        cmd=fallback_cmd,
-                        root=root,
-                        env=env,
-                        cargo_timeout=cargo_timeout,
-                        profile_dir=fallback_profile_dir,
-                        target_root_override=fallback_target_root,
-                        json_output=json_output,
-                    )
-                except subprocess.TimeoutExpired:
-                    if not json_output:
-                        timeout_note = (
-                            f"Runtime wasm fallback build timed out after {cargo_timeout:.1f}s."
-                            if cargo_timeout is not None
-                            else "Runtime wasm fallback build timed out."
-                        )
-                        print(timeout_note, file=sys.stderr)
-                    return False
-                if build.returncode != 0:
-                    if not json_output:
-                        detail = _runtime_wasm_build_error_detail(build)
-                        msg = "Runtime wasm fallback build failed"
-                        if detail:
-                            msg = f"{msg}: {detail}"
-                        print(msg, file=sys.stderr)
-                    return False
-                fallback_state = _inspect_wasm_binary(fallback_src)
-                if fallback_state == "missing":
-                    if not json_output:
-                        print(
-                            "Runtime wasm fallback build succeeded but artifact is missing.",
-                            file=sys.stderr,
-                        )
-                    return False
-                if fallback_state != "valid":
-                    if not json_output:
-                        print(
-                            f"Runtime wasm fallback build produced invalid artifact: {fallback_src}",
-                            file=sys.stderr,
-                        )
-                    return False
-                src = fallback_src
-            else:
-                src = recovery_src
+            return False
         if reloc:
             missing_exports = _runtime_missing_exports_for_mode(
                 src,
@@ -3668,7 +3553,10 @@ def _ensure_runtime_wasm_both(
         or combined_wasm_linker is None
     ):
         if combined_wasm_linker is None and not json_output:
-            print("Runtime WASM linker identity failed: wasm-ld not found.", file=sys.stderr)
+            print(
+                "Runtime WASM linker identity failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
         return False
 
     def _ensure(reloc: bool) -> bool:
@@ -3696,7 +3584,10 @@ def _ensure_runtime_wasm_both(
             if reloc
             else runtime_state.runtime_wasm_ready
         )
-        if ready_key in ready_feature_keys or ready_all_exports_key in ready_feature_keys:
+        if (
+            ready_key in ready_feature_keys
+            or ready_all_exports_key in ready_feature_keys
+        ):
             return True
         if not requested_features and (
             None in ready_export_sets or requested_exports in ready_export_sets
@@ -3719,6 +3610,7 @@ def _ensure_runtime_wasm_both(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
+            build_if_missing=False,
         ):
             return False
         if reloc:
@@ -3885,7 +3777,10 @@ def _ensure_runtime_wasm_both(
         post_wasm_linker = wasm_toolchain.resolve_wasm_linker()
     except wasm_toolchain.WasmLinkerContractError as exc:
         if not json_output:
-            print(f"Runtime WASM post-build linker identity failed: {exc}", file=sys.stderr)
+            print(
+                f"Runtime WASM post-build linker identity failed: {exc}",
+                file=sys.stderr,
+            )
         return False
     if post_wasm_linker is None:
         if not json_output:

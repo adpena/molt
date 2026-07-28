@@ -7,9 +7,8 @@ The live codebase and executable Cargo metadata remain authoritative.
 
 - The build-iteration profile fix from this document has already landed in the
   root `Cargo.toml`: `release-fast` disables LTO and uses high codegen-unit
-  parallelism for backend-daemon edit loops, while shipped output profiles
-  retain fat LTO where binary size/runtime performance need whole-program
-  optimization.
+  parallelism for backend-daemon edit loops, while shipped output profiles use
+  the measured memory-bounded ThinLTO/cgu=16/debug=0 policy.
 - Runtime leaf crates exist and are wired as path dependencies from
   `runtime/molt-runtime/Cargo.toml`: `molt-runtime-core`, `-math`, `-text`,
   `-collections`, `-serial`, `-crypto`, `-compression`, `-net`, `-asyncio`,
@@ -167,10 +166,11 @@ Distinguish two link products:
   because current Windows NVMe/persistent-target evidence moved a
   `value_range` pass edit from 87.89 s under ThinLTO to 8.42 s with LTO off.
 - **The shipped user-binary runtime** (statically linked into the AOT output):
-  fat LTO matters here for end-user runtime perf. Keep fat LTO on the *artifact*
-  link step (`release`/published), not on the daemon's iteration builds.
-These are different link steps — separating them removes the single-threaded LTO
-tax from every dev rebuild while preserving the perf contract for shipped binaries.
+  keep the measured ThinLTO/cgu=16/debug=0 policy on the *artifact* link step
+  (`release-output`/published), not on the daemon's iteration builds.
+These are different link steps — separating them removes LTO from every dev
+rebuild while preserving the measured memory and performance contract for
+shipped binaries.
 Root `Cargo.toml` records the measured fat-to-thin and thin-to-off
 `release-fast` deltas; future work should extend the measurement to crate
 extraction and cache-hit rebuild cases.
@@ -194,8 +194,8 @@ reported a `release-fast` daemon prime of 10.31 s, `dev-fast` `test-lib` of
   private `target/` and recompile the whole world; `tools/new-agent-task.sh`
   writes `logs/agents/<task>/env.sh` so each lane can source the same
   shared-root policy before building.
-- **Fast linker**: shipped fat-LTO links of large runtime artifacts remain
-  link-bound, while `release-fast` now avoids LTO in the daemon iteration loop.
+- **Fast linker**: shipped ThinLTO links of large runtime artifacts remain
+  link-bound, while `release-fast` avoids LTO in the daemon iteration loop.
   `-C link-arg=-fuse-ld=lld` (mac) / `mold` (Linux). Currently opt-in only in
   `.cargo/config.toml`; flip on for dev profiles (keep the portable baseline for CI).
 
@@ -239,8 +239,9 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
   the **<2MB binary-size** goal (precise per-app dead-strip) and the **typed-IR /
   backend-coherence** work (clearer crate contracts). One structural arc, three
   roadmap goals.
-- Keep the perf contract intact: shipped artifacts retain fat LTO; only the dev
-  iteration loop trades whole-program re-opt for parallelism + incrementality.
+- Keep the perf contract intact: shipped artifacts retain the measured
+  ThinLTO/cgu=16 policy; only the dev iteration loop drops LTO for parallelism
+  and incrementality.
 - Keep docs honest: when a profile or crate boundary lands, update this file
   from `Cargo.toml`, `cargo metadata`, and targeted build timings before using
   old design text as a work plan.
