@@ -23,7 +23,7 @@ from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
 from molt.cli.extension_scan_surface import _parse_preprocessor_argument_definition
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.native_link_plan import (
     native_link_capabilities,
     native_link_policy_flags,

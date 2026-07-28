@@ -23,7 +23,7 @@ from packaging.version import InvalidVersion, Version
 
 from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.dx import checkout_custody
 from molt import process_guard
 

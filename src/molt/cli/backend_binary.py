@@ -30,7 +30,7 @@ from molt.cli.cargo_execution import (
 )
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
-from molt.cli.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
+from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.native_toolchain import _codesign_binary
 from molt.cli.runtime_fingerprints import (

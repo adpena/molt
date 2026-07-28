@@ -11,7 +11,7 @@ import subprocess
 from typing import Literal
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.llvm_linker_roles import (
     LlvmLinkerRole,
     executable_selects_linker_role,

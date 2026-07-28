@@ -25,7 +25,7 @@ RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
-FILE_HASHING = importlib.import_module("molt.cli.file_hashing")
+FILE_HASHING = importlib.import_module("molt.file_hashing")
 
 
 ROOT = Path(__file__).resolve().parents[2]

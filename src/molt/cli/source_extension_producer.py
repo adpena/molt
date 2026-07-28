@@ -33,7 +33,7 @@ from molt.cli.extension_manifest import (
     _manifest_dotted_name_tuple,
     _validate_extension_manifest,
 )
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.extension_wheel import _rewrite_staged_extension_wheel
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail

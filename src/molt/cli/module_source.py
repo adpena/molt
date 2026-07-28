@@ -16,7 +16,7 @@ from typing import Any, cast
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 
 
 @dataclass(frozen=True)

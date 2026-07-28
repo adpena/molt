@@ -11,7 +11,7 @@ from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
     _rustc_version,
 )
-from molt.cli.file_hashing import (
+from molt.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
 )

@@ -9,7 +9,7 @@ from typing import Any
 
 from molt.cli.atomic_io import _atomic_zip_file
 from molt.cli.extension_manifest import _wheel_record_line, _write_zip_member
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 
 
 _EMBEDDED_EXTENSION_MANIFEST = "extension_manifest.json"

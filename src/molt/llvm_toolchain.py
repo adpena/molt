@@ -19,7 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from molt.cli.file_hashing import _content_change_time_ns
+from molt.file_hashing import _content_change_time_ns
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,

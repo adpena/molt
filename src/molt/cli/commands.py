@@ -79,7 +79,7 @@ from molt.cli.extension_support import module_attr_support_files
 from molt.cli.external_native import (
     _source_recompiled_external_package_root,
 )
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.llvm_wasi_tools import (
     LlvmToolRole,

@@ -11,7 +11,7 @@ import tomllib
 from typing import Any
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.file_hashing import _normalize_sha256, _sha256_file
+from molt.file_hashing import _normalize_sha256, _sha256_file
 
 
 def _is_macho(path: Path) -> bool:
