@@ -115,3 +115,12 @@ def test_user_facing_artifact_guidance_cannot_return_to_cargo_build() -> None:
         "cargo rustc --release --package molt-runtime --crate-type staticlib"
         in developer_guide
     )
+
+
+def test_default_rlib_build_script_has_no_retired_native_cdylib_link_lane() -> None:
+    build_script = (ROOT / "runtime" / "molt-runtime" / "build.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "cargo:rustc-cdylib-link-arg" not in build_script
+    assert "cargo:rustc-link-arg-tests" in build_script
