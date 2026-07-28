@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -388,6 +389,40 @@ class _RuntimeWasmPairBuild:
     toolchain_manifest_path: Path
     generation_manifest: Path
     pre_identity: _RuntimeWasmPairIdentity | None
+    staging_root: Path | None = None
+    staging_shared: Path | None = None
+    staging_reloc: Path | None = None
+
+    def failure_details(self) -> dict[str, object]:
+        identity = self.pre_identity
+        return {
+            "pair_digest": (
+                None if identity is None else identity.shared.pair_digest
+            ),
+            "stdlib_profile": self.stdlib_profile,
+            "required_link_features": sorted(self.required_link_features),
+            "required_exports": (
+                None if self.required_exports is None else sorted(self.required_exports)
+            ),
+            "canonical_shared": str(self.runtime_wasm),
+            "canonical_reloc": str(self.runtime_reloc_wasm),
+            "generation_manifest": str(self.generation_manifest),
+            "staging_root": (
+                None if self.staging_root is None else str(self.staging_root)
+            ),
+            "staging_shared": (
+                None if self.staging_shared is None else str(self.staging_shared)
+            ),
+            "staging_shared_exists": bool(
+                self.staging_shared is not None and self.staging_shared.is_file()
+            ),
+            "staging_reloc": (
+                None if self.staging_reloc is None else str(self.staging_reloc)
+            ),
+            "staging_reloc_exists": bool(
+                self.staging_reloc is not None and self.staging_reloc.is_file()
+            ),
+        }
 
     def fail(self, stage: str, summary: str) -> bool:
         return record_runtime_wasm_failure(
@@ -395,6 +430,7 @@ class _RuntimeWasmPairBuild:
             project_root=self.project_root,
             stage=stage,
             summary=summary,
+            details=self.failure_details(),
         )
 
     def accept_generation(self) -> bool:
@@ -439,49 +475,41 @@ class _RuntimeWasmPairBuild:
         self.runtime_state.runtime_wasm_selected = generation.shared
         self.runtime_state.runtime_reloc_wasm_selected = generation.reloc
         self.runtime_state.runtime_wasm_expected_identity = expected_path
-        for staging in (self.runtime_wasm, self.runtime_reloc_wasm):
-            with contextlib.suppress(OSError):
-                staging.unlink(missing_ok=True)
         return True
 
+    def provision_staging(self) -> None:
+        identity = self.pre_identity
+        if identity is None:
+            raise ValueError("runtime WASM staging requires an exact pair identity")
+        root = (
+            _build_state_root(self.project_root)
+            / "runtime_wasm_staging"
+            / identity.shared.pair_digest
+            / uuid.uuid4().hex
+        )
+        root.mkdir(parents=True, exist_ok=False)
+        self.staging_root = root
+        self.staging_shared = root / self.runtime_wasm.name
+        self.staging_reloc = root / self.runtime_reloc_wasm.name
+
+    def cleanup_staging(self) -> None:
+        for staging in (self.staging_shared, self.staging_reloc):
+            if staging is not None:
+                with contextlib.suppress(OSError):
+                    staging.unlink(missing_ok=True)
+        if self.staging_root is not None:
+            with contextlib.suppress(OSError):
+                self.staging_root.rmdir()
+
+    def staging_member(self, *, reloc: bool) -> Path:
+        member = self.staging_reloc if reloc else self.staging_shared
+        if member is None:
+            raise ValueError("runtime WASM member staging is not provisioned")
+        return member
+
     def ensure_member(self, *, reloc: bool) -> bool:
-        requested_exports = (
-            None if self.required_exports is None else frozenset(self.required_exports)
-        )
-        requested_features = frozenset(self.required_link_features)
-        ready_export_sets = (
-            self.runtime_state.runtime_reloc_wasm_ready_export_sets
-            if reloc
-            else self.runtime_state.runtime_wasm_ready_export_sets
-        )
-        ready_feature_keys = (
-            self.runtime_state.runtime_reloc_wasm_ready_feature_keys
-            if reloc
-            else self.runtime_state.runtime_wasm_ready_feature_keys
-        )
-        ready_key = (requested_features, requested_exports)
-        if (
-            ready_key in ready_feature_keys
-            or (requested_features, None) in ready_feature_keys
-            or (
-                not requested_features
-                and (
-                    None in ready_export_sets or requested_exports in ready_export_sets
-                )
-            )
-        ):
-            return True
-        ready = (
-            self.runtime_state.runtime_reloc_wasm_ready
-            if reloc
-            else self.runtime_state.runtime_wasm_ready
-        )
-        if ready and self.required_exports is None and not requested_features:
-            ready_export_sets.add(None)
-            ready_feature_keys.add(ready_key)
-            return True
         if not _ensure_runtime_wasm(
-            self.runtime_reloc_wasm if reloc else self.runtime_wasm,
+            self.staging_member(reloc=reloc),
             reloc=reloc,
             json_output=self.json_output,
             cargo_profile=self.cargo_profile,
@@ -496,12 +524,6 @@ class _RuntimeWasmPairBuild:
             build_if_missing=False,
         ):
             return False
-        if reloc:
-            self.runtime_state.runtime_reloc_wasm_ready = True
-        else:
-            self.runtime_state.runtime_wasm_ready = True
-        ready_export_sets.add(requested_exports)
-        ready_feature_keys.add(ready_key)
         return True
 
 
@@ -668,6 +690,14 @@ def _materialize_runtime_wasm_pair(
             "Runtime WASM shared cache hydrated a pair that failed generation validation.",
         )
         return _PairBuildOutcome.FAILED
+    try:
+        ctx.provision_staging()
+    except (OSError, ValueError) as exc:
+        ctx.fail(
+            "pair-staging",
+            f"Runtime WASM pair staging failed: {exc}",
+        )
+        return _PairBuildOutcome.FAILED
     if not _prepopulate_combined_runtime_wasm_target(
         runtime_state=ctx.runtime_state,
         shared_spec=ctx.shared_spec,
@@ -748,6 +778,8 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
             ctx.runtime_reloc_wasm,
             shared_identity=post_identity.shared,
             reloc_identity=post_identity.reloc,
+            source_shared=ctx.staging_member(reloc=False),
+            source_reloc=ctx.staging_member(reloc=True),
         )
     except (OSError, ValueError) as exc:
         return ctx.fail(
@@ -802,9 +834,12 @@ def _ensure_runtime_wasm_both(
     )
     if ctx is None:
         return False
-    outcome = _materialize_runtime_wasm_pair(ctx)
-    if outcome is _PairBuildOutcome.ACCEPTED:
-        return True
-    if outcome is _PairBuildOutcome.FAILED:
-        return False
-    return _publish_runtime_wasm_pair(ctx)
+    try:
+        outcome = _materialize_runtime_wasm_pair(ctx)
+        if outcome is _PairBuildOutcome.ACCEPTED:
+            return True
+        if outcome is _PairBuildOutcome.FAILED:
+            return False
+        return _publish_runtime_wasm_pair(ctx)
+    finally:
+        ctx.cleanup_staging()
