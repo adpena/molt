@@ -16,6 +16,8 @@ build.  Modes:
 * ``shared_cache``-- hydrated from the session-independent shared cache (V2).
 * ``fingerprint`` -- the destination artifact already matched its fingerprint.
 * ``link``        -- a post-cargo ``wasm-ld`` link (reloc ``-r`` / recovery).
+* ``pre_build``   -- exact runtime source/toolchain identity before Cargo.
+* ``post_build``  -- exact runtime source/toolchain identity after Cargo.
 
 The count of ``cargo_compile`` phases whose ``mode == "build"`` for one
 ``--kind both`` invocation is exactly the V1 acceptance metric: 2 before the
@@ -99,12 +101,32 @@ def _runtime_wasm_build_timings_snapshot() -> dict[str, Any] | None:
         for record in phases
         if record["phase"] == "cargo_compile" and record["mode"] != "build"
     ]
+    identity_phases = [
+        record
+        for record in phases
+        if record["phase"] in {"runtime_toolchain_identity", "runtime_source_identity"}
+    ]
+    identity_pre = [
+        record for record in identity_phases if record["mode"] == "pre_build"
+    ]
+    identity_post = [
+        record for record in identity_phases if record["mode"] == "post_build"
+    ]
     snapshot: dict[str, Any] = {
         "phases": phases,
         "cargo_compile_builds": len(cargo_builds),
         "cargo_compile_reuses": len(cargo_reuses),
         "cargo_compile_build_wall_s": round(
             sum(record["wall_s"] for record in cargo_builds), 6
+        ),
+        "runtime_identity_pre_wall_s": round(
+            sum(record["wall_s"] for record in identity_pre), 6
+        ),
+        "runtime_identity_post_wall_s": round(
+            sum(record["wall_s"] for record in identity_post), 6
+        ),
+        "runtime_identity_wall_s": round(
+            sum(record["wall_s"] for record in identity_phases), 6
         ),
         "total_wall_s": round(sum(record["wall_s"] for record in phases), 6),
     }

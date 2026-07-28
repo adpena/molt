@@ -28,9 +28,9 @@ if str(ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from molt.cli.file_hashing import _windows_change_time_ns  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     _llvm_attestation_custody,
-    _windows_change_time_ns,
     LlvmManagedPaths,
     LlvmToolchainConfigError,
     LlvmPrefixVerification,

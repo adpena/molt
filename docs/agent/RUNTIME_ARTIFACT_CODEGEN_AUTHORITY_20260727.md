@@ -109,6 +109,67 @@ retry are deleted. Atomic generation custody remains authoritative for every
 split-runtime build, including freestanding consumers that select only the reloc
 member downstream.
 
+## Exact split-runtime pair proof
+
+The final `both` path was measured with an isolated Cargo target and cache after
+the publication and codegen authorities were combined. It performed one Cargo
+compile, reused both declared crate-type outputs from that compile, transformed
+and published one immutable shared/reloc generation, and created no fixed-name
+artifact authority.
+
+| measurement | wall | process RSS | tree RSS | Job commit | result |
+|---|---:|---:|---:|---:|---|
+| guarded cold pair | 402.906 s | 3,214,643,200 B | 3,475,525,632 B | 3,411,423,232 B | pass |
+| instrumented Cargo + publication phases | 169.905 s | - | - | - | 1 compile, 2 target reuses |
+| guarded warm pair before identity optimization | 8.640 s | 98,983,936 B | 170,430,464 B | 189,558,784 B | pass |
+| guarded first local-generation reconciliation after identity optimization | 20.593 s | 121,004,032 B | 189,333,504 B | 198,057,984 B | pass; 0 Cargo compiles |
+| guarded steady-state immutable-generation read | 7.625 s | 113,065,984 B | 181,796,864 B | 190,763,008 B | pass; no identity scan or Cargo compile |
+
+The published shared member is 30,949,871 B, the reloc member is 44,842,469 B,
+and their pair digest is
+`3d1aa8c79761bdaa477c333e79d79c577bd5cb8f72078f1b12db57cb00742c23`.
+The first post-optimization reconciliation spent 9.618 s on the exact 17,983-file
+toolchain identity and 1.146 s on the 694-file source identity. It selected the
+existing immutable generation without compilation or publication. The next
+steady-state read consumed that immutable manifest directly in 7.625 s without
+rescanning identity or invoking Cargo.
+
+Evidence:
+
+- `C:\Molt\tmp\runtime-final-combined-20260728\pair-build.metrics.json`
+- `C:\Molt\tmp\runtime-final-combined-20260728\pair-warm.metrics.json`
+- `C:\Molt\tmp\runtime-final-combined-20260728\pair-final-warm.metrics.json`
+- `C:\Molt\tmp\runtime-final-combined-20260728\pair-final-steady.metrics.json`
+- `C:\Molt\tmp\runtime-final-combined-20260728\diagnostics-final.jsonl`
+
+## Exact content-identity throughput
+
+The cold pair profile exposed an uninstrumented identity gap: the exact WASI
+sysroot closure was enumerated and hashed sequentially before Cargo, then
+repeated after Cargo to reject build-time input mutation. The second scan is a
+correctness invariant, so it remains exact and uncached.
+
+The canonical identity walker now uses fail-closed `scandir` enumeration,
+resource-adaptive bounded scheduling, reusable 1 MiB per-worker buffers, and
+deterministic result assembly. Snapshot and post-read checks compare file
+identity, size, mode, mtime, and the platform content-change time; aliases,
+mutation, and I/O errors fail closed. Windows NTFS ChangeTime moved out of the
+LLVM-specific implementation into the shared file-hashing authority consumed by
+runtime identity, LLVM attestation, and LLVM bootstrap. Pre/post source and
+toolchain phase walls and selected worker counts are emitted in build
+diagnostics but are excluded from the content identity.
+
+An interleaved `old/new/new/old/new/old` benchmark used separate child processes
+over the same four WASI roots. All six runs produced the same digest over 17,983
+files and 249,161,774 B. The unchanged authority median was 55.443 s; the final
+authority median was 7.945 s, a 6.98x speedup with 24 resource-selected workers.
+The final profile attributed 0.192 s to enumeration/aggregation, 2.237 s to
+parallel snapshot, and 5.427 s to exact hashing and post-read validation.
+
+Evidence:
+
+- `C:\Molt\logs\agents\runtime_identity_parallel_hash\sysroot_hash_benchmark_20260728.json`
+
 ## Proof contract
 
 The landing proof must show:

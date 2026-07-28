@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
     _reset_runtime_wasm_build_timings,
@@ -23,7 +25,9 @@ def test_empty_snapshot_is_none() -> None:
 
 def test_dual_compile_reports_two_builds() -> None:
     # The V1 "before" shape: --kind both drives two full cargo compiles.
-    _record_runtime_wasm_build_phase("cargo_compile", 151.0, kind="shared", mode="build")
+    _record_runtime_wasm_build_phase(
+        "cargo_compile", 151.0, kind="shared", mode="build"
+    )
     _record_runtime_wasm_build_phase("cargo_compile", 149.0, kind="reloc", mode="build")
     _record_runtime_wasm_build_phase("reloc_link", 3.5, kind="reloc", mode="link")
     snap = _runtime_wasm_build_timings_snapshot()
@@ -36,7 +40,9 @@ def test_dual_compile_reports_two_builds() -> None:
 
 def test_single_compile_reports_one_build_and_a_reuse() -> None:
     # The V1 "after" shape: one combined compile, the second kind reused.
-    _record_runtime_wasm_build_phase("cargo_compile", 150.0, kind="combined", mode="build")
+    _record_runtime_wasm_build_phase(
+        "cargo_compile", 150.0, kind="combined", mode="build"
+    )
     _record_runtime_wasm_build_phase(
         "cargo_compile", 0.0, kind="reloc", mode="target_reuse"
     )
@@ -59,6 +65,47 @@ def test_negative_wall_is_clamped_and_detail_preserved() -> None:
     assert snap["cargo_compile_reuses"] == 1
 
 
+def test_runtime_identity_pre_and_post_wall_are_attributed_separately() -> None:
+    _record_runtime_wasm_build_phase(
+        "runtime_toolchain_identity",
+        7.0,
+        kind="pair",
+        mode="pre_build",
+        detail="status=ok,files=17983,bytes=249161774",
+    )
+    _record_runtime_wasm_build_phase(
+        "runtime_source_identity", 1.5, kind="pair", mode="pre_build"
+    )
+    _record_runtime_wasm_build_phase(
+        "runtime_toolchain_identity", 6.0, kind="pair", mode="post_build"
+    )
+    _record_runtime_wasm_build_phase(
+        "runtime_source_identity", 1.0, kind="pair", mode="post_build"
+    )
+
+    snap = _runtime_wasm_build_timings_snapshot()
+
+    assert snap is not None
+    assert snap["runtime_identity_pre_wall_s"] == 8.5
+    assert snap["runtime_identity_post_wall_s"] == 7.0
+    assert snap["runtime_identity_wall_s"] == 15.5
+    assert snap["phases"][0]["detail"] == ("status=ok,files=17983,bytes=249161774")
+
+
+def test_runtime_identity_phase_detail_attests_selected_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import runtime_build
+
+    monkeypatch.setattr(runtime_build, "_tree_hash_worker_count", lambda _count: 6)
+
+    detail = runtime_build._runtime_identity_tree_phase_detail(
+        {"file_count": 17_983, "total_size": 249_161_774}, status="ok"
+    )
+
+    assert detail == "status=ok,files=17983,bytes=249161774,workers=6"
+
+
 def test_atomic_pair_cache_hydration_precedes_combined_build() -> None:
     import inspect
 
@@ -66,8 +113,19 @@ def test_atomic_pair_cache_hydration_precedes_combined_build() -> None:
 
     source = inspect.getsource(runtime_build._ensure_runtime_wasm_both)
     hydrate_offset = source.index("hydrate_runtime_wasm_pair_from_shared_cache(")
-    combined_build_offset = source.index(
-        "_prepopulate_combined_runtime_wasm_target("
-    )
+    combined_build_offset = source.index("_prepopulate_combined_runtime_wasm_target(")
 
     assert hydrate_offset < combined_build_offset
+
+
+def test_exact_pair_build_records_pre_and_post_identity_phases() -> None:
+    import inspect
+
+    from molt.cli import runtime_build
+
+    source = inspect.getsource(runtime_build._ensure_runtime_wasm_both)
+
+    assert source.count('"runtime_toolchain_identity"') == 2
+    assert source.count('"runtime_source_identity"') == 2
+    assert 'mode="pre_build"' in source
+    assert 'mode="post_build"' in source

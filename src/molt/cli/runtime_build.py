@@ -13,7 +13,16 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Collection, Literal, Mapping, NamedTuple, Sequence
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Sequence,
+    TypeVar,
+)
 
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_abi_generated import (
@@ -96,6 +105,7 @@ from molt.cli.runtime_build_identity import (
     RuntimeBuildIdentity,
     RuntimePairMemberPlan,
     RuntimeToolchainContentManifest,
+    _tree_hash_worker_count,
     provision_runtime_toolchain_content_manifest,
     resolve_runtime_build_pair_identities,
 )
@@ -2451,6 +2461,71 @@ def _runtime_wasm_toolchain_manifest_path(spec: _RuntimeWasmBuildSpec) -> Path:
     return spec.target_root / ".molt" / "runtime-toolchain-content.wasm32-wasip1.json"
 
 
+def _runtime_identity_tree_phase_detail(
+    tree: Mapping[str, object] | None,
+    *,
+    status: str,
+) -> str:
+    if tree is None:
+        return f"status={status}"
+    file_count = tree.get("file_count")
+    total_size = tree.get("total_size")
+    if not isinstance(file_count, int) or not isinstance(total_size, int):
+        return f"status={status}"
+    workers = _tree_hash_worker_count(file_count)
+    return f"status={status},files={file_count},bytes={total_size},workers={workers}"
+
+
+def _runtime_toolchain_identity_tree(
+    manifest: RuntimeToolchainContentManifest,
+) -> Mapping[str, object] | None:
+    toolchain = manifest.payload.get("toolchain")
+    if not isinstance(toolchain, Mapping):
+        return None
+    tree = toolchain.get("wasi_sysroot")
+    return tree if isinstance(tree, Mapping) else None
+
+
+def _runtime_source_identity_tree(
+    identities: tuple[RuntimeBuildIdentity, RuntimeBuildIdentity],
+) -> Mapping[str, object] | None:
+    identity = identities[0]
+    pair = identity.payload.get("pair")
+    if not isinstance(pair, Mapping):
+        return None
+    tree = pair.get("sources")
+    return tree if isinstance(tree, Mapping) else None
+
+
+_RuntimeIdentityPhaseResult = TypeVar("_RuntimeIdentityPhaseResult")
+
+
+def _timed_runtime_identity_phase(
+    *,
+    phase: Literal["runtime_toolchain_identity", "runtime_source_identity"],
+    mode: Literal["pre_build", "post_build"],
+    operation: Callable[[], _RuntimeIdentityPhaseResult],
+    identity_tree: Callable[[_RuntimeIdentityPhaseResult], Mapping[str, object] | None],
+) -> _RuntimeIdentityPhaseResult:
+    started = time.perf_counter()
+    result: _RuntimeIdentityPhaseResult | None = None
+    try:
+        result = operation()
+        return result
+    finally:
+        tree = identity_tree(result) if result is not None else None
+        _record_runtime_wasm_build_phase(
+            phase,
+            time.perf_counter() - started,
+            kind="pair",
+            mode=mode,
+            detail=_runtime_identity_tree_phase_detail(
+                tree,
+                status="ok" if result is not None else "failed",
+            ),
+        )
+
+
 def _compute_runtime_wasm_build_spec(
     root: Path,
     runtime_wasm: Path,
@@ -3731,14 +3806,22 @@ def _ensure_runtime_wasm_both(
     # scan. Normal valid-generation reads above consume only the immutable
     # content manifest and never launch compiler/version subprocesses.
     try:
-        exact_pre_toolchain = _provision_runtime_wasm_toolchain_manifest(shared_spec)
-        pre_shared_identity, pre_reloc_identity = (
-            _resolved_runtime_wasm_pair_identities(
+        exact_pre_toolchain = _timed_runtime_identity_phase(
+            phase="runtime_toolchain_identity",
+            mode="pre_build",
+            operation=lambda: _provision_runtime_wasm_toolchain_manifest(shared_spec),
+            identity_tree=_runtime_toolchain_identity_tree,
+        )
+        pre_shared_identity, pre_reloc_identity = _timed_runtime_identity_phase(
+            phase="runtime_source_identity",
+            mode="pre_build",
+            operation=lambda: _resolved_runtime_wasm_pair_identities(
                 project_root,
                 shared_spec,
                 reloc_spec,
                 toolchain_manifest=exact_pre_toolchain,
-            )
+            ),
+            identity_tree=_runtime_source_identity_tree,
         )
         exact_pre_toolchain.write(toolchain_manifest_path)
     except (OSError, ValueError) as exc:
@@ -3816,14 +3899,22 @@ def _ensure_runtime_wasm_both(
         wasm_linker_identity=post_wasm_linker,
     )
     try:
-        exact_post_toolchain = _provision_runtime_wasm_toolchain_manifest(post_shared)
-        post_shared_identity, post_reloc_identity = (
-            _resolved_runtime_wasm_pair_identities(
+        exact_post_toolchain = _timed_runtime_identity_phase(
+            phase="runtime_toolchain_identity",
+            mode="post_build",
+            operation=lambda: _provision_runtime_wasm_toolchain_manifest(post_shared),
+            identity_tree=_runtime_toolchain_identity_tree,
+        )
+        post_shared_identity, post_reloc_identity = _timed_runtime_identity_phase(
+            phase="runtime_source_identity",
+            mode="post_build",
+            operation=lambda: _resolved_runtime_wasm_pair_identities(
                 project_root,
                 post_shared,
                 post_reloc,
                 toolchain_manifest=exact_post_toolchain,
-            )
+            ),
+            identity_tree=_runtime_source_identity_tree,
         )
     except (OSError, ValueError) as exc:
         if not json_output:
