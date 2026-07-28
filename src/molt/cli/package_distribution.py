@@ -34,7 +34,7 @@ from molt.cli.extension_manifest import (
     _validate_extension_manifest,
     _write_zip_member,
 )
-from molt.cli.file_hashing import _normalize_sha256, _sha256_file
+from molt.file_hashing import _normalize_sha256, _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail

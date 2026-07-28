@@ -271,8 +271,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_commands': ('commands', None),
     # molt.cli.completion
     '_completion_script': ('completion', '_completion_script'),
-    # molt.cli.file_hashing
-    '_hash_source_tree_metadata': ('file_hashing', '_hash_source_tree_metadata'),
     # molt.cli.maintenance
     '_load_artifact_cleanup_module': ('maintenance', '_load_artifact_cleanup_module'),
     'clean': ('maintenance', 'clean'),
@@ -623,7 +621,7 @@ from molt.cli.env_paths import (
     _vendor_roots,
 )
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.external_native import (
     _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS,
     _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,

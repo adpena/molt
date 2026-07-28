@@ -10,7 +10,7 @@ from pathlib import Path
 import tomllib
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.llvm_wasi_tools import (
     llvm_linker_candidates,
     resolve_explicit_tool_command,

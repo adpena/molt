@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.llvm_wasi_tools import (
     _tool_version,
     llvm_linker_candidates,

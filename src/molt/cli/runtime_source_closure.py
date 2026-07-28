@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 
 
 _RUNTIME_FACADE_CRATE = Path("runtime/molt-runtime")

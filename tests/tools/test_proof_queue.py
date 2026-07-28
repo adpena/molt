@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import scientific_stack_versions as scientific_versions
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.source_build_environment import canonical_source_marker_environment
 from molt.cli.source_extension_set_identity import _source_extension_set_identity
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal

@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from molt.cli.dependency_files import parse_make_depfile
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt import process_guard
 
 # Cython emits the ``.pyx`` -> C generated file with the same stem. A Cython

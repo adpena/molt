@@ -7,7 +7,7 @@ from typing import Any
 
 from molt.cli.compiler_metadata import _compiler_metadata, _rustc_version
 from molt.cli.deps import _classify_tier, _dep_allowlists, _load_toml, _normalize_name
-from molt.cli.file_hashing import _normalize_sha256
+from molt.file_hashing import _normalize_sha256
 
 
 _SPDX_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")

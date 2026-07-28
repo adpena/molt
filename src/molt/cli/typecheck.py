@@ -15,7 +15,7 @@ from molt.type_facts import TypeFacts
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import TypeHintPolicy
 from molt.cli.output import emit_json as _emit_json
