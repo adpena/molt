@@ -54,7 +54,8 @@ def test_native_exception_constructor_keywords(tmp_path: Path) -> None:
     if not _is_valid_static_lib(runtime_lib):
         pytest.skip(
             "libmolt_runtime.a is not a valid archive "
-            "(rebuild with: cargo build -p molt-runtime --release)"
+            "(rebuild with: cargo rustc -p molt-runtime --release "
+            "--crate-type staticlib -- --print native-static-libs)"
         )
     if shutil.which("clang") is None:
         pytest.skip("clang not available")

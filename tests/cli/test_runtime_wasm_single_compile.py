@@ -5,8 +5,8 @@ Verifies the combined-compile design invariants that make the dedup correct:
 * the reloc and shared specs share one compile identity (same target dir, same
   cargo profile, same feature plan) but keep DISTINCT content fingerprints, so a
   single compile can serve both while the artifacts stay independently cached;
-* the combined cargo invocation passes NO ``--crate-type`` override (so rustc
-  emits every declared crate-type in one codegen) and routes the shared cdylib
+* the combined cargo invocation selects exactly ``staticlib,cdylib`` at Cargo
+  level (so no dependency-only rlib is emitted) and routes the shared cdylib
   link args through a ``-C link-arg=@response`` file (not RUSTFLAGS);
 * the ``MOLT_RUNTIME_WASM_SINGLE_COMPILE`` kill switch is honoured.
 """
@@ -20,6 +20,10 @@ from pathlib import Path
 import pytest
 
 import molt.cli.runtime_build as rb
+from molt.cli.runtime_artifact_selection import (
+    RUNTIME_CDYLIB_ARTIFACTS,
+    RUNTIME_STATICLIB_ARTIFACTS,
+)
 from molt.cli.wasm_toolchain import WasmLinkerIdentity
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.models import (
@@ -74,6 +78,8 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     assert shared.profile_dir == reloc.profile_dir
     assert shared.no_default_features == reloc.no_default_features
     assert shared.wasm_cargo_features == reloc.wasm_cargo_features
+    assert shared.artifact_selection is RUNTIME_CDYLIB_ARTIFACTS
+    assert reloc.artifact_selection is RUNTIME_STATICLIB_ARTIFACTS
     # ...but the artifacts have distinct content identities (link args differ).
     assert shared.fingerprint["meta_digest"] != reloc.fingerprint["meta_digest"]
     # Shared link flags carry the split-runtime import ABI.
@@ -443,8 +449,14 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     assert ok is False  # fake build returned non-zero
     cmd = captured["cmd"]
     assert isinstance(cmd, list)
-    # No crate-type override anywhere: rustc emits all declared crate-types.
-    assert not any("crate-type" in str(tok) for tok in cmd)
+    # The producer overrides the manifest rlib default with exactly the two
+    # external artifact types consumed by split runtime.
+    selector = cmd.index("--crate-type")
+    assert cmd[selector : selector + 2] == [
+        "--crate-type",
+        "staticlib,cdylib",
+    ]
+    assert selector < cmd.index("--")
     assert "--lib" in cmd
     # Shared cdylib link args delivered via a single response-file link arg.
     link_arg_tokens = [

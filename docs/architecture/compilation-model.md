@@ -221,7 +221,9 @@ Only stdlib crates that the user imports are linked. The linker's
 - Stdlib functions are resolved at link time from the pre-compiled .a
 
 ### Phase 2: Pre-compile core runtime
-- `cargo build -p molt-runtime` already produces libmolt_runtime.a
+- The manifest builds an `rlib` for Rust dependency use. The native producer
+  selects its link archive explicitly with
+  `cargo rustc -p molt-runtime --crate-type staticlib -- --print native-static-libs`.
 - Cache it with a fingerprint
 - CLI links user.o against it
 

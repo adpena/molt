@@ -15,6 +15,10 @@ from molt.cli.file_hashing import (
     _hash_source_tree_paths,
 )
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.cli.runtime_artifact_selection import (
+    RUNTIME_RLIB_ARTIFACTS,
+    RuntimeArtifactSelection,
+)
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
@@ -205,13 +209,15 @@ def _runtime_fingerprint(
     target_triple: str | None,
     rustflags: str,
     runtime_features: tuple[str, ...] = (),
+    artifact_selection: RuntimeArtifactSelection = RUNTIME_RLIB_ARTIFACTS,
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
-    meta += "build-schema:runtime-feature-profile-v3\n"
+    meta += "build-schema:runtime-feature-profile-v4\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
+    meta += f"artifacts:{artifact_selection.source_identity}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
     rustc_info = _rustc_version()
     source_state = _compiler_clean_source_state(project_root)

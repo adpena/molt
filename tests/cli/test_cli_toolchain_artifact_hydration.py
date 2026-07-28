@@ -13,6 +13,7 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
+from molt.cli.runtime_artifact_selection import RuntimeCrateType
 from molt.cli.static_archive_identity import artifact_content_identity
 from tests.cli.native_link_test_support import static_archive_bytes
 import pytest
@@ -126,8 +127,8 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
             "--target",
             "wasm32-wasip1",
             "--lib",
-            "--",
-            "--crate-type=cdylib",
+            "--crate-type",
+            "cdylib",
         ],
         root=tmp_path,
         env={},
@@ -135,7 +136,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
         profile_dir=profile_dir,
         target_root_override=target_root,
         json_output=True,
-        artifact_kind="cdylib",
+        artifact_kind=RuntimeCrateType.CDYLIB,
     )
 
     assert build.returncode == 0
@@ -186,8 +187,8 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
             "--target",
             "wasm32-wasip1",
             "--lib",
-            "--",
-            "--crate-type=cdylib",
+            "--crate-type",
+            "cdylib",
         ],
         root=tmp_path,
         env={},
@@ -195,7 +196,7 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
         profile_dir=profile_dir,
         target_root_override=target_root,
         json_output=True,
-        artifact_kind="cdylib",
+        artifact_kind=RuntimeCrateType.CDYLIB,
     )
 
     assert build.returncode == 0
@@ -244,8 +245,8 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
             "--target",
             "wasm32-wasip1",
             "--lib",
-            "--",
-            "--crate-type=cdylib",
+            "--crate-type",
+            "cdylib",
         ],
         root=tmp_path,
         env={},
@@ -253,7 +254,7 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
         profile_dir=profile_dir,
         target_root_override=target_root,
         json_output=True,
-        artifact_kind="cdylib",
+        artifact_kind=RuntimeCrateType.CDYLIB,
     )
 
     assert src == primary
@@ -305,8 +306,8 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
             "--target",
             "wasm32-wasip1",
             "--lib",
-            "--",
-            "--crate-type=staticlib",
+            "--crate-type",
+            "staticlib",
         ],
         root=tmp_path,
         env={},
@@ -314,7 +315,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
         profile_dir=profile_dir,
         target_root_override=target_root,
         json_output=True,
-        artifact_kind="staticlib",
+        artifact_kind=RuntimeCrateType.STATICLIB,
     )
 
     assert src == reported
