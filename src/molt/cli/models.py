@@ -635,6 +635,7 @@ class _RuntimeWasmBuildFailure:
     evidence_path: Path | None = None
     returncode: int | None = None
     timed_out: bool = False
+    details: dict[str, object] | None = None
 
     def json_payload(self) -> dict[str, object]:
         return {
@@ -645,6 +646,7 @@ class _RuntimeWasmBuildFailure:
             ),
             "returncode": self.returncode,
             "timed_out": self.timed_out,
+            "details": self.details,
         }
 
 
@@ -663,20 +665,6 @@ class _RuntimeArtifactState:
     native_link_source_fingerprint: dict[str, object] | None = None
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
-    runtime_wasm_ready: bool = False
-    runtime_reloc_wasm_ready: bool = False
-    runtime_wasm_ready_export_sets: set[frozenset[str] | None] = field(
-        default_factory=set
-    )
-    runtime_reloc_wasm_ready_export_sets: set[frozenset[str] | None] = field(
-        default_factory=set
-    )
-    runtime_wasm_ready_feature_keys: set[
-        tuple[frozenset[str], frozenset[str] | None]
-    ] = field(default_factory=set)
-    runtime_reloc_wasm_ready_feature_keys: set[
-        tuple[frozenset[str], frozenset[str] | None]
-    ] = field(default_factory=set)
     runtime_lib_ready_future: Future[bool] | None = None
 
 
