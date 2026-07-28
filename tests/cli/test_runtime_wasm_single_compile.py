@@ -591,7 +591,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     assert expected <= set(shared.fingerprint_features)
 
 
-def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
+def test_combined_cargo_cmd_selects_exact_pair_and_uses_response_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = _compiler_root()

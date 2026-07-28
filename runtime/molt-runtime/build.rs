@@ -40,9 +40,9 @@ fn main() {
     let build_python = resolve_build_python();
     emit_cpython_abi_variadic_export_anchors(&manifest_dir, &out_dir);
 
-    // Keep cdylib in the crate types so plain `cargo build -p molt-runtime`
-    // still emits a stable `molt_runtime.wasm` artifact for wasm lanes that
-    // consume the runtime directly.
+    // The manifest owns only the dependency rlib. Final native/WASM producers
+    // select their exact external crate types at Cargo level; Cargo's artifact
+    // report, rather than a fixed-name target alias, owns publication identity.
     let _ = &target_os;
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
     emit_cpython_abi_requested_export_anchors(&out_dir, &target_arch);
@@ -73,7 +73,7 @@ fn main() {
         println!("cargo:rustc-cfg=molt_has_mpdec");
     }
 
-    emit_native_cdylib_isolate_stubs(&out_dir, &target_arch, &target_env);
+    emit_native_test_isolate_stubs(&out_dir, &target_arch, &target_env);
 
     emit_wasm_long_double_link_policy(&out_dir, &target_arch);
 
@@ -289,12 +289,12 @@ fn resolve_wasm_link_archive(env_key: &str, file_name: &str) -> Option<PathBuf> 
     }
 }
 
-fn emit_native_cdylib_isolate_stubs(out_dir: &Path, target_arch: &str, target_env: &str) {
+fn emit_native_test_isolate_stubs(out_dir: &Path, target_arch: &str, target_env: &str) {
     if target_arch == "wasm32" {
         return;
     }
 
-    let source = out_dir.join("molt_cdylib_isolate_stubs.c");
+    let source = out_dir.join("molt_test_isolate_stubs.c");
     // Provide unresolved-symbol fallbacks that yield to strong definitions from
     // downstream crates, integration tests, or production app code. GNU/Clang
     // targets can use weak definitions directly. MSVC needs `/alternatename`
@@ -342,7 +342,7 @@ uint64_t molt_isolate_import(uint64_t name_bits) {
     .expect("failed to write native cdylib isolate stubs");
 
     let object_ext = if target_env == "msvc" { "obj" } else { "o" };
-    let object = out_dir.join(format!("molt_cdylib_isolate_stubs.{object_ext}"));
+    let object = out_dir.join(format!("molt_test_isolate_stubs.{object_ext}"));
     let compiler = Build::new().cargo_metadata(false).get_compiler();
     let mut cmd = compiler.to_command();
     if compiler.is_like_msvc() {
@@ -359,7 +359,6 @@ uint64_t molt_isolate_import(uint64_t name_bits) {
     if !status.success() {
         panic!("compiling native cdylib isolate stubs failed: {status}");
     }
-    println!("cargo:rustc-cdylib-link-arg={}", object.display());
     println!("cargo:rustc-link-arg-tests={}", object.display());
 }
 
