@@ -27,7 +27,7 @@ pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
     match simpleir_var_field_role_table(op.kind.as_str()) {
         SimpleIrVarFieldRole::Read => true,
         SimpleIrVarFieldRole::MetadataWhenArgs => {
-            !op.args.as_ref().is_some_and(|args| !args.is_empty())
+            op.args.as_ref().is_none_or(Vec::is_empty)
         }
         SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::Result => false,
     }
