@@ -83,6 +83,10 @@ DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS = (
     "MOLT_PREFER_EXTERNAL_ARTIFACTS",
     "MOLT_USE_EXTERNAL_ARTIFACTS",
 )
+DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS = (
+    "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+    "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
+)
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -1181,10 +1185,13 @@ def _reject_c_drive_artifact_path(
 
 
 def _candidate_roots(repo_root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
-    raw = (
-        env.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
-        or env.get("MOLT_EXTERNAL_ARTIFACT_CANDIDATES")
-        or ""
+    raw = next(
+        (
+            value
+            for key in DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS
+            if (value := env.get(key))
+        ),
+        "",
     )
     candidates = raw.split(os.pathsep) if raw.strip() else ()
     roots: list[Path] = []
