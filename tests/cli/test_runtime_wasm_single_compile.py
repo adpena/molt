@@ -357,6 +357,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     _reset_runtime_wasm_build_timings()
     try:
         assert runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+            runtime_state=_RuntimeArtifactState(),
             shared_spec=early_shared,
             reloc_spec=early_reloc,
             json_output=True,
@@ -366,6 +367,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
             freestanding=False,
         )
         assert runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+            runtime_state=_RuntimeArtifactState(),
             shared_spec=final_shared,
             reloc_spec=final_reloc,
             json_output=True,
@@ -462,6 +464,7 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     )
 
     ok = runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+        runtime_state=_RuntimeArtifactState(),
         shared_spec=shared,
         reloc_spec=reloc,
         json_output=True,
@@ -565,6 +568,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
 
     assert (
         runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
+            runtime_state=_RuntimeArtifactState(),
             shared_spec=shared,
             reloc_spec=reloc,
             json_output=True,

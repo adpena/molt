@@ -368,6 +368,7 @@ def test_proof_plan_validation_rejects_cross_family_admission_masking(
 def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     ci_text = _read(".github/workflows/ci.yml")
     perf_text = _read(".github/workflows/perf-gate.yml")
+    wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
     action_text = _read(".github/actions/setup-llvm/action.yml")
 
     assert "uses: ./.github/actions/setup-llvm" in ci_text
@@ -390,6 +391,17 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "Setup canonical WebAssembly linker and WASI sysroot" in ci_text
     assert "profile: wasm" in ci_text
     assert 'wasi: "true"' in ci_text
+    wasm_steps = yaml.safe_load(wasm_text)["jobs"]["wasm-build"]["steps"]
+    llvm_steps = [
+        step
+        for step in wasm_steps
+        if step.get("uses") == "./.github/actions/setup-llvm"
+    ]
+    assert len(llvm_steps) == 1
+    assert llvm_steps[0]["with"] == {"profile": "wasm", "wasi": "true"}
+    assert all(
+        "wasi-libc" not in str(step.get("run", "")) for step in wasm_steps
+    )
     assert "grep -oE" not in ci_text
     assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text

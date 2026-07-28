@@ -16,10 +16,12 @@ from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
 from molt import process_guard
 from molt.cli.atomic_io import _atomic_write_text
-from molt.file_hashing import _content_change_time_ns
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.dx import _memory_bounded_worker_count
+from molt.file_hashing import _content_change_time_ns
+from molt.llvm_linker_roles import lexical_executable_path
+from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 
 
 _SCHEMA = "molt.runtime-build-identity.v2"
@@ -446,13 +448,13 @@ def _tree_identity(
 def _command_path(command: str, env: Mapping[str, str]) -> Path | None:
     whole = Path(command.strip().strip('"')).expanduser()
     if whole.is_file():
-        return whole.resolve(strict=False)
+        return lexical_executable_path(whole)
     try:
         argv = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         argv = [command]
     found = shutil.which(argv[0], path=env.get("PATH")) if argv else None
-    return Path(found).resolve(strict=False) if found else None
+    return lexical_executable_path(Path(found)) if found else None
 
 
 def _executable_identity(
@@ -505,15 +507,23 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
     if path is None:
         raise ValueError("runtime build Python is unresolved")
     script = (
-        "import hashlib,json,sys,unicodedata;"
-        "p=unicodedata.__file__;"
+        "import hashlib,json,os,sys,sysconfig,unicodedata;"
+        "p=getattr(unicodedata,'__file__',None);"
+        "names=(sysconfig.get_config_var('INSTSONAME'),"
+        "sysconfig.get_config_var('LDLIBRARY'));"
+        "libdir=sysconfig.get_config_var('LIBDIR');"
+        "owners=([p] if p else [])+"
+        "([os.path.join(libdir,n) for n in names if libdir and n]);"
+        "owner=next((v for v in owners if v and os.path.isfile(v)),sys.executable);"
         "print(json.dumps({'version':sys.version,'version_info':list(sys.version_info[:5]),"
         "'unicodedata_version':unicodedata.unidata_version,"
-        "'unicodedata_sha256':hashlib.sha256(open(p,'rb').read()).hexdigest()},sort_keys=True))"
+        "'unicodedata_storage':'module-file' if p else 'python-runtime',"
+        "'unicodedata_sha256':hashlib.sha256(open(owner,'rb').read()).hexdigest()},"
+        "sort_keys=True))"
     )
     completed = process_guard.run_completed_command(
         [os.fspath(path), "-c", script],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -521,10 +531,20 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
         timeout=30,
         memory_guard_prefix=None,
     )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValueError(
+            "runtime build Python identity probe failed"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        runtime = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("runtime build Python identity probe emitted invalid JSON") from exc
     return {
         "logical_name": "build-python",
         "sha256": _sha256_file(path),
-        "runtime": json.loads(completed.stdout),
+        "runtime": runtime,
     }
 
 
@@ -607,6 +627,12 @@ def _canonical_flag_token(
                 + "="
                 + _canonical_path_operand(operand, logical_paths=logical_paths)
             )
+    for _label, root in logical_paths:
+        root_text = os.fspath(root.resolve(strict=False))
+        if token.find(root_text) > 0:
+            raise ValueError(
+                f"embedded absolute host path in canonical runtime flags: {token!r}"
+            )
     if re.search(r"(?i)[a-z]:[\\/]", token) or re.search(r"(?:^|[=@])/[A-Za-z]", token):
         raise ValueError(
             f"embedded absolute host path in canonical runtime flags: {token!r}"
@@ -619,6 +645,8 @@ def _canonical_flag_text(
     *,
     logical_paths: Sequence[tuple[str, Path]],
 ) -> list[str]:
+    if os.name != "nt" and re.search(r"(?i)[a-z]:[\\/]", value):
+        raise ValueError(f"unknown absolute host path in canonical runtime flags: {value!r}")
     try:
         tokens = shlex.split(value, posix=os.name != "nt")
     except ValueError as exc:
@@ -807,13 +835,11 @@ def _runtime_toolchain_content(
     wasi_libc_archive: Path,
     rust_builtins_archive: Path,
 ) -> dict[str, object]:
+    layout = resolve_wasi_sysroot_layout(wasi_sysroot)
+    if layout is None:
+        raise ValueError(f"runtime WASI sysroot layout is unresolved: {wasi_sysroot}")
     sysroot = _tree_identity(
-        (
-            ("wasi/include", wasi_sysroot / "include"),
-            (f"wasi/lib/{target_triple}", wasi_sysroot / "lib" / target_triple),
-            ("wasi/lib/wasm32-wasi", wasi_sysroot / "lib" / "wasm32-wasi"),
-            ("wasi/VERSION", wasi_sysroot / "VERSION"),
-        ),
+        tuple((f"wasi/{label}", path) for label, path in layout.content_roots()),
         require_all=False,
     )
     cc = (
