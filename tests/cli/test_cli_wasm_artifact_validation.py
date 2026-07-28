@@ -24,6 +24,7 @@ RUNTIME_WASM_BUILD_SPEC = importlib.import_module("molt.cli.runtime_wasm_build_s
 RUNTIME_WASM_BUILD_SUPPORT = importlib.import_module(
     "molt.cli.runtime_wasm_build_support"
 )
+RUNTIME_WASM_FAILURE = importlib.import_module("molt.cli.runtime_wasm_failure")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 WASM_LINK_ARGS = importlib.import_module("molt.cli.wasm_link_args")
 
@@ -174,6 +175,49 @@ def test_prebuild_runtime_wasm_json_failure_is_machine_readable(
         "error": "Runtime wasm pair prebuild failed.",
         "status": "error",
     }
+
+
+def test_prebuild_runtime_wasm_json_preserves_exact_failure_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_with_evidence(runtime_state, **_kwargs):  # noqa: ANN001, ANN003
+        return RUNTIME_WASM_FAILURE.record_runtime_wasm_failure(
+            runtime_state,
+            project_root=tmp_path,
+            stage="identity-provisioning",
+            summary="Runtime WASM identity provisioning failed: poisoned sysroot",
+        )
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm_both",
+        fail_with_evidence,
+        raising=True,
+    )
+
+    assert (
+        RUNTIME_BUILD._prebuild_runtime_wasm(
+            project_root=tmp_path,
+            kind="shared",
+            json_output=True,
+            build_profile="dev",
+            cargo_timeout=1200.0,
+        )
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    assert "poisoned sysroot" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["status"] == "error"
+    assert payload["failure"]["stage"] == "identity-provisioning"
+    assert "poisoned sysroot" in payload["failure"]["summary"]
+    evidence_path = Path(payload["failure"]["evidence_path"])
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["schema"] == (
+        "molt.runtime-wasm-build-failure.v1"
+    )
 
 
 def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(

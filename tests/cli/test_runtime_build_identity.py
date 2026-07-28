@@ -16,6 +16,7 @@ from molt.cli.runtime_artifact_selection import (
     RUNTIME_WASM_COMBINED_ARTIFACTS,
     RuntimeArtifactSelection,
 )
+from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 
 
 def _provision_toolchain(root: Path) -> identity.RuntimeToolchainContentManifest:
@@ -122,6 +123,7 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
     sysroot = tmp_path / "wasi-sysroot"
     (sysroot / "include").mkdir(parents=True)
+    (sysroot / "include" / "errno.h").write_text("#define WASI_ERRNO 1\n")
     (sysroot / "include" / "stddef.h").write_text("typedef int size_t;\n")
     (sysroot / "lib" / "wasm32-wasip1").mkdir(parents=True)
     (sysroot / "lib" / "wasm32-wasip1" / "libwasi-emulated-signal.a").write_bytes(
@@ -688,6 +690,61 @@ def test_tree_identity_rejects_broken_symlink_escape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="escaped logical root"):
         identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_distro_wasi_layout_identities_only_target_content(tmp_path: Path) -> None:
+    root = tmp_path / "usr"
+    host_include = root / "include"
+    target_include = host_include / "wasm32-wasi"
+    target_lib = root / "lib" / "wasm32-wasi"
+    target_include.mkdir(parents=True)
+    target_lib.mkdir(parents=True)
+    (target_include / "errno.h").write_text("#define WASI_ERRNO 1\n", encoding="utf-8")
+    (target_lib / "libc.a").write_bytes(b"wasi-libc")
+    outside = tmp_path / "host-ncurses.h"
+    outside.write_text("host-only\n", encoding="utf-8")
+    try:
+        (host_include / "ncurses.h").symlink_to(outside)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    layout = resolve_wasi_sysroot_layout(target_include)
+    assert layout is not None
+    assert layout.root == root.resolve(strict=False)
+    assert layout.include_roots == (
+        ("include/wasm32-wasi", target_include.resolve(strict=False)),
+    )
+    roots = tuple((f"wasi/{label}", path) for label, path in layout.content_roots())
+    before = identity._tree_identity(roots, require_all=False)
+    outside.write_text("changed host-only\n", encoding="utf-8")
+    assert identity._tree_identity(roots, require_all=False) == before
+    (target_include / "errno.h").write_text("#define WASI_ERRNO 2\n", encoding="utf-8")
+    assert identity._tree_identity(roots, require_all=False)["digest"] != before["digest"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
+def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
+    generic = tmp_path / "lld"
+    generic.write_text(
+        "#!/bin/sh\n"
+        'case "$0" in\n'
+        '  *wasm-ld) echo "LLD 22.1.8" ;;\n'
+        '  *) echo "lld is a generic driver" >&2; exit 1 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    generic.chmod(0o755)
+    role = tmp_path / "wasm-ld"
+    role.symlink_to(generic)
+
+    tool = identity._executable_identity(
+        "wasm-ld",
+        "wasm-ld",
+        env={"PATH": str(tmp_path)},
+    )
+
+    assert identity._command_path("wasm-ld", {"PATH": str(tmp_path)}) == role
+    assert tool["version"] == "22.1.8"
 
 
 def test_normal_identity_consumes_only_provisioned_toolchain_manifest(

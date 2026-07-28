@@ -86,12 +86,24 @@ def _prebuild_runtime_wasm(
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     verbose: bool = False,
 ) -> int:
-    def fail(message: str) -> int:
+    def fail(
+        message: str,
+        *,
+        runtime_state: _RuntimeArtifactState | None = None,
+    ) -> int:
         # JSON mode owns stdout framing, not error suppression. Keep a stable
         # machine-readable failure envelope while the lower build/validation
         # boundary emits its precise diagnostic on stderr for CI and operators.
         if json_output:
-            print(json.dumps({"status": "error", "error": message}, sort_keys=True))
+            payload: dict[str, object] = {"status": "error", "error": message}
+            if (
+                runtime_state is not None
+                and runtime_state.runtime_wasm_build_failure is not None
+            ):
+                payload["failure"] = (
+                    runtime_state.runtime_wasm_build_failure.json_payload()
+                )
+            print(json.dumps(payload, sort_keys=True))
         else:
             print(message, file=sys.stderr)
         return 1
@@ -133,7 +145,7 @@ def _prebuild_runtime_wasm(
         resolved_modules=None,
         required_exports=None,
     ):
-        return fail("Runtime wasm pair prebuild failed.")
+        return fail("Runtime wasm pair prebuild failed.", runtime_state=runtime_state)
     if (
         runtime_state.runtime_wasm_selected is None
         or runtime_state.runtime_reloc_wasm_selected is None
