@@ -17,9 +17,13 @@ pub(super) fn emit_iterator_op(
     match op.kind.as_str() {
         "iter_next_unboxed" => {
             let args = op.args.as_ref().unwrap();
-            let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-            let value_name = results.first().copied();
-            let done_name = results.get(1).copied();
+            let mut results = [None, None];
+            let mut result_count = 0;
+            molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                results[result_count] = Some(name);
+                result_count += 1;
+            });
+            let [value_name, done_name] = results;
             let iter = locals[&args[0]];
             let pair = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(iter));

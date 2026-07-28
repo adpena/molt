@@ -94,6 +94,7 @@ impl LuauBackend {
             "luau",
             molt_tir::target_admission::NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
             molt_tir::target_admission::RuntimeTargetCapabilities {
+                python_frame_state: false,
                 python_identity: true,
                 tuple_representation: true,
                 exception_model: true,

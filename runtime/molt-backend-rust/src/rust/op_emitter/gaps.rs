@@ -77,14 +77,22 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_unpack_sequence(&mut self, op: &OpIR) {
-        let reads = molt_tir::tir::simple_def_use::simple_ir_read_names(op);
-        let outputs = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-        let Some(source) = reads.first() else {
+        let mut source = None;
+        let mut read_count = 0;
+        molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+            read_count += 1;
+            source.get_or_insert(read.name);
+        });
+        let Some(source) = source.filter(|_| read_count == 1) else {
             self.emit_unsupported_op(op, "unpacking requires one source operand");
             return;
         };
+        let mut output_count = 0;
+        molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |_| {
+            output_count += 1;
+        });
         let expected = op.value.and_then(|value| usize::try_from(value).ok());
-        if expected != Some(outputs.len()) {
+        if expected != Some(output_count) {
             self.emit_unsupported_op(
                 op,
                 "unpacking expected count must equal the output-variable count",
@@ -97,9 +105,9 @@ impl RustBackend {
         self.emit_line(&format!(
             "let mut __molt_unpack_values = molt_unpack_sequence(&{}, {}).into_iter();",
             rust_value(source),
-            outputs.len(),
+            output_count,
         ));
-        for output in &outputs {
+        molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |output| {
             let output = rust_ident(output);
             let assignment = declare_molt_value(
                 &output,
@@ -107,7 +115,7 @@ impl RustBackend {
                 &self.hoisted_vars,
             );
             self.emit_line(&assignment);
-        }
+        });
         self.pop_indent();
         self.emit_line("}");
     }

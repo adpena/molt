@@ -5,7 +5,9 @@ use crate::json_boundary::{
     expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
     optional_string_list, required_field, required_string, required_string_list,
 };
-use crate::tir::simple_def_use::{SimpleIrReadField, simple_ir_defined_names, simple_ir_reads};
+use crate::tir::simple_def_use::{
+    SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
+};
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -683,24 +685,28 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     for func in &ir.functions {
         let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
         for (op_index, op) in func.ops.iter().enumerate() {
-            for source in simple_ir_reads(op) {
+            let mut undefined = None;
+            visit_simple_ir_reads(op, |source| {
                 let name = source.name;
-                if !is_defined_value_name(name) {
-                    continue;
+                if undefined.is_none()
+                    && is_defined_value_name(name)
+                    && !defined.contains(name)
+                    && !allows_undefined_value(op, name, source.field)
+                {
+                    undefined = Some(name.to_string());
                 }
-                if defined.contains(name) || allows_undefined_value(op, name, source.field) {
-                    continue;
-                }
+            });
+            if let Some(name) = undefined {
                 return Err(format!(
                     "function `{}` op#{op_index} `{}` uses undefined value `{name}`",
                     func.name, op.kind
                 ));
             }
-            for name in simple_ir_defined_names(op) {
-                if is_defined_value_name(&name) {
-                    defined.insert(name);
+            visit_simple_ir_defined_names(op, |name| {
+                if is_defined_value_name(name) {
+                    defined.insert(name.to_string());
                 }
-            }
+            });
         }
     }
     Ok(())

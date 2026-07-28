@@ -466,6 +466,10 @@ impl SimpleIrRuntimeRequirements {
     pub const ASYNC_RUNTIME: Self = Self(1 << 10);
     pub const UNSTRUCTURED_CONTROL: Self = Self(1 << 11);
     pub const HOST_CAPABILITY: Self = Self(1 << 12);
+    pub const FRAME_STATE: Self = Self(1 << 13);
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
     pub const fn contains(self, requirement: Self) -> bool {
         self.0 & requirement.0 != 0
     }
@@ -582,7 +586,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "floordiv"
         | "for_iter_end"
         | "for_iter_start"
-        | "frame_locals_set"
         | "free"
         | "function_defaults_version"
         | "get_iter"
@@ -598,7 +601,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "inplace_add"
         | "inplace_mul"
         | "inplace_sub"
-        | "line"
         | "load"
         | "load_const"
         | "load_var"
@@ -634,8 +636,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "store_var"
         | "string_eq"
         | "sub"
-        | "trace_enter_slot"
-        | "trace_exit"
         | "type_guard"
         | "unbox"
         | "unbox_to_raw_int"
@@ -828,6 +828,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
         "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
             Some(SimpleIrRuntimeRequirements(4096))
+        }
+        "frame_locals_set" | "line" | "trace_enter_slot" | "trace_exit" => {
+            Some(SimpleIrRuntimeRequirements(8192))
         }
         _ => None,
     }

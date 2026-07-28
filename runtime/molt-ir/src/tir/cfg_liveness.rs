@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::ir::OpIR;
 
 use super::cfg::CFG;
-use super::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
+use super::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
 /// Exact name liveness over the canonical SimpleIR CFG.
 ///
@@ -69,12 +69,14 @@ pub fn analyze_simple_cfg_liveness(ops: &[OpIR]) -> SimpleCfgLiveness {
         let defs = &mut block_defs[block.id];
         for op_idx in block.start_op..block.end_op {
             op_to_block[op_idx] = block.id;
-            for name in simple_ir_read_names(&ops[op_idx]) {
-                if !defs.contains(&name) {
-                    uses.insert(name);
+            visit_simple_ir_reads(&ops[op_idx], |source| {
+                if !defs.contains(source.name) {
+                    uses.insert(source.name.to_string());
                 }
-            }
-            defs.extend(simple_ir_defined_names(&ops[op_idx]));
+            });
+            visit_simple_ir_defined_names(&ops[op_idx], |name| {
+                defs.insert(name.to_string());
+            });
         }
     }
 
@@ -113,10 +115,12 @@ pub fn analyze_simple_cfg_liveness(ops: &[OpIR]) -> SimpleCfgLiveness {
         let mut live = live_out_by_block[block.id].clone();
         for op_idx in (block.start_op..block.end_op).rev() {
             live_after_op[op_idx] = live.clone();
-            for name in simple_ir_defined_names(&ops[op_idx]) {
-                live.remove(&name);
-            }
-            live.extend(simple_ir_read_names(&ops[op_idx]));
+            visit_simple_ir_defined_names(&ops[op_idx], |name| {
+                live.remove(name);
+            });
+            visit_simple_ir_reads(&ops[op_idx], |source| {
+                live.insert(source.name.to_string());
+            });
         }
     }
 
