@@ -3360,44 +3360,272 @@ def _callable_app_end(layout: CallableTableLayout) -> int:
     return layout.finalized_app_base + layout.app_entry_count
 
 
-def _linked_callable_occupied_end(
+class _CallableTableEntryPlan:
+    __slots__ = (
+        "app_indices",
+        "fixed_indices",
+        "owns_runtime_region",
+        "preserved_fixed_indices",
+    )
+
+    def __init__(
+        self,
+        fixed_indices: tuple[int, ...],
+        app_indices: tuple[int, ...],
+        *,
+        owns_runtime_region: bool,
+        preserved_fixed_indices: tuple[int, ...] | None = None,
+    ) -> None:
+        self.fixed_indices = fixed_indices
+        self.preserved_fixed_indices = (
+            fixed_indices
+            if preserved_fixed_indices is None
+            else preserved_fixed_indices
+        )
+        self.app_indices = app_indices
+        self.owns_runtime_region = owns_runtime_region
+
+    def slot_function_indices(self, layout: CallableTableLayout) -> dict[int, int]:
+        layout.validate()
+        if len(self.fixed_indices) not in (0, layout.fixed_prefix_len):
+            raise ValueError(
+                "callable-table fixed entry plan disagrees with the published layout: "
+                f"functions={len(self.fixed_indices)}, entries={layout.fixed_prefix_len}"
+            )
+        if len(self.app_indices) != layout.app_entry_count:
+            raise ValueError(
+                "callable-table app entry plan disagrees with the published layout: "
+                f"functions={len(self.app_indices)}, entries={layout.app_entry_count}"
+            )
+        return {
+            **{
+                layout.fixed_prefix_base + offset: function_index
+                for offset, function_index in enumerate(self.fixed_indices)
+            },
+            **{
+                layout.finalized_app_base + offset: function_index
+                for offset, function_index in enumerate(self.app_indices)
+            },
+        }
+
+    def slot_allowed_function_indices(
+        self, layout: CallableTableLayout
+    ) -> dict[int, frozenset[int]]:
+        allowed = {
+            slot: frozenset((function_index,))
+            for slot, function_index in self.slot_function_indices(layout).items()
+        }
+        if len(self.preserved_fixed_indices) != len(self.fixed_indices):
+            raise ValueError(
+                "callable-table preserved fixed identity plan disagrees with "
+                "the publication plan"
+            )
+        for offset, function_index in enumerate(self.preserved_fixed_indices):
+            slot = layout.fixed_prefix_base + offset
+            allowed[slot] = allowed[slot] | frozenset((function_index,))
+        return allowed
+
+
+def _resolve_callable_table_entry_plan(
+    data: bytes,
+    layout: CallableTableLayout,
+    *,
+    entry_symbol_names: Sequence[str] | None,
+    include_fixed_prefix: bool,
+    override_reserved_direct: bool,
+) -> _CallableTableEntryPlan:
+    total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
+    if entry_symbol_names is not None and len(entry_symbol_names) != total_entry_count:
+        raise ValueError(
+            "callable-table entry symbol count disagrees with the published layout: "
+            f"symbols={len(entry_symbol_names)}, entries={total_entry_count}"
+        )
+    exports = _collect_function_exports(data)
+    named_indices: dict[str, set[int]] = {}
+    if entry_symbol_names is not None:
+        function_import_index = 0
+        for _module, import_name, import_kind, _description in _collect_imports(data):
+            if import_kind != 0:
+                continue
+            named_indices.setdefault(import_name, set()).add(function_import_index)
+            function_import_index += 1
+        for function_index, function_name in _collect_func_names(data).items():
+            named_indices.setdefault(function_name, set()).add(function_index)
+
+    def resolve_entry(logical_slot: int) -> int:
+        name = _callable_entry_export_name(logical_slot)
+        function_index = exports.get(name)
+        symbol_name = (
+            entry_symbol_names[logical_slot] if entry_symbol_names is not None else None
+        )
+        if function_index is None and symbol_name is not None:
+            function_index = exports.get(symbol_name)
+        if function_index is None and symbol_name is not None:
+            candidates = named_indices.get(symbol_name, set())
+            if len(candidates) > 1:
+                raise ValueError(
+                    "linked wasm has ambiguous callable-table function identity "
+                    f"for {symbol_name}: {candidates}"
+                )
+            if candidates:
+                function_index = next(iter(candidates))
+        if function_index is None:
+            suffix = (
+                f" or retained linker symbol {symbol_name}"
+                if symbol_name is not None
+                else ""
+            )
+            raise ValueError(
+                f"linked wasm is missing callable-table entry export {name}{suffix}"
+            )
+        return function_index
+
+    preserved_fixed_indices = (
+        tuple(resolve_entry(slot) for slot in range(layout.fixed_prefix_len))
+        if include_fixed_prefix
+        else ()
+    )
+    fixed_indices = preserved_fixed_indices
+    app_indices = tuple(
+        resolve_entry(slot)
+        for slot in range(layout.fixed_prefix_len, total_entry_count)
+    )
+    reserved_end = WASM_RESERVED_RUNTIME_CALLABLE_BASE + len(
+        WASM_RESERVED_RUNTIME_CALLABLES
+    )
+    if (
+        include_fixed_prefix
+        and WASM_RESERVED_RUNTIME_CALLABLE_BASE < len(fixed_indices) < reserved_end
+    ):
+        raise ValueError("callable table truncates reserved runtime callable region")
+    if (
+        include_fixed_prefix
+        and override_reserved_direct
+        and len(fixed_indices) >= reserved_end
+    ):
+        mutable_fixed_indices = list(fixed_indices)
+        for (
+            index,
+            runtime_name,
+            _import_name,
+            _arity,
+            dispatch,
+        ) in WASM_RESERVED_RUNTIME_CALLABLES:
+            if dispatch != "direct":
+                continue
+            logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
+            runtime_function_index = exports.get(runtime_name)
+            if runtime_function_index is None:
+                candidates = named_indices.get(runtime_name, set())
+                if len(candidates) == 1:
+                    runtime_function_index = next(iter(candidates))
+            if runtime_function_index is None:
+                raise ValueError(
+                    f"linked wasm is missing reserved runtime export {runtime_name}"
+                )
+            mutable_fixed_indices[logical_slot] = runtime_function_index
+        fixed_indices = tuple(mutable_fixed_indices)
+    return _CallableTableEntryPlan(
+        fixed_indices,
+        app_indices,
+        owns_runtime_region=include_fixed_prefix,
+        preserved_fixed_indices=preserved_fixed_indices,
+    )
+
+
+def _merge_linked_callable_table(
     raw_entries: object,
     layout: CallableTableLayout,
+    entry_plan: _CallableTableEntryPlan,
 ) -> int:
-    """Validate post-link ownership and return the final occupied boundary.
+    """Merge compiler-owned entries with final linker growth.
 
-    The compiler's fixed/app slots are already embedded in code as table
-    immediates.  wasm-ld may add relocatable runtime/native entries, but those
-    entries must start after the compiler-owned app region; moving
-    ``finalized_app_base`` after the link would change only metadata and element
-    publication, leaving every existing callsite bound to the old slots.
+    Fixed shared-runtime entries may be present in both the compiler output and
+    the relocatable runtime.  That overlap is valid only when both inputs resolve
+    to the same canonical post-link function identity.  A monolithic link may
+    also contain contiguous runtime-owned growth between the fixed prefix and the
+    finalized app base.  App entries are already embedded in code as table
+    immediates and must retain their canonical identities.  Native/future linked
+    entries form a second contiguous suffix at the immutable pre-link app end.
     """
 
     if not isinstance(raw_entries, list):
         raise ValueError("linked WASM facts omitted callable-table entries")
-    slots: list[int] = []
+    rows_by_slot: dict[int, tuple[int, int, int]] = {}
     for entry in raw_entries:
         if (
             not isinstance(entry, list)
             or len(entry) != 4
-            or not isinstance(entry[0], int)
-            or isinstance(entry[0], bool)
-            or entry[0] < 0
-            or entry[0] > 0xFFFF_FFFF
+            or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+                or value > 0xFFFF_FFFF
+                for value in entry
+            )
         ):
             raise ValueError(
                 "linked WASM facts contain an invalid callable-table entry"
             )
-        slots.append(entry[0])
+        slot, function_index, type_index, role = cast(list[int], entry)
+        if slot in rows_by_slot:
+            raise ValueError(
+                f"linked WASM facts contain duplicate callable-table slot {slot}"
+            )
+        rows_by_slot[slot] = (function_index, type_index, role)
 
+    expected_owned = entry_plan.slot_allowed_function_indices(layout)
     app_end = _callable_app_end(layout)
-    for slot in slots:
+    for slot, expected_function_indices in expected_owned.items():
+        actual = rows_by_slot.get(slot)
+        if actual is None:
+            raise ValueError(
+                "linked WASM dropped compiler-owned callable-table entry: "
+                f"slot={slot}, functions={sorted(expected_function_indices)}"
+            )
+        if actual[0] not in expected_function_indices:
+            raise ValueError(
+                "linked WASM changed compiler-owned callable-table identity: "
+                f"slot={slot}, expected_functions={sorted(expected_function_indices)}, "
+                f"actual_function={actual[0]}"
+            )
+
+    fixed_end = layout.fixed_prefix_base + layout.fixed_prefix_len
+    runtime_growth_slots: list[int] = []
+    suffix_growth_slots: list[int] = []
+    for slot in rows_by_slot:
+        if slot in expected_owned:
+            continue
+        if (
+            entry_plan.owns_runtime_region
+            and fixed_end <= slot < layout.finalized_app_base
+        ):
+            runtime_growth_slots.append(slot)
+            continue
         if slot < app_end:
             raise ValueError(
-                "linked WASM relocatable entries overlap the pre-link callable "
+                "linked WASM entry without compiler identity overlaps the pre-link callable "
                 f"region: slot={slot}, region=[0,{app_end})"
             )
-    return max((slot + 1 for slot in slots), default=app_end)
+        suffix_growth_slots.append(slot)
+    runtime_growth_slots.sort()
+    for offset, slot in enumerate(runtime_growth_slots):
+        expected_slot = fixed_end + offset
+        if slot != expected_slot:
+            raise ValueError(
+                "linked WASM runtime callable-table growth is not contiguous from "
+                f"the fixed prefix: expected_slot={expected_slot}, actual_slot={slot}"
+            )
+    suffix_growth_slots.sort()
+    for offset, slot in enumerate(suffix_growth_slots):
+        expected_slot = app_end + offset
+        if slot != expected_slot:
+            raise ValueError(
+                "linked WASM suffix callable-table growth is not contiguous from "
+                f"the pre-link app boundary: expected_slot={expected_slot}, "
+                f"actual_slot={slot}"
+            )
+    return app_end + len(suffix_growth_slots)
 
 
 def _write_varsint32(value: int) -> bytes:
@@ -3423,97 +3651,21 @@ def _install_callable_table_layout(
     entry_symbol_names: Sequence[str] | None = None,
     include_fixed_prefix: bool = True,
     override_reserved_direct: bool = True,
+    entry_plan: _CallableTableEntryPlan | None = None,
 ) -> bytes:
     total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
     if total_entry_count == 0:
         return data
-    if entry_symbol_names is not None and len(entry_symbol_names) != total_entry_count:
-        raise ValueError(
-            "callable-table entry symbol count disagrees with the published layout: "
-            f"symbols={len(entry_symbol_names)}, entries={total_entry_count}"
+    if entry_plan is None:
+        entry_plan = _resolve_callable_table_entry_plan(
+            data,
+            layout,
+            entry_symbol_names=entry_symbol_names,
+            include_fixed_prefix=include_fixed_prefix,
+            override_reserved_direct=override_reserved_direct,
         )
-    exports = _collect_function_exports(data)
-    named_indices: dict[str, set[int]] = {}
-    if entry_symbol_names is not None:
-        function_import_index = 0
-        for _module, import_name, import_kind, _description in _collect_imports(data):
-            if import_kind != 0:
-                continue
-            named_indices.setdefault(import_name, set()).add(function_import_index)
-            function_import_index += 1
-        for function_index, function_name in _collect_func_names(data).items():
-            named_indices.setdefault(function_name, set()).add(function_index)
-
-    def resolve_entry(slot: int) -> int:
-        name = _callable_entry_export_name(slot)
-        function_index = exports.get(name)
-        symbol_name = (
-            entry_symbol_names[slot] if entry_symbol_names is not None else None
-        )
-        if function_index is None and symbol_name is not None:
-            function_index = exports.get(symbol_name)
-        if function_index is None and symbol_name is not None:
-            candidates = named_indices.get(symbol_name, set())
-            if len(candidates) > 1:
-                raise ValueError(
-                    "linked wasm has ambiguous callable-table function identity "
-                    f"for {symbol_name}: {candidates}"
-                )
-            if candidates:
-                function_index = next(iter(candidates))
-        if function_index is None:
-            suffix = (
-                f" or retained linker symbol {symbol_name}"
-                if symbol_name is not None
-                else ""
-            )
-            raise ValueError(
-                f"linked wasm is missing callable-table entry export {name}{suffix}"
-            )
-        return function_index
-
-    fixed_indices = (
-        [resolve_entry(slot) for slot in range(layout.fixed_prefix_len)]
-        if include_fixed_prefix
-        else []
-    )
-    app_indices = [
-        resolve_entry(slot)
-        for slot in range(layout.fixed_prefix_len, total_entry_count)
-    ]
-    reserved_end = WASM_RESERVED_RUNTIME_CALLABLE_BASE + len(
-        WASM_RESERVED_RUNTIME_CALLABLES
-    )
-    if (
-        include_fixed_prefix
-        and WASM_RESERVED_RUNTIME_CALLABLE_BASE < len(fixed_indices) < reserved_end
-    ):
-        raise ValueError("callable table truncates reserved runtime callable region")
-    if (
-        include_fixed_prefix
-        and override_reserved_direct
-        and len(fixed_indices) >= reserved_end
-    ):
-        for (
-            index,
-            runtime_name,
-            _import_name,
-            _arity,
-            dispatch,
-        ) in WASM_RESERVED_RUNTIME_CALLABLES:
-            if dispatch != "direct":
-                continue
-            logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
-            runtime_function_index = exports.get(runtime_name)
-            if runtime_function_index is None:
-                candidates = named_indices.get(runtime_name, set())
-                if len(candidates) == 1:
-                    runtime_function_index = next(iter(candidates))
-            if runtime_function_index is None:
-                raise ValueError(
-                    f"linked wasm is missing reserved runtime export {runtime_name}"
-                )
-            fixed_indices[logical_slot] = runtime_function_index
+    fixed_indices = entry_plan.fixed_indices
+    app_indices = entry_plan.app_indices
     sections = _parse_sections(data)
     element_indices = [
         index
@@ -4016,14 +4168,23 @@ def _run_wasm_ld_with_custodied_inputs(
             try:
                 raw_linked_facts = facts_provider(linked_bytes)
                 raw_callable_entries = raw_linked_facts.get("callable_table_entries")
-                _linked_callable_occupied_end(
+                entry_plan = _resolve_callable_table_entry_plan(
+                    linked_bytes,
+                    output_callable_layout,
+                    entry_symbol_names=callable_entry_symbol_names_by_slot,
+                    include_fixed_prefix=True,
+                    override_reserved_direct=True,
+                )
+                _merge_linked_callable_table(
                     raw_callable_entries,
                     output_callable_layout,
+                    entry_plan,
                 )
                 linked_bytes = _install_callable_table_layout(
                     linked_bytes,
                     output_callable_layout,
                     entry_symbol_names=callable_entry_symbol_names_by_slot,
+                    entry_plan=entry_plan,
                 )
             except ValueError as exc:
                 print(
@@ -4280,9 +4441,17 @@ def _run_wasm_ld_with_custodied_inputs(
                 try:
                     raw_split_facts = facts_provider(rewritten_data)
                     raw_split_entries = raw_split_facts.get("callable_table_entries")
-                    split_app_required_table_min = _linked_callable_occupied_end(
+                    entry_plan = _resolve_callable_table_entry_plan(
+                        rewritten_data,
+                        split_callable_layout,
+                        entry_symbol_names=callable_entry_symbol_names_by_slot,
+                        include_fixed_prefix=False,
+                        override_reserved_direct=False,
+                    )
+                    split_app_required_table_min = _merge_linked_callable_table(
                         raw_split_entries,
                         split_callable_layout,
+                        entry_plan,
                     )
                     rewritten_data = _install_callable_table_layout(
                         rewritten_data,
@@ -4290,6 +4459,7 @@ def _run_wasm_ld_with_custodied_inputs(
                         entry_symbol_names=callable_entry_symbol_names_by_slot,
                         include_fixed_prefix=False,
                         override_reserved_direct=False,
+                        entry_plan=entry_plan,
                     )
                 except ValueError as exc:
                     print(
