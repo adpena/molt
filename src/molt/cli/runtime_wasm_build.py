@@ -267,7 +267,11 @@ def _reuse_published_runtime_wasm(ctx: _RuntimeWasmMemberBuild) -> bool | None:
     return True
 
 
-def _reuse_target_runtime_wasm(ctx: _RuntimeWasmMemberBuild) -> bool | None:
+def _reuse_target_runtime_wasm(
+    ctx: _RuntimeWasmMemberBuild,
+    *,
+    persist_output_fingerprint: bool = True,
+) -> bool | None:
     target_label = "wasm32-wasip1"
     candidates = (
         _wasm_runtime_staticlib_candidates(ctx.spec.target_root, ctx.spec.profile_dir)
@@ -348,17 +352,72 @@ def _reuse_target_runtime_wasm(ctx: _RuntimeWasmMemberBuild) -> bool | None:
             ctx.staticlib_fingerprint if ctx.reloc else ctx.fingerprint,
             artifact=artifact,
         )
-        ctx.spec.fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(
-            ctx.spec.fingerprint_path,
-            ctx.fingerprint,
-            artifact=ctx.runtime_wasm,
-        )
+        if persist_output_fingerprint:
+            ctx.spec.fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(
+                ctx.spec.fingerprint_path,
+                ctx.fingerprint,
+                artifact=ctx.runtime_wasm,
+            )
     except OSError:
         if not ctx.json_output:
             print("Failed to publish prebuilt runtime wasm metadata.", file=sys.stderr)
         return False
     return True
+
+
+def _materialize_runtime_wasm_member_from_target(
+    destination: Path,
+    *,
+    reloc: bool,
+    json_output: bool,
+    cargo_timeout: float | None,
+    project_root: Path,
+    required_exports: set[str] | frozenset[str] | None,
+    resolved_modules: set[str] | frozenset[str] | None,
+    spec: _RuntimeWasmBuildSpec,
+) -> bool:
+    """Finalize one transient pair member from an exact canonical target spec.
+
+    The combined pair producer has already built and fingerprinted both Cargo
+    artifacts.  A unique publication destination is custody, not build
+    identity, so it must not create a second UUID-keyed spec or fingerprint
+    authority.
+    """
+
+    long_double_required = reloc and _reloc_runtime_requires_long_double(
+        resolved_modules=resolved_modules,
+        required_exports=required_exports,
+    )
+    if long_double_required:
+        archives = _resolve_reloc_long_double_archives(long_double_required=True)
+        if archives.error is not None:
+            if not json_output:
+                print(archives.error, file=sys.stderr)
+            return False
+    ctx = _RuntimeWasmMemberBuild(
+        runtime_wasm=destination,
+        reloc=reloc,
+        json_output=json_output,
+        cargo_timeout=cargo_timeout,
+        root=project_root,
+        required_exports=required_exports,
+        build_if_missing=False,
+        spec=spec,
+        fingerprint=spec.fingerprint or {},
+        staticlib_fingerprint=spec.staticlib_fingerprint or {},
+        long_double_required=long_double_required,
+        stored_fingerprint=None,
+    )
+    if spec.fingerprint is None or spec.staticlib_fingerprint is None:
+        return False
+    with _build_lock(ctx.root, ctx.lock_name):
+        return bool(
+            _reuse_target_runtime_wasm(
+                ctx,
+                persist_output_fingerprint=False,
+            )
+        )
 
 
 def _runtime_wasm_cargo_command(ctx: _RuntimeWasmMemberBuild) -> list[str]:

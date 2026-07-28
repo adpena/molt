@@ -29,7 +29,6 @@ from wasm_link_format import (
     _collect_func_names,
     _collect_function_exports,
     _collect_imports,
-    _collect_linking_function_symbols,
     _count_func_imports,
     _find_func_import_index,
     wasm_runtime_export_name,
@@ -49,6 +48,7 @@ from wasm_link_format import (
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from molt.cli.external_link_providers import wasm_external_link_provider_symbols
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from wasm_link_facts import callable_table_entry_rows
 
 
@@ -294,9 +294,9 @@ def _collect_preserved_output_export_names(
 def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
     export_indices = _collect_function_exports(data)
     by_index: dict[int, list[str]] = {}
-    for _flags, index, name, _kind in _collect_linking_function_symbols(data):
-        if name:
-            by_index.setdefault(index, []).append(name)
+    for symbol in parse_wasm_linking_symbols(data).function_symbols:
+        if symbol.name and symbol.index is not None:
+            by_index.setdefault(symbol.index, []).append(symbol.name)
     mapping: dict[str, str] = {}
     for public_name, index in export_indices.items():
         candidates = by_index.get(index, [])
@@ -361,9 +361,9 @@ def _ensure_function_exports_by_symbol_names(
     if not public_to_symbol:
         return None
     symbol_indices = {
-        name: index
-        for _flags, index, name, _kind in _collect_linking_function_symbols(data)
-        if name
+        symbol.name: symbol.index
+        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        if symbol.name and symbol.index is not None
     }
     if not set(public_to_symbol.values()).issubset(symbol_indices):
         for index, name in _collect_func_names(data).items():

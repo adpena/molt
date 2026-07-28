@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from molt import wasm_artifact
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 
 
 def _load_wasm_link():
@@ -147,6 +148,9 @@ _REAL_RUN_WASM_LD = wasm_link._run_wasm_ld
 
 def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-def]
     kwargs.setdefault("wasm_facts_scanner", Path("rust-facts-fixture"))
+    kwargs.setdefault("runtime_role", "shared")
+    if kwargs.get("split_runtime"):
+        kwargs.setdefault("deploy_runtime_override", Path(args[1]))
     if not kwargs.get("split_runtime"):
         return _REAL_RUN_WASM_LD(*args, **kwargs)
 
@@ -2726,7 +2730,7 @@ def test_tree_shake_cache_counts_request_when_identity_is_unreadable(
     assert not list((tmp_path / "cache").rglob("artifact.wasm"))
 
 
-def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
+def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2775,6 +2779,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         linked,
         split_runtime=True,
         split_output_dir=split_dir,
+        deploy_runtime_override=runtime,
         phase_timings_file=timings_path,
     )
     first_link_commands = list(wasm_ld_commands)
@@ -2785,6 +2790,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         control_linked,
         split_runtime=True,
         split_output_dir=control_split_dir,
+        deploy_runtime_override=runtime,
     )
 
     assert rc == 0
@@ -2849,9 +2855,9 @@ def test_explicit_deploy_runtime_outranks_ambient_and_fails_closed(
         path.write_bytes(b"\0asm\x01\0\0\0")
     monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(ambient))
 
-    assert wasm_link._resolve_deploy_runtime(reloc, explicit) == explicit
+    assert wasm_link._resolve_deploy_runtime(explicit) == explicit
     with pytest.raises(FileNotFoundError, match="explicit split deploy runtime"):
-        wasm_link._resolve_deploy_runtime(reloc, tmp_path / "missing.wasm")
+        wasm_link._resolve_deploy_runtime(tmp_path / "missing.wasm")
 
 
 def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
@@ -2898,20 +2904,31 @@ def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
         )
 
 
-def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocations(
+def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     output_bytes = _build_minimal_module(b"")
-    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
-    runtime = tmp_path / "molt_runtime.wasm"
-    reloc_runtime = tmp_path / "molt_runtime_reloc.wasm"
+    runtime_bytes = wasm_link._append_linking_function_symbols(
+        _build_exported_runtime_module("molt_exception_pending"),
+        [
+            (
+                "molt_exception_pending",
+                0,
+                wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+            )
+        ],
+    )
+    assert runtime_bytes is not None
+    runtime = (
+        tmp_path
+        / "molt_runtime_reloc.wasm.deadbeef.runtime-wasm-member"
+    )
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     wasm_ld_inputs: list[str] = []
 
     runtime.write_bytes(runtime_bytes)
-    reloc_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
@@ -2934,11 +2951,16 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
 
-    rc = _run_wasm_ld_with_rust_facts("wasm-ld", runtime, output, linked)
+    rc = _run_wasm_ld_with_rust_facts(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        runtime_role="reloc",
+    )
 
     assert rc == 0
-    assert any(Path(part).name == reloc_runtime.name for part in wasm_ld_inputs)
-    assert not any(Path(part).name == runtime.name for part in wasm_ld_inputs)
+    assert any(Path(part).name == runtime.name for part in wasm_ld_inputs)
 
 
 def test_run_wasm_ld_links_staged_native_objects(
@@ -3490,6 +3512,14 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
                                 wasm_link.SYMTAB_SUBSECTION_ID,
                                 _build_symbol_subsection(
                                     [
+                                        _function_symbol_entry(
+                                            flags=(
+                                                wasm_link.FLAG_BINDING_GLOBAL
+                                                | wasm_link.FLAG_EXPLICIT_NAME
+                                            ),
+                                            index=0,
+                                            name="molt_err_pending",
+                                        ),
                                         _data_symbol_entry(
                                             flags=wasm_link.FLAG_EXPLICIT_NAME,
                                             name="PyLong_Type",
@@ -3639,6 +3669,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         split_runtime=True,
         split_output_dir=split_dir,
         native_objects=(native_object,),
+        runtime_role="reloc",
     )
 
     assert rc == 0
@@ -4334,7 +4365,7 @@ def test_post_link_optimize_split_app_drops_numeric_table_aliases() -> None:
     assert table_ref not in split_exports
 
 
-def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> (
+def test_linking_symbol_authority_parses_defined_and_undefined_functions() -> (
     None
 ):
     data = _module_with_linking_symbols(
@@ -4359,9 +4390,9 @@ def test_collect_linking_function_symbols_parses_defined_and_undefined_entries()
         ]
     )
 
-    symbols = wasm_link._collect_linking_function_symbols(data)
+    symbols = parse_wasm_linking_symbols(data).function_symbols
 
-    assert [(flags, index, name) for flags, index, name, _ in symbols] == [
+    assert [(symbol.flags, symbol.index, symbol.name) for symbol in symbols] == [
         (
             wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
             7,
@@ -4433,11 +4464,12 @@ def test_inject_output_export_aliases_preserves_export_flag_for_user_exports(
         updated = wasm_link._inject_output_export_aliases(
             output, temp_dir, _rust_facts_fixture(output.read_bytes())
         )
-        symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
+        symbols = parse_wasm_linking_symbols(updated.read_bytes()).function_symbols
         assert any(
-            name == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
-            and (flags & wasm_link.FLAG_EXPORTED)
-            for flags, _, name, _ in symbols
+            symbol.name
+            == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
+            and (symbol.flags & wasm_link.FLAG_EXPORTED)
+            for symbol in symbols
         ), symbols
         temp_dir.cleanup()
 
@@ -4547,15 +4579,17 @@ def test_inject_output_export_aliases_adds_runtime_entrypoint_symbols(
         updated = wasm_link._inject_output_export_aliases(
             output, temp_dir, _rust_facts_fixture(output.read_bytes())
         )
-        symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
+        symbols = parse_wasm_linking_symbols(updated.read_bytes()).function_symbols
         assert any(
-            name == "molt_isolate_import" and (flags & wasm_link.FLAG_BINDING_GLOBAL)
-            for flags, _, name, _ in symbols
+            symbol.name == "molt_isolate_import"
+            and (symbol.flags & wasm_link.FLAG_BINDING_GLOBAL)
+            for symbol in symbols
         ), symbols
         assert any(
-            name == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}molt_isolate_import"
-            and (flags & wasm_link.FLAG_EXPORTED)
-            for flags, _, name, _ in symbols
+            symbol.name
+            == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}molt_isolate_import"
+            and (symbol.flags & wasm_link.FLAG_EXPORTED)
+            for symbol in symbols
         ), symbols
         temp_dir.cleanup()
 
