@@ -16,15 +16,15 @@ document the chosen target in specs/tests and keep the differential suite aligne
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
   - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEM_AVAILABLE_GB=<n>`.
 - **Memory guard**: enabled by default with adaptive per-process,
-  per-test-tree, global RSS, and direct-child virtual-memory limits. Configure
+  per-test-tree, global RSS, and a direct-child `RLIMIT_RSS` backstop. Configure
   deliberate investigation caps with `MOLT_DIFF_MAX_PROCESS_RSS_GB`,
   `MOLT_DIFF_MAX_TREE_RSS_GB`, `MOLT_DIFF_GLOBAL_RSS_LIMIT_GB`, or
   `MOLT_DIFF_CHILD_RLIMIT_GB`. Test execution is not allowed to bypass memory
   custody; direct pytest sessions re-exec through `tools/memory_guard.py` before
   collection, and differential/conformance/regrtest harnesses keep their RSS
-  guards active by policy. Disable only the child virtual-memory clamp with
-  `MOLT_DIFF_CHILD_RLIMIT_GB=0` when a virtual-address-heavy host runtime needs
-  it; recursive RSS polling remains authoritative. The lineage tracker keeps
+  guards active by policy. The child limit never constrains virtual-address
+  reservations through `RLIMIT_AS` or `RLIMIT_DATA`; recursive RSS polling
+  remains authoritative. The lineage tracker keeps
   reparented/session-changing descendants inside RSS accounting, while teardown
   stays scoped to the guarded root process group plus exact escaped descendant
   PIDs; repo sentinels must exclude ancestor and Claude/Codex/control-plane

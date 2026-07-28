@@ -1570,8 +1570,9 @@ def main() -> None:
         type=float,
         default=None,
         help=(
-            "Apply this OS resource limit to each direct check child before exec; "
-            "defaults to an adaptive virtual-memory clamp. Set <=0 to disable."
+            "Apply this RLIMIT_RSS backstop to each direct check child before "
+            "exec; defaults to the adaptive per-process RSS budget and never "
+            "constrains sparse virtual-address reservations. Set <=0 to disable."
         ),
     )
     parser.add_argument(

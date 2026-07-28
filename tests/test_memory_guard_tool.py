@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -1753,6 +1754,32 @@ def test_default_child_rlimit_tracks_process_rss_budget() -> None:
         max_process_rss_gb=46.0,
         max_total_rss_gb=51.0,
     ) == pytest.approx(46.0)
+
+
+def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, tuple[int, int]]] = []
+    fake_resource = types.ModuleType("resource")
+    rlimit_as, rlimit_data, rlimit_rss = 1, 2, 3
+    setattr(fake_resource, "RLIM_INFINITY", -1)
+    setattr(fake_resource, "RLIMIT_AS", rlimit_as)
+    setattr(fake_resource, "RLIMIT_DATA", rlimit_data)
+    setattr(fake_resource, "RLIMIT_RSS", rlimit_rss)
+    setattr(fake_resource, "getrlimit", lambda _resource: (-1, -1))
+    setattr(
+        fake_resource,
+        "setrlimit",
+        lambda resource, limits: calls.append((resource, limits)),
+    )
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    memory_guard._apply_child_resource_limit(1024)
+
+    assert [resource for resource, _limits in calls] == [rlimit_rss]
+    assert rlimit_as not in [resource for resource, _limits in calls]
+    assert rlimit_data not in [resource for resource, _limits in calls]
+    assert all(limits == (1024 * 1024, 1024 * 1024) for _resource, limits in calls)
 
 
 def test_run_command_passes_through_success() -> None:
