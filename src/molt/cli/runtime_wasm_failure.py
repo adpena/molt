@@ -4,7 +4,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from molt.cli.artifact_state import _build_state_root
 from molt.cli.atomic_io import _atomic_write_json
@@ -34,6 +34,7 @@ def record_runtime_wasm_failure(
     stderr: str = "",
     returncode: int | None = None,
     timed_out: bool = False,
+    details: Mapping[str, object] | None = None,
 ) -> bool:
     """Publish one exact WASM failure authority without corrupting JSON stdout."""
 
@@ -59,6 +60,7 @@ def record_runtime_wasm_failure(
                 "cwd": str(project_root),
                 "returncode": returncode,
                 "timed_out": timed_out,
+                "details": dict(details or {}),
                 "stdout": _bounded_failure_text(stdout),
                 "stderr": _bounded_failure_text(stderr),
             },
@@ -73,6 +75,7 @@ def record_runtime_wasm_failure(
         evidence_path=evidence_path,
         returncode=returncode,
         timed_out=timed_out,
+        details=dict(details or {}),
     )
     print(compact, file=sys.stderr)
     if evidence_path is not None:

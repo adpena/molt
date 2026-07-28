@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from molt.cli import artifact_state as runtime_artifact_state
 from molt.cli import (
+    runtime_build_identity,
     runtime_fingerprints,
     runtime_wasm_build,
     runtime_wasm_build_spec,
@@ -382,6 +384,98 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         assert len(cargo_calls) == 1
     finally:
         _reset_runtime_wasm_build_timings()
+
+
+def _test_pair_identity():
+    pair_payload = {"schema": "molt.runtime-build-pair.v2", "test": "pair"}
+    payload = {"pair": pair_payload}
+    pair_digest = runtime_build_identity._digest(pair_payload)
+    member = runtime_build_identity.RuntimeBuildIdentity(
+        digest=runtime_build_identity._digest(payload),
+        pair_digest=pair_digest,
+        payload=payload,
+    )
+    toolchain_payload = {"test": "toolchain"}
+    toolchain = runtime_build_identity.RuntimeToolchainContentManifest(
+        digest=runtime_build_identity._digest(toolchain_payload),
+        payload=toolchain_payload,
+    )
+    return runtime_wasm_pair_build._RuntimeWasmPairIdentity(
+        toolchain=toolchain,
+        shared=member,
+        reloc=member,
+    )
+
+
+def test_pair_member_staging_is_identity_local_and_never_process_cached(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shared, reloc = _specs(_compiler_root())
+    state = _RuntimeArtifactState()
+    canonical_shared = tmp_path / "wasm" / "molt_runtime.wasm"
+    canonical_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
+    identity = _test_pair_identity()
+    ctx = runtime_wasm_pair_build._RuntimeWasmPairBuild(
+        runtime_state=state,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_link_features=frozenset(),
+        required_exports=None,
+        runtime_wasm=canonical_shared,
+        runtime_reloc_wasm=canonical_reloc,
+        shared_spec=shared,
+        reloc_spec=reloc,
+        toolchain_manifest_path=tmp_path / "toolchain.json",
+        generation_manifest=canonical_shared.with_name(
+            "molt_runtime.generation.json"
+        ),
+        pre_identity=identity,
+    )
+    calls: list[tuple[Path, bool]] = []
+
+    def ensure(path: Path, *, reloc: bool, **_kwargs) -> bool:  # noqa: ANN003
+        calls.append((path, reloc))
+        return True
+
+    monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm", ensure)
+    ctx.provision_staging()
+    first_root = ctx.staging_root
+    assert first_root is not None
+    assert first_root.parent.name == identity.shared.pair_digest
+    assert ctx.staging_member(reloc=False).name == canonical_shared.name
+    assert ctx.staging_member(reloc=True).name == canonical_reloc.name
+    assert ctx.ensure_member(reloc=False)
+    assert ctx.ensure_member(reloc=False)
+    assert ctx.ensure_member(reloc=True)
+    assert ctx.ensure_member(reloc=True)
+    assert calls == [
+        (ctx.staging_member(reloc=False), False),
+        (ctx.staging_member(reloc=False), False),
+        (ctx.staging_member(reloc=True), True),
+        (ctx.staging_member(reloc=True), True),
+    ]
+    concurrent_ctx = replace(
+        ctx,
+        staging_root=None,
+        staging_shared=None,
+        staging_reloc=None,
+    )
+    concurrent_ctx.provision_staging()
+    concurrent_root = concurrent_ctx.staging_root
+    assert concurrent_root is not None
+    assert concurrent_root != first_root
+    assert concurrent_root.parent == first_root.parent
+    concurrent_ctx.cleanup_staging()
+    assert not concurrent_root.exists()
+    ctx.cleanup_staging()
+    assert not first_root.exists()
 
 
 def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
