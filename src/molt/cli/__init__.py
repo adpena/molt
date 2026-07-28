@@ -313,14 +313,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     'package': ('package_distribution', 'package'),
     'publish': ('package_distribution', 'publish'),
     'verify': ('package_distribution', 'verify'),
-    # molt.cli.runtime_build
-    '_RUNTIME_LIB_VERIFIED': ('runtime_build', '_RUNTIME_LIB_VERIFIED'),
-    '_ensure_native_runtime_lib_ready_before_link': ('runtime_build', '_ensure_native_runtime_lib_ready_before_link'),
-    '_ensure_runtime_lib': ('runtime_build', '_ensure_runtime_lib'),
-    '_ensure_runtime_lib_ready': ('runtime_build', '_ensure_runtime_lib_ready'),
-    '_initialize_runtime_artifact_state': ('runtime_build', '_initialize_runtime_artifact_state'),
-    '_maybe_start_native_runtime_lib_ready_async': ('runtime_build', '_maybe_start_native_runtime_lib_ready_async'),
-    '_runtime_build': ('runtime_build', None),
     # molt.cli.runtime_fingerprints
     '_artifact_content_looks_valid': ('runtime_fingerprints', '_artifact_content_looks_valid'),
     '_artifact_needs_rebuild': ('runtime_fingerprints', '_artifact_needs_rebuild'),

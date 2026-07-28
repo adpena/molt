@@ -3,14 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
+from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.build_results import (
     _emit_native_link_result,
     _emit_non_native_build_result,
 )
-from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
+from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.models import (
     BuildProfile,
     _BuildOutputLayout,
@@ -23,9 +23,9 @@ from molt.cli.models import (
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
-from molt.cli.output import fail as _fail
-from molt.cli.runtime_build import _ensure_native_runtime_lib_ready_before_link
 from molt.cli.native_toolchain import _run_bolt_post_link
+from molt.cli.output import fail as _fail
+from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_before_link
 
 
 def _emit_backend_pipeline_outputs(

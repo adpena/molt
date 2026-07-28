@@ -179,7 +179,7 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         WASM_IMPORT_SIGNATURES,
         WASM_RUNTIME_IMPORT_EXPORT_NAMES,
     )
-    from molt.cli.runtime_build import _build_state_root
+    from molt.cli.artifact_state import _build_state_root
     from molt.cli.runtime_build_identity import RuntimeBuildIdentity
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
     from molt.cli.runtime_wasm_generation import (

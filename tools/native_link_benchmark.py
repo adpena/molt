@@ -14,20 +14,19 @@ O(command arguments + declared inputs); publication is O(output bytes).
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import asdict
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import statistics
 import sys
 import time
 import tracemalloc
-from typing import Callable, Mapping, Sequence
 import uuid
-
+from collections import Counter
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -38,11 +37,11 @@ for import_root in (ROOT, SRC):
 from molt.cli.build_results import _finalize_native_link_candidate  # noqa: E402
 from molt.cli.link_pipeline import _native_link_execution_command  # noqa: E402
 from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
-from molt.cli.native_link_plan import NativeLinkPlan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
     native_link_dependency_manifest_path,
     read_native_link_dependency_manifest,
 )
+from molt.cli.native_link_plan import NativeLinkPlan  # noqa: E402
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
 from molt.cli.static_archive_identity import artifact_content_identity  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
@@ -124,7 +123,7 @@ def implementation_source_facts() -> dict[str, object]:
         "static_archive_identity.py",
         "link_pipeline.py",
         "build_results.py",
-        "runtime_build.py",
+        "runtime_native_build.py",
     )
     files = [
         {

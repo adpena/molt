@@ -14,7 +14,8 @@ from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 
 
 CARGO = importlib.import_module("molt.cli.cargo_execution")
-RUNTIME = importlib.import_module("molt.cli.runtime_build")
+RUNTIME = importlib.import_module("molt.cli.runtime_native_build")
+RUNTIME_WASM_SUPPORT = importlib.import_module("molt.cli.runtime_wasm_build_support")
 
 
 def _completed(
@@ -410,8 +411,10 @@ def test_native_failure_receipt_carries_attempts_signal_timing_and_rss(
     assert failure.json_payload()["attempt_count"] == 2
 
 
-def test_runtime_wasm_builds_have_no_private_sccache_retry_lane() -> None:
-    source = inspect.getsource(RUNTIME)
+def test_runtime_builds_have_no_private_sccache_retry_lane() -> None:
+    source = "\n".join(
+        inspect.getsource(module) for module in (RUNTIME, RUNTIME_WASM_SUPPORT)
+    )
     assert "retry_env = env.copy()" not in source
     assert "retry_env = build_env.copy()" not in source
     assert 'Path(wrapper).name == "sccache"' not in source

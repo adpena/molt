@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import runtime_build as rb
+from molt.cli import runtime_wasm_build_support as rb
 from molt.cli import runtime_wasm_build_timings as timings
 from molt.cli import wasm_toolchain
 
@@ -102,9 +102,7 @@ def test_witness_tier_fails_loud_when_archive_absent(
     monkeypatch.setattr(
         wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
     )
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None
-    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
     timings._reset_runtime_wasm_build_timings()
     result = rb._resolve_reloc_long_double_archives(long_double_required=True)
     assert result.error is not None, "numpy tier must fail loud, not degrade"
@@ -125,9 +123,7 @@ def test_micro_build_degrades_when_archive_absent(
     monkeypatch.setattr(
         wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
     )
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None
-    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
     timings._reset_runtime_wasm_build_timings()
     result = rb._resolve_reloc_long_double_archives(long_double_required=False)
     assert result.error is None, "micro build must not hard-error"
@@ -166,9 +162,7 @@ def test_link_hard_errors_before_invoking_wasm_ld(
     monkeypatch.setattr(
         wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
     )
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None
-    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
 
     def _boom(*_a, **_k):  # pragma: no cover - must never run
         raise AssertionError("wasm-ld was invoked despite a required archive absent")
@@ -197,9 +191,7 @@ def test_fingerprint_token_flips_when_presence_flips(
     monkeypatch.setattr(
         wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
     )
-    monkeypatch.setattr(
-        wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None
-    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
     token_absent = rb._reloc_link_archive_fingerprint_token()
     assert token_present != token_absent
 
@@ -244,7 +236,9 @@ def test_split_app_fails_loud_when_longdouble_absent(
 # by re-implementing resolution.
 
 
-def _fake_archives(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+def _fake_archives(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[Path, Path]:
     ld = tmp_path / "libc-printscan-long-double.a"
     ld.write_bytes(b"!<arch>\n")
     bi = tmp_path / "libclang_rt.builtins-wasm32.a"

@@ -183,7 +183,20 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
 
 
 def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
-    runtime_build = (ROOT / "src" / "molt" / "cli" / "runtime_build.py").read_text()
+    runtime_cli = ROOT / "src" / "molt" / "cli"
+    runtime_sources = "\n".join(
+        (runtime_cli / name).read_text()
+        for name in (
+            "runtime_build.py",
+            "runtime_wasm_build.py",
+            "runtime_wasm_build_policy.py",
+            "runtime_wasm_build_spec.py",
+            "runtime_wasm_build_support.py",
+            "runtime_wasm_pair_build.py",
+        )
+    )
+    runtime_wasm_build = (runtime_cli / "runtime_wasm_build.py").read_text()
+    runtime_wasm_pair_build = (runtime_cli / "runtime_wasm_pair_build.py").read_text()
     non_native_output = (
         ROOT / "src" / "molt" / "cli" / "non_native_output.py"
     ).read_text()
@@ -195,11 +208,14 @@ def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
         "_wasm_runtime_recovery_target_root",
         "_app_split_runtime_dual_compile_forced",
     ):
-        assert deleted_authority not in runtime_build
+        assert deleted_authority not in runtime_sources
         assert deleted_authority not in non_native_output
 
-    assert "build_if_missing=False" in runtime_build
-    assert "if not _prepopulate_combined_runtime_wasm_target(" in runtime_build
+    assert "build_if_missing=False" in runtime_wasm_pair_build
+    assert (
+        "if not _prepopulate_combined_runtime_wasm_target(" in runtime_wasm_pair_build
+    )
+    assert "def _ensure_runtime_wasm(" in runtime_wasm_build
     assert "ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(" in (
         non_native_output
     )
