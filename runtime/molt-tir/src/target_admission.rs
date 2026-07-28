@@ -1,12 +1,20 @@
 //! Shared pre-source target admission for semantic domains that a backend's
 //! value model may not represent exactly.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use crate::representation_plan::ScalarRepresentationPlan;
+use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
-    SimpleIrIntegerSemantics, SimpleIrRuntimeRequirements, simpleir_integer_semantics_table,
-    simpleir_runtime_requirements_table,
+    SimpleIrIntegerSemantics, SimpleIrModuleIdentityAliasRole, SimpleIrModuleSlotRole,
+    SimpleIrRuntimeRequirements, SimpleIrVarFieldRole, simpleir_integer_semantics_table,
+    simpleir_kind_has_callable_operand, simpleir_module_identity_alias_role_table,
+    simpleir_module_identity_source_name_arg, simpleir_module_slot_access_table,
+    simpleir_runtime_requirements_table, simpleir_runtime_symbol_requirements_table,
+    simpleir_var_field_role_table,
 };
-use crate::{OpIR, SimpleIR};
+use crate::tir::simple_def_use::visit_simple_ir_reads;
+use crate::{FunctionIR, OpIR, SimpleIR};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NumericTargetCapabilities {
@@ -42,7 +50,8 @@ impl NumericTargetCapabilities {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeTargetCapabilities {
-    pub python_frame_state: bool,
+    pub execution_frame_state: bool,
+    pub python_frame_introspection: bool,
     pub python_identity: bool,
     pub tuple_representation: bool,
     pub exception_model: bool,
@@ -60,7 +69,8 @@ pub struct RuntimeTargetCapabilities {
 
 impl RuntimeTargetCapabilities {
     pub const NONE: Self = Self {
-        python_frame_state: false,
+        execution_frame_state: false,
+        python_frame_introspection: false,
         python_identity: false,
         tuple_representation: false,
         exception_model: false,
@@ -123,13 +133,15 @@ pub fn validate_runtime_target_contract(
 ) -> Result<(), String> {
     let admission_checks = runtime_admission_checks(capabilities);
     for function in &ir.functions {
+        let propagated_requirements = simpleir_callable_runtime_requirements(function);
         for (index, op) in function.ops.iter().enumerate() {
-            let Some(requirements) = simpleir_runtime_requirements_table(op.kind.as_str()) else {
+            let Some(mut requirements) = simpleir_op_runtime_requirements(op) else {
                 return Err(format!(
                     "{target} target rejected before source generation: {}:op#{index} `{}`: operation is unclassified in the generated runtime semantic authority",
                     function.name, op.kind,
                 ));
             };
+            requirements = requirements.union(propagated_requirements[index]);
             if requirements.is_empty() {
                 continue;
             }
@@ -146,14 +158,419 @@ pub fn validate_runtime_target_contract(
     Ok(())
 }
 
+fn requirement_for_name(
+    requirements: &BTreeMap<String, SimpleIrRuntimeRequirements>,
+    name: &str,
+) -> SimpleIrRuntimeRequirements {
+    requirements
+        .get(name)
+        .copied()
+        .unwrap_or(SimpleIrRuntimeRequirements::NONE)
+}
+
+fn union_requirement(
+    requirements: &mut BTreeMap<String, SimpleIrRuntimeRequirements>,
+    name: &str,
+    incoming: SimpleIrRuntimeRequirements,
+) {
+    if incoming.is_empty() || name == "none" {
+        return;
+    }
+    let prior = requirement_for_name(requirements, name);
+    requirements.insert(name.to_string(), prior.union(incoming));
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CallableBindingState {
+    locals: BTreeMap<String, SimpleIrRuntimeRequirements>,
+    local_modules: BTreeMap<String, BTreeSet<String>>,
+    modules: BTreeMap<(String, String), SimpleIrRuntimeRequirements>,
+}
+
+fn merge_binding_states<'a>(
+    states: impl Iterator<Item = &'a CallableBindingState>,
+) -> CallableBindingState {
+    let mut merged = CallableBindingState::default();
+    for state in states {
+        for (slot, requirement) in &state.locals {
+            union_requirement(&mut merged.locals, slot, *requirement);
+        }
+        for (slot, identities) in &state.local_modules {
+            merged
+                .local_modules
+                .entry(slot.clone())
+                .or_default()
+                .extend(identities.iter().cloned());
+        }
+        for (slot, requirement) in &state.modules {
+            let prior = merged
+                .modules
+                .get(slot)
+                .copied()
+                .unwrap_or(SimpleIrRuntimeRequirements::NONE);
+            merged
+                .modules
+                .insert(slot.clone(), prior.union(*requirement));
+        }
+    }
+    merged
+}
+
+fn replace_requirement(
+    requirements: &mut BTreeMap<String, SimpleIrRuntimeRequirements>,
+    name: &str,
+    incoming: SimpleIrRuntimeRequirements,
+) {
+    if incoming.is_empty() {
+        requirements.remove(name);
+    } else {
+        requirements.insert(name.to_string(), incoming);
+    }
+}
+
+fn replace_module_requirement(
+    requirements: &mut BTreeMap<(String, String), SimpleIrRuntimeRequirements>,
+    key: (String, String),
+    incoming: SimpleIrRuntimeRequirements,
+) {
+    if incoming.is_empty() {
+        requirements.remove(&key);
+    } else {
+        requirements.insert(key, incoming);
+    }
+}
+
+fn module_identities_for(
+    identities: &BTreeMap<String, BTreeSet<String>>,
+    value: &str,
+) -> BTreeSet<String> {
+    identities
+        .get(value)
+        .cloned()
+        .unwrap_or_else(|| BTreeSet::from([format!("value:{value}")]))
+}
+
+/// Propagate canonical callable provenance through the generated SimpleIR
+/// field roles and the mutable local/module slots those roles describe. The
+/// frontend owns qualified import resolution; this pass owns only transport
+/// dataflow and never guesses Python spellings in a backend.
+fn simpleir_callable_runtime_requirements(
+    function: &FunctionIR,
+) -> Vec<SimpleIrRuntimeRequirements> {
+    let mut values = BTreeMap::<String, SimpleIrRuntimeRequirements>::new();
+    let mut module_identities = BTreeMap::<String, BTreeSet<String>>::new();
+    let constant_strings = function
+        .ops
+        .iter()
+        .filter_map(|op| {
+            (op.kind == "const_str")
+                .then(|| Some((op.out.as_ref()?.clone(), op.s_value.as_ref()?.clone())))?
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut call_requirements = vec![SimpleIrRuntimeRequirements::NONE; function.ops.len()];
+    if function.ops.is_empty() {
+        return call_requirements;
+    }
+    let cfg = CFG::build(&function.ops);
+    let mut predecessors = cfg.predecessors.clone();
+    let mut successors = cfg.successors.clone();
+    for &(from, to) in &cfg.exception_edges {
+        if !successors[from].contains(&to) {
+            successors[from].push(to);
+            predecessors[to].push(from);
+        }
+    }
+    for &(from, to, _) in &cfg.state_resume_edges {
+        if !successors[from].contains(&to) {
+            successors[from].push(to);
+            predecessors[to].push(from);
+        }
+    }
+    let mut reachable = vec![false; cfg.blocks.len()];
+    let mut reachability = VecDeque::from([cfg.entry]);
+    while let Some(block) = reachability.pop_front() {
+        if reachable[block] {
+            continue;
+        }
+        reachable[block] = true;
+        reachability.extend(successors[block].iter().copied());
+    }
+    let mut out_states = vec![CallableBindingState::default(); cfg.blocks.len()];
+    let mut value_consumer_blocks = BTreeMap::<String, BTreeSet<usize>>::new();
+    for block in &cfg.blocks {
+        for op in &function.ops[block.start_op..block.end_op] {
+            visit_simple_ir_reads(op, |read| {
+                value_consumer_blocks
+                    .entry(read.name.to_string())
+                    .or_default()
+                    .insert(block.id);
+            });
+        }
+    }
+    let mut queued = reachable.clone();
+    let mut worklist = reachable
+        .iter()
+        .enumerate()
+        .filter_map(|(block, is_reachable)| is_reachable.then_some(block))
+        .collect::<VecDeque<_>>();
+
+    while let Some(block_id) = worklist.pop_front() {
+        queued[block_id] = false;
+        let block = &cfg.blocks[block_id];
+        let mut changed_values = BTreeSet::<String>::new();
+        let mut state = merge_binding_states(
+            predecessors[block_id]
+                .iter()
+                .map(|predecessor| &out_states[*predecessor]),
+        );
+
+        for index in block.start_op..block.end_op {
+            let op = &function.ops[index];
+            let mut produced = op
+                .runtime_symbol
+                .as_deref()
+                .map(simpleir_runtime_symbol_requirements_table)
+                .unwrap_or(SimpleIrRuntimeRequirements::NONE);
+
+            if let Some(alias_role) = simpleir_module_identity_alias_role_table(op.kind.as_str()) {
+                for arg in op.args.as_deref().unwrap_or_default() {
+                    produced = produced.union(requirement_for_name(&values, arg));
+                }
+                if let Some(out) = op.out.as_deref() {
+                    let mut incoming_identities = BTreeSet::new();
+                    for arg in op.args.as_deref().unwrap_or_default() {
+                        incoming_identities.extend(module_identities_for(&module_identities, arg));
+                    }
+                    let identities = module_identities.entry(out.to_string()).or_default();
+                    let changed = match alias_role {
+                        SimpleIrModuleIdentityAliasRole::Strong => {
+                            if *identities == incoming_identities {
+                                false
+                            } else {
+                                *identities = incoming_identities;
+                                true
+                            }
+                        }
+                        SimpleIrModuleIdentityAliasRole::Merge => {
+                            if *identities == incoming_identities {
+                                false
+                            } else {
+                                // Recompute the complete phi union from current
+                                // source contributions. A provisional fallback
+                                // is not a permanent may-alias fact once that
+                                // source resolves to a canonical module.
+                                *identities = incoming_identities;
+                                true
+                            }
+                        }
+                    };
+                    if changed {
+                        changed_values.insert(out.to_string());
+                    }
+                }
+            }
+            if let Some(module_name_arg) =
+                simpleir_module_identity_source_name_arg(op.kind.as_str())
+                && let Some(out) = op.out.as_deref()
+                && let Some(module_name_value) = op
+                    .args
+                    .as_deref()
+                    .and_then(|args| args.get(module_name_arg))
+                && let Some(module_name) = constant_strings.get(module_name_value)
+            {
+                let identities = module_identities.entry(out.to_string()).or_default();
+                if identities.insert(format!("module:{module_name}")) {
+                    changed_values.insert(out.to_string());
+                }
+            }
+
+            match simpleir_var_field_role_table(op.kind.as_str()) {
+                SimpleIrVarFieldRole::Definition => {
+                    if let Some(slot) = op.var.as_deref().or(op.out.as_deref()) {
+                        let source = op.args.as_deref().and_then(|args| args.first());
+                        let incoming = source
+                            .map(|name| requirement_for_name(&values, name))
+                            .unwrap_or(SimpleIrRuntimeRequirements::NONE);
+                        replace_requirement(&mut state.locals, slot, incoming);
+                        if let Some(source) = source {
+                            state.local_modules.insert(
+                                slot.to_string(),
+                                module_identities_for(&module_identities, source),
+                            );
+                        } else {
+                            state.local_modules.remove(slot);
+                        }
+                    }
+                }
+                SimpleIrVarFieldRole::MetadataWhenArgs => {
+                    if let Some(source) = op.args.as_deref().and_then(|args| args.first()) {
+                        produced = produced.union(requirement_for_name(&values, source));
+                        if let Some(out) = op.out.as_deref() {
+                            let incoming_identities =
+                                module_identities_for(&module_identities, source);
+                            let identities = module_identities.entry(out.to_string()).or_default();
+                            let before = identities.len();
+                            identities.extend(incoming_identities);
+                            if identities.len() != before {
+                                changed_values.insert(out.to_string());
+                            }
+                        }
+                    } else if let Some(slot) = op.var.as_deref() {
+                        produced = produced.union(requirement_for_name(&state.locals, slot));
+                        if let Some(out) = op.out.as_deref()
+                            && let Some(identities) = state.local_modules.get(slot)
+                        {
+                            let out_identities =
+                                module_identities.entry(out.to_string()).or_default();
+                            let before = out_identities.len();
+                            out_identities.extend(identities.iter().cloned());
+                            if out_identities.len() != before {
+                                changed_values.insert(out.to_string());
+                            }
+                        }
+                    }
+                }
+                SimpleIrVarFieldRole::Read | SimpleIrVarFieldRole::Result => {}
+            }
+
+            if let Some(access) = simpleir_module_slot_access_table(op.kind.as_str())
+                && let Some(args) = op.args.as_deref()
+                && let (Some(module_value), Some(name_value)) =
+                    (args.get(access.module_arg), args.get(access.name_arg))
+                && let Some(attribute) = constant_strings.get(name_value)
+            {
+                let identities = module_identities_for(&module_identities, module_value);
+                match access.role {
+                    SimpleIrModuleSlotRole::Set => {
+                        let incoming = access
+                            .value_arg
+                            .and_then(|position| args.get(position))
+                            .map(|value| requirement_for_name(&values, value))
+                            .unwrap_or(SimpleIrRuntimeRequirements::NONE);
+                        if identities.len() == 1 {
+                            replace_module_requirement(
+                                &mut state.modules,
+                                (
+                                    identities.into_iter().next().expect("singleton"),
+                                    attribute.clone(),
+                                ),
+                                incoming,
+                            );
+                        } else if !incoming.is_empty() {
+                            for module_identity in identities {
+                                let key = (module_identity, attribute.clone());
+                                let prior = state
+                                    .modules
+                                    .get(&key)
+                                    .copied()
+                                    .unwrap_or(SimpleIrRuntimeRequirements::NONE);
+                                state.modules.insert(key, prior.union(incoming));
+                            }
+                        }
+                    }
+                    SimpleIrModuleSlotRole::Delete => {
+                        if identities.len() == 1 {
+                            state.modules.remove(&(
+                                identities.into_iter().next().expect("singleton"),
+                                attribute.clone(),
+                            ));
+                        }
+                    }
+                    SimpleIrModuleSlotRole::Get => {
+                        for module_identity in identities {
+                            if let Some(requirement) =
+                                state.modules.get(&(module_identity, attribute.clone()))
+                            {
+                                produced = produced.union(*requirement);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(out) = op.out.as_deref() {
+                let before = requirement_for_name(&values, out);
+                // SSA results have one defining transfer. Re-evaluation must
+                // replace that result so a strong slot/module update can
+                // remove a requirement learned from an earlier provisional
+                // state; phi itself has already merged all incoming operands.
+                replace_requirement(&mut values, out, produced);
+                if before != requirement_for_name(&values, out) {
+                    changed_values.insert(out.to_string());
+                }
+            }
+
+            if simpleir_kind_has_callable_operand(op.kind.as_str())
+                && op.s_value.is_none()
+                && let Some(callable) = op.args.as_deref().and_then(|args| args.first())
+            {
+                let incoming = requirement_for_name(&values, callable);
+                // This is the transfer result for the current fixed-point
+                // state, not a monotone fact of its own. Strong local/module
+                // updates may remove a provisional requirement on revisit.
+                call_requirements[index] = incoming;
+            }
+        }
+
+        if out_states[block_id] != state {
+            out_states[block_id] = state;
+            for successor in &successors[block_id] {
+                if reachable[*successor] && !queued[*successor] {
+                    queued[*successor] = true;
+                    worklist.push_back(*successor);
+                }
+            }
+        }
+        for value in changed_values {
+            if let Some(consumers) = value_consumer_blocks.get(&value) {
+                for candidate in consumers {
+                    if reachable[*candidate] && !queued[*candidate] {
+                        queued[*candidate] = true;
+                        worklist.push_back(*candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    call_requirements
+}
+
+/// Compose kind and canonical runtime-call metadata through one generated
+/// requirement authority. Runtime symbols may arrive as builtin metadata,
+/// `call_internal.s_value`, or the first operand of an invocation op.
+pub fn simpleir_op_runtime_requirements(op: &OpIR) -> Option<SimpleIrRuntimeRequirements> {
+    let mut requirements = simpleir_runtime_requirements_table(op.kind.as_str())?;
+    if let Some(symbol) = op.builtin_name.as_deref() {
+        requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+    }
+    if matches!(op.kind.as_str(), "call_internal" | "builtin_func")
+        && let Some(symbol) = op.s_value.as_deref()
+    {
+        requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+    }
+    if simpleir_kind_has_callable_operand(op.kind.as_str())
+        && op.s_value.is_none()
+        && let Some(symbol) = op.args.as_deref().and_then(|args| args.first())
+    {
+        requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
+    }
+    Some(requirements)
+}
+
 fn runtime_admission_checks(
     capabilities: RuntimeTargetCapabilities,
-) -> [(SimpleIrRuntimeRequirements, bool, &'static str); 14] {
+) -> [(SimpleIrRuntimeRequirements, bool, &'static str); 15] {
     [
         (
-            SimpleIrRuntimeRequirements::FRAME_STATE,
-            capabilities.python_frame_state,
-            "operation requires observable Python frame stack, locals, and traceback line state",
+            SimpleIrRuntimeRequirements::EXECUTION_FRAME,
+            capabilities.execution_frame_state,
+            "operation requires internal execution-frame stack and source-location custody",
+        ),
+        (
+            SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,
+            capabilities.python_frame_introspection,
+            "operation requires exact Python-visible frame objects, locals, globals, and tracing state",
         ),
         (
             SimpleIrRuntimeRequirements::IDENTITY,
@@ -377,8 +794,63 @@ mod tests {
                 param_types: Some(vec![ty.to_string(), ty.to_string()]),
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
+        }
+    }
+
+    fn runtime_without_frame_introspection() -> RuntimeTargetCapabilities {
+        RuntimeTargetCapabilities {
+            execution_frame_state: true,
+            python_frame_introspection: false,
+            python_identity: true,
+            tuple_representation: true,
+            exception_model: true,
+            deterministic_lifetime: true,
+            format_protocol: true,
+            iterable_protocol: true,
+            object_model: true,
+            python_truthiness: true,
+            python_comparison: true,
+            structured_runtime_errors: true,
+            async_runtime: true,
+            unstructured_control_flow: true,
+            host_capabilities: true,
+        }
+    }
+
+    fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "callable_flow".to_string(),
+                params: vec![],
+                ops,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        }
+    }
+
+    fn frame_callable(out: &str) -> OpIR {
+        OpIR {
+            kind: "module_get_attr".to_string(),
+            runtime_symbol: Some("molt_getframe".to_string()),
+            args: Some(vec!["sys_module".to_string(), "frame_attr".to_string()]),
+            out: Some(out.to_string()),
+            ..OpIR::default()
+        }
+    }
+
+    fn call_value(kind: &str, callable: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: Some(vec![callable.to_string(), "callargs".to_string()]),
+            out: Some("call_result".to_string()),
+            ..OpIR::default()
         }
     }
 
@@ -444,6 +916,7 @@ mod tests {
                     param_types: None,
                     source_file: None,
                     is_extern: false,
+                    execution_context: Default::default(),
                 }],
                 profile: None,
             };
@@ -465,6 +938,7 @@ mod tests {
                     param_types: None,
                     source_file: None,
                     is_extern: false,
+                    execution_context: Default::default(),
                 }],
                 profile: None,
             };
@@ -489,6 +963,7 @@ mod tests {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         };
@@ -501,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_state_siblings_share_one_effectful_capability() {
+    fn execution_frames_are_distinct_from_python_introspection() {
         for kind in ["frame_locals_set", "line", "trace_enter_slot", "trace_exit"] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
@@ -516,6 +991,7 @@ mod tests {
                     param_types: None,
                     source_file: None,
                     is_extern: false,
+                    execution_context: Default::default(),
                 }],
                 profile: None,
             };
@@ -523,17 +999,733 @@ mod tests {
             let error =
                 validate_runtime_target_contract(&ir, "no-frames", RuntimeTargetCapabilities::NONE)
                     .expect_err("observable frame state must not degrade to a target no-op");
-            assert!(error.contains("frame stack, locals, and traceback line"));
+            assert!(error.contains("execution-frame stack and source-location"));
 
             validate_runtime_target_contract(
                 &ir,
                 "frames",
                 RuntimeTargetCapabilities {
-                    python_frame_state: true,
+                    execution_frame_state: true,
                     ..RuntimeTargetCapabilities::NONE
                 },
             )
-            .expect("the shared frame-state capability admits every sibling");
+            .expect("the execution-frame capability admits its full sibling family");
         }
+
+        let getframe_ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "observe".to_string(),
+                params: vec!["depth".to_string()],
+                ops: vec![OpIR {
+                    kind: "getframe".to_string(),
+                    args: Some(vec!["depth".to_string()]),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+        let error = validate_runtime_target_contract(
+            &getframe_ir,
+            "execution-only",
+            RuntimeTargetCapabilities {
+                execution_frame_state: true,
+                ..RuntimeTargetCapabilities::NONE
+            },
+        )
+        .expect_err("execution frames must not imply Python-visible frame objects");
+        assert!(error.contains("exact Python-visible frame objects"));
+    }
+
+    #[test]
+    fn canonical_runtime_symbol_fields_share_frame_introspection_admission() {
+        for symbol in [
+            "molt_getframe",
+            "molt_inspect_currentframe",
+            "molt_sys_settrace",
+            "molt_sys_gettrace",
+            "molt_sys_setprofile",
+            "molt_sys_getprofile",
+        ] {
+            for op in [
+                OpIR {
+                    kind: "call_internal".to_string(),
+                    s_value: Some(symbol.to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "builtin_func".to_string(),
+                    builtin_name: Some(symbol.to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_func".to_string(),
+                    args: Some(vec![symbol.to_string()]),
+                    ..OpIR::default()
+                },
+            ] {
+                let requirements = simpleir_op_runtime_requirements(&op)
+                    .expect("runtime-call op must be classified");
+                assert!(
+                    requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION),
+                    "{symbol} via {}",
+                    op.kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_callable_provenance_reaches_indirect_call_bind_through_aliases() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "aliased_frame_call".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "module_get_attr".to_string(),
+                        runtime_symbol: Some("molt_getframe".to_string()),
+                        args: Some(vec!["sys_module".to_string(), "attr".to_string()]),
+                        out: Some("frame_func".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "copy".to_string(),
+                        args: Some(vec!["frame_func".to_string()]),
+                        out: Some("alias".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some("callable_slot".to_string()),
+                        args: Some(vec!["alias".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some("callable_slot".to_string()),
+                        out: Some("loaded".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_bind".to_string(),
+                        args: Some(vec!["loaded".to_string(), "callargs".to_string()]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+
+        let error = validate_runtime_target_contract(
+            &ir,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("an indirect aliased frame call must reject before source generation");
+        assert!(error.contains("op#4 `call_bind`"), "{error}");
+        assert!(
+            error.contains("exact Python-visible frame objects"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn callable_slots_replace_on_safe_store_and_delete_but_union_at_cfg_joins() {
+        for tail in [
+            vec![
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("slot".into()),
+                    args: Some(vec!["safe".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".into(),
+                    var: Some("slot".into()),
+                    out: Some("loaded".into()),
+                    ..OpIR::default()
+                },
+                call_value("call_indirect", "loaded"),
+            ],
+            vec![
+                OpIR {
+                    kind: "delete_var".into(),
+                    var: Some("slot".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".into(),
+                    var: Some("slot".into()),
+                    out: Some("loaded".into()),
+                    ..OpIR::default()
+                },
+                call_value("call_indirect", "loaded"),
+            ],
+        ] {
+            let mut ops = vec![
+                frame_callable("frame_func"),
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("safe".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("slot".into()),
+                    args: Some(vec!["frame_func".into()]),
+                    ..OpIR::default()
+                },
+            ];
+            ops.extend(tail);
+            validate_runtime_target_contract(
+                &function_ir(ops),
+                "execution-only",
+                runtime_without_frame_introspection(),
+            )
+            .expect("definite safe overwrite/delete must clear callable provenance");
+        }
+
+        let joined = function_ir(vec![
+            frame_callable("frame_func"),
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("safe".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "if".into(),
+                args: Some(vec!["condition".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                args: Some(vec!["frame_func".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                args: Some(vec!["safe".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".into(),
+                var: Some("slot".into()),
+                out: Some("joined".into()),
+                ..OpIR::default()
+            },
+            call_value("call_bind", "joined"),
+        ]);
+        let error = validate_runtime_target_contract(
+            &joined,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("safe/frame branch join must retain frame provenance");
+        assert!(error.contains("call_bind"), "{error}");
+    }
+
+    #[test]
+    fn callable_provenance_covers_phi_loops_modules_and_every_indirect_spelling() {
+        for kind in [
+            "call_func",
+            "call_function",
+            "call_guarded",
+            "call_bind",
+            "call_indirect",
+        ] {
+            assert!(simpleir_kind_has_callable_operand(kind));
+            let error = validate_runtime_target_contract(
+                &function_ir(vec![
+                    frame_callable("frame_func"),
+                    call_value(kind, "frame_func"),
+                ]),
+                "execution-only",
+                runtime_without_frame_introspection(),
+            )
+            .expect_err("every generated callable-operand spelling must reject");
+            assert!(error.contains(kind), "{kind}: {error}");
+        }
+
+        let loop_carried = function_ir(vec![
+            frame_callable("frame_func"),
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("safe".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                args: Some(vec!["safe".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_start".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                args: Some(vec!["frame_func".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".into(),
+                var: Some("slot".into()),
+                out: Some("loop_value".into()),
+                ..OpIR::default()
+            },
+            call_value("call_indirect", "loop_value"),
+        ]);
+        validate_runtime_target_contract(
+            &loop_carried,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("loop-carried prohibited callable must reach the exit call");
+
+        let module_alias = function_ir(vec![
+            frame_callable("frame_func"),
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("alias".into()),
+                out: Some("alias_name".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec![
+                    "module".into(),
+                    "alias_name".into(),
+                    "frame_func".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_global".into(),
+                args: Some(vec!["module".into(), "alias_name".into()]),
+                out: Some("module_alias".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "phi".into(),
+                args: Some(vec!["module_alias".into(), "safe_unknown".into()]),
+                out: Some("phi_alias".into()),
+                ..OpIR::default()
+            },
+            call_value("call_function", "phi_alias"),
+        ]);
+        validate_runtime_target_contract(
+            &module_alias,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("module global and phi aliases must retain prohibited provenance");
+    }
+
+    #[test]
+    fn callable_admission_folds_exception_and_state_resume_edges() {
+        for ops in [
+            vec![
+                OpIR {
+                    kind: "async_work_poll".into(),
+                    value: Some(41),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(41),
+                    ..OpIR::default()
+                },
+                frame_callable("handler_frame"),
+                call_value("call_indirect", "handler_frame"),
+            ],
+            vec![
+                OpIR {
+                    kind: "state_switch".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_yield".into(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                frame_callable("resumed_frame"),
+                call_value("call_indirect", "resumed_frame"),
+            ],
+        ] {
+            let error = validate_runtime_target_contract(
+                &function_ir(ops),
+                "execution-only",
+                runtime_without_frame_introspection(),
+            )
+            .expect_err("handler/resume-only callable use must be admitted as executable");
+            assert!(
+                error.contains("exact Python-visible frame objects"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_identity_aliases_share_replace_and_delete_semantics() {
+        let prefix = || {
+            vec![
+                frame_callable("frame_func"),
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("sample".into()),
+                    out: Some("module_name".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("alias".into()),
+                    out: Some("alias_name".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_get".into(),
+                    args: Some(vec!["module_name".into()]),
+                    out: Some("module_a".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy".into(),
+                    args: Some(vec!["module_a".into()]),
+                    out: Some("module_alias".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".into(),
+                    args: Some(vec![
+                        "module_alias".into(),
+                        "alias_name".into(),
+                        "frame_func".into(),
+                    ]),
+                    ..OpIR::default()
+                },
+            ]
+        };
+        let read_and_call = || {
+            vec![
+                OpIR {
+                    kind: "module_cache_get".into(),
+                    args: Some(vec!["module_name".into()]),
+                    out: Some("module_b".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_get_global".into(),
+                    args: Some(vec!["module_b".into(), "alias_name".into()]),
+                    out: Some("loaded".into()),
+                    ..OpIR::default()
+                },
+                call_value("call_indirect", "loaded"),
+            ]
+        };
+
+        let mut prohibited = prefix();
+        prohibited.extend(read_and_call());
+        validate_runtime_target_contract(
+            &function_ir(prohibited),
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("module cache/copy aliases must share callable provenance");
+
+        for clearing_op in [
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec![
+                    "module_a".into(),
+                    "alias_name".into(),
+                    "safe_unknown".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_del_global".into(),
+                args: Some(vec!["module_a".into(), "alias_name".into()]),
+                ..OpIR::default()
+            },
+        ] {
+            let mut cleared = prefix();
+            cleared.push(clearing_op);
+            cleared.extend(read_and_call());
+            validate_runtime_target_contract(
+                &function_ir(cleared),
+                "execution-only",
+                runtime_without_frame_introspection(),
+            )
+            .expect("definite module overwrite/delete must clear stale provenance");
+        }
+
+        let mut local_alias = prefix();
+        local_alias.extend([
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("module_slot".into()),
+                args: Some(vec!["module_a".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".into(),
+                var: Some("module_slot".into()),
+                out: Some("module_local_alias".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_global".into(),
+                args: Some(vec!["module_local_alias".into(), "alias_name".into()]),
+                out: Some("local_loaded".into()),
+                ..OpIR::default()
+            },
+            call_value("call_indirect", "local_loaded"),
+        ]);
+        validate_runtime_target_contract(
+            &function_ir(local_alias),
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("module identity must survive generated local store/load roles");
+
+        for uncertain_mutation in ["module_set_attr", "module_del_global"] {
+            let mut uncertain = vec![
+                frame_callable("frame_func"),
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("safe".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("a".into()),
+                    out: Some("a_name".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("b".into()),
+                    out: Some("b_name".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("alias".into()),
+                    out: Some("attr".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_get".into(),
+                    args: Some(vec!["a_name".into()]),
+                    out: Some("module_a".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_get".into(),
+                    args: Some(vec!["b_name".into()]),
+                    out: Some("module_b".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".into(),
+                    args: Some(vec!["module_b".into(), "attr".into(), "frame_func".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "phi".into(),
+                    args: Some(vec!["module_a".into(), "module_b".into()]),
+                    out: Some("maybe_module".into()),
+                    ..OpIR::default()
+                },
+            ];
+            uncertain.push(if uncertain_mutation == "module_set_attr" {
+                OpIR {
+                    kind: uncertain_mutation.into(),
+                    args: Some(vec!["maybe_module".into(), "attr".into(), "safe".into()]),
+                    ..OpIR::default()
+                }
+            } else {
+                OpIR {
+                    kind: uncertain_mutation.into(),
+                    args: Some(vec!["maybe_module".into(), "attr".into()]),
+                    ..OpIR::default()
+                }
+            });
+            uncertain.extend([
+                OpIR {
+                    kind: "module_get_global".into(),
+                    args: Some(vec!["module_b".into(), "attr".into()]),
+                    out: Some("still_prohibited".into()),
+                    ..OpIR::default()
+                },
+                call_value("call_indirect", "still_prohibited"),
+            ]);
+            validate_runtime_target_contract(
+                &function_ir(uncertain),
+                "execution-only",
+                runtime_without_frame_introspection(),
+            )
+            .expect_err("may-alias mutation cannot strongly clear every possible module");
+        }
+    }
+
+    #[test]
+    fn strong_module_copy_replaces_provisional_identity_after_out_of_order_resolution() {
+        let ops = vec![
+            frame_callable("frame_func"),
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("sample".into()),
+                out: Some("module_name".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("alias".into()),
+                out: Some("attr".into()),
+                ..OpIR::default()
+            },
+            // Deliberately precede the defining import. The worklist must
+            // revisit this consumer and replace its provisional value identity
+            // once the canonical module identity becomes available.
+            OpIR {
+                kind: "copy".into(),
+                args: Some(vec!["late_module".into()]),
+                out: Some("module_alias".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_get".into(),
+                args: Some(vec!["module_name".into()]),
+                out: Some("late_module".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec![
+                    "late_module".into(),
+                    "attr".into(),
+                    "frame_func".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec![
+                    "module_alias".into(),
+                    "attr".into(),
+                    "safe_unknown".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_global".into(),
+                args: Some(vec!["late_module".into(), "attr".into()]),
+                out: Some("loaded".into()),
+                ..OpIR::default()
+            },
+            call_value("call_indirect", "loaded"),
+        ];
+
+        validate_runtime_target_contract(
+            &function_ir(ops),
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect("a resolved strong copy must recover definite strong-update semantics");
+    }
+
+    #[test]
+    fn module_phi_recomputes_out_of_order_sources_without_provisional_poison() {
+        let ops = vec![
+            frame_callable("frame_func"),
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("sample".into()),
+                out: Some("module_name".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".into(),
+                s_value: Some("alias".into()),
+                out: Some("attr".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "phi".into(),
+                args: Some(vec!["late_a".into(), "late_b".into()]),
+                out: Some("joined_module".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_get".into(),
+                args: Some(vec!["module_name".into()]),
+                out: Some("late_a".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_get".into(),
+                args: Some(vec!["module_name".into()]),
+                out: Some("late_b".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec!["late_a".into(), "attr".into(), "frame_func".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".into(),
+                args: Some(vec![
+                    "joined_module".into(),
+                    "attr".into(),
+                    "safe_unknown".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_global".into(),
+                args: Some(vec!["late_b".into(), "attr".into()]),
+                out: Some("loaded".into()),
+                ..OpIR::default()
+            },
+            call_value("call_indirect", "loaded"),
+        ];
+
+        validate_runtime_target_contract(
+            &function_ir(ops),
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect("resolved phi sources for one module must shed provisional may-alias identities");
     }
 }

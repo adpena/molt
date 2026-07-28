@@ -30,6 +30,7 @@ pub(super) fn wasm_test_function(
         param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -99,6 +100,7 @@ pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR 
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }

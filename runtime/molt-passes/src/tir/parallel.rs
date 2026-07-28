@@ -76,6 +76,7 @@ mod tests {
         blocks.insert(entry_id, block);
         TirFunction {
             name: name.into(),
+            execution_context: Default::default(),
             param_names: vec![],
             param_types: vec![],
             return_type: TirType::I64,
@@ -126,6 +127,7 @@ mod tests {
         blocks.insert(entry_id, block);
         TirFunction {
             name: name.into(),
+            execution_context: Default::default(),
             param_names: vec!["p0".into(), "p1".into()],
             param_types: vec![TirType::I64, TirType::I64],
             return_type: TirType::I64,

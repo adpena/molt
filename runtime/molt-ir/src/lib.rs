@@ -23,8 +23,8 @@ pub mod stdlib_module_symbols;
 pub mod tir;
 
 pub use crate::ir::{
-    BackendIrDocument, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR,
-    validate_simple_ir,
+    BackendIrDocument, ExecutionContextPolicy, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR,
+    SimpleIR, validate_simple_ir,
 };
 pub use crate::repr::Repr;
 

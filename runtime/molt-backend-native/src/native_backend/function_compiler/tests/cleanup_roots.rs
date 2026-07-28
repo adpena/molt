@@ -46,6 +46,7 @@ fn cleanup_roots_collapse_join_alias_duplicates() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());

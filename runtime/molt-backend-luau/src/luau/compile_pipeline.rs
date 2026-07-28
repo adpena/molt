@@ -9,6 +9,20 @@ impl LuauBackend {
         // backend instance does not carry unsupported-op records across runs.
         self.unsupported_ops.clear();
         self.function_symbols = ir.functions.iter().map(|func| func.name.clone()).collect();
+        self.inherited_frame_context_functions = ir
+            .functions
+            .iter()
+            .filter(|func| matches!(func.execution_context, ExecutionContextPolicy::Inherited))
+            .map(|func| func.name.clone())
+            .collect();
+        let has_execution_frames = ir.functions.iter().flat_map(|func| &func.ops).any(|op| {
+            molt_tir::tir::op_kinds_generated::simpleir_runtime_requirements_table(op.kind.as_str())
+                .is_some_and(|requirements| {
+                    requirements.contains(
+                        molt_tir::tir::op_kinds_generated::SimpleIrRuntimeRequirements::EXECUTION_FRAME,
+                    )
+                })
+        });
         // Phase 1: Emit all function bodies to a temporary buffer so we can
         // scan which runtime helpers are actually referenced.
         let emit_funcs: Vec<&FunctionIR> = ir.functions.iter().collect();
@@ -49,7 +63,12 @@ impl LuauBackend {
         self.emit_line("-- Entry point");
         self.emit_line("if molt_main then");
         self.push_indent();
-        self.emit_line("molt_main()");
+        if has_execution_frames {
+            self.emit_line("local __molt_ok, __molt_error = xpcall(molt_main, function(error_value) local context, owner = molt_frame_context(); local exception, _restored = molt_frame_finalize(context, owner, 0, error_value, true); return exception end)");
+            self.emit_line("if not __molt_ok then error(__molt_error, 0) end");
+        } else {
+            self.emit_line("molt_main()");
+        }
         self.pop_indent();
         self.emit_line("end");
 
@@ -94,7 +113,8 @@ impl LuauBackend {
             "luau",
             molt_tir::target_admission::NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
             molt_tir::target_admission::RuntimeTargetCapabilities {
-                python_frame_state: false,
+                execution_frame_state: true,
+                python_frame_introspection: false,
                 python_identity: true,
                 tuple_representation: true,
                 exception_model: true,
@@ -162,8 +182,18 @@ impl LuauBackend {
             .push_str("local molt_call_checked: (any, ...any) -> any\n");
         self.output
             .push_str("local molt_equal: (any, any, any?) -> boolean\n");
+        let needs_frame_runtime = func_body.contains("molt_frame_")
+            || func_body.contains("molt_coroutine_execution_wrap(")
+            || func_body.contains("molt_exception_attach_traceback(");
         self.output
             .push_str("local molt_sequence_length_key = {}\nlocal molt_sequence_kind_key = {}\nlocal function molt_sequence_len(sequence: {any}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {any}\n\tlocal sequence = table.pack(...)\n\trawset(sequence, molt_sequence_length_key, sequence.n)\n\trawset(sequence, molt_sequence_kind_key, kind)\n\trawset(sequence, \"n\", nil)\n\treturn sequence\nend\nlocal function molt_pack_list(...): {any} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {any} return molt_pack_sequence_kind(\"tuple\", ...) end\nlocal function molt_function_register_signature(func: any, arg_names: {any}): nil\n\tmolt_function_metadata[func] = {arg_names = arg_names, posonly = 0, kwonly = molt_pack_tuple(), vararg = nil, varkw = nil, defaults = nil, kwdefaults = nil}\n\treturn nil\nend\n");
+        if needs_frame_runtime {
+            self.output.push_str(frame_runtime::FRAME_RUNTIME);
+            self.output.push('\n');
+        }
+        if func_body.contains("molt_function_set_builtin") {
+            self.output.push_str("local function molt_function_set_builtin(func: any): any\n\tlocal metadata = molt_function_metadata[func]\n\tif metadata == nil then metadata = {}; molt_function_metadata[func] = metadata end\n\tmetadata.is_builtin = true\n\treturn func\nend\n\n");
+        }
         let needs_callargs_runtime = func_body.contains("molt_callargs_")
             || func_body.contains("molt_function_init_metadata_packed(")
             || func_body.contains("molt_function_set_defaults(")
@@ -210,8 +240,8 @@ impl LuauBackend {
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
 
         let needs_luau_module_import = func_body.contains("molt_luau_import_module(");
-        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info(")
-            || func_body.contains("molt_sys_ensure_module(")
+        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info")
+            || func_body.contains("molt_sys_ensure_module")
             || needs_luau_module_import;
         if needs_sys_bootstrap {
             self.output.push_str(concat!(

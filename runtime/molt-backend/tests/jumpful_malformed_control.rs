@@ -40,6 +40,7 @@ fn jumpful_else_without_end_if_does_not_panic() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

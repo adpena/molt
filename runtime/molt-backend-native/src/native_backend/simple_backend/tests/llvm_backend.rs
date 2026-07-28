@@ -46,6 +46,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -57,6 +58,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

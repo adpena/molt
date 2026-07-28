@@ -362,6 +362,11 @@ class ModuleLifecycleMixin(_MixinBase):
             return False
         if func_name == "molt_main" or func_name.startswith("molt_init_"):
             return False
+        # Module chunks are an internal partition of the enclosing module code
+        # object, not Python call frames. Their LINE ops update the active module
+        # frame and must not mint an unbound synthetic code-slot identity.
+        if func_name.startswith(f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"):
+            return False
         if func_name == _MOLT_GLOBALS_BUILTIN or func_name.endswith(
             f"__{_MOLT_GLOBALS_BUILTIN}"
         ):

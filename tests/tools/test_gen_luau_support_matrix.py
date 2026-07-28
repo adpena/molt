@@ -224,13 +224,17 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
     assert "ignored_test_only" not in output
 
 
-def test_observable_frame_state_siblings_are_all_rejected_before_source() -> None:
+def test_execution_frames_are_implemented_but_introspection_is_not_admitted() -> None:
     mod = _load_module()
     source = r'''
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
-            "frame_locals_set" | "line" | "trace_enter_slot" | "trace_exit" => {
-                self.emit_line("-- legacy silent drop");
+            "trace_enter_slot" => { self.emit_line("molt_frame_enter(code)"); }
+            "trace_exit" => { self.emit_line("molt_frame_exit(cookie)"); }
+            "line" => { self.emit_line("molt_frame_set_line(7)"); }
+            "frame_locals_set" => { self.emit_line("molt_frame_locals_set(locals)"); }
+            "getframe" => {
+                self.emit_line("local frame = molt_getframe(depth)");
             }
         }
     }
@@ -239,5 +243,5 @@ def test_observable_frame_state_siblings_are_all_rejected_before_source() -> Non
     rows = {row.op: row for row in mod.collect_rows_from_text(source)}
 
     for kind in ("frame_locals_set", "line", "trace_enter_slot", "trace_exit"):
-        assert rows[kind].status == "not-admitted"
-        assert "target contract rejects" in rows[kind].note
+        assert rows[kind].status == "implemented-exact"
+    assert rows["getframe"].status == "not-admitted"

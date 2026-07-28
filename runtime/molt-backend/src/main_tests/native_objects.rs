@@ -10,6 +10,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "b".to_string(),
@@ -18,6 +19,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "c".to_string(),
@@ -26,6 +28,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ];
 
@@ -54,6 +57,7 @@ fn partition_functions_for_batches_respects_count_budget() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         })
         .collect();
 
@@ -217,6 +221,7 @@ fn native_application_object_batches_cleanup_temp_dir_after_merge_failure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "helper".to_string(),
@@ -228,6 +233,7 @@ fn native_application_object_batches_cleanup_temp_dir_after_merge_failure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -316,6 +322,7 @@ fn native_application_object_uses_op_budget_even_when_count_fits() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "helper".to_string(),
@@ -327,6 +334,7 @@ fn native_application_object_uses_op_budget_even_when_count_fits() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -434,6 +442,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "demo__module".to_string(),
@@ -445,6 +454,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ];
 

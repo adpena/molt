@@ -19,6 +19,9 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -216,8 +219,18 @@ class AttributeAccessMixin(_MixinBase):
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         res = MoltValue(self.next_var(), type_hint="Any")
+        runtime_symbol = SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
+            f"{module_name}.{name}"
+        )
         self.emit(
-            MoltOp(kind="MODULE_GET_ATTR", args=[module_val, name_val], result=res)
+            MoltOp(
+                kind="MODULE_GET_ATTR",
+                args=[module_val, name_val],
+                result=res,
+                metadata=(
+                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
+                ),
+            )
         )
         return res
 
@@ -943,11 +956,28 @@ class AttributeAccessMixin(_MixinBase):
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
             res = MoltValue(self.next_var(), type_hint="Any")
+            module_name = (
+                self._imported_module_binding_target(obj_name)
+                if obj_name is not None
+                else None
+            )
+            runtime_symbol = (
+                SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
+                    f"{module_name}.{node.attr}"
+                )
+                if module_name is not None
+                else None
+            )
             self.emit(
                 MoltOp(
                     kind="MODULE_GET_ATTR",
                     args=[obj, attr_name],
                     result=res,
+                    metadata=(
+                        {"runtime_symbol": runtime_symbol}
+                        if runtime_symbol
+                        else None
+                    ),
                 )
             )
             return res

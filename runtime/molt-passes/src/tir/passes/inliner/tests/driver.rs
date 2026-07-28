@@ -41,6 +41,39 @@ fn run_inliner_inlines_const_call() {
 }
 
 #[test]
+fn run_inliner_preserves_typed_execution_context_boundaries() {
+    for policy in [
+        molt_ir::ExecutionContextPolicy::Local,
+        molt_ir::ExecutionContextPolicy::Inherited,
+    ] {
+        let mut callee = const_callee();
+        callee.execution_context = policy;
+        let caller = caller_calling_const("constfn");
+        let mut module = module(vec![caller, callee]);
+        let (call_graph, summaries) = analysis(&module);
+
+        let stats = run_inliner(
+            &mut module,
+            &call_graph,
+            &summaries,
+            &TargetInfo::native_release_fast(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(stats.sites_inlined, 0, "policy {policy:?}");
+        let caller = module.functions.iter().find(|f| f.name == "g").unwrap();
+        assert!(
+            caller
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .any(|op| op.opcode == OpCode::Call),
+            "typed execution-context call must survive inlining for {policy:?}"
+        );
+    }
+}
+
+#[test]
 fn run_inliner_inlines_add_call_with_args() {
     // g(p, q) { return addfn(p, q) }, addfn(a, b) = a + b.
     let callee = add_callee();

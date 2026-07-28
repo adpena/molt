@@ -13,6 +13,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "demo____molt_globals_builtin__".to_string(),
@@ -36,6 +37,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ]);
 
@@ -63,6 +65,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
     let tir = crate::tir::lower_from_simple::lower_to_tir(&func);
@@ -92,6 +95,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut func);
     let tir = crate::tir::lower_from_simple::lower_to_tir(&func);
@@ -129,6 +133,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     crate::externalize_function_with_signature(&mut extern_helper);
     let caller = FunctionIR {
@@ -151,6 +156,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let functions = vec![caller.clone(), extern_helper.clone()];
     let module_context = SimpleBackend::build_module_context(&functions);
@@ -207,6 +213,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "demo__molt_module_chunk_1".to_string(),
@@ -220,6 +227,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ]);
 
@@ -245,6 +253,7 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         param_types: Some(vec!["i64".to_string()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }]);
 
     assert_eq!(

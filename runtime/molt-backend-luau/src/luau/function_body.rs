@@ -15,13 +15,14 @@ impl LuauBackend {
             param_types: func.param_types.clone(),
             source_file: func.source_file.clone(),
             is_extern: func.is_extern,
+            execution_context: func.execution_context.clone(),
         };
         self.scalar_plan = ScalarRepresentationPlan::for_function_ir(&scalar_func);
 
         // Build typed parameter list.  When `param_types` carries per-param
         // type hints from the frontend we emit Luau type annotations so the
         // native JIT can skip runtime type guards.
-        let typed_params: Vec<String> = func
+        let mut typed_params: Vec<String> = func
             .params
             .iter()
             .enumerate()
@@ -36,6 +37,10 @@ impl LuauBackend {
                 format!("{ident}: {luau_ty}")
             })
             .collect();
+        let inherits_frame_context = self.inherited_frame_context_functions.contains(&func.name);
+        if inherits_frame_context {
+            typed_params.push("__molt_frame_context: any".to_string());
+        }
         let params = typed_params.join(", ");
 
         let name = emit_function_ident(&func.name);
@@ -62,6 +67,8 @@ impl LuauBackend {
         self.try_depth_counter.clear();
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
+        self.has_local_frame_context =
+            inherits_frame_context || ops.iter().any(|op| op.kind == "trace_enter_slot");
         self.nonneg_consts.clear();
         self.scope_local_count = 0;
         self.func_body_indent = self.indent as u32;

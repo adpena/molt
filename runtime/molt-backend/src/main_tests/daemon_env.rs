@@ -91,6 +91,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "demo__module".to_string(),
@@ -109,6 +110,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_bootstrap".to_string(),
@@ -120,6 +122,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_import".to_string(),
@@ -131,6 +134,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -142,6 +146,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

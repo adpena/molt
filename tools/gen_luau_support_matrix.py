@@ -44,7 +44,6 @@ def _kind_set(*keys: str) -> frozenset[str]:
 
 
 _PRE_SOURCE_NOT_ADMITTED = _kind_set(
-    "simpleir_frame_state_semantics_kinds",
     "simpleir_dynamic_divmod_semantics_kinds",
     "simpleir_dynamic_power_semantics_kinds",
     "simpleir_integer_only_semantics_kinds",
@@ -53,6 +52,7 @@ _PRE_SOURCE_NOT_ADMITTED = _kind_set(
     "simpleir_tuple_semantics_kinds",
     "simpleir_exception_semantics_kinds",
     "simpleir_deterministic_lifetime_semantics_kinds",
+    "simpleir_frame_introspection_semantics_kinds",
     "simpleir_format_protocol_semantics_kinds",
     "simpleir_iterable_protocol_semantics_kinds",
     "simpleir_object_model_semantics_kinds",
@@ -77,6 +77,12 @@ _REGISTERED_SIMPLEIR_KINDS = {
     for row in _OP_KIND_TABLE.get("kind", [])
     for spelling in (row["canonical"], *row.get("aliases", []))
 }
+_REGISTERED_SIMPLEIR_KINDS.update(
+    _kind_set(
+        "simpleir_execution_frame_semantics_kinds",
+        "simpleir_frame_introspection_semantics_kinds",
+    )
+)
 for _table in ("simpleir_control_kind", "frontend_effect_kind"):
     _REGISTERED_SIMPLEIR_KINDS.update(
         row["kind"] for row in _OP_KIND_TABLE.get(_table, [])

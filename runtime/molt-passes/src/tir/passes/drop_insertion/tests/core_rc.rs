@@ -122,6 +122,7 @@ fn loop_slot_accumulator_no_double_drop() {
         param_types: Some(vec!["Any".into()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let mut tir_func = lower_to_tir(&func_ir);

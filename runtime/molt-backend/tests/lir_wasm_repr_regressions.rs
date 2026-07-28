@@ -35,6 +35,7 @@ fn empty_tir_function(
 ) -> TirFunction {
     TirFunction {
         name: name.into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type,
@@ -217,6 +218,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
     );
     let func = TirFunction {
         name: "truthy_branch".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into()],
         param_types: vec![TirType::DynBox],
         return_type: TirType::None,
@@ -306,6 +308,7 @@ fn wasm_lir_loop_carried_i64_params_stay_i64() {
     );
     let func = TirFunction {
         name: "loop_i64".into(),
+        execution_context: Default::default(),
         param_names: vec!["i".into()],
         param_types: vec![TirType::I64],
         return_type: TirType::None,

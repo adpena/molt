@@ -10,7 +10,7 @@
 
 use crate::repr::{ContainerKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::{FunctionIR, OpIR, SimpleIR};
+use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -31,6 +31,7 @@ pub use source_checks::{review_luau_perf, validate_luau_source};
 
 mod compile_pipeline;
 mod dict_runtime;
+mod frame_runtime;
 mod function_body;
 mod helpers;
 mod op_attributes;
@@ -138,6 +139,10 @@ pub struct LuauBackend {
     /// user-defined names in the reserved `molt_` namespace from compiler
     /// runtime references carried by call op metadata.
     function_symbols: BTreeSet<String>,
+    /// Functions without their own TRACE_ENTER_SLOT that nevertheless consume
+    /// execution-frame ops. Their caller threads the active context through a
+    /// backend-private trailing parameter (module chunks are the canonical case).
+    inherited_frame_context_functions: BTreeSet<String>,
     /// Variables that have been pre-declared at function scope and should use
     /// assignment (`var = val`) instead of `local var = val` in emit_op.
     hoisted_vars: BTreeSet<String>,
@@ -157,6 +162,9 @@ pub struct LuauBackend {
     /// True when we are inside a pcall body (between pcall_wrap_begin and
     /// pcall_wrap_end). exception_last should return nil in this zone.
     inside_pcall_body: bool,
+    /// Whether the active function owns a TRACE_ENTER_SLOT activation local.
+    /// Compiler-generated module chunks inherit the caller's execution context.
+    has_local_frame_context: bool,
     /// Variables known to hold non-negative integer constants.  Populated from
     /// `const` / `const_int` ops with `value >= 0`.  Used to skip the negative
     /// index ternary in get_item / set_item / del_item / string index paths.
@@ -191,6 +199,7 @@ impl LuauBackend {
             indent: 0,
             uses_forward_decls: false,
             function_symbols: BTreeSet::new(),
+            inherited_frame_context_functions: BTreeSet::new(),
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
             scalar_plan: ScalarRepresentationPlan::default(),
@@ -198,12 +207,23 @@ impl LuauBackend {
             pcall_counter: 0,
             temp_counter: 0,
             inside_pcall_body: false,
+            has_local_frame_context: false,
             nonneg_consts: BTreeSet::new(),
             scope_local_count: 0,
             func_body_indent: 1,
             in_spill_do_block: false,
             needs_local_spill: false,
             unsupported_ops: Vec::new(),
+        }
+    }
+}
+
+impl LuauBackend {
+    fn frame_context_expr(&self) -> &'static str {
+        if self.has_local_frame_context {
+            "__molt_frame_context"
+        } else {
+            "molt_frame_context()"
         }
     }
 }

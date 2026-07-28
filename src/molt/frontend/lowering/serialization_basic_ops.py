@@ -523,7 +523,9 @@ class SerializationBasicOpsMixin(_MixinBase):
             target = op.args[0]
             code_id = self.func_code_ids.get(target, 0)
             entry = {
-                "kind": "call",
+                "kind": (
+                    "call_internal" if target in self.module_chunk_symbols else "call"
+                ),
                 "s_value": target,
                 "args": [arg.name for arg in op.args[1:]],
                 "value": code_id,
@@ -543,19 +545,22 @@ class SerializationBasicOpsMixin(_MixinBase):
             metadata = op.metadata or {}
             if metadata.get("defines_del") is True:
                 entry["defines_del"] = True
+            if target in self.module_chunk_symbols:
+                entry["passes_execution_context"] = True
             ctx.json_ops.append(entry)
         elif op.kind == "CALL_INTERNAL":
             target = op.args[0]
             code_id = self.func_code_ids.get(target, 0)
-            ctx.json_ops.append(
-                {
-                    "kind": "call_internal",
-                    "s_value": target,
-                    "args": [arg.name for arg in op.args[1:]],
-                    "value": code_id,
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "call_internal",
+                "s_value": target,
+                "args": [arg.name for arg in op.args[1:]],
+                "value": code_id,
+                "out": op.result.name,
+            }
+            if target in self.module_chunk_symbols:
+                entry["passes_execution_context"] = True
+            ctx.json_ops.append(entry)
         elif op.kind == "CALL_INDIRECT":
             ctx.json_ops.append(
                 {

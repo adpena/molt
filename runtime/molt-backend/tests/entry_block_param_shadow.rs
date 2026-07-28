@@ -92,6 +92,7 @@ fn entry_block_params_compile_with_int_shadow_targets() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -139,6 +140,7 @@ fn structured_if_phi_merges_compile() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -215,6 +217,7 @@ fn nested_structured_if_phi_merges_compile() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

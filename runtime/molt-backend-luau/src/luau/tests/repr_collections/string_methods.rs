@@ -21,6 +21,7 @@ fn test_string_startswith_endswith_honor_start_end_bounds() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_startswith".to_string(),
@@ -81,6 +82,7 @@ fn test_string_find_honors_start_end_bounds() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_find".to_string(),
@@ -121,6 +123,7 @@ fn test_string_startswith_endswith_tuple_prefixes_lower() {
             param_types: Some(vec!["str".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -190,6 +193,7 @@ fn test_string_rfind_honors_start_end_bounds() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_rfind_slice".to_string(),
@@ -239,6 +243,7 @@ fn test_string_index_rindex_raise_value_error_when_missing() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_index_slice".to_string(),
@@ -290,6 +295,7 @@ fn test_string_partition_and_rpartition_lower_to_tuple_tables() {
             param_types: Some(vec!["str".to_string(), "str".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_partition".to_string(),
@@ -332,6 +338,7 @@ fn test_string_removeprefix_suffix_get_attr_indirect_path() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -426,6 +433,7 @@ fn test_luau_repr_authority_typed_string_get_attr_dispatch() {
             param_types: Some(vec!["str".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "get_attr_generic_obj".to_string(),
@@ -462,6 +470,7 @@ fn test_string_ascii_predicate_get_attr_indirect_path() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -553,6 +562,7 @@ fn test_string_splitlines_lowers_with_keepends_flag() {
             param_types: Some(vec!["str".to_string(), "bool".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_splitlines".to_string(),
@@ -599,6 +609,7 @@ fn test_string_empty_needle_edge_cases_are_explicit() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_find".to_string(),
@@ -660,6 +671,7 @@ fn test_string_split_rejects_empty_separator() {
             param_types: Some(vec!["str".to_string(), "str".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_split".to_string(),
@@ -702,6 +714,7 @@ fn test_string_replace_honors_count_argument() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_replace".to_string(),
@@ -751,6 +764,7 @@ fn test_string_count_and_count_slice_lower_to_nonoverlap_loop() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_count".to_string(),

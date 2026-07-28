@@ -183,6 +183,12 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.builtin_name {
             attrs.insert("builtin_name".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(ref v) = op.runtime_symbol {
+            attrs.insert("runtime_symbol".into(), AttrValue::Str(v.clone()));
+        }
+        if op.passes_execution_context {
+            attrs.insert("passes_execution_context".into(), AttrValue::Bool(true));
+        }
         // Finalizer fact for `object_new_bound`: the instance's class defines
         // `__del__` (frontend-resolved through the MRO, excluding `object`). The
         // escape pass reads this to keep the instance heap-allocated with a live

@@ -8,6 +8,7 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
             make_ref_op("dec_ref", "x"),
@@ -30,6 +31,7 @@ fn rc_coalescing_preserves_pair_across_control_flow() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
             make_op("if"),
@@ -52,6 +54,7 @@ fn rc_coalescing_handles_borrow_release_pair() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_ref_op("borrow", "y"),
             make_ref_op("release", "y"),
@@ -73,6 +76,7 @@ fn rc_coalescing_preserves_pair_with_intervening_use() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "x"),
             // An op that uses x as an argument — breaks the window.
@@ -96,6 +100,7 @@ fn rc_coalescing_eliminates_different_vars_independently() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_ref_op("inc_ref", "a"),
             make_ref_op("inc_ref", "b"),
@@ -139,6 +144,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_import".to_string(),
@@ -159,6 +165,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_math".to_string(),
@@ -167,6 +174,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -202,6 +210,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_host_init".to_string(),
@@ -222,6 +231,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "host_init_helper".to_string(),
@@ -230,6 +240,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -270,6 +281,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -283,6 +295,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "sys__helper".to_string(),
@@ -291,6 +304,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_json".to_string(),
@@ -299,6 +313,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

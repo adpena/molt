@@ -121,6 +121,14 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'    "{kind}": "{effects[kind]}",\n')
     out.append("}\n\n")
 
+    out.append("SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {\n")
+    for row in sorted(
+        data.get("simpleir_runtime_qualified_callable", []),
+        key=lambda item: item["qualified"],
+    ):
+        out.append(f'    "{row["qualified"]}": "{row["symbol"]}",\n')
+    out.append("}\n\n")
+
     for effect, const_name in (
         ("pure", "FRONTEND_EFFECT_PURE_KINDS"),
         ("reads_heap", "FRONTEND_EFFECT_READS_HEAP_KINDS"),

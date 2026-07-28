@@ -69,6 +69,7 @@ fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

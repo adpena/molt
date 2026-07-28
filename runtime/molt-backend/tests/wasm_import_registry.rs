@@ -21,6 +21,7 @@ fn empty_ir() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -162,6 +163,7 @@ fn ir_with_code_new() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -191,6 +193,7 @@ fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }

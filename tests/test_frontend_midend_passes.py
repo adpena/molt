@@ -1895,6 +1895,116 @@ value = len(globals())
     assert [op for op in ops if op.get("kind") == "len"] == []
 
 
+def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
+    gen = SimpleTIRGenerator(
+        module_name="hello",
+        entry_module="hello",
+        module_chunking=True,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse("print(42)\n"))
+    ir = gen.to_json()
+
+    chunks = [
+        func
+        for func in ir["functions"]
+        if "__molt_module_chunk_" in func["name"]
+    ]
+    assert chunks
+    for chunk in chunks:
+        kinds = [op["kind"] for op in chunk["ops"]]
+        assert "line" in kinds
+        assert "trace_enter_slot" not in kinds
+        assert "trace_exit" not in kinds
+        assert chunk["execution_context"] == "inherited"
+    chunk_calls = [
+        op
+        for func in ir["functions"]
+        for op in func["ops"]
+        if op.get("s_value") in {chunk["name"] for chunk in chunks}
+    ]
+    assert chunk_calls
+    assert all(op.get("passes_execution_context") is True for op in chunk_calls)
+
+
+def test_function_lifecycle_is_the_only_trace_exit_authority() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            """
+def explicit(flag):
+    if flag:
+        return 1
+    return 2
+
+def fallthrough(flag):
+    if flag:
+        return 3
+
+def exceptional():
+    raise ValueError("boom")
+"""
+        )
+    )
+    ir = gen.to_json()
+
+    functions = {
+        func["name"].rsplit("__", 1)[-1]: func["ops"]
+        for func in ir["functions"]
+        if func["name"].rsplit("__", 1)[-1]
+        in {"explicit", "fallthrough", "exceptional"}
+    }
+    assert set(functions) == {"explicit", "fallthrough", "exceptional"}
+
+    for ops in functions.values():
+        kinds = [op["kind"] for op in ops]
+        assert all(
+            pair != ("trace_exit", "trace_exit")
+            for pair in zip(kinds, kinds[1:], strict=False)
+        )
+        for index, kind in enumerate(kinds):
+            if kind in {"ret", "ret_void"}:
+                assert index > 0
+                assert kinds[index - 1] == "trace_exit"
+
+    exceptional_kinds = [op["kind"] for op in functions["exceptional"]]
+    assert exceptional_kinds.count("trace_exit") == 1
+
+
+def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            """
+import inspect as inspection
+import sys as system
+from sys import getprofile as imported_getprofile
+from sys import gettrace as imported_gettrace
+
+get_frame = system._getframe
+current_frame = inspection.currentframe
+set_profile = system.setprofile
+set_trace = system.settrace
+"""
+        )
+    )
+    ir = gen.to_json()
+    symbols = {
+        op["runtime_symbol"]
+        for func in ir["functions"]
+        for op in func["ops"]
+        if "runtime_symbol" in op
+    }
+    assert symbols == {
+        "molt_getframe",
+        "molt_inspect_currentframe",
+        "molt_sys_getprofile",
+        "molt_sys_gettrace",
+        "molt_sys_setprofile",
+        "molt_sys_settrace",
+    }
+
+
 def test_module_control_flow_class_calls_use_load_global_semantics() -> None:
     source = """
 flag = False

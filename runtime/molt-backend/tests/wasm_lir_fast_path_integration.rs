@@ -87,6 +87,7 @@ fn wasm_backend_uses_lir_fast_path_for_simple_scalar_function() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -114,6 +115,7 @@ fn wasm_backend_skips_lir_fast_path_for_void_return_function() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });

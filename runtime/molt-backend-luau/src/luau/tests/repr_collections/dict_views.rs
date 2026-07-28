@@ -9,6 +9,7 @@ fn test_dict_view_ops_emit_luau_helpers() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "build_dict".to_string(),

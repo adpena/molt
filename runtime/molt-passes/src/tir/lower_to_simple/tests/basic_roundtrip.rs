@@ -17,6 +17,46 @@ fn linearize_emits_return() {
 }
 
 #[test]
+fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
+    let func = FunctionIR {
+        name: "caller".into(),
+        params: vec![],
+        ops: vec![
+            OpIR {
+                kind: "module_get_attr".into(),
+                args: Some(vec!["module".into(), "name".into()]),
+                out: Some("callable".into()),
+                runtime_symbol: Some("molt_getframe".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("module_chunk".into()),
+                passes_execution_context: true,
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+
+    let round_tripped = lower_to_simple_ir(&lower_to_tir(&func));
+    let callable = round_tripped
+        .iter()
+        .find(|op| op.kind == "module_get_attr")
+        .expect("module callable read must round-trip");
+    assert_eq!(callable.runtime_symbol.as_deref(), Some("molt_getframe"));
+    let call = round_tripped
+        .iter()
+        .find(|op| op.kind == "call_internal")
+        .expect("direct local call must round-trip");
+    assert!(call.passes_execution_context);
+}
+
+#[test]
 fn lower_to_simple_emits_separate_drop_fact_markers() {
     let mut func = TirFunction::new("drop_fact_markers".into(), vec![], TirType::None);
     func.attrs.insert(
@@ -206,6 +246,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
     assert!(
         relifted.blocks.values().any(|block| {
@@ -505,6 +546,7 @@ fn tir_round_trip_preserves_ret_var() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let mut tir_func = lower_to_tir(&func_ir);
@@ -573,6 +615,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     // Lift (the module-phase path): the opcode must survive — NOT fall
@@ -656,6 +699,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let mut tir_func = lower_to_tir(&func_ir);

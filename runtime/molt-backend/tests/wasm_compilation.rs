@@ -31,6 +31,7 @@ fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     })
@@ -54,6 +55,7 @@ fn compile_single_function_with_param_types(
             param_types: Some(param_types.iter().map(|ty| (*ty).to_string()).collect()),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     })
@@ -227,6 +229,7 @@ fn empty_module_compiles_to_valid_wasm() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -245,6 +248,7 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let registry = ModuleRegistryIR {
         schema: 2,
@@ -314,6 +318,7 @@ fn empty_module_is_structurally_valid_wasm() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -331,6 +336,7 @@ fn empty_module_exports_molt_main() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -353,6 +359,7 @@ fn empty_module_exports_memory() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -653,6 +660,7 @@ fn tail_call_candidate_ir() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "tail_target".to_string(),
@@ -661,6 +669,7 @@ fn tail_call_candidate_ir() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -745,6 +754,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "guarded_target".to_string(),
@@ -753,6 +763,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -935,6 +946,7 @@ fn multiple_functions_compile() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_helper".to_string(),
@@ -947,6 +959,7 @@ fn multiple_functions_compile() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -1118,6 +1131,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "__main_____f_poll".to_string(),
@@ -1126,6 +1140,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -1155,6 +1170,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "__main_____future_poll".to_string(),
@@ -1163,6 +1179,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -1186,6 +1203,7 @@ fn call_async_rejects_non_poll_table_target() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -1466,6 +1484,7 @@ fn wasm_does_not_split_non_linear_control_functions() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         },
@@ -1497,6 +1516,7 @@ fn wasm_preserves_frontend_module_chunk_boundaries() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         },

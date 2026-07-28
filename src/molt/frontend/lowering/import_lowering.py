@@ -18,6 +18,9 @@ from molt.compiler_analysis.python_imports import (
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -262,7 +265,11 @@ class ImportLoweringMixin(_MixinBase):
         return current_val
 
     def _emit_module_import_from_value(
-        self, module_val: MoltValue, attr_name: str
+        self,
+        module_val: MoltValue,
+        attr_name: str,
+        *,
+        module_name: str | None = None,
     ) -> MoltValue:
         attr_val = MoltValue(self.next_var(), type_hint="Any")
         attr_name_val = MoltValue(self.next_var(), type_hint="str")
@@ -271,11 +278,21 @@ class ImportLoweringMixin(_MixinBase):
         # missing attribute raises ImportError ("cannot import name ...") after
         # a sys.modules submodule fallback, NOT the AttributeError that a plain
         # `MODULE.name` (MODULE_GET_ATTR) read raises.
+        runtime_symbol = (
+            SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
+                f"{module_name}.{attr_name}"
+            )
+            if module_name is not None
+            else None
+        )
         self.emit(
             MoltOp(
                 kind="MODULE_IMPORT_FROM",
                 args=[module_val, attr_name_val],
                 result=attr_val,
+                metadata=(
+                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
+                ),
             )
         )
         return attr_val

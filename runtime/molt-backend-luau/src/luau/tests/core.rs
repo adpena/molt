@@ -42,6 +42,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
                 ..OpIR::default()
@@ -60,6 +61,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
                     ..OpIR::default()
@@ -71,6 +73,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
                     ..OpIR::default()
@@ -148,6 +151,7 @@ fn deferred_annotation_functions_are_emitted_with_their_real_body() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -180,6 +184,7 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "unpack_sequence".to_string(),
@@ -226,6 +231,7 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_none".to_string(),
@@ -279,6 +285,7 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -426,6 +433,7 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops,
         }],
         profile: None,
@@ -820,6 +828,400 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
     assert!(source.contains("return molt_hash_string(668265263, binary.value)"));
     assert!(source.contains("molt_dict_set(mapping, text_key, text_key)"));
     assert!(source.contains("molt_dict_set(mapping, bytes_key, text_key)"));
+}
+
+#[test]
+fn execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable() {
+    let runner = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| {
+            home.join("bin")
+                .join(if cfg!(windows) { "lune.exe" } else { "lune" })
+        })
+        .or_else(|| {
+            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+            Some(
+                std::path::PathBuf::from(home)
+                    .join(".cargo")
+                    .join("bin")
+                    .join(if cfg!(windows) { "lune.exe" } else { "lune" }),
+            )
+        });
+    let Some(runner) = runner.filter(|path| path.is_file()) else {
+        eprintln!("Lune unavailable; executable execution-frame proof skipped");
+        return;
+    };
+
+    let source = format!(
+        "--!strict\n{}\n{}",
+        frame_runtime::FRAME_RUNTIME,
+        r#"
+local outer_code = {co_filename="frame_oracle.py", co_name="outer", co_firstlineno=10}
+local inner_code = {co_filename="frame_oracle.py", co_name="inner", co_firstlineno=20}
+local module_code = {co_filename="module_oracle.py", co_name="<module>", co_firstlineno=1}
+
+local module_context, module_depth, module_identity, module_owner = molt_frame_enter(module_code)
+local module_globals = {__name__="module_oracle"}
+molt_frame_locals_set(module_context, module_globals)
+assert(module_code.co_globals == module_globals)
+molt_frame_exit(module_context, module_depth, module_identity, module_owner)
+
+local outer_context, outer_depth, outer_identity, outer_owner = molt_frame_enter(outer_code)
+molt_frame_set_line(outer_context, 11, 2, 9)
+local inner_context, inner_depth, inner_identity, _inner_owner = molt_frame_enter(inner_code)
+assert(inner_context == outer_context and inner_depth == 2)
+molt_frame_set_line(inner_context, 23, 4, 17)
+local exception = molt_exception_attach_traceback(inner_context, {__type="ValueError", __msg="boom"})
+assert(exception.__traceback__ == nil)
+assert(#exception.__molt_traceback_locations == 2)
+assert(exception.__molt_traceback_locations[1].name == "outer")
+assert(exception.__molt_traceback_locations[1].line == 11)
+assert(exception.__molt_traceback_locations[2].name == "inner")
+assert(exception.__molt_traceback_locations[2].line == 23)
+assert(exception.__molt_traceback_locations[2].col_offset == 4)
+molt_frame_restore_depth(inner_context, outer_depth)
+assert(inner_context.depth == 1)
+
+local mismatch_ok, mismatch_error = pcall(function()
+	molt_frame_exit(outer_context, outer_depth, inner_code, outer_owner)
+end)
+assert(not mismatch_ok and mismatch_error.__type == "RuntimeError" and outer_context.depth == 1)
+molt_frame_exit(outer_context, outer_depth, outer_identity, outer_owner)
+local empty_ok, empty_error = pcall(function()
+	molt_frame_exit(outer_context, outer_depth, outer_identity, outer_owner)
+end)
+assert(not empty_ok and empty_error.__type == "RuntimeError")
+
+local contexts = {}
+local function coroutine_body(code, line)
+	local context, depth, identity, owner = molt_frame_enter(code)
+	molt_frame_set_line(context, line, 0, 1)
+	coroutine.yield(context)
+	assert(context.depth == 1 and context.lines[1] == line)
+	molt_frame_exit(context, depth, identity, owner)
+	return context
+end
+local first = coroutine.create(function() return coroutine_body(outer_code, 31) end)
+local second = coroutine.create(function() return coroutine_body(inner_code, 41) end)
+local ok_first, first_context = coroutine.resume(first)
+local ok_second, second_context = coroutine.resume(second)
+assert(ok_first and ok_second and first_context ~= second_context)
+assert(first_context.depth == 1 and second_context.depth == 1)
+local done_first, final_first = coroutine.resume(first)
+local done_second, final_second = coroutine.resume(second)
+assert(done_first and done_second and final_first.depth == 0 and final_second.depth == 0)
+
+local failing_context: any = nil
+local failing = molt_coroutine_execution_wrap(function(code)
+	local context, _depth, _identity, _owner = molt_frame_enter(code)
+	failing_context = context
+	molt_frame_set_line(context, 57, 6, 14)
+	coroutine.yield("suspended")
+	error({__type="ValueError", __msg="inside coroutine"}, 0)
+end)
+assert(failing(inner_code) == "suspended")
+assert(failing_context.depth == 1)
+local failing_ok, failing_error = pcall(failing)
+assert(not failing_ok and failing_error.__type == "ValueError")
+assert(#failing_error.__molt_traceback_locations == 1)
+assert(failing_error.__molt_traceback_locations[1].name == "inner")
+assert(failing_error.__molt_traceback_locations[1].line == 57)
+assert(failing_context.depth == 0)
+
+local attachment_failure_context: any = nil
+local attachment_failure = molt_coroutine_execution_wrap(function(code)
+	local context = molt_frame_enter(code)
+	attachment_failure_context = context
+	context.codes[context.depth] = nil
+	error({__type="ValueError", __msg="traceback attachment failure"}, 0)
+end)
+local attachment_ok, attachment_error = pcall(attachment_failure, inner_code)
+assert(not attachment_ok and attachment_error.__type == "RuntimeError")
+assert(attachment_error.__cause__.__type == "ValueError")
+assert(attachment_error.__molt_traceback_attachment_error ~= nil)
+assert(attachment_failure_context.depth == 0)
+
+local hostile_context: any = nil
+local hostile = molt_coroutine_execution_wrap(function(code)
+	local context = molt_frame_enter(code)
+	hostile_context = context
+	local exception = setmetatable({__type="ValueError", __msg="hostile"}, {
+		__newindex=function() error("hostile newindex", 0) end,
+	})
+	error(exception, 0)
+end)
+local hostile_ok, hostile_error = pcall(hostile, inner_code)
+assert(not hostile_ok and hostile_error.__type == "ValueError")
+assert(rawget(hostile_error, "__molt_traceback_locations") ~= nil)
+assert(hostile_context.depth == 0)
+
+local frozen_context: any = nil
+local frozen = molt_coroutine_execution_wrap(function(code)
+	local context = molt_frame_enter(code)
+	frozen_context = context
+	local exception = table.freeze({__type="ValueError", __msg="frozen"})
+	error(exception, 0)
+end)
+local frozen_ok, frozen_error = pcall(frozen, inner_code)
+assert(not frozen_ok and frozen_error.__type == "RuntimeError")
+assert(frozen_error.__cause__.__type == "ValueError")
+assert(frozen_error.__molt_traceback_attachment_error ~= nil)
+assert(frozen_context.depth == 0)
+
+local restoration_failure_context: any = nil
+local restoration_failure_owner: any = nil
+local restoration_failure = molt_coroutine_execution_wrap(function(code)
+	local context, _depth, _identity, owner = molt_frame_enter(code)
+	restoration_failure_context = context
+	restoration_failure_owner = owner
+	table.freeze(context.codes)
+	return "cannot complete with a poisoned frame stack"
+end)
+local restoration_ok, restoration_error = pcall(restoration_failure, inner_code)
+assert(not restoration_ok and restoration_error.__type == "RuntimeError")
+assert(restoration_error.__msg == "execution-frame restoration failed")
+assert(restoration_error.__molt_frame_restoration_error ~= nil)
+assert(molt_frame_contexts[restoration_failure_owner] == nil)
+assert(restoration_failure_context.depth == 1)
+
+local completing_context: any = nil
+local completing = molt_coroutine_execution_wrap(function(code)
+	local context = molt_frame_enter(code)
+	completing_context = context
+	return "complete"
+end)
+assert(completing(outer_code) == "complete")
+assert(completing_context.depth == 0)
+
+local close_context: any = nil
+local abandoned, close_abandoned = molt_coroutine_execution_wrap(function(code)
+	local context = molt_frame_enter(code)
+	close_context = context
+	coroutine.yield("open")
+end)
+assert(abandoned(outer_code) == "open" and close_context.depth == 1)
+close_abandoned()
+close_abandoned()
+assert(close_context.depth == 0)
+
+local function context_count(): number
+	local count = 0
+	for _key, _context in molt_frame_contexts do count += 1 end
+	return count
+end
+local context_baseline = context_count()
+for _index = 1, 2000 do
+	local resume = molt_coroutine_execution_wrap(function(code)
+		local context, depth = molt_frame_enter(code)
+		context.globals[depth] = {owner=coroutine.running()}
+		coroutine.yield("abandoned")
+	end)
+	assert(resume(inner_code) == "abandoned")
+	resume = nil
+end
+for _round = 1, 8 do
+	local pressure = table.create(250000, _round)
+	assert(pressure[250000] == _round)
+	pressure = nil
+end
+local contexts_after_abandonment = context_count()
+for _sweep = 1, 32 do
+	if contexts_after_abandonment <= context_baseline + 2 then break end
+	for _round = 1, 8 do
+		local pressure = table.create(250000, _round)
+		assert(pressure[250000] == _round)
+		pressure = nil
+	end
+	contexts_after_abandonment = context_count()
+end
+assert(contexts_after_abandonment <= context_baseline + 2)
+
+local completed_wrappers = table.create(2000)
+local completed_closers = table.create(2000)
+for index = 1, 2000 do
+	local resume, close = molt_coroutine_execution_wrap(function(code)
+		molt_frame_enter(code)
+		return index
+	end)
+	assert(resume(outer_code) == index)
+	completed_wrappers[index] = resume
+	completed_closers[index] = close
+end
+for _sweep = 1, 64 do
+	if context_count() <= context_baseline + 2 then break end
+	for _round = 1, 8 do
+		local pressure = table.create(250000, _sweep)
+		assert(pressure[250000] == _sweep)
+		pressure = nil
+	end
+end
+local contexts_after_completed = context_count()
+assert(contexts_after_completed <= context_baseline + 2)
+local finalized_ok, finalized_error = pcall(completed_wrappers[1])
+assert(not finalized_ok and finalized_error.__type == "RuntimeError")
+completed_closers[1]()
+
+local warm_context, warm_depth, warm_identity, warm_owner = molt_frame_enter(outer_code)
+molt_frame_exit(warm_context, warm_depth, warm_identity, warm_owner)
+local baseline_total = 0
+local baseline_started = os.clock()
+for index = 1, 100000 do baseline_total += index end
+local baseline_elapsed = os.clock() - baseline_started
+local heap_before = gcinfo()
+local started = os.clock()
+for index = 1, 100000 do
+	local context, depth, identity, owner = molt_frame_enter(outer_code)
+	molt_frame_set_line(context, 12, 1, 3)
+	molt_frame_exit(context, depth, identity, owner)
+end
+local elapsed = os.clock() - started
+local heap_delta_kib = gcinfo() - heap_before
+assert(baseline_total > 0 and elapsed < 5 and heap_delta_kib < 64)
+local weak_mode = getmetatable(molt_frame_contexts).__mode
+assert(string.find(weak_mode, "k") ~= nil and string.find(weak_mode, "v") ~= nil)
+print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
+"#
+    );
+    assert!(frame_runtime::FRAME_RUNTIME.len() < 9_000);
+    assert!(!frame_runtime::FRAME_RUNTIME.contains("owner = key"));
+    assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
+    assert!(frame_runtime::FRAME_RUNTIME.contains("molt_frame_contexts[owner] ~= context"));
+    validate_luau_source(&source).expect("execution-frame oracle must pass source validation");
+    let path = std::env::temp_dir().join(format!(
+        "molt_luau_execution_frame_{}.luau",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).expect("write execution-frame oracle");
+    let output = std::process::Command::new(&runner)
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run Lune execution-frame oracle");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        output.status.success(),
+        "execution-frame oracle failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000"),
+        "{stdout}"
+    );
+    eprintln!(
+        "luau-execution-frame-source-bytes={} {stdout}",
+        frame_runtime::FRAME_RUNTIME.len()
+    );
+}
+
+#[test]
+fn generated_coroutine_tasks_use_the_execution_wrapper_authority() {
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "sample__genexpr_1".to_string(),
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![
+                    OpIR {
+                        kind: "alloc_task".to_string(),
+                        s_value: Some("sample__genexpr_1".to_string()),
+                        out: Some("items".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().emit_source(&ir);
+    assert!(
+        source.contains("local __co, __close = molt_coroutine_execution_wrap(sample__genexpr_1)")
+    );
+    assert!(source.contains("__close()"));
+    assert!(!source.contains("coroutine.wrap("));
+    assert!(source.contains("local function molt_coroutine_execution_wrap"));
+    assert!(!source.contains("molt_frame_finalize_error"));
+}
+
+#[test]
+fn module_chunks_receive_one_strong_caller_frame_context() {
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "sample__molt_module_chunk_1".to_string(),
+                params: vec!["module".to_string()],
+                execution_context: ExecutionContextPolicy::Inherited,
+                ops: vec![
+                    OpIR {
+                        kind: "line".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(0),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_internal".to_string(),
+                        s_value: Some("sample__molt_module_chunk_1".to_string()),
+                        args: Some(vec!["module".to_string()]),
+                        out: Some("result".to_string()),
+                        passes_execution_context: true,
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().emit_source(&ir);
+    assert!(source.contains(
+        "sample__molt_module_chunk_1 = function(module: any, __molt_frame_context: any)"
+    ));
+    assert!(source.contains("sample__molt_module_chunk_1(module, __molt_frame_context)"));
+    let chunk = source
+        .split("sample__molt_module_chunk_1 = function")
+        .nth(1)
+        .expect("chunk body")
+        .split("\nend")
+        .next()
+        .expect("chunk terminator");
+    assert!(!chunk.contains("molt_frame_context()"));
 }
 
 #[test]
@@ -1286,6 +1688,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -1337,6 +1740,7 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "is".to_string(),
@@ -1398,6 +1802,7 @@ fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "is".to_string(),
@@ -1453,6 +1858,7 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     make_const("left"),
                     make_const("right"),
@@ -1489,6 +1895,7 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_bool".to_string(),
@@ -1624,6 +2031,7 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_new".to_string(),
@@ -1690,6 +2098,7 @@ fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_bool".to_string(),
@@ -1841,6 +2250,7 @@ fn value_scalar_plus_unknown_identity_is_rejected() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_float".to_string(),
@@ -1877,6 +2287,7 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_float".to_string(),
@@ -1913,6 +2324,7 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "call_function".to_string(),
@@ -1949,6 +2361,7 @@ fn test_simple_function() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -1985,6 +2398,7 @@ fn test_int_from_str_of_obj_preserves_base_operand() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "int_from_str_of_obj".to_string(),
@@ -2020,6 +2434,7 @@ fn test_real_ir_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_float".to_string(),
@@ -2080,6 +2495,7 @@ fn test_control_flow() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "label".to_string(),
@@ -2187,6 +2603,7 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -2273,7 +2690,7 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
         .expect("bounded sys bootstrap literals and the Luau module model are exact");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
-    assert!(source.contains("molt_sys_set_version_info("));
+    assert!(source.contains("local function molt_sys_set_version_info("));
     assert!(source.contains("local sys_module = molt_luau_import_module(sys_name)"));
 }
 
@@ -2286,6 +2703,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -2324,6 +2742,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "const_bigint".to_string(),
                     s_value: Some(payload.to_string()),
@@ -2349,6 +2768,7 @@ fn test_compile_checked_accepts_label_goto_comments() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "label".to_string(),
@@ -2385,6 +2805,7 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_int".to_string(),
@@ -2431,6 +2852,7 @@ fn test_compile_checked_lowers_missing_singleton() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "missing".to_string(),
@@ -2467,69 +2889,69 @@ fn test_compile_checked_lowers_missing_singleton() {
 }
 
 #[test]
-fn test_compile_checked_lowers_luau_process_target_facts() {
+fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
-            name: "process_target_facts_test".to_string(),
-            params: vec![],
+            name: "frame_introspection_test".to_string(),
+            params: vec!["depth".to_string()],
             param_types: None,
             source_file: None,
             is_extern: false,
-            ops: vec![
-                OpIR {
-                    kind: "getargv".to_string(),
-                    out: Some("argv".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "sys_executable".to_string(),
-                    out: Some("executable".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("depth".to_string()),
-                    value: Some(0),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "getframe".to_string(),
-                    out: Some("frame".to_string()),
-                    args: Some(vec!["depth".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "tuple_new".to_string(),
-                    args: Some(vec![
-                        "argv".to_string(),
-                        "executable".to_string(),
-                        "frame".to_string(),
-                    ]),
-                    out: Some("facts".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec!["facts".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
+            execution_context: ExecutionContextPolicy::None,
+            ops: vec![OpIR {
+                kind: "getframe".to_string(),
+                out: Some("frame".to_string()),
+                args: Some(vec!["depth".to_string()]),
+                ..OpIR::default()
+            }],
         }],
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-
-    assert!(source.contains("local argv = {}"));
-    assert!(source.contains("local executable = \"\""));
-    assert!(source.contains("local frame = nil"));
-    assert!(!source.contains("-- [getargv]"));
-    assert!(!source.contains("-- [sys_executable]"));
-    assert!(!source.contains("-- [getframe]"));
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("getframe requires Python-visible frame introspection");
+    assert!(error.contains("Python-visible frame objects"), "{error}");
 }
 
 #[test]
-fn compile_checked_rejects_every_observable_frame_state_sibling_before_source() {
+fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
+    for symbol in [
+        "molt_getframe",
+        "molt_inspect_currentframe",
+        "molt_sys_settrace",
+        "molt_sys_gettrace",
+        "molt_sys_setprofile",
+        "molt_sys_getprofile",
+    ] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
+                ops: vec![OpIR {
+                    kind: "call_internal".to_string(),
+                    s_value: Some(symbol.to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let error = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect_err("frame/trace intrinsics require whole-program locals authority");
+        assert!(
+            error.contains("exact Python-visible frame objects"),
+            "{symbol}: {error}"
+        );
+    }
+}
+
+#[test]
+fn execution_frame_siblings_have_real_luau_lowering() {
     for kind in ["trace_enter_slot", "trace_exit", "line", "frame_locals_set"] {
         let mut op = OpIR {
             kind: kind.to_string(),
@@ -2550,32 +2972,22 @@ fn compile_checked_rejects_every_observable_frame_state_sibling_before_source() 
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![op],
             }],
             profile: None,
         };
 
-        let error = LuauBackend::new()
-            .compile_checked(&ir)
-            .expect_err("Luau has no exact Python frame-state authority");
-        assert!(
-            error.contains("rejected before source generation"),
-            "{kind}: {error}"
-        );
-        assert!(
-            error.contains("frame stack, locals, and traceback line"),
-            "{kind}: {error}"
-        );
-
         let mut unchecked_backend = LuauBackend::new();
         let unchecked = unchecked_backend.compile(&ir);
         assert!(
-            unchecked_backend
+            !unchecked_backend
                 .unsupported_ops
                 .iter()
                 .any(|unsupported| unsupported.contains(&format!("`{kind}`"))),
-            "the private emitter must retain a second fail-closed record for {kind}: {unchecked}"
+            "execution-frame op must have effectful lowering for {kind}: {unchecked}"
         );
+        assert!(unchecked.contains("molt_frame_"), "{kind}: {unchecked}");
     }
 }
 
@@ -2588,6 +3000,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "loop_start".to_string(),
@@ -2643,6 +3056,7 @@ fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "code_slots_init".to_string(),
@@ -2685,11 +3099,6 @@ fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
         }],
         profile: None,
     };
-    let error = LuauBackend::new()
-        .compile_checked(&ir)
-        .expect_err("frame_locals_set must reject before source generation");
-    assert!(error.contains("frame stack, locals, and traceback line"));
-
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
@@ -2707,13 +3116,7 @@ fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
             && !source.contains("[unsupported op: code_slot_set]"),
         "code-slot state may emit without stub markers, got:\n{source}"
     );
-    assert!(
-        backend
-            .unsupported_ops
-            .iter()
-            .any(|unsupported| unsupported.contains("`frame_locals_set`")),
-        "the private emitter must retain frame_locals_set as an unsupported record"
-    );
+    assert!(backend.unsupported_ops.is_empty());
 }
 
 #[test]
@@ -2725,6 +3128,7 @@ fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts(
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "drop_inserted".to_string(),
@@ -2754,6 +3158,7 @@ fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifact
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
@@ -2806,6 +3211,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -2850,6 +3256,7 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "exception_stack_depth".to_string(),
@@ -2884,6 +3291,7 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
             param_types: Some(vec!["list[int]".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "iter".to_string(),

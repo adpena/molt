@@ -57,6 +57,7 @@ fn emitted_format_float_block() -> String {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

@@ -84,6 +84,7 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
 
     let mut func = TirFunction {
         name: "iv_loop".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,
@@ -187,6 +188,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
 
     let mut func = TirFunction {
         name: "iv_loop_dynamic_backedge".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,
@@ -309,6 +311,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
 
     let mut func = TirFunction {
         name: "unreachable_loop_end_meet".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,

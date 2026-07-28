@@ -68,6 +68,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: chunk1,
@@ -88,6 +89,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: stub.clone(),
@@ -114,6 +116,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         &stub,

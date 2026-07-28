@@ -49,6 +49,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         param_types: Some(vec!["i64".into()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let caller_ir = FunctionIR {
@@ -613,6 +614,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         param_types: Some(vec!["i64".into()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     for func_ir in [callee_ir, caller_ir] {

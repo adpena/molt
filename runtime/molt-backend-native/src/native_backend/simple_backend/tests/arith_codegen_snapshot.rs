@@ -60,6 +60,7 @@ fn typed_int_function() -> FunctionIR {
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -86,6 +87,7 @@ fn generic_function() -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -111,6 +113,7 @@ fn typed_float_function() -> FunctionIR {
         param_types: Some(vec!["float".to_string(), "float".to_string()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
