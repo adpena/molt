@@ -580,7 +580,6 @@ class SerializationMixin(
                 json_ops=json_ops,
                 const_none_vars=const_none_vars,
                 json_list_int_containers=json_list_int_containers,
-                emit_function_frame=emit_function_frame,
                 function_name=function_name,
             )
             if self._serialize_basic_op(op, ctx):
@@ -595,9 +594,11 @@ class SerializationMixin(
                 continue
             self._serialize_loop_string_async_op(op, ctx)
 
-        if ops and ops[-1].kind not in {"ret", "ret_void"}:
-            if emit_function_frame:
-                json_ops.append({"kind": "trace_exit"})
+        if (
+            ops
+            and ops[-1].kind not in {"ret", "ret_void"}
+            and not emit_function_frame
+        ):
             json_ops.append({"kind": "ret_void"})
 
         if emit_function_frame:
@@ -691,6 +692,10 @@ class SerializationMixin(
                 "params": data["params"],
                 "ops": json_ops,
             }
+            if name in self.module_chunk_symbols:
+                func_entry["execution_context"] = "inherited"
+            elif any(op.get("kind") == "trace_enter_slot" for op in json_ops):
+                func_entry["execution_context"] = "local"
             # Always emit param_types so the backend creates Cranelift block
             # params for function arguments. Without this, parameters are
             # uninitialized (read as 0x0 = float +0.0 in NaN-boxing).

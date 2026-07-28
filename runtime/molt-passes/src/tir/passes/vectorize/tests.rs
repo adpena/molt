@@ -143,6 +143,7 @@ fn simple_sum_loop_vectorizable() {
 
     let mut func = TirFunction {
         name: "sum_loop".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::I64,
@@ -251,6 +252,7 @@ fn loop_with_call_not_vectorizable() {
 
     let mut func = TirFunction {
         name: "call_loop".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,
@@ -347,6 +349,7 @@ fn build_loop_func(
     // upper bound is sufficient and keeps tests robust to future edits.
     TirFunction {
         name: name.into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,

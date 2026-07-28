@@ -84,6 +84,7 @@ fn loop_continue_in_if_compiles() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

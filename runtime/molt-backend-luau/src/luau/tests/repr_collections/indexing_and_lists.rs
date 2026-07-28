@@ -13,6 +13,7 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "get_item".to_string(),
@@ -59,6 +60,7 @@ fn test_string_get_item_uses_utf8_codepoint_offsets() {
             param_types: Some(vec!["str".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "get_item".to_string(),
@@ -99,6 +101,7 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
             param_types: Some(vec!["str".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "ord_at".to_string(),
@@ -141,6 +144,7 @@ fn test_list_set_and_delete_emit_index_error_guards() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "set_item".to_string(),
@@ -186,6 +190,7 @@ fn test_list_pop_and_index_emit_python_error_guards() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_pop".to_string(),
@@ -233,6 +238,7 @@ fn test_call_method_list_pop_uses_python_error_guards() {
             param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "call_method".to_string(),
@@ -284,6 +290,7 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "call_method".to_string(),
@@ -400,6 +407,7 @@ fn test_list_index_range_honors_start_stop_bounds() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_index_range".to_string(),
@@ -445,6 +453,7 @@ fn test_dict_popitem_emits_empty_dict_key_error_guard() {
             param_types: Some(vec!["dict[str, int]".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "dict_popitem".to_string(),
@@ -481,6 +490,7 @@ fn test_list_insert_clamps_python_index_bounds() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_insert".to_string(),
@@ -516,6 +526,7 @@ fn test_list_extend_uses_table_move_fast_path() {
             param_types: Some(vec!["list[int]".to_string(), "list[int]".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_extend".to_string(),
@@ -548,6 +559,7 @@ fn test_list_repeat_clamps_negative_count_to_empty() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "list_repeat_range".to_string(),
@@ -590,6 +602,7 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "string_find_slice".to_string(),

@@ -420,7 +420,7 @@ impl LuauBackend {
                     let module = sanitize_ident(&args[0]);
                     let attr_var = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = if molt_dict_is_ordered({module}) then molt_dict_get({module}, {attr_var}, nil) elseif type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
+                        "local {out} = if {attr_var} == \"__dict__\" and type({module}) == \"table\" then {module} elseif molt_dict_is_ordered({module}) then molt_dict_get({module}, {attr_var}, nil) elseif type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
                     ));
                 } else {
                     self.emit_unsupported_op(op);
@@ -494,7 +494,7 @@ impl LuauBackend {
                         "local {out} = (function()\n\
                          \t\tlocal __result = {{}}\n\
                          \t\tlocal __n = 0\n\
-                         \t\tlocal __co = coroutine.wrap({func_name})\n\
+                         \t\tlocal __co, __close = molt_coroutine_execution_wrap({func_name})\n\
                          \t\twhile true do\n\
                          \t\t\tlocal __item = __co()\n\
                          \t\t\tif __item == nil then break end\n\
@@ -505,6 +505,7 @@ impl LuauBackend {
                          \t\t\t\t__n += 1; __result[__n] = __item\n\
                          \t\t\tend\n\
                          \t\tend\n\
+                         \t\t__close()\n\
                          \t\treturn __result\n\
                          \tend)()"
                     ));

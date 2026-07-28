@@ -18,6 +18,7 @@ fn llvm_object_retains_exact_generated_object_abi_through_dead_strip() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

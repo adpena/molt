@@ -19,6 +19,7 @@ fn single_block_func(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
     blocks.insert(entry_id, block);
     TirFunction {
         name: "test".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,

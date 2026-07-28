@@ -26,6 +26,7 @@ fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     })
@@ -224,6 +225,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_test_wasm_fastcall_guarded_matched".to_string(),
@@ -232,6 +234,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

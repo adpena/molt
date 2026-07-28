@@ -21,6 +21,7 @@ fn native_object_retains_exact_generated_object_abi_import() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -96,6 +97,7 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         };
@@ -146,6 +148,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -154,6 +157,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 param_types: None,
                 source_file: None,
                 is_extern: true,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -202,6 +206,7 @@ fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let mut helper = FunctionIR {
         name: "stdlib_value_helper".to_string(),
@@ -210,6 +215,7 @@ fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     molt_backend::externalize_function_with_signature(&mut helper);
     let module_context = SimpleBackend::build_module_context(&[caller.clone(), helper.clone()]);

@@ -49,6 +49,7 @@ fn loop_start_after_unreachable_code() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -87,6 +88,7 @@ fn loop_index_start_after_unreachable_code() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -134,6 +136,7 @@ fn loop_start_in_reachable_code_still_works() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

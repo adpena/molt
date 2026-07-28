@@ -57,6 +57,7 @@ fn preanalysis_treats_immediate_fresh_object_field_stores_as_direct() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -140,6 +141,7 @@ fn preanalysis_treats_immediate_heap_fixed_layout_field_stores_as_direct() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -222,6 +224,7 @@ fn preanalysis_rejects_unsized_heap_object_direct_field_stores() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -272,6 +275,7 @@ fn preanalysis_classifies_fresh_heap_field_first_store_as_init() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -334,6 +338,7 @@ fn preanalysis_keeps_heap_field_second_store_as_overwrite() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -393,6 +398,7 @@ fn preanalysis_rejects_fresh_init_after_escape() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());

@@ -127,6 +127,7 @@ mod tests {
                 ],
                 source_file: Some("app.py".to_string()),
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         };
@@ -202,6 +203,7 @@ mod tests {
                 }],
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         };

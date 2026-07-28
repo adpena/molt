@@ -169,6 +169,7 @@ struct TirOptimizationInput {
     ops: Vec<OpIR>,
     param_types: Option<Vec<String>>,
     source_file: Option<String>,
+    execution_context: crate::ExecutionContextPolicy,
 }
 
 struct TirOptimizationOutput {
@@ -530,6 +531,7 @@ where
                         ops: func_ir.ops.clone(),
                         param_types: func_ir.param_types.clone(),
                         source_file: func_ir.source_file.clone(),
+                        execution_context: func_ir.execution_context,
                     }
                 })
                 .collect();
@@ -781,6 +783,7 @@ where
         param_types: input.param_types,
         source_file: input.source_file,
         is_extern: false,
+        execution_context: input.execution_context,
     };
     trace_tir_function_stage(&tmp_func.name, "start", tmp_func.ops.len());
     preprocess_before_lowering(&mut tmp_func);
@@ -1010,6 +1013,7 @@ mod tests {
             param_types: Some(vec!["int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: crate::ExecutionContextPolicy::None,
         };
 
         let native = TargetInfo::native_release_fast();
@@ -1063,6 +1067,7 @@ mod tests {
             param_types: None,
             source_file: Some("app.py".to_string()),
             is_extern: false,
+            execution_context: crate::ExecutionContextPolicy::Inherited,
         }];
         let target_info = TargetInfo::native_release_fast();
         let cache_dir =
@@ -1108,6 +1113,11 @@ mod tests {
         assert_eq!(
             tir_func.attrs.get(crate::tir::ops::SOURCE_FILE_ATTR),
             Some(&crate::tir::ops::AttrValue::Str("app.py".to_string()))
+        );
+        assert_eq!(
+            tir_func.execution_context,
+            crate::ExecutionContextPolicy::Inherited,
+            "SimpleIR -> cached TIR custody must preserve the module execution-context ABI"
         );
         let _ = std::fs::remove_dir_all(cache_dir);
     }

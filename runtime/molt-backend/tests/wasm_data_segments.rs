@@ -81,6 +81,7 @@ fn empty_module_has_data_segments() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -108,6 +109,7 @@ fn const_str_creates_data_segment_with_string_bytes() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -138,6 +140,7 @@ fn multiple_const_strs_create_separate_segments() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -167,6 +170,7 @@ fn duplicate_const_strs_are_deduplicated() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -208,6 +212,7 @@ fn data_segments_are_8_byte_aligned() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -235,6 +240,7 @@ fn data_segment_starts_align_current_payload_from_unaligned_base() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         },
@@ -277,6 +283,7 @@ fn data_segments_do_not_overlap() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -316,6 +323,7 @@ fn scratch_buffer_for_const_str_exists() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });
@@ -349,6 +357,7 @@ fn empty_string_constant_does_not_allocate_payload_segment() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     });

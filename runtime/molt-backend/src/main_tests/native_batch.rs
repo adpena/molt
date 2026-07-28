@@ -76,6 +76,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                     FunctionIR {
                         name: "helper".to_string(),
@@ -87,6 +88,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                 ],
                 profile: None,

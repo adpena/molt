@@ -235,6 +235,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let func_b = FunctionIR {
         name: "sys__version".to_string(),
@@ -247,6 +248,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let mut changed = func_b.clone();
     changed.ops[0].s_value = Some("3.13".to_string());
@@ -280,6 +282,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let copy_init = FunctionIR {
         name: "molt_init_copy".to_string(),
@@ -293,6 +296,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let copy_chunk = FunctionIR {
         name: "copy__molt_module_chunk_1".to_string(),
@@ -304,6 +308,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let copy_copy = FunctionIR {
         name: "copy__copy".to_string(),
@@ -316,6 +321,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let valid_partition = vec![
         userdict_copy.clone(),
@@ -385,6 +391,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_app".to_string(),
@@ -393,6 +400,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "app__module".to_string(),
@@ -401,6 +409,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -413,6 +422,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_json".to_string(),
@@ -425,6 +435,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -457,6 +468,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_app".to_string(),
@@ -465,6 +477,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "app__module".to_string(),
@@ -473,6 +486,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
@@ -485,6 +499,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_init_json".to_string(),
@@ -497,6 +512,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -534,6 +550,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "demo__module".to_string(),
@@ -545,6 +562,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_import".to_string(),
@@ -556,6 +574,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -678,6 +697,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                     FunctionIR {
                         name: "demo__module".to_string(),
@@ -689,6 +709,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                     FunctionIR {
                         name: "molt_isolate_bootstrap".to_string(),
@@ -700,6 +721,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                     FunctionIR {
                         name: "molt_isolate_import".to_string(),
@@ -711,6 +733,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         param_types: None,
                         source_file: None,
                         is_extern: false,
+                        execution_context: Default::default(),
                     },
                 ],
                 profile: None,
@@ -777,6 +800,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "demo__module".to_string(),
@@ -788,6 +812,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_bootstrap".to_string(),
@@ -799,6 +824,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_isolate_import".to_string(),
@@ -810,6 +836,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

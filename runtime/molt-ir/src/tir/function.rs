@@ -7,11 +7,16 @@ use super::op_kinds_generated::{
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
+use crate::ir::ExecutionContextPolicy;
 
 /// A function in TIR: a collection of basic blocks in SSA form.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirFunction {
     pub name: String,
+    /// Target-neutral execution-context ABI preserved through cached TIR and
+    /// every SimpleIR relift.
+    #[serde(default)]
+    pub execution_context: ExecutionContextPolicy,
     /// Original parameter names, aligned 1:1 with `param_types` and the entry
     /// block arguments. These are preserved through the TIR round-trip so
     /// backends do not have to recover parameter identity from synthetic
@@ -97,6 +102,7 @@ impl TirFunction {
 
         Self {
             name,
+            execution_context: ExecutionContextPolicy::None,
             param_names: param_types
                 .iter()
                 .enumerate()

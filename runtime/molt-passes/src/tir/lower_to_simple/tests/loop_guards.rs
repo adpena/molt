@@ -79,6 +79,7 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);

@@ -14,6 +14,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_main".to_string(),
@@ -34,6 +35,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -58,6 +60,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_main".to_string(),
@@ -86,6 +89,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -136,6 +140,7 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let clif = compile_function_to_clif_text(vec![func], "hot_runtime_call");
@@ -174,6 +179,7 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let clif = compile_function_to_clif_text(vec![func], "direct_call_live_through");
@@ -205,6 +211,7 @@ fn native_boxed_or_retains_selected_operand_result() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let clif = compile_function_to_clif_text(vec![func], "boxed_or_selected_owner");
@@ -291,6 +298,7 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let clif = compile_function_to_clif_text(vec![func], "shift_runtime_contract");
@@ -405,6 +413,7 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "molt_main",
     );
@@ -455,6 +464,7 @@ fn semantic_branch_edges_explicitly_transport_live_parameter() {
             param_types: Some(vec!["dyn".to_string(), "bool".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "semantic_edge_transport",
     );
@@ -501,6 +511,7 @@ fn exception_edges_explicitly_transport_live_parameter() {
             param_types: Some(vec!["dyn".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "exception_edge_transport",
     );
@@ -564,6 +575,7 @@ fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "molt_main",
     );
@@ -655,6 +667,7 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "molt_main",
     );

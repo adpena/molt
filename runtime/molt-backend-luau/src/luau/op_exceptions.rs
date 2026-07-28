@@ -65,10 +65,16 @@ impl LuauBackend {
             }
             "raise" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
+                let context = self.frame_context_expr();
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!("error({})", sanitize_ident(val)));
+                    self.emit_line(&format!(
+                        "error(molt_exception_attach_traceback({context}, {}), 0)",
+                        sanitize_ident(val)
+                    ));
                 } else {
-                    self.emit_line("error(\"raised\")");
+                    self.emit_line(&format!(
+                        "error(molt_exception_attach_traceback({context}, \"raised\"), 0)"
+                    ));
                 }
             }
             "check_exception" => {

@@ -76,6 +76,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use molt_ir::ExecutionContextPolicy;
+
 use crate::tir::call_graph::CallGraph;
 use crate::tir::function::TirModule;
 use crate::tir::passes::ip_summary::ModuleSummaries;
@@ -158,6 +160,10 @@ pub fn run_inliner(
         // unsound (it drops the external reference and forks the definition).
         // Refused unconditionally - the `Call` survives as an external reference.
         .filter(|(_, f)| !non_inlinable.contains(&f.name))
+        // Execution-context policy is an ABI boundary. Local callees own a
+        // distinct Python frame and inherited callees require a hidden context
+        // argument; splicing either body would erase or duplicate authority.
+        .filter(|(_, f)| f.execution_context == ExecutionContextPolicy::None)
         .filter(|(_, f)| {
             is_inlineable(f, call_graph, summaries, tti)
                 || (split_enabled.contains(&f.name) && is_inline_safe(f, call_graph))

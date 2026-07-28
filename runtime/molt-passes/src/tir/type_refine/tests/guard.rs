@@ -34,6 +34,7 @@ fn typeguard_result_gets_proven_type() {
     blocks.insert(entry_id, block);
     let mut func = TirFunction {
         name: "guard_test".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into()],
         param_types: vec![TirType::DynBox],
         return_type: TirType::DynBox,
@@ -122,6 +123,7 @@ fn guard_propagates_to_dominated_blocks() {
 
     let mut func = TirFunction {
         name: "guard_prop_test".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into()],
         param_types: vec![TirType::DynBox],
         return_type: TirType::DynBox,

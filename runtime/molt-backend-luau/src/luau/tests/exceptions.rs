@@ -9,6 +9,7 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
                 ..OpIR::default()
@@ -32,6 +33,7 @@ fn test_compile_checked_rejects_async_work_poll_without_runtime_boundary() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "async_work_poll".to_string(),
                 value: Some(0),
@@ -190,6 +192,7 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "exception_push".into(),
@@ -318,6 +321,16 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
     assert!(
         pcall_start < pcall_end && pcall_end < handler_read,
         "handler must be outside pcall body, got:\n{source}"
+    );
+    assert!(source.contains("__err_0, __molt_pcall_restored_0 = molt_frame_finalize("));
+    assert!(!source.contains("molt_frame_finalize_error"));
+    assert!(
+        !source.contains("__err_0 = molt_exception_attach_traceback(__molt_pcall_frame_context_0")
+    );
+    assert!(
+        !source.contains(
+            "molt_frame_restore_depth(__molt_pcall_frame_context_0, __molt_frame_depth_0)"
+        )
     );
 }
 
@@ -458,6 +471,7 @@ fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_str".into(),
@@ -516,6 +530,7 @@ fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "exception_new_builtin_empty".into(),
@@ -563,6 +578,7 @@ fn test_pcall_try_except_compile() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "try_start".into(),
@@ -649,6 +665,7 @@ fn test_no_duplicate_local_declarations() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 // First definition of v0 — should get `local v0 = 1`
                 OpIR {

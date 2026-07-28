@@ -11,5 +11,4 @@ class SerializationContext:
     json_ops: list[dict[str, Any]]
     const_none_vars: set[str]
     json_list_int_containers: set[str]
-    emit_function_frame: bool
     function_name: str | None

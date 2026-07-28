@@ -27,6 +27,7 @@ fn slot_exclusion_marks_call_arg_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -57,6 +58,7 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -91,6 +93,7 @@ fn slot_exclusion_marks_store_attr_value_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -125,6 +128,7 @@ fn slot_exclusion_marks_refcount_ops_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -163,6 +167,7 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -198,6 +203,7 @@ fn slot_exclusion_marks_release_var_field_as_unsafe() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -270,6 +276,7 @@ fn slot_exclusion_safe_for_pure_arithmetic_loop() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -324,6 +331,7 @@ fn slot_exclusion_marks_store_index_on_generic_list() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());
@@ -370,6 +378,7 @@ fn slot_exclusion_allows_store_index_on_list_int() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let analysis = preanalyze_for_test(&func, &BTreeMap::new());

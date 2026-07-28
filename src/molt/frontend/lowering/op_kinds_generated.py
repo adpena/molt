@@ -811,6 +811,15 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "YIELD_FROM": "writes_heap",
 }
 
+SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
+    "inspect.currentframe": "molt_inspect_currentframe",
+    "sys._getframe": "molt_getframe",
+    "sys.getprofile": "molt_sys_getprofile",
+    "sys.gettrace": "molt_sys_gettrace",
+    "sys.setprofile": "molt_sys_setprofile",
+    "sys.settrace": "molt_sys_settrace",
+}
+
 FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     {
         "ABS",

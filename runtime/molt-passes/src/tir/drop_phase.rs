@@ -341,6 +341,7 @@ mod tests {
             param_types: Some(vec!["Any".into()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         };
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
         crate::tir::type_refine::refine_types(&mut tir);
@@ -385,6 +386,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         };
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
         crate::tir::type_refine::refine_types(&mut tir);
@@ -419,6 +421,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: true,
+            execution_context: Default::default(),
         }];
         // Must not panic (no lift of the empty extern body).
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
@@ -437,6 +440,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }];
 
         let mut tir = TirFunction::new("custody".into(), vec![], crate::tir::types::TirType::I64);
@@ -498,6 +502,7 @@ mod tests {
             param_types: Some(vec!["Any".into()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }];
 
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
@@ -561,6 +566,7 @@ mod tests {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         };
 
         let tti = TargetInfo::native_release_fast();
@@ -607,6 +613,7 @@ mod tests {
             param_types: func_ir.param_types.clone(),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }];
         finalize_simple_ir_drops(&mut funcs, &tti);
         let ops = &funcs[0].ops;

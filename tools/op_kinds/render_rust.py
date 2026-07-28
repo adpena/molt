@@ -1092,7 +1092,8 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         ("simpleir_async_runtime_semantics_kinds", "ASYNC_RUNTIME"),
         ("simpleir_unstructured_control_semantics_kinds", "UNSTRUCTURED_CONTROL"),
         ("simpleir_host_capability_semantics_kinds", "HOST_CAPABILITY"),
-        ("simpleir_frame_state_semantics_kinds", "FRAME_STATE"),
+        ("simpleir_execution_frame_semantics_kinds", "EXECUTION_FRAME"),
+        ("simpleir_frame_introspection_semantics_kinds", "FRAME_INTROSPECTION"),
     )
     registered = set()
     for row in data.get("kind", []):
@@ -1123,6 +1124,9 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "    pub const fn contains(self, requirement: Self) -> bool {\n",
             "        self.0 & requirement.0 != 0\n",
             "    }\n",
+            "    pub const fn union(self, other: Self) -> Self {\n",
+            "        Self(self.0 | other.0)\n",
+            "    }\n",
             "}\n\n",
             "/// Return `None` only for an unclassified spelling. Registered kinds\n",
             "/// with no special requirements return `Some(NONE)`.\n",
@@ -1143,6 +1147,90 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         lines.append(
             f"        {patterns} => Some(SimpleIrRuntimeRequirements({bits})),\n"
         )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "/// Runtime-call metadata requirements keyed by canonical intrinsic symbol.\n",
+            "#[inline]\n",
+            "pub fn simpleir_runtime_symbol_requirements_table(symbol: &str) -> SimpleIrRuntimeRequirements {\n",
+            "    match symbol {\n",
+        ]
+    )
+    frame_symbols = sorted(data.get("simpleir_frame_introspection_runtime_symbols", []))
+    if frame_symbols:
+        patterns = " | ".join(f'\"{symbol}\"' for symbol in frame_symbols)
+        lines.append(
+            f"        {patterns} => SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,\n"
+        )
+    lines.extend(
+        [
+            "        _ => SimpleIrRuntimeRequirements::NONE,\n",
+            "    }\n",
+            "}\n\n",
+            "/// Canonical runtime symbol for a statically resolved Python module callable.\n",
+            "#[inline]\n",
+            "pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'static str> {\n",
+            "    match qualified {\n",
+        ]
+    )
+    for row in sorted(
+        data.get("simpleir_runtime_qualified_callable", []),
+        key=lambda item: item["qualified"],
+    ):
+        lines.append(f'        "{row["qualified"]}" => Some("{row["symbol"]}"),\n')
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "/// Whether args[0] is the dynamically invoked callable value.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_has_callable_operand(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    callable_kinds = sorted(data.get("simpleir_callable_operand_kinds", []))
+    if callable_kinds:
+        lines.append("            " + "\n            | ".join(f'"{kind}"' for kind in callable_kinds) + "\n")
+    lines.extend(["    )\n", "}\n"])
+    lines.extend([
+        "\n/// Whether s_value is a first-class function reference.\n",
+        "#[inline]\n",
+        "pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {\n",
+        "    matches!(kind, ",
+    ])
+    function_refs = sorted(data.get("simpleir_function_reference_s_value_kinds", []))
+    lines.append(" | ".join(f'"{kind}"' for kind in function_refs) if function_refs else "\"\"")
+    lines.extend([")\n", "}\n"])
+    lines.extend([
+        "\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrModuleIdentityAliasRole { Strong, Merge }\n\n",
+        "#[inline]\n",
+        "pub fn simpleir_module_identity_alias_role_table(kind: &str) -> Option<SimpleIrModuleIdentityAliasRole> {\n",
+        "    match kind {\n",
+    ])
+    for row in sorted(data.get("simpleir_module_identity_alias", []), key=lambda item: item["kind"]):
+        role = {"strong": "Strong", "merge": "Merge"}[row["role"]]
+        lines.append(f'        "{row["kind"]}" => Some(SimpleIrModuleIdentityAliasRole::{role}),\n')
+    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    lines.append("#[inline]\npub fn simpleir_module_identity_source_name_arg(kind: &str) -> Option<usize> {\n    match kind {\n")
+    for row in sorted(data.get("simpleir_module_identity_source", []), key=lambda item: item["kind"]):
+        lines.append(f'        "{row["kind"]}" => Some({row["module_name_arg"]}),\n')
+    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    lines.extend([
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrModuleSlotRole { Get, Set, Delete }\n\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub struct SimpleIrModuleSlotAccess { pub role: SimpleIrModuleSlotRole, pub module_arg: usize, pub name_arg: usize, pub value_arg: Option<usize> }\n\n",
+        "#[inline]\npub fn simpleir_module_slot_access_table(kind: &str) -> Option<SimpleIrModuleSlotAccess> {\n    match kind {\n",
+    ])
+    for row in sorted(data.get("simpleir_module_slot_access", []), key=lambda item: item["kind"]):
+        role = {"get": "Get", "set": "Set", "delete": "Delete"}[row["role"]]
+        value_arg = f'Some({row["value_arg"]})' if "value_arg" in row else "None"
+        lines.append(f'        "{row["kind"]}" => Some(SimpleIrModuleSlotAccess {{ role: SimpleIrModuleSlotRole::{role}, module_arg: {row["module_arg"]}, name_arg: {row["name_arg"]}, value_arg: {value_arg} }}),\n')
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines)
 

@@ -60,6 +60,7 @@ fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -86,6 +87,7 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -116,6 +118,7 @@ fn fn_ptr_code_set_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -151,6 +154,7 @@ fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -186,6 +190,7 @@ fn gen_locals_register_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -218,6 +223,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -241,6 +247,7 @@ fn compile_missing_static_target_symbol(kind: &str) {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "caller",
     );
@@ -285,6 +292,7 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "const_str_missing_payload",
     );
@@ -312,6 +320,7 @@ fn const_str_empty_string_payload_still_compiles() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         "const_str_empty_payload",
     );
@@ -353,6 +362,7 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }
 
@@ -372,6 +382,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "caller".to_string(),
@@ -406,6 +417,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         "caller",
@@ -441,5 +453,6 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
 }

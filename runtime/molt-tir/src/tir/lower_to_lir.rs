@@ -848,6 +848,7 @@ mod tests {
         );
         let func = TirFunction {
             name: "checked_add".into(),
+            execution_context: Default::default(),
             param_names: vec![],
             param_types: vec![],
             return_type: TirType::I64,
@@ -891,6 +892,7 @@ mod tests {
         );
         let func = TirFunction {
             name: "implicit_raise_helper".into(),
+            execution_context: Default::default(),
             param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,
@@ -945,6 +947,7 @@ mod tests {
         );
         let func = TirFunction {
             name: "alloc_point".into(),
+            execution_context: Default::default(),
             param_names: vec!["cls".into()],
             param_types: vec![TirType::DynBox],
             return_type: TirType::UserClass("Point".into()),
@@ -1001,6 +1004,7 @@ mod tests {
         );
         let func = TirFunction {
             name: "stack_alloc_point".into(),
+            execution_context: Default::default(),
             param_names: vec!["cls".into()],
             param_types: vec![TirType::DynBox],
             return_type: TirType::UserClass("Point".into()),
@@ -1090,6 +1094,7 @@ mod tests {
 
         let func = TirFunction {
             name: "dead_loop_end_lir".into(),
+            execution_context: Default::default(),
             param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,

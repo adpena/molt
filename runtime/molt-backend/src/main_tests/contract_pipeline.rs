@@ -46,6 +46,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         ],
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let caller = FunctionIR {
         name: "molt_main".to_string(),
@@ -73,6 +74,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         ],
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     let mut ir = SimpleIR {
         functions: vec![caller, callee],
@@ -122,6 +124,7 @@ fn rust_source_for_ir_rejects_stub_markers() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -149,6 +152,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "dead_stdlib_helper".to_string(),
@@ -161,6 +165,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,

@@ -25,6 +25,7 @@ mod cbor_tests {
                 param_types: Some(vec!["int".to_string()]),
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         };
@@ -86,6 +87,7 @@ fn test_cbor_nan_infinity_round_trip() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

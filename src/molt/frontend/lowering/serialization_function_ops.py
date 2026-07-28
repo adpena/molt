@@ -303,15 +303,21 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 effect_proof = op.metadata.get("effect_proof")
                 if isinstance(effect_proof, str) and effect_proof:
                     entry["effect_proof"] = effect_proof
+                runtime_symbol = op.metadata.get("runtime_symbol")
+                if isinstance(runtime_symbol, str) and runtime_symbol:
+                    entry["runtime_symbol"] = runtime_symbol
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_IMPORT_FROM":
-            ctx.json_ops.append(
-                {
-                    "kind": "module_import_from",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "module_import_from",
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            if op.metadata is not None:
+                runtime_symbol = op.metadata.get("runtime_symbol")
+                if isinstance(runtime_symbol, str) and runtime_symbol:
+                    entry["runtime_symbol"] = runtime_symbol
+            ctx.json_ops.append(entry)
         elif op.kind == "MODULE_GET_GLOBAL":
             ctx.json_ops.append(
                 {
