@@ -254,6 +254,21 @@ def test_deserializer_rejects_self_asserted_digest(identity_root: Path) -> None:
         identity.RuntimeBuildIdentity.from_dict(value)
 
 
+def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
+    with pytest.raises(TypeError, match="keys must be strings"):
+        identity._freeze_json({1: "integer", "1": "string"})
+
+    with pytest.raises(ValueError, match="incomplete"):
+        identity.RuntimeBuildIdentity.from_dict(
+            {
+                "schema": "molt.runtime-build-identity.v2",
+                "digest": "0" * 64,
+                "pair_digest": "0" * 64,
+                "payload": {1: "not-json"},
+            }
+        )
+
+
 def test_identity_rejects_digest_valid_wrong_pair_schema(identity_root: Path) -> None:
     value = _resolve(
         identity_root,

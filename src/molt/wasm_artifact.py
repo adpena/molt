@@ -182,7 +182,7 @@ class WasmCallableTableEntry:
         }
 
 
-def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
+def _read_wasm_varuint(data: bytes | mmap.mmap, offset: int) -> tuple[int, int]:
     result = 0
     shift = 0
     while True:
@@ -198,7 +198,7 @@ def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
             raise ValueError("wasm varuint is too large")
 
 
-def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
+def _read_wasm_string(data: bytes | mmap.mmap, offset: int) -> tuple[str, int]:
     length, offset = _read_wasm_varuint(data, offset)
     end = offset + length
     if end > len(data):
@@ -835,9 +835,7 @@ def read_wasm_split_runtime_callable_layout(
     fixed_prefix_len = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
         WASM_RESERVED_RUNTIME_CALLABLES
     )
-    runtime_base = (
-        1 if first_active_slot == fixed_prefix_len + 1 else first_active_slot
-    )
+    runtime_base = 1 if first_active_slot == fixed_prefix_len + 1 else first_active_slot
     missing = [
         slot
         for slot in range(runtime_base, runtime_base + fixed_prefix_len)

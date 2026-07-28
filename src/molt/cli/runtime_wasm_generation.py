@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_text, _durable_replace
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
 
 
 _RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v2"
@@ -109,7 +109,9 @@ def _publish_immutable_member(staged: Path, member: Path, source: Path) -> None:
 
     if member.exists():
         if not _is_regular_immutable_member(member):
-            raise ValueError(f"immutable runtime member is not a regular file: {member.name}")
+            raise ValueError(
+                f"immutable runtime member is not a regular file: {member.name}"
+            )
         digest, size = _hash_artifact(member)
         if digest != member.name.split(".")[-2] or size != staged.stat().st_size:
             raise ValueError(f"immutable runtime member is corrupt: {member.name}")
@@ -238,6 +240,23 @@ def _validate_artifact_record(
     return member
 
 
+def _generation_receipts(
+    value: object,
+) -> dict[str, dict[str, object]] | None:
+    """Return the exact typed shared/reloc receipt pair or fail closed."""
+
+    receipts = _json_object_mapping(value)
+    if receipts is None or set(receipts) != {"shared", "reloc"}:
+        return None
+    typed: dict[str, dict[str, object]] = {}
+    for kind in ("shared", "reloc"):
+        record = _json_object_mapping(receipts.get(kind))
+        if record is None:
+            return None
+        typed[kind] = dict(record)
+    return typed
+
+
 def read_runtime_wasm_generation(
     manifest: Path,
     *,
@@ -258,8 +277,8 @@ def read_runtime_wasm_generation(
         or payload.get("pair_digest") != expected_shared_identity.pair_digest
     ):
         return None
-    receipts = payload.get("receipts")
-    if not isinstance(receipts, dict):
+    receipts = _generation_receipts(payload.get("receipts"))
+    if receipts is None:
         return None
     shared_member = _validate_artifact_record(
         receipts.get("shared"),
@@ -306,8 +325,9 @@ def hydrate_runtime_wasm_generation(
         )
     source_member_shared = payload.shared
     source_member_reloc = payload.reloc
-    receipts = payload.payload["receipts"]
-    assert isinstance(receipts, dict)
+    receipts = _generation_receipts(payload.payload.get("receipts"))
+    if receipts is None:
+        raise ValueError("validated runtime generation receipts are invalid")
     return publish_runtime_wasm_generation(
         dest_shared,
         dest_reloc,
@@ -315,5 +335,5 @@ def hydrate_runtime_wasm_generation(
         reloc_identity=expected_reloc_identity,
         source_shared=source_member_shared,
         source_reloc=source_member_reloc,
-        expected_source_receipts=receipts,  # type: ignore[arg-type]
+        expected_source_receipts=receipts,
     )

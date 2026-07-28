@@ -22,6 +22,7 @@ from typing import (
     NamedTuple,
     Sequence,
     TypeVar,
+    cast,
 )
 
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
@@ -2483,7 +2484,7 @@ def _runtime_toolchain_identity_tree(
     if not isinstance(toolchain, Mapping):
         return None
     tree = toolchain.get("wasi_sysroot")
-    return tree if isinstance(tree, Mapping) else None
+    return cast(Mapping[str, object], tree) if isinstance(tree, Mapping) else None
 
 
 def _runtime_source_identity_tree(
@@ -2494,7 +2495,7 @@ def _runtime_source_identity_tree(
     if not isinstance(pair, Mapping):
         return None
     tree = pair.get("sources")
-    return tree if isinstance(tree, Mapping) else None
+    return cast(Mapping[str, object], tree) if isinstance(tree, Mapping) else None
 
 
 _RuntimeIdentityPhaseResult = TypeVar("_RuntimeIdentityPhaseResult")
