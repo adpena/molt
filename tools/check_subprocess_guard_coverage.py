@@ -486,6 +486,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded synthetic-repository git helper for dirty-tree landing audit tests",
     ),
     AllowedRawSubprocessUse(
+        "tests/tools/test_command_execution.py",
+        "test_executor_loads_process_guard_without_repo_package_importable",
+        "run",
+        "bounded isolated-interpreter smoke proving the shared command executor "
+        "loads its process guard without the repository package importable",
+    ),
+    AllowedRawSubprocessUse(
         "src/molt/cli/source_extension_toolchain.py",
         "_probe_wasm_source_extension_compiler",
         "run",

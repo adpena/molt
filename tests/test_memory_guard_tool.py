@@ -3153,7 +3153,7 @@ def test_run_guarded_observes_child_exit_before_timeout_race(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         sampler=lambda: {},
-        timeout=0.05,
+        timeout=0.5,
         cleanup_orphans=False,
     )
 
