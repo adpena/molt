@@ -27,6 +27,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+    SIMPLEIR_OUT_METADATA_KINDS,
+    SIMPLEIR_VAR_DEFINITION_KINDS,
+    SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS,
+    SIMPLEIR_VAR_RESULT_KINDS,
+)
+
 # ---------------------------------------------------------------------------
 # Diagnostic accumulator
 # ---------------------------------------------------------------------------
@@ -89,16 +101,6 @@ CONTROL_FLOW_ONLY_KINDS = frozenset(
 # Essentially: if the op has an "args" list and is not in a known-exception set,
 # treat args entries as variable references.
 
-# Ops that reference a single variable in a "var" field instead of "args".
-VAR_FIELD_KINDS = frozenset(
-    {
-        "ret",
-    }
-)
-
-# Ops that produce a new SSA definition via "out".
-# We detect this dynamically by checking for the "out" key.
-
 # Ops where "value" is a label reference (for label/jump consistency).
 LABEL_DEF_KINDS = frozenset(
     {
@@ -136,19 +138,28 @@ def _extract_used_vars(op: dict[str, Any]) -> list[str]:
     used: list[str] = []
     kind = op.get("kind", "")
 
-    # "var" field (ret op)
-    if kind in VAR_FIELD_KINDS:
-        var = op.get("var")
-        if isinstance(var, str) and var:
-            used.append(var)
-        return used
-
     # "args" field -- the common case
     args = op.get("args")
     if isinstance(args, list):
-        for arg in args:
+        read_arity = min(
+            len(args), SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(kind, len(args))
+        )
+        for arg in args[:read_arity]:
             if isinstance(arg, str) and arg:
                 used.append(arg)
+
+    var = op.get("var")
+    var_is_read = (
+        kind not in SIMPLEIR_VAR_DEFINITION_KINDS | SIMPLEIR_VAR_RESULT_KINDS
+    )
+    if (
+        kind in SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS
+        and isinstance(args, list)
+        and args
+    ):
+        var_is_read = False
+    if var_is_read and isinstance(var, str) and var and var != "none":
+        used.append(var)
 
     # Some ops also read from "condition" or similar non-standard fields.
     # The Molt TIR JSON uses "args" consistently for variable operands,
@@ -157,15 +168,30 @@ def _extract_used_vars(op: dict[str, Any]) -> list[str]:
     return used
 
 
-def _extract_defined_var(op: dict[str, Any]) -> str | None:
-    """Extract the SSA variable defined (written) by an op, if any.
+def _extract_defined_vars(op: dict[str, Any]) -> list[str]:
+    """Extract every variable defined (written) by an op.
 
     Mirrors Instr.dst from Syntax.lean.
     """
+    kind = op.get("kind", "")
+    defined: list[str] = []
+    var = op.get("var")
+    if kind in SIMPLEIR_VAR_RESULT_KINDS | SIMPLEIR_VAR_DEFINITION_KINDS:
+        if isinstance(var, str) and var and var != "none":
+            defined.append(var)
     out = op.get("out")
-    if isinstance(out, str) and out:
-        return out
-    return None
+    if kind not in SIMPLEIR_OUT_METADATA_KINDS:
+        if isinstance(out, str) and out and out != "none":
+            defined.append(out)
+    args = op.get("args")
+    first_result = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(kind)
+    if first_result is not None and isinstance(args, list):
+        defined.extend(
+            arg
+            for arg in args[first_result:]
+            if isinstance(arg, str) and arg and arg != "none"
+        )
+    return list(dict.fromkeys(defined))
 
 
 def verify_use_before_def(
@@ -203,9 +229,7 @@ def verify_use_before_def(
                 )
 
         # Record definition.
-        out = _extract_defined_var(op)
-        if out is not None:
-            defined.add(out)
+        defined.update(_extract_defined_vars(op))
 
     return diagnostics
 
@@ -233,31 +257,28 @@ def verify_no_duplicate_defs(
     param_set = set(params)
 
     for i, op in enumerate(ops):
-        out = _extract_defined_var(op)
-        if out is None:
-            continue
+        for out in _extract_defined_vars(op):
+            if out in param_set:
+                # Parameter shadowed by op output. This is common in Molt IR for
+                # reassignment of local variables, so report as a warning-level
+                # diagnostic only when we encounter a strict mode.
+                # For now, just record the definition.
+                pass
 
-        if out in param_set:
-            # Parameter shadowed by op output. This is common in Molt IR for
-            # reassignment of local variables, so report as a warning-level
-            # diagnostic only when we encounter a strict mode.
-            # For now, just record the definition.
-            pass
-
-        if out in first_def:
-            # Multiple definitions. In Molt's flat-opcode IR this happens
-            # legitimately for phi-like patterns and variable reassignment
-            # within loops/conditionals. We only flag it as a true error if
-            # the op is not a phi and the redefined name is not a parameter.
-            kind = op.get("kind", "")
-            if kind == "phi":
-                # phi nodes are expected to redefine.
+            if out in first_def:
+                # Multiple definitions. In Molt's flat-opcode IR this happens
+                # legitimately for phi-like patterns and variable reassignment
+                # within loops/conditionals. We only flag it as a true error if
+                # the op is not a phi and the redefined name is not a parameter.
+                kind = op.get("kind", "")
+                if kind == "phi":
+                    # phi nodes are expected to redefine.
+                    continue
+                # Allow reassignment -- Molt IR is not strict SSA.
+                # Record but do not error.
                 continue
-            # Allow reassignment -- Molt IR is not strict SSA.
-            # Record but do not error.
-            continue
 
-        first_def[out] = i
+            first_def[out] = i
 
     return diagnostics
 

@@ -23,8 +23,9 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
-                    let done_out = op.out.as_deref().map(sanitize_ident);
-                    let value_out = op.var.as_deref().map(sanitize_ident);
+                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+                    let value_out = results.first().copied().map(sanitize_ident);
+                    let done_out = results.get(1).copied().map(sanitize_ident);
                     let tmp_seed = done_out
                         .as_deref()
                         .or(value_out.as_deref())

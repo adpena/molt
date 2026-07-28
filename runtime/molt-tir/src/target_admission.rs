@@ -11,6 +11,10 @@ use crate::{OpIR, SimpleIR};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NumericTargetCapabilities {
     pub arbitrary_precision_integers: bool,
+    /// Largest concrete integer magnitude the target carrier represents
+    /// exactly. This admits only literal values proven in range; it does not
+    /// authorize integer-producing operations that can overflow that range.
+    pub exact_integer_literal_max_magnitude: Option<u128>,
     pub cpython_float_divmod: bool,
     pub cpython_power: bool,
 }
@@ -20,6 +24,17 @@ impl NumericTargetCapabilities {
     /// shared CPython-exact float divmod authority.
     pub const FIXED_WIDTH_FLOAT_ONLY: Self = Self {
         arbitrary_precision_integers: false,
+        exact_integer_literal_max_magnitude: None,
+        cpython_float_divmod: false,
+        cpython_power: false,
+    };
+
+    /// Luau's sole numeric carrier is IEEE-754 binary64. Every integer through
+    /// magnitude 2^53 is represented exactly, while general integer producers
+    /// remain inadmissible without an arbitrary-precision value authority.
+    pub const LUAU_EXACT_INTEGER_LITERALS: Self = Self {
+        arbitrary_precision_integers: false,
+        exact_integer_literal_max_magnitude: Some(1_u128 << 53),
         cpython_float_divmod: false,
         cpython_power: false,
     };
@@ -207,6 +222,20 @@ fn numeric_admission_failure(
 
     match role {
         Role::None => None,
+        Role::IntegerLiteral => {
+            if !op_has_integer_literal_payload(op)
+                || capabilities.arbitrary_precision_integers
+                || capabilities
+                    .exact_integer_literal_max_magnitude
+                    .is_some_and(|max| exact_integer_literal_value(op, max).is_some())
+            {
+                None
+            } else {
+                Some(
+                    "integer literal exceeds the target's exact concrete value authority and requires the canonical arbitrary-precision value authority",
+                )
+            }
+        }
         Role::IntegerOnly | Role::IntegerProducer => (!capabilities.arbitrary_precision_integers)
             .then_some(
             "Python integer semantics require the canonical arbitrary-precision value authority",
@@ -277,6 +306,27 @@ fn numeric_admission_failure(
             }
         }
     }
+}
+
+fn op_has_integer_literal_payload(op: &OpIR) -> bool {
+    match op.kind.as_str() {
+        "const" => op.value.is_some(),
+        "const_int" | "const_bigint" => true,
+        _ => false,
+    }
+}
+
+/// Return a canonical concrete integer literal when its complete decimal value
+/// fits the target's exact carrier. This is shared by target admission and
+/// bounded-value emitters so a backend cannot admit one range and materialize
+/// another.
+pub fn exact_integer_literal_value(op: &OpIR, max_magnitude: u128) -> Option<i128> {
+    let value = match op.kind.as_str() {
+        "const" | "const_int" => i128::from(op.value?),
+        "const_bigint" => op.s_value.as_deref()?.parse::<i128>().ok()?,
+        _ => return None,
+    };
+    (value.unsigned_abs() <= max_magnitude).then_some(value)
 }
 
 fn operands(op: &OpIR, arity: usize) -> Option<&[String]> {
@@ -350,5 +400,92 @@ mod tests {
         )
         .expect_err("i64 is not Python integer semantics");
         assert!(error.contains("arbitrary-precision"));
+    }
+
+    #[test]
+    fn exact_literal_capability_admits_only_concrete_in_range_siblings() {
+        let capabilities = NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS;
+        for op in [
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(42),
+                out: Some("out".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_int".to_string(),
+                value: Some(-(1_i64 << 53)),
+                out: Some("out".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_bigint".to_string(),
+                s_value: Some((1_u64 << 53).to_string()),
+                out: Some("out".to_string()),
+                ..OpIR::default()
+            },
+        ] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "f".to_string(),
+                    params: vec![],
+                    ops: vec![op],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                }],
+                profile: None,
+            };
+            validate_numeric_target_contract(&ir, "luau", capabilities)
+                .expect("exact concrete literal must be admitted");
+        }
+
+        for payload in ["9007199254740993", "-9007199254740993", "not-an-int"] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "f".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "const_bigint".to_string(),
+                        s_value: Some(payload.to_string()),
+                        out: Some("out".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                }],
+                profile: None,
+            };
+            let error = validate_numeric_target_contract(&ir, "luau", capabilities)
+                .expect_err("unsafe or malformed bigint literal must reject");
+            assert!(error.contains("exact concrete value authority"));
+        }
+    }
+
+    #[test]
+    fn generic_const_non_integer_payload_is_not_an_integer_literal() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "f".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "const".to_string(),
+                    f_value: Some(1.25),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+        validate_numeric_target_contract(
+            &ir,
+            "fixed",
+            NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        )
+        .expect("generic const float payload must stay outside integer admission");
     }
 }

@@ -295,6 +295,70 @@ pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
     )
 }
 
+/// Canonical role of the optional SimpleIR `var` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrVarFieldRole {
+    Read,
+    Definition,
+    Result,
+    MetadataWhenArgs,
+}
+
+#[inline]
+pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {
+    match kind {
+        "delete_var" | "store_fast" | "store_var" => SimpleIrVarFieldRole::Definition,
+        "checked_add" | "checked_mul" | "iter_next_unboxed" => SimpleIrVarFieldRole::Result,
+        "copy_var" | "load_var" => SimpleIrVarFieldRole::MetadataWhenArgs,
+        _ => SimpleIrVarFieldRole::Read,
+    }
+}
+
+/// Whether `out` is transport metadata rather than an SSA result.
+#[inline]
+pub fn simpleir_out_field_is_metadata(kind: &str) -> bool {
+    matches!(
+        kind,
+        "set_attr"
+            | "store_attr"
+            | "set_attr_name"
+            | "set_attr_generic_ptr"
+            | "set_attr_generic_obj"
+            | "guarded_field_set"
+            | "guarded_field_init"
+            | "module_cache_set"
+            | "module_cache_del"
+            | "module_set_attr"
+            | "module_del_global"
+            | "module_del_global_if_present"
+            | "store"
+            | "store_init"
+            | "store_index"
+            | "index_set"
+            | "del_attr"
+            | "del_attr_name"
+            | "del_attr_generic_ptr"
+            | "del_attr_generic_obj"
+            | "del_index"
+            | "raise"
+            | "raise_from"
+            | "inc_ref"
+            | "dec_ref"
+            | "delete_var"
+            | "store_fast"
+            | "store_var"
+    )
+}
+
+/// First `args` position encoded as an output binding, if any.
+#[inline]
+pub fn simpleir_first_trailing_result_arg_table(kind: &str) -> Option<usize> {
+    match kind {
+        "unpack_sequence" => Some(1),
+        _ => None,
+    }
+}
+
 /// Python integer semantic role for a SimpleIR wire spelling.
 /// Generated from op_kinds.toml so string-dispatch backends apply target
 /// policy to one shared operation taxonomy.
@@ -308,6 +372,7 @@ pub enum SimpleIrIntegerSemantics {
     DynamicPower,
     DynamicUnaryNumeric,
     IntegerOnly,
+    IntegerLiteral,
     IntegerProducer,
 }
 
@@ -357,10 +422,8 @@ pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics 
         | "shl" | "inplace_lshift" | "rshift" | "shr" | "inplace_rshift" => {
             SimpleIrIntegerSemantics::IntegerOnly
         }
-        "const"
-        | "const_int"
-        | "const_bigint"
-        | "box_from_raw_int"
+        "const" | "const_int" | "const_bigint" => SimpleIrIntegerSemantics::IntegerLiteral,
+        "box_from_raw_int"
         | "unbox_to_raw_int"
         | "checked_add"
         | "checked_mul"
@@ -510,13 +573,16 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "del_boundary"
         | "delete_var"
         | "div"
+        | "drop_inserted"
         | "else"
         | "end_if"
         | "exception_pending"
+        | "exception_region_drops_inserted"
         | "floor_div"
         | "floordiv"
         | "for_iter_end"
         | "for_iter_start"
+        | "frame_locals_set"
         | "free"
         | "function_defaults_version"
         | "get_iter"
@@ -532,6 +598,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "inplace_add"
         | "inplace_mul"
         | "inplace_sub"
+        | "line"
         | "load"
         | "load_const"
         | "load_var"
@@ -567,6 +634,8 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "store_var"
         | "string_eq"
         | "sub"
+        | "trace_enter_slot"
+        | "trace_exit"
         | "type_guard"
         | "unbox"
         | "unbox_to_raw_int"
@@ -614,12 +683,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "reraise"
         | "try_end"
         | "try_start" => Some(SimpleIrRuntimeRequirements(4)),
-        "borrow"
-        | "dec_ref"
-        | "drop_inserted"
-        | "exception_region_drops_inserted"
-        | "inc_ref"
-        | "release" => Some(SimpleIrRuntimeRequirements(8)),
+        "borrow" | "dec_ref" | "inc_ref" | "release" => Some(SimpleIrRuntimeRequirements(8)),
         "format_string" | "string_format" => Some(SimpleIrRuntimeRequirements(16)),
         "for_iter" | "iter_next" | "iter_next_unboxed" | "list_fill_new" | "string_join"
         | "unpack_sequence" => Some(SimpleIrRuntimeRequirements(32)),

@@ -62,20 +62,20 @@ fn function_op_count(func: &TirFunction) -> usize {
 /// mapping) AND runs no competing automatic temp-refcount mechanism that would
 /// double-release the same values.
 ///
-/// * `Llvm`, `Wasm`, `NativeCranelift`, `Luau` — qualify. LLVM is value-keyed;
+/// * `Llvm`, `Wasm`, `NativeCranelift` — qualify. LLVM is value-keyed;
 ///   WASM has a 1:1 name↔NaN-boxed-local mapping and no tracked-var auto-RC;
 ///   native suppresses its automatic temp-RC substrate only on full-function
 ///   `drop_inserted` functions; the narrower
 ///   `exception_region_drops_inserted` fact protects pre-bail exception releases
-///   without disabling legacy native RC. Luau is GC-managed and lowers the ops to
-///   nothing. The native loop-phi raw/heap representation blocker is pinned by
+///   without disabling legacy native RC. Luau is GC-managed and therefore does
+///   not materialize target-dead RC operations at all. The native loop-phi
+///   raw/heap representation blocker is pinned by
 ///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
 ///   plane is now the native RC authority as well.
 const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
     match target {
-        TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift | TargetKind::Luau => {
-            true
-        }
+        TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift => true,
+        TargetKind::Luau => false,
     }
 }
 
@@ -579,7 +579,8 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 ///   * WASM  — each SimpleIR name maps 1:1 to a uniformly NaN-boxed wasm local;
 ///     no tracked-var auto-RC. The LIR fast lane lowers `IncRef`/`DecRef`
 ///     directly (lower_to_wasm.rs).
-///   * Luau  — GC-managed; `DecRef`/`IncRef` lower to nothing (no-op).
+///   * Luau  — GC-managed; the terminal phase remains in the shared topology
+///     but does not manufacture target-dead `DecRef`/`IncRef` operations.
 ///   * Native/Cranelift — `function_compiler.rs` carries a value-tracking
 ///     automatic temp-RC substrate, suppressed only for full-function
 ///     drop-inserted functions by the design-20 §4.1 `drop_inserted`-marker gate

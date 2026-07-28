@@ -51,6 +51,64 @@ fn simple_value_names_record_block_arg_slots_without_shadowing_values() {
     );
 }
 
+#[test]
+fn block_argument_roundtrip_uses_valid_local_slot_transport() {
+    let mut func = TirFunction::new("join".into(), vec![], TirType::I64);
+    let incoming = func.fresh_value();
+    let join = func.fresh_block();
+    let joined = func.fresh_value();
+
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let mut value = AttrDict::new();
+    value.insert("value".into(), AttrValue::Int(42));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstInt,
+        operands: vec![],
+        results: vec![incoming],
+        attrs: value,
+        source_span: None,
+    });
+    entry.terminator = Terminator::Branch {
+        target: join,
+        args: vec![incoming],
+    };
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: joined,
+                ty: TirType::I64,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![joined],
+            },
+        },
+    );
+
+    let ops = lower_to_simple_ir(&func);
+    assert!(
+        ops.iter()
+            .any(|op| { op.kind == "store_var" && op.var.as_deref() == Some("_bb1_arg0") }),
+        "TIR block arguments must lower through their canonical local slot: {ops:?}"
+    );
+    let ir = crate::SimpleIR {
+        functions: vec![FunctionIR {
+            name: func.name,
+            params: vec![],
+            ops,
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    crate::validate_simple_ir(&ir)
+        .expect("canonical TIR block-argument transport must satisfy SimpleIR validation");
+}
+
 /// Regression: the TIR inliner mints fresh `ValueId`s, so a value's CANONICAL
 /// name (`_v{id}`) can land on a string a DIFFERENT value already claimed via
 /// an explicit `_simple_out` override (carried verbatim from the pre-lift

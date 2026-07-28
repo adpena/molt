@@ -633,11 +633,14 @@ fn handle_checked_add_op(
     // loop — same semantics, no speedup). This mirrors the
     // Luau lowering exactly.
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    let result_names = crate::tir::simple_def_use::simple_ir_result_names(op);
+    let sum_name = result_names.first().copied();
+    let flag_name = result_names.get(1).copied();
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
     let rhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
     if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
         let (sum, of) = builder.ins().sadd_overflow(lhs_raw, rhs_raw);
-        if let Some(ref sum_name) = op.var {
+        if let Some(sum_name) = sum_name {
             // The chain can only admit the sum if it admitted
             // the operands feeding it — a raw sum slot with a
             // boxed def would truncate. Enforced here because
@@ -648,7 +651,7 @@ fn handle_checked_add_op(
             );
             def_var_named(&mut *builder, vars, sum_name, sum);
         }
-        if let Some(ref flag_name) = op.out {
+        if let Some(flag_name) = flag_name {
             // `of` is an i8 0/1; widen to the I64 raw-bool
             // carrier convention.
             let of_wide = builder.ins().uextend(types::I64, of);
@@ -663,9 +666,7 @@ fn handle_checked_add_op(
         }
     } else {
         assert!(
-            op.var
-                .as_ref()
-                .is_none_or(|sum| !representation_plan.is_raw_int_carrier_name(sum)),
+            sum_name.is_none_or(|sum| !representation_plan.is_raw_int_carrier_name(sum)),
             "checked_add: boxed operands but raw sum slot (carrier chain inconsistency)",
         );
         let lhs = var_get_boxed_overflow_safe(
@@ -700,10 +701,10 @@ fn handle_checked_add_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let sum_boxed = builder.inst_results(call)[0];
-        if let Some(ref sum_name) = op.var {
+        if let Some(sum_name) = sum_name {
             def_var_named(&mut *builder, vars, sum_name, sum_boxed);
         }
-        if let Some(ref flag_name) = op.out {
+        if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(
                 &mut *builder,
@@ -781,11 +782,14 @@ fn handle_checked_mul_op(
     // CONSTANT FALSE (the peel's slow path is correctly dead; the
     // "fast" loop IS the boxed loop — same semantics, no speedup).
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    let result_names = crate::tir::simple_def_use::simple_ir_result_names(op);
+    let prod_name = result_names.first().copied();
+    let flag_name = result_names.get(1).copied();
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
     let rhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
     if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
         let (prod, of) = imul_overflow64(&mut *builder, lhs_raw, rhs_raw);
-        if let Some(ref prod_name) = op.var {
+        if let Some(prod_name) = prod_name {
             // The chain can only admit the product if it admitted the
             // operands feeding it — a raw product slot with a boxed
             // def would truncate. Enforced here because this IS the
@@ -796,7 +800,7 @@ fn handle_checked_mul_op(
             );
             def_var_named(&mut *builder, vars, prod_name, prod);
         }
-        if let Some(ref flag_name) = op.out {
+        if let Some(flag_name) = flag_name {
             // `of` is an i8 0/1; widen to the I64 raw-bool carrier
             // convention.
             let of_wide = builder.ins().uextend(types::I64, of);
@@ -811,9 +815,7 @@ fn handle_checked_mul_op(
         }
     } else {
         assert!(
-            op.var
-                .as_ref()
-                .is_none_or(|prod| !representation_plan.is_raw_int_carrier_name(prod)),
+            prod_name.is_none_or(|prod| !representation_plan.is_raw_int_carrier_name(prod)),
             "checked_mul: boxed operands but raw product slot (carrier chain inconsistency)",
         );
         let lhs = var_get_boxed_overflow_safe(
@@ -848,10 +850,10 @@ fn handle_checked_mul_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let prod_boxed = builder.inst_results(call)[0];
-        if let Some(ref prod_name) = op.var {
+        if let Some(prod_name) = prod_name {
             def_var_named(&mut *builder, vars, prod_name, prod_boxed);
         }
-        if let Some(ref flag_name) = op.out {
+        if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(
                 &mut *builder,

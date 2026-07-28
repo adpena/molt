@@ -49,6 +49,95 @@ fn validate_simple_ir_rejects_missing_value_definition() {
 }
 
 #[test]
+fn validate_simple_ir_accepts_block_argument_local_slot_transport() {
+    let mut incoming = op("const_int");
+    incoming.value = Some(42);
+    incoming.out = Some("incoming".to_string());
+
+    let mut store = op("store_var");
+    store.var = Some("_bb1_arg0".to_string());
+    store.args = Some(vec!["incoming".to_string()]);
+
+    let mut load = op("load_var");
+    load.var = Some("_bb1_arg0".to_string());
+    load.out = Some("joined".to_string());
+
+    let mut ret = op("ret");
+    ret.var = Some("joined".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![test_func(
+            "molt_test_validate_block_arg_slot",
+            vec![incoming, store, load, ret],
+        )],
+        profile: None,
+    };
+    validate_simple_ir(&ir).expect("store_var defines the block-argument local slot");
+}
+
+#[test]
+fn validate_simple_ir_rejects_undefined_block_argument_store_source() {
+    let mut store = op("store_var");
+    store.var = Some("_bb1_arg0".to_string());
+    store.args = Some(vec!["missing_incoming".to_string()]);
+
+    let ir = SimpleIR {
+        functions: vec![test_func(
+            "molt_test_validate_missing_block_arg_source",
+            vec![store],
+        )],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("store source must still be defined");
+    assert!(err.contains("function `molt_test_validate_missing_block_arg_source` op#0"));
+    assert!(err.contains("uses undefined value `missing_incoming`"));
+}
+
+#[test]
+fn validate_simple_ir_accepts_every_generated_multi_result_transport_shape() {
+    let mut sequence = op("const");
+    sequence.value = Some(0);
+    sequence.out = Some("sequence".to_string());
+
+    let mut unpack = op("unpack_sequence");
+    unpack.args = Some(vec![
+        "sequence".to_string(),
+        "left".to_string(),
+        "right".to_string(),
+    ]);
+    unpack.value = Some(2);
+
+    let mut checked_add = op("checked_add");
+    checked_add.args = Some(vec!["left".to_string(), "right".to_string()]);
+    checked_add.var = Some("sum".to_string());
+    checked_add.out = Some("add_overflow".to_string());
+
+    let mut checked_mul = op("checked_mul");
+    checked_mul.args = Some(vec!["sum".to_string(), "right".to_string()]);
+    checked_mul.var = Some("product".to_string());
+    checked_mul.out = Some("mul_overflow".to_string());
+
+    let mut next = op("iter_next_unboxed");
+    next.args = Some(vec!["iterator".to_string()]);
+    next.var = Some("item".to_string());
+    next.out = Some("done".to_string());
+
+    let mut ret = op("ret");
+    ret.var = Some("product".to_string());
+
+    let mut function = test_func(
+        "molt_test_validate_multi_result_fields",
+        vec![sequence, unpack, checked_add, checked_mul, next, ret],
+    );
+    function.params = vec!["iterator".to_string()];
+    let ir = SimpleIR {
+        functions: vec![function],
+        profile: None,
+    };
+    validate_simple_ir(&ir).expect("generated field roles must define every multi-result output");
+}
+
+#[test]
 fn validate_simple_ir_allows_dict_receiver_merge_placeholders() {
     let mut k = op("const_str");
     k.s_value = Some("key".to_string());

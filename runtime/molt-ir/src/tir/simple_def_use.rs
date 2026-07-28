@@ -1,36 +1,61 @@
 use std::collections::BTreeSet;
 
 use crate::ir::OpIR;
+use crate::tir::op_kinds_generated::{
+    SimpleIrVarFieldRole, simpleir_first_trailing_result_arg_table, simpleir_out_field_is_metadata,
+    simpleir_var_field_role_table,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimpleIrReadField {
+    Arg(usize),
+    Var,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimpleIrRead<'a> {
+    pub name: &'a str,
+    pub field: SimpleIrReadField,
+}
 
 /// Whether `op.var` denotes a source read rather than an assignment target.
 ///
 /// This is the canonical SimpleIR field-role authority used by CFG liveness,
 /// dead-operation elimination, megafunction ABI planning, and backends.
 pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
-    if matches!(op.kind.as_str(), "copy_var" | "load_var")
-        && op.args.as_ref().is_some_and(|args| !args.is_empty())
-    {
-        return false;
+    match simpleir_var_field_role_table(op.kind.as_str()) {
+        SimpleIrVarFieldRole::Read => true,
+        SimpleIrVarFieldRole::MetadataWhenArgs => {
+            !op.args.as_ref().is_some_and(|args| !args.is_empty())
+        }
+        SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::Result => false,
     }
-    !matches!(
-        op.kind.as_str(),
-        "store_var" | "store_fast" | "iter_next_unboxed"
-    )
 }
 
 /// Names defined directly by an operation result.
 pub fn simple_ir_result_names(op: &OpIR) -> Vec<&str> {
     let mut defined = Vec::new();
-    if let Some(out) = op.out.as_deref()
-        && out != "none"
-    {
-        defined.push(out);
-    }
-    if op.kind == "iter_next_unboxed"
+    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result
         && let Some(var) = op.var.as_deref()
         && var != "none"
     {
         defined.push(var);
+    }
+    if !simpleir_out_field_is_metadata(op.kind.as_str())
+        && let Some(out) = op.out.as_deref()
+        && out != "none"
+    {
+        defined.push(out);
+    }
+    if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+        && let Some(args) = op.args.as_deref()
+    {
+        defined.extend(
+            args.iter()
+                .skip(first_result)
+                .map(String::as_str)
+                .filter(|name| *name != "none"),
+        );
     }
     defined
 }
@@ -41,30 +66,44 @@ fn push_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
     }
 }
 
+/// Every source read and its canonical field role, in deterministic order.
+///
+/// Consumers that need positional diagnostics or narrowly-scoped transport
+/// exceptions use this API directly. Name-set consumers should use
+/// [`simple_ir_read_names`], which projects from this same authority.
+pub fn simple_ir_reads(op: &OpIR) -> Vec<SimpleIrRead<'_>> {
+    let mut reads = Vec::new();
+    if let Some(args) = op.args.as_ref() {
+        let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+            .unwrap_or(args.len())
+            .min(args.len());
+        reads.extend(
+            args.iter()
+                .take(read_arity)
+                .enumerate()
+                .map(|(index, name)| SimpleIrRead {
+                    name,
+                    field: SimpleIrReadField::Arg(index),
+                }),
+        );
+    }
+    if simple_ir_var_field_is_read(op)
+        && let Some(name) = op.var.as_deref()
+    {
+        reads.push(SimpleIrRead {
+            name,
+            field: SimpleIrReadField::Var,
+        });
+    }
+    reads
+}
+
 /// All SimpleIR names read by `op`, in deterministic field order.
 pub fn simple_ir_read_names(op: &OpIR) -> Vec<String> {
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
-    match op.kind.as_str() {
-        "unpack_sequence" => {
-            if let Some(args) = op.args.as_ref()
-                && let Some(seq) = args.first()
-            {
-                push_name(&mut read, &mut seen, seq);
-            }
-        }
-        _ => {
-            if let Some(args) = op.args.as_ref() {
-                for arg in args {
-                    push_name(&mut read, &mut seen, arg);
-                }
-            }
-        }
-    }
-    if simple_ir_var_field_is_read(op)
-        && let Some(var) = op.var.as_deref()
-    {
-        push_name(&mut read, &mut seen, var);
+    for source in simple_ir_reads(op) {
+        push_name(&mut read, &mut seen, source.name);
     }
     read
 }
@@ -76,20 +115,112 @@ pub fn simple_ir_defined_names(op: &OpIR) -> Vec<String> {
     for name in simple_ir_result_names(op) {
         push_name(&mut defined, &mut seen, name);
     }
-    match op.kind.as_str() {
-        "store_var" | "store_fast" => {
-            if let Some(var) = op.var.as_deref().or(op.out.as_deref()) {
-                push_name(&mut defined, &mut seen, var);
-            }
-        }
-        "unpack_sequence" => {
-            if let Some(args) = op.args.as_ref() {
-                for arg in args.iter().skip(1) {
-                    push_name(&mut defined, &mut seen, arg);
-                }
-            }
-        }
-        _ => {}
+    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Definition
+        && let Some(var) = op.var.as_deref().or(op.out.as_deref())
+    {
+        push_name(&mut defined, &mut seen, var);
     }
     defined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn local_slot_store_targets_are_definitions_not_reads() {
+        for kind in ["store_var", "store_fast"] {
+            let mut store = op(kind);
+            store.var = Some("_bb1_arg0".into());
+            store.args = Some(vec!["incoming".into()]);
+
+            assert_eq!(
+                simple_ir_reads(&store),
+                vec![SimpleIrRead {
+                    name: "incoming",
+                    field: SimpleIrReadField::Arg(0),
+                }]
+            );
+            assert_eq!(
+                simple_ir_defined_names(&store),
+                vec!["_bb1_arg0".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn unpack_sequence_reads_only_input_and_defines_output_args() {
+        let mut unpack = op("unpack_sequence");
+        unpack.args = Some(vec!["sequence".into(), "first".into(), "second".into()]);
+
+        assert_eq!(
+            simple_ir_reads(&unpack),
+            vec![SimpleIrRead {
+                name: "sequence",
+                field: SimpleIrReadField::Arg(0),
+            }]
+        );
+        assert_eq!(
+            simple_ir_defined_names(&unpack),
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    #[test]
+    fn args_based_local_copies_treat_var_as_metadata() {
+        for kind in ["copy_var", "load_var"] {
+            let mut copy = op(kind);
+            copy.var = Some("local_name".into());
+            copy.args = Some(vec!["source".into()]);
+            copy.out = Some("result".into());
+
+            assert_eq!(simple_ir_read_names(&copy), vec!["source".to_string()]);
+            assert_eq!(simple_ir_defined_names(&copy), vec!["result".to_string()]);
+        }
+    }
+
+    #[test]
+    fn every_var_result_sibling_defines_var_then_out() {
+        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+            let mut multi = op(kind);
+            multi.args = Some(vec!["lhs".into(), "rhs".into()]);
+            multi.var = Some("primary".into());
+            multi.out = Some("secondary".into());
+
+            assert_eq!(
+                simple_ir_read_names(&multi),
+                vec!["lhs".to_string(), "rhs".to_string()],
+                "{kind}"
+            );
+            assert_eq!(
+                simple_ir_result_names(&multi),
+                vec!["primary", "secondary"],
+                "{kind}"
+            );
+            assert_eq!(
+                simple_ir_defined_names(&multi),
+                vec!["primary".to_string(), "secondary".to_string()],
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn side_effect_out_metadata_is_not_a_definition() {
+        for kind in ["store_index", "module_cache_set", "dec_ref", "raise"] {
+            let mut side_effect = op(kind);
+            side_effect.args = Some(vec!["input".into()]);
+            side_effect.out = Some("transport_only".into());
+
+            assert!(simple_ir_result_names(&side_effect).is_empty(), "{kind}");
+            assert_eq!(simple_ir_read_names(&side_effect), vec!["input"], "{kind}");
+        }
+    }
 }

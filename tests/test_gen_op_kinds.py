@@ -5150,6 +5150,29 @@ def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
     assert "ResultValidity::ConditionalValidOnlyOnEdge" in predicate
 
 
+def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sibling() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    rendered_rs = gen.render_rs(data)
+    rendered_py = gen.render_py(data)
+
+    assert data["simpleir_var_result_kinds"] == [
+        "checked_add",
+        "checked_mul",
+        "iter_next_unboxed",
+    ]
+    assert data["simpleir_trailing_arg_result"] == [
+        {"kind": "unpack_sequence", "first_result_arg": 1}
+    ]
+    assert (
+        '"checked_add" | "checked_mul" | "iter_next_unboxed" => '
+        "SimpleIrVarFieldRole::Result"
+    ) in rendered_rs
+    assert '"unpack_sequence" => Some(1)' in rendered_rs
+    assert "SIMPLEIR_VAR_RESULT_KINDS" in rendered_py
+    assert '"unpack_sequence": 1' in rendered_py
+
+
 def test_result_validity_rejects_bad_rows() -> None:
     gen = _gen()
     data = gen.load_table()
