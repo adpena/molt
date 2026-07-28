@@ -11,7 +11,10 @@ pub(crate) use limits::stdin_request_limit_bytes;
 pub(crate) use limits::{daemon_max_jobs, daemon_request_limit_bytes};
 #[cfg(test)]
 pub(crate) use output::default_backend_output_path;
-#[cfg(any(unix, test))]
+#[cfg(any(
+    all(unix, any(feature = "native-backend", feature = "wasm-backend")),
+    test
+))]
 pub(crate) use output::write_cached_output;
 #[cfg(all(any(unix, test), feature = "wasm-backend"))]
 pub(crate) use output::write_output;

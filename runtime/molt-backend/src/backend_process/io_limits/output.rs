@@ -38,11 +38,10 @@ pub(crate) fn resolve_backend_output_path(
     output_path.unwrap_or(default_backend_output_path(kind))
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-#[cfg(any(unix, test))]
+#[cfg(any(
+    all(unix, any(feature = "native-backend", feature = "wasm-backend")),
+    test
+))]
 pub(crate) fn write_cached_output(
     path: &str,
     bytes: &[u8],
@@ -55,19 +54,14 @@ pub(crate) fn write_cached_output(
     Ok(true)
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-#[cfg(any(unix, test))]
+#[cfg(any(
+    all(unix, any(feature = "native-backend", feature = "wasm-backend")),
+    test
+))]
 pub(crate) fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     write_output_path(Path::new(path), bytes)
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 #[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
 pub(crate) fn write_output_path(output_path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_bytes_atomically(output_path, bytes)
