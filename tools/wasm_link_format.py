@@ -22,6 +22,8 @@ if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
 _WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
 _WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols  # noqa: E402
+
 WASM_MAGIC = b"\x00asm"
 
 WASM_VERSION = b"\x01\x00\x00\x00"
@@ -426,54 +428,6 @@ def _parse_indexed_symbol(
     return index, name, offset
 
 
-def _skip_data_symbol(payload: bytes, offset: int, flags: int) -> int:
-    _, offset = _read_string(payload, offset)
-    if not (flags & FLAG_UNDEFINED):
-        _, offset = _read_varuint(payload, offset)
-        _, offset = _read_varuint(payload, offset)
-        _, offset = _read_varuint(payload, offset)
-    return offset
-
-
-def _collect_linking_function_symbols(data: bytes) -> list[tuple[int, int, str, str]]:
-    symbols: list[tuple[int, int, str, str]] = []
-    for section_id, payload in _parse_sections(data):
-        if section_id != 0:
-            continue
-        name, custom_payload = _parse_custom_section(payload)
-        if name != "linking":
-            continue
-        _, subsections = _parse_linking_payload(custom_payload)
-        for sub_id, sub_payload in subsections:
-            if sub_id != SYMTAB_SUBSECTION_ID:
-                continue
-            count, offset = _read_varuint(sub_payload, 0)
-            for _ in range(count):
-                if offset >= len(sub_payload):
-                    raise ValueError("Unexpected EOF while reading linking symbols")
-                kind = sub_payload[offset]
-                offset += 1
-                flags, offset = _read_varuint(sub_payload, offset)
-                if kind == SYMBOL_KIND_FUNCTION:
-                    index, symbol_name, offset = _parse_indexed_symbol(
-                        sub_payload, offset, flags
-                    )
-                    symbols.append((flags, index, symbol_name, ""))
-                    continue
-                if kind in (2, 4, 5):
-                    _, _, offset = _parse_indexed_symbol(sub_payload, offset, flags)
-                    continue
-                if kind == 1:
-                    offset = _skip_data_symbol(sub_payload, offset, flags)
-                    continue
-                if kind == 3:
-                    _, offset = _read_varuint(sub_payload, offset)
-                    continue
-                raise ValueError(f"Unknown linking symbol kind: {kind}")
-            return symbols
-    return symbols
-
-
 def _encode_function_symbol_entry(*, flags: int, index: int, name: str) -> bytes:
     entry = bytearray()
     entry.append(SYMBOL_KIND_FUNCTION)
@@ -529,7 +483,11 @@ def _append_linking_function_symbols(
 ) -> bytes | None:
     if not entries:
         return None
-    existing_names = {name for _, _, name, _ in _collect_linking_function_symbols(data)}
+    existing_names = {
+        symbol.name
+        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        if symbol.name
+    }
     sections = _parse_sections(data)
     func_import_count = _count_func_imports(sections)
     total_func_count = _get_total_func_count(data)

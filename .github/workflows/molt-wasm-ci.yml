@@ -84,8 +84,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-receipt-wasm
-          path: proof-receipts/wasm.json
+          path: |
+            proof-receipts/wasm.json
+            ${{ env.CARGO_TARGET_DIR }}/.molt_state/build_failures/*.json
+            ${{ env.CARGO_TARGET_DIR }}/.molt_state/runtime_wasm_generations/*.json
+            /tmp/molt-ext/wasm/*.json
           if-no-files-found: error
+          include-hidden-files: true
 
       - name: Summarize guarded command hotspots
         if: always()
