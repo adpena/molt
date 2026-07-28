@@ -3579,10 +3579,11 @@ def _merge_linked_callable_table(
     for slot, expected_function_indices in expected_owned.items():
         actual = rows_by_slot.get(slot)
         if actual is None:
-            raise ValueError(
-                "linked WASM dropped compiler-owned callable-table entry: "
-                f"slot={slot}, functions={sorted(expected_function_indices)}"
-            )
+            # wasm-ld GC may omit an element row even though the canonical
+            # linker symbol remains. The already-resolved entry plan is the
+            # publication authority and will restore this slot immediately
+            # after the merge check.
+            continue
         if actual[0] not in expected_function_indices:
             raise ValueError(
                 "linked WASM changed compiler-owned callable-table identity: "

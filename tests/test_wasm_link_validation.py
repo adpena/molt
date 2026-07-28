@@ -875,6 +875,59 @@ def test_monolithic_callable_merge_accepts_prelink_stub_then_publishes_direct_ru
     assert _simple_active_function_segments(published) == [(1, [1])]
 
 
+def _empty_callable_publication_module() -> bytes:
+    sections = wasm_link._parse_sections(
+        _build_exported_runtime_module_many(
+            [wasm_link._callable_entry_export_name(slot) for slot in range(2)]
+        )
+    )
+    sections.insert(2, (4, b"\x01\x70\x00\x10"))
+    sections.insert(-1, (9, b"\x00"))
+    return wasm_link._build_sections(sections)
+
+
+def test_monolithic_callable_merge_republishes_gc_omitted_fixed_and_app_rows() -> (
+    None
+):
+    module = _empty_callable_publication_module()
+    layout = wasm_link.CallableTableLayout(1, 1, 8, 1)
+    entry_plan = wasm_link._resolve_callable_table_entry_plan(
+        module,
+        layout,
+        entry_symbol_names=None,
+        include_fixed_prefix=True,
+        override_reserved_direct=False,
+    )
+
+    assert wasm_link._merge_linked_callable_table([], layout, entry_plan) == 9
+    published = wasm_link._install_callable_table_layout(
+        module, layout, entry_plan=entry_plan
+    )
+    assert _simple_active_function_segments(published) == [(1, [0]), (8, [1])]
+
+
+def test_split_callable_merge_republishes_gc_omitted_app_row_only() -> None:
+    module = _empty_callable_publication_module()
+    layout = wasm_link.CallableTableLayout(1, 1, 8, 1)
+    entry_plan = wasm_link._resolve_callable_table_entry_plan(
+        module,
+        layout,
+        entry_symbol_names=None,
+        include_fixed_prefix=False,
+        override_reserved_direct=False,
+    )
+
+    assert wasm_link._merge_linked_callable_table([], layout, entry_plan) == 9
+    published = wasm_link._install_callable_table_layout(
+        module,
+        layout,
+        include_fixed_prefix=False,
+        override_reserved_direct=False,
+        entry_plan=entry_plan,
+    )
+    assert _simple_active_function_segments(published) == [(8, [1])]
+
+
 def test_linked_callable_merge_rejects_identity_change_and_unowned_overlap() -> None:
     layout = wasm_link.CallableTableLayout(1, 2, 8, 2)
     entry_plan = wasm_link._CallableTableEntryPlan(
@@ -892,17 +945,13 @@ def test_linked_callable_merge_rejects_identity_change_and_unowned_overlap() -> 
         )
 
 
-def test_linked_callable_merge_rejects_missing_owned_slot_and_sparse_growth() -> None:
+def test_linked_callable_merge_rejects_sparse_runtime_and_suffix_growth() -> None:
     layout = wasm_link.CallableTableLayout(1, 2, 8, 2)
     entry_plan = wasm_link._CallableTableEntryPlan(
         (10, 11), (80, 81), owns_runtime_region=True
     )
     owned_rows = [[1, 10, 0, 0], [2, 11, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]]
 
-    with pytest.raises(ValueError, match="dropped compiler-owned.*slot=8"):
-        wasm_link._merge_linked_callable_table(
-            [*owned_rows[:2], owned_rows[3]], layout, entry_plan
-        )
     with pytest.raises(ValueError, match="suffix callable-table growth is not contiguous"):
         wasm_link._merge_linked_callable_table(
             [*owned_rows, [10, 100, 0, 0], [12, 120, 0, 0]],
