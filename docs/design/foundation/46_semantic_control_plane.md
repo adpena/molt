@@ -208,8 +208,9 @@ lowering work, NOT rushed as a scrape.
 generic calls / RC events / alloc sites / backend-unsupported ops / compile time —
 to attribute fact loss to a pass. Profile tiers (dev / release-fast /
 release-output) may deserve *distinct lowering strategies* (copy-and-patch-style
-stencil baseline for dev; thin-LTO + hot facts for release-fast; fat-LTO + post-
-link layout for release-output) — `docs/design/foundation/profile_tiering...md`.
+stencil baseline for dev; LTO-off + hot facts for release-fast; the shared
+ThinLTO/cgu=16 shipping policy + post-link layout for release-output) —
+`docs/design/foundation/profile_tiering...md`.
 
 ## 5. Sequencing (no new abstraction blocks the P0 lane)
 

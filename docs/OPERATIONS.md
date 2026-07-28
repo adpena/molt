@@ -146,30 +146,20 @@ Use these when `molt build --target wasm` fails with runtime-artifact validation
 
 `Runtime wasm build produced invalid artifact`
 ```bash
-# Validate the current runtime artifact and detect zero-filled/corrupt output.
-RUNTIME="$CARGO_TARGET_DIR/wasm32-wasip1/release/molt_runtime.wasm"
+# Preserve and validate the exact failed artifact; the producer fails closed and
+# never retries under a different Cargo profile.
+RUNTIME="$CARGO_TARGET_DIR/wasm32-wasip1/wasm-release/molt_runtime.wasm"
 ls -l "$RUNTIME"
 xxd -l 16 "$RUNTIME"
 wasm-tools validate "$RUNTIME"
 
-# Compare release vs release-fast wasm runtime outputs directly.
-export TEST_ROOT=/Volumes/APDataStore/Molt/cargo-target-wasm-profile-check
-export CARGO_TARGET_DIR="$TEST_ROOT/release"
-cargo rustc --package molt-runtime --profile release --target wasm32-wasip1 --crate-type cdylib
-xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release/molt_runtime.wasm"
-
-export CARGO_TARGET_DIR="$TEST_ROOT/release-fast"
-cargo rustc --package molt-runtime --profile release-fast --target wasm32-wasip1 --crate-type cdylib
-xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
-wasm-tools validate "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
-```
-
-`Runtime wasm recovery build produced invalid artifact`
-```bash
-# Force fallback profile lane (default fallback is release-fast).
-export MOLT_WASM_RUNTIME_FALLBACK_PROFILE=release-fast
-export MOLT_WASM_FORCE_CC=1
-uv run --python 3.12 python -m molt.cli build --target wasm --require-linked examples/hello.py
+# Confirm the canonical profile contract before investigating compiler/toolchain
+# drift. `wasm-release` is the only shipping WASM codegen authority.
+uv run --python 3.12 pytest -q \
+  tests/cli/test_backend_manifest_contract.py::test_shipping_profiles_share_one_memory_bounded_codegen_policy \
+  tests/cli/test_backend_manifest_contract.py::test_runtime_wasm_shipping_has_no_fallback_compiler_authority \
+  tests/cli/test_cli_wasm_artifact_validation.py::test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact \
+  tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair
 ```
 
 ### Failure String -> Copy-Paste Response

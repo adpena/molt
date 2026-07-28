@@ -310,19 +310,23 @@ Falls back to default linker if the fast linker fails (line 10057-10073).
 
 ## 8. Binary Size
 
-**Cargo release profile** (Cargo.toml lines 12-17):
+**Cargo shipping profile authority** (`Cargo.toml`):
 ```toml
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+[profile.release-output]
+inherits = "release"
+opt-level = "z"
+lto = "thin"
+codegen-units = 16
+debug = 0
 panic = "abort"
-strip = true
+strip = "symbols"
 ```
 
-This is well-configured: full LTO, single codegen unit (maximum optimization),
-panic=abort (no unwinding tables), strip=true (no debug symbols). The Rust
-runtime itself is optimized and stripped.
+`release-output`, `release-size`, and `wasm-release` share this measured,
+memory-bounded codegen policy. ThinLTO preserves cross-crate optimization without
+the fat-LTO/one-CGU memory cliff; `debug = 0` prevents stripped artifacts from
+paying for unused PDB/DWARF generation. Package overrides own only hot-crate
+optimization levels. `dev-release` is the explicit symbol-bearing profile.
 
 **Binary composition** (approximate, for a "hello world"):
 - Runtime (`libmolt_runtime.a`): ~2-4 MB (contains all intrinsics, object model,

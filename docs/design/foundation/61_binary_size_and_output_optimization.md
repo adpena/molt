@@ -84,7 +84,7 @@ the tree at HEAD (2026-06-24):
 
 | Asset | Path | What it already does | Gap this arc fills |
 |---|---|---|---|
-| **7 tuned Cargo profiles** | `Cargo.toml` lines 378-437 | `release-output` (opt-z, fat-LTO, cgu=1, panic=abort, strip), `release-size`, `wasm-release`, `wasm-release-fallback`; the *measured* hot-crate opt-level policy (lines 462-564: speed profiles opt-3 hot crates, size profiles re-assert opt-"s", with the 25.5% wasm measurement) | **No `-Z share-generics`/polymorphize**; profiles tuned but their *output is never gated* — no scoreboard consumes them |
+| **Tuned Cargo profiles** | `Cargo.toml` shipping profiles | `release-output`/`release-size`/`wasm-release` share measured ThinLTO, cgu=16, debug=0, panic=abort, strip; package overrides own only hot-crate opt levels. `dev-release` is the sole symbol-bearing release profile. | **No `-Z share-generics`/polymorphize**; output still needs the Size-board projection below |
 | Native size analyser | `tools/binary_size_analysis.py` (831 ln) | nm symbol census, Mach-O segment/section breakdown, 5 symbol categories, `--compare` deltas, `--budget`, JSON | Budgets are **per-invocation magic constants** (35MB native / 20MB wasm, lines 107-108); **no history, no gate wiring, no per-tier budget, no compressed size, no cause attribution** |
 | WASM size auditor | `tools/wasm_size_audit.py` | per-section LEB128 parse, code/data split, `--budget 16MB`/`--budget-code 10MB` gate (V8 OOM headroom) | Standalone; **not a board projection**; budgets are V8-OOM-driven not the 3MB Workers contract; no compressed size; no history |
 | Output+startup+size matrix | `tools/output_startup_size_audit.py` (1239 ln) | builds hello-world across `native/wasm/luau/mlir × dev/release × auto/llvm × stdlib-{micro,full}`; records artifact bytes, cold-first-sighting + page-cache-cold + same-path startup, CPython + C baselines, `--max-artifact-mb`/`--max-fresh-start-ms` budget checks | The right *matrix shape* but **budgets are opt-in CLI flags (default None → never gates)**; writes a timestamped JSON, **no history index, no regression gate, not a doc-64 projection, no cause attribution, stripped-only (no gzip/brotli)** |
@@ -358,7 +358,7 @@ shared crossover). **Class retired:** "linkage chosen by default, never measured
 
 > Build/test discipline (CLAUDE.md): `export MOLT_SESSION_ID=size-<phase>` before any
 > build; size builds use the **size profiles** (`release-output`/`release-size`/
-> `wasm-release`) — these are slow (fat-LTO, cgu=1) so cache aggressively and never
+> `wasm-release`) — these use the bounded ThinLTO/16-CGU shipping authority, so cache aggressively and never
 > `cargo clean`; max 2 build-triggering agents; route any raw-binary run through
 > `tools/safe_run.py`. Phases 0,1,2,5(measurement),6,7 are **host tooling** (Python, no
 > Rust rebuild on the critical path); Phase 3c and Phase 4 (if product-wired) touch Rust.
@@ -626,7 +626,7 @@ exports, compressed bytes, and the export contract; no third "leave it" or estim
 linked-Falcon/Tinygrad smoke) on every WASM size step; the full differential on every 3c
 change. A size optimization that breaks a symbol is not a win, it is a regression.
 
-### Risk 7: Size profiles are slow (fat-LTO, cgu=1) → the size gate is too slow per-PR
+### Risk 7: Size profiles remain expensive → the size gate is too slow per-PR
 **Band-aid (rejected):** run the full size sweep per-PR and time out / flake.
 **Structural fix:** the **tiered suite** (mirroring doc 64 §3.3) — per-PR gates only the
 two contract cells (`release-output`+`micro`, `wasm-release`+`micro`) on a cached
@@ -666,9 +666,8 @@ Performance-Constitution dimension in fact, not just in the constitution.**
 
 ## Appendix A — Exact file/line anchors (for the implementing agents)
 
-- Cargo size profiles to gate the output of: `Cargo.toml` `release-output` (378-384),
-  `release-size` (416-422), `wasm-release` (431-437), `wasm-release-fallback` (545-564);
-  the measured hot-crate opt-level policy (462-532, the 25.5% wasm measurement is the
+- Cargo size profiles to gate the output of: `Cargo.toml` `release-output`,
+  `release-size`, and `wasm-release`; the measured hot-crate opt-level policy (the 25.5% wasm measurement is the
   template for "measure before/after, record the delta").
 - `-Zshare-generics`/RUSTFLAGS seam (Phase 3a): `.cargo/config.toml` (the per-target
   `rustflags` arrays, lines 8-34 — size-profile flags would be added via env/`RUSTFLAGS`

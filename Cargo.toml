@@ -336,7 +336,7 @@ debug = 0
 
 # Fast-ITERATION profile for the backend DAEMON (the molt compiler itself), NOT a
 # ship profile. The shipped user-binary runtime staticlib is built with
-# `release-output` (fat LTO, opt-z) and WASM with `wasm-release`; this profile
+# `release-output` (thin LTO, opt-z) and WASM with `wasm-release`; this profile
 # only ever builds the daemon-compiler's own code, which runs as a compiler — its
 # internal codegen quality has no bearing on USER-program runtime perf. So we
 # optimize this profile purely for the edit->rebuild->test iteration loop.
@@ -344,8 +344,8 @@ debug = 0
 # lto = "off" (was "thin" until measured 2026-07-09): the daemon bin's
 # cross-crate LTO was still the pass-edit rebuild long pole on the NVMe
 # persistent-target lane. This is a compiler iteration profile, not the shipped
-# runtime artifact profile: release-output and wasm-release keep fat LTO for
-# user binaries where whole-program optimization and size matter. MEASURED on
+# runtime artifact profile: release-output and wasm-release retain ThinLTO for
+# user binaries where cross-crate optimization and size matter. MEASURED on
 # this repo:
 #   2026-06-05, M5 Max, touch a molt-backend lib source -> rebuild daemon:
 #   fat LTO : ~137 s  (median of 132/142)
@@ -355,7 +355,8 @@ debug = 0
 #   thin LTO:  87.89 s (current repaired dx_build_timer evidence)
 #   LTO off :   8.42 s (isolated CARGO_PROFILE_RELEASE_FAST_LTO=off probe)
 # Zero shipped user-binary runtime-perf risk: release-fast is not the shipped
-# runtime profile; release-output and wasm-release remain untouched.
+# runtime profile; release-output and wasm-release use their separately measured
+# shipping policy below.
 # panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
@@ -363,7 +364,7 @@ opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon
 lto = "off"
 # codegen-units: release-fast is a build-ITERATION profile (the backend daemon
 # + runtime staging), not a ship profile — the shipping native runtime is built with release-output and
-# WASM with wasm-release, both of which keep codegen-units=1. A high cgu here
+# WASM with wasm-release, both of which keep a bounded 16-unit ThinLTO plan. A high cgu here
 # parallelizes the incremental recompile of the 342k-LoC molt-runtime hub (cgu=1
 # serialized it into a ~72s one-line-edit rebuild; cgu=256 parallelizes across cores)
 # and avoids paying an LTO merge in every pass/backend edit loop.
@@ -386,19 +387,6 @@ opt-level = 3
 
 [profile.release-fast.package.regalloc2]
 opt-level = 3
-
-# Override the inherited [profile.release.package.molt-runtime] codegen-units = 1
-# for the build-iteration profile. Without this explicit override, release-fast
-# would inherit the ship-tuned cgu=1 from the base release profile and serialize
-# the 342k-LoC hub's codegen into a single unit (~72s for a one-line edit). Under
-# fat LTO the cgu count does not change final perf (whole-program re-merge), so
-# raising it is a pure incremental-rebuild win. opt-level stays 3 to match the
-# release-fast intent (the daemon-adjacent runtime staging should be optimized).
-# The SHIPPING runtime staticlib is built with release-output (cgu=1, untouched),
-# so this does NOT regress shipped runtime performance.
-[profile.release-fast.package.molt-runtime]
-opt-level = 3
-codegen-units = 256
 
 # Output-binary profile: used when building the runtime staticlib that gets
 # linked into user output binaries. Key differences from release-fast:
@@ -425,26 +413,27 @@ codegen-units = 256
 #                      catch_unwind as a defense-in-depth net.
 # opt-level "z"      — minimises code size; user hot paths are in compiled
 #                      Python code (optimized by Cranelift), not runtime glue.
-# lto = "fat"        — fat LTO + codegen-units=1 produces a single object file
-#                      with SUBSECTIONS_VIA_SYMBOLS set (macOS) or
-#                      -ffunction-sections (Linux), enabling the system linker
-#                      to strip individual functions via -dead_strip /
-#                      --gc-sections even within that single object.
-# codegen-units = 1  — maximum cross-crate inlining and dead code elimination
-#                      during the LTO pass. The system linker handles the
-#                      remaining function-level stripping.
+# lto = "thin"       — keeps cross-crate import/inlining while partitioning LLVM
+#                      work instead of creating one memory-dominant fat-LTO merge.
+# codegen-units = 16 — measured boundary: enough partitioning to keep the exact
+#                      full-feature native staticlib below the CI memory frontier
+#                      without the extra archive fragmentation of 32 units.
+# debug = 0          — shipping artifacts are stripped. Inheriting release's
+#                      debug=1 emitted unused PDB/debug payload and dominated both
+#                      rustc memory and archive size. Use dev-release for symbols.
 [profile.release-output]
 inherits = "release"
 opt-level = "z"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+debug = 0
 panic = "abort"
 strip = true
 
 # Size-optimized release profile for micro stdlib builds.
-# Uses opt-level "z" (minimize binary size) at profile scope with fat LTO and a
-# single codegen unit for maximum cross-crate inlining and dead code
-# elimination. The four hot runtime crates are re-asserted to opt-"s" below
+# Uses opt-level "z" (minimize binary size) at profile scope with the same
+# bounded ThinLTO shipping policy as release-output and wasm-release. The four
+# hot runtime crates are re-asserted to opt-"s" below
 # (see the hot-crate opt-level policy block) so they do not silently ride at the
 # opt-3 inherited from `release`.
 #
@@ -474,14 +463,17 @@ strip = true
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+debug = 0
 panic = "abort"
 strip = true
 
-# WASM-optimized release profile: fat LTO with single codegen unit for
-# maximum cross-crate inlining and dead code elimination. Build time
-# increases but runtime wasm artifacts are cached and infrequently rebuilt.
+# WASM-optimized release profile: the same bounded ThinLTO/16-CGU authority as
+# native shipping artifacts. The former fat-LTO/one-CGU primary plus a
+# thin-LTO/16-CGU retry profile duplicated policy and made invalid output trigger
+# a different compiler configuration. One primary policy now either produces a
+# valid artifact or fails closed.
 # NOTE: the profile-scope opt-level="z" below governs bulk stdlib crates only;
 # the four hot runtime crates are re-asserted to opt-"s" in the hot-crate
 # opt-level policy block (they would otherwise inherit opt-3 from `release` and
@@ -489,8 +481,9 @@ strip = true
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+debug = 0
 panic = "abort"  # WASM doesn't use catch_unwind; unwind tables are pure bloat
 strip = true
 
@@ -547,7 +540,6 @@ opt-level = 3
 # crates at 3, verified shipping at opt-3 via `cargo build -v`).
 [profile.release.package.molt-runtime]
 opt-level = 3
-codegen-units = 1
 
 [profile.release.package.molt-runtime-core]
 opt-level = 3
@@ -562,10 +554,10 @@ opt-level = 3
 # runtime crates, overriding the opt-3 inherited from `release` above. "s"
 # (optimize for size, retaining cheap speed wins) gives the full 25.5% wasm size
 # reduction measured above while protecting the faster-than-CPython contract
-# better than "z" would. codegen-units=1 is preserved for cross-crate DCE.
+# better than "z" would. Codegen partitioning remains profile-owned so every
+# runtime crate follows one target policy instead of package-local exceptions.
 [profile.release-size.package.molt-runtime]
 opt-level = "s"
-codegen-units = 1
 
 [profile.release-size.package.molt-runtime-core]
 opt-level = "s"
@@ -578,7 +570,6 @@ opt-level = "s"
 
 [profile.wasm-release.package.molt-runtime]
 opt-level = "s"
-codegen-units = 1
 
 [profile.wasm-release.package.molt-runtime-core]
 opt-level = "s"
@@ -588,35 +579,3 @@ opt-level = "s"
 
 [profile.wasm-release.package.molt-runtime-collections]
 opt-level = "s"
-
-# Fallback profile for the wasm runtime recovery path (cli.py
-# MOLT_WASM_RUNTIME_FALLBACK_PROFILE). It MUST preserve wasm-release's size +
-# panic contract (opt size, panic=abort, strip) — switching the fallback to
-# `release-fast` (opt-3, panic=unwind) re-introduced unwind tables and inflated
-# the artifact past the 3MB Cloudflare ceiling. The ONLY differences from
-# wasm-release are the codegen knobs that change to escape the fat-LTO single-CGU
-# corruption class a fallback is recovering from: thin LTO + 16 codegen units,
-# applied to ALL crates including the hot ones (the hot crates would otherwise
-# keep codegen-units=1 from the inherited `release` package override and so be
-# exempt from the very relaxation the fallback exists to apply). Same opt-"s"
-# hot-crate re-assertion as wasm-release so size stays bounded.
-[profile.wasm-release-fallback]
-inherits = "wasm-release"
-lto = "thin"
-codegen-units = 16
-
-[profile.wasm-release-fallback.package.molt-runtime]
-opt-level = "s"
-codegen-units = 16
-
-[profile.wasm-release-fallback.package.molt-runtime-core]
-opt-level = "s"
-codegen-units = 16
-
-[profile.wasm-release-fallback.package.molt-lang-obj-model]
-opt-level = "s"
-codegen-units = 16
-
-[profile.wasm-release-fallback.package.molt-runtime-collections]
-opt-level = "s"
-codegen-units = 16

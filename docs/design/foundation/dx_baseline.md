@@ -3,6 +3,11 @@
      host described below; the blueprint's quantified table was treated as UNVERIFIED
      until reproduced here. Several blueprint claims were found stale — see §3. -->
 
+> Historical measurement record. The profile configuration described below is
+> intentionally frozen with the measurements it produced; current profile
+> authority is `Cargo.toml` plus
+> `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
+
 # DX Build-Throughput Baseline (Phase 0)
 
 ## Machine / toolchain state
@@ -249,4 +254,3 @@ Empirical sanity (M5 Max, settled load; molt user binary unchanged):
   per MEMORY.md bench_calls), unchanged by this arc; the LTO knob affects neither the runtime
   staticlib nor the compiled program. (Heavier non-recursion benchmarks where molt is decisively
   faster than CPython — sum/list/dict — are likewise unaffected.)
-

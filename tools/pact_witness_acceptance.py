@@ -19,6 +19,7 @@ from molt.scientific_stack_versions import (
     numpy_witness_seal_root,
     resolve_scientific_stack,
 )
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -112,6 +113,8 @@ def _assert_build_provenance() -> None:
         f"wasm_link={linker_path}",
         flush=True,
     )
+
+
 _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
     r"(?:ImportError:|Original error was:)\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*):\s+"
@@ -338,8 +341,8 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
 def _build_wasm(build_dir: Path) -> Path:
     env = _build_env()
     if _iteration_mode():
-        # Frontier-iteration lane: the
-        # ship profile's fat-LTO/cgu=1 runtime codegen neither ships nor
+        # Frontier-iteration lane (doctrine 74 law 3 + doc 75 lever #1): the
+        # ship profile's ThinLTO/cgu=16 runtime codegen neither ships nor
         # changes a deterministic import/frontier outcome, so iteration cycles
         # use the landed fast knobs. `setdefault` keeps an operator pin
         # authoritative. Final green MUST run WITHOUT MOLT_WITNESS_ITERATION:
