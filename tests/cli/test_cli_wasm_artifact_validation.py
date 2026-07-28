@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
@@ -18,6 +19,11 @@ from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+RUNTIME_WASM_BUILD = importlib.import_module("molt.cli.runtime_wasm_build")
+RUNTIME_WASM_BUILD_SPEC = importlib.import_module("molt.cli.runtime_wasm_build_spec")
+RUNTIME_WASM_BUILD_SUPPORT = importlib.import_module(
+    "molt.cli.runtime_wasm_build_support"
+)
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 WASM_LINK_ARGS = importlib.import_module("molt.cli.wasm_link_args")
 
@@ -44,7 +50,7 @@ def _valid_wasm_bytes(label: bytes = b"") -> bytes:
 def _runtime_build_spec(
     tmp_path: Path, runtime_wasm: Path, fingerprint: dict[str, object]
 ):
-    return RUNTIME_BUILD._RuntimeWasmBuildSpec(
+    return RUNTIME_WASM_BUILD_SPEC._RuntimeWasmBuildSpec(
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
@@ -276,7 +282,7 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "0")
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_reloc,
         reloc=True,
         json_output=True,
@@ -302,7 +308,7 @@ def test_reloc_runtime_publication_preserves_linker_metadata_bytes() -> None:
     reloc = b"\0asm\x01\0\0\0linking-reloc-debug-metadata-must-remain-byte-identical"
 
     assert (
-        RUNTIME_BUILD._runtime_publication_bytes(
+        RUNTIME_WASM_BUILD._runtime_publication_bytes(
             reloc, reloc=True, preserve_debug=False
         )
         == reloc
@@ -318,10 +324,12 @@ def test_shared_runtime_publication_still_uses_final_artifact_strip(
         seen.update(kwargs)
         return data + b"-stripped"
 
-    monkeypatch.setattr(RUNTIME_BUILD, "strip_wasm_publication_sections", fake_strip)
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD, "strip_wasm_publication_sections", fake_strip
+    )
 
     assert (
-        RUNTIME_BUILD._runtime_publication_bytes(
+        RUNTIME_WASM_BUILD._runtime_publication_bytes(
             b"shared", reloc=False, preserve_debug=False
         )
         == b"shared-stripped"
@@ -338,25 +346,25 @@ def test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact(
     primary_target = tmp_path / "target-primary"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(primary_target))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: _test_runtime_fingerprint("01"),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -383,13 +391,13 @@ def test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact(
         return subprocess.CompletedProcess(cmd, 0, "", ""), src
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+    assert not RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -421,7 +429,7 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_state_root",
         lambda _root: build_state_root,
         raising=True,
@@ -433,31 +441,31 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: _test_runtime_fingerprint("03"),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_is_valid_runtime_wasm_artifact",
         lambda *args, **kwargs: True,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda *args, **kwargs: True,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -485,13 +493,13 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
         return subprocess.CompletedProcess(cmd, 0), src
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -536,45 +544,53 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         lambda _root, **_kwargs: [runtime_source],
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: _test_runtime_fingerprint("04"),
     )
-    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SPEC, "_read_runtime_fingerprint", lambda path: None
+    )
     monkeypatch.setattr(
         cli_backend_binary,
         "_artifact_newer_than_sources",
         lambda artifact, sources: Path(artifact) == cargo_runtime,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
     )
-    monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True
+        RUNTIME_WASM_BUILD, "_inspect_wasm_binary", lambda path: "valid"
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda path: Path(path) == built_src,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_exports_satisfy", lambda path, required: True
+        RUNTIME_WASM_BUILD_SUPPORT,
+        "_runtime_wasm_exports_satisfy",
+        lambda path, required: True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set()
+        RUNTIME_WASM_BUILD_SUPPORT,
+        "_runtime_wasm_missing_exports",
+        lambda path, required: set(),
     )
     # Shared-mode (reloc=False) export validation routes through the
     # split-runtime authorities.
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_split_runtime_wasm_exports_satisfy",
         lambda path, required: True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_split_runtime_wasm_missing_exports",
         lambda path, required: set(),
     )
@@ -597,12 +613,12 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         return subprocess.CompletedProcess(cmd, 0), built_src
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -642,19 +658,25 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         return _test_runtime_fingerprint("05")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+        RUNTIME_WASM_BUILD_SPEC,
+        "_runtime_fingerprint",
+        fake_runtime_fingerprint,
+        raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None, raising=True
+        RUNTIME_WASM_BUILD_SPEC,
+        "_read_runtime_fingerprint",
+        lambda path: None,
+        raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
@@ -666,13 +688,13 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda *args, **kwargs: True,
         raising=True,
@@ -698,13 +720,13 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         return subprocess.CompletedProcess(cmd, 0), src
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -858,7 +880,7 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_state_root",
         lambda _root: build_state_root,
         raising=True,
@@ -870,31 +892,31 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "wasm_runtime_shared_export_link_args",
         fake_wasm_runtime_shared_export_link_args,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_write_runtime_fingerprint",
         lambda *args, **kwargs: None,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_runtime_wasm_missing_exports",
         lambda path, required: set(),
         raising=True,
@@ -902,13 +924,13 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
     # Shared-mode (reloc=False) export validation routes through the
     # split-runtime authority.
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_split_runtime_wasm_missing_exports",
         lambda path, required: set(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda path: True,
         raising=True,
@@ -920,7 +942,10 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         return _test_runtime_fingerprint("06")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+        RUNTIME_WASM_BUILD_SPEC,
+        "_runtime_fingerprint",
+        fake_runtime_fingerprint,
+        raising=True,
     )
 
     captured: dict[str, object] = {}
@@ -949,13 +974,13 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -1005,7 +1030,7 @@ def test_wasm_link_args_response_file_path_is_absolute(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    response_path = RUNTIME_BUILD._write_wasm_link_args_response_file(
+    response_path = WASM_LINK_ARGS.write_wasm_link_args_response_file(
         Path("relative") / ".molt_link_args",
         label="molt runtime reloc",
         link_args=["--export-if-defined=molt_required_export"],
@@ -1027,37 +1052,37 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     export_flags = " -C link-arg=--export-if-defined=molt_reloc_required_export"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "wasm_runtime_export_link_args",
         lambda *args, **kwargs: export_flags,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: _test_runtime_fingerprint("07"),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_write_runtime_fingerprint",
         lambda *args, **kwargs: None,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -1108,19 +1133,19 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         return True
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_link_runtime_staticlib_to_reloc_wasm",
         fake_link_runtime_staticlib_to_reloc_wasm,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=True,
         json_output=True,
@@ -1175,7 +1200,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
         WASM_TOOLCHAIN, "wasm_wasi_libc_archive", lambda: libc, raising=True
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_is_valid_runtime_wasm_artifact",
         lambda path: True,
         raising=True,
@@ -1199,14 +1224,14 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
     )
 
     output = Path("runtime") / "molt_runtime_reloc.wasm"
-    assert RUNTIME_BUILD._link_runtime_staticlib_to_reloc_wasm(
+    assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=output,
         json_output=True,
@@ -1245,7 +1270,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: _test_runtime_fingerprint(
             "09" if os.environ.get("CARGO_INCREMENTAL") == "1" else "08"
@@ -1253,37 +1278,37 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_write_runtime_fingerprint",
         lambda *args, **kwargs: None,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_runtime_wasm_missing_exports",
         lambda path, required: set(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda path: True,
         raising=True,
@@ -1312,13 +1337,13 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         tmp_path / "wasm" / "default" / "molt_runtime.wasm",
         reloc=False,
         json_output=True,
@@ -1331,7 +1356,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     assert captured_envs[-1]["MOLT_WASI_SYSROOT"] == str(wasi_sysroot)
 
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         tmp_path / "wasm" / "explicit" / "molt_runtime.wasm",
         reloc=False,
         json_output=True,
@@ -1354,25 +1379,25 @@ def test_runtime_wasm_json_build_failure_emits_cargo_detail(
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "diagnostic"},
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -1402,13 +1427,13 @@ def test_runtime_wasm_json_build_failure_emits_cargo_detail(
         )
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fake_run_runtime_wasm_cargo_build,
         raising=True,
     )
 
-    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+    assert not RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         tmp_path / "wasm" / "molt_runtime.wasm",
         reloc=False,
         json_output=True,
@@ -1431,31 +1456,31 @@ def test_runtime_wasm_missing_rust_target_fails_before_cargo(
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "missing-target"},
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SPEC,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD.wasm_toolchain,
+        RUNTIME_WASM_BUILD.wasm_toolchain,
         "rust_target_libdir",
         lambda target: None,
         raising=True,
@@ -1467,13 +1492,13 @@ def test_runtime_wasm_missing_rust_target_fails_before_cargo(
         raise AssertionError("runtime WASM Cargo build should not run")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD,
         "_run_runtime_wasm_cargo_build",
         fail_if_cargo_runs,
         raising=True,
     )
 
-    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+    assert not RUNTIME_WASM_BUILD._ensure_runtime_wasm(
         tmp_path / "wasm" / "molt_runtime.wasm",
         reloc=False,
         json_output=False,
@@ -1577,15 +1602,17 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         lambda: libc_archive,
         raising=True,
     )
-    monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run, raising=True)
     monkeypatch.setattr(
-        RUNTIME_BUILD,
+        RUNTIME_WASM_BUILD_SUPPORT, "_run_completed_command", fake_run, raising=True
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD_SUPPORT,
         "_is_valid_runtime_wasm_artifact",
         lambda path: True,
         raising=True,
     )
 
-    assert RUNTIME_BUILD._link_runtime_staticlib_to_reloc_wasm(
+    assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=runtime_wasm,
         json_output=True,

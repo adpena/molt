@@ -23,7 +23,6 @@ NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
-RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 

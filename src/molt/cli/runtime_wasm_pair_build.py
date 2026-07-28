@@ -1,0 +1,741 @@
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from enum import Enum, auto
+from pathlib import Path
+from typing import Literal
+
+from molt.cli import wasm_toolchain
+from molt.cli.artifact_state import (
+    _build_state_root,
+    _runtime_target_fingerprint_path,
+)
+from molt.cli.atomic_io import (
+    _atomic_write_text,
+)
+from molt.cli.cargo_execution import (
+    _maybe_enable_sccache,
+)
+from molt.cli.config_resolution import (
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
+)
+from molt.cli.models import (
+    _RuntimeArtifactState,
+)
+from molt.cli.runtime_artifact_selection import (
+    RUNTIME_WASM_COMBINED_ARTIFACTS,
+    RuntimeCrateType,
+)
+from molt.cli.runtime_build_identity import (
+    RuntimeBuildIdentity,
+    RuntimeToolchainContentManifest,
+)
+from molt.cli.runtime_fingerprints import (
+    _write_runtime_fingerprint,
+)
+from molt.cli.runtime_wasm_build import _ensure_runtime_wasm
+from molt.cli.runtime_wasm_build_spec import (
+    _compute_runtime_wasm_build_spec,
+    _provision_runtime_wasm_toolchain_manifest,
+    _resolved_runtime_wasm_pair_identities,
+    _runtime_source_identity_tree,
+    _runtime_toolchain_identity_tree,
+    _runtime_wasm_toolchain_manifest_path,
+    _RuntimeWasmBuildSpec,
+    _timed_runtime_identity_phase,
+)
+from molt.cli.runtime_wasm_build_support import (
+    _configure_wasi_sysroot_env,
+    _configure_wasm_cc_env,
+    _configure_wasm_long_double_env,
+    _current_runtime_target_artifact,
+    _reported_runtime_artifacts_from_cargo_stdout,
+    _run_runtime_wasm_cargo_build,
+    _runtime_exports_satisfy_for_mode,
+    _wasm_runtime_codegen_rustflags,
+    _wasm_runtime_staticlib_candidates,
+    _wasm_runtime_wasm_candidates,
+)
+from molt.cli.runtime_wasm_build_timings import (
+    _record_runtime_wasm_build_phase,
+)
+from molt.cli.runtime_wasm_cache import (
+    hydrate_runtime_wasm_pair_from_shared_cache,
+    publish_runtime_wasm_pair_to_shared_cache,
+)
+from molt.cli.runtime_wasm_generation import (
+    publish_runtime_wasm_generation,
+    read_runtime_wasm_generation,
+    runtime_wasm_generation_path,
+)
+from molt.cli.runtime_wasm_validation import (
+    _is_valid_runtime_wasm_artifact,
+    _is_valid_shared_runtime_wasm_artifact,
+)
+from molt.cli.wasm_link_args import (
+    wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
+)
+from molt.cli.wasm_link_args import (
+    write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
+)
+from molt.wasm_artifact import (
+    inspect_wasm_binary as _inspect_wasm_binary,
+)
+
+
+def _warn_runtime_wasm_cache_publish_failure(
+    failure: str | None,
+    *,
+    json_output: bool,
+) -> None:
+    if failure is None or json_output:
+        return
+    print(
+        f"Warning: runtime wasm shared cache publish failed: {failure}",
+        file=sys.stderr,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _CombinedRuntimeWasmBuild:
+    shared_spec: _RuntimeWasmBuildSpec
+    reloc_spec: _RuntimeWasmBuildSpec
+    json_output: bool
+    cargo_timeout: float | None
+    project_root: Path
+    simd_enabled: bool
+    freestanding: bool
+
+    @property
+    def build_state_root(self) -> Path:
+        return _build_state_root(self.project_root)
+
+    def target_pair_is_current(self) -> bool:
+        if (
+            self.shared_spec.fingerprint is None
+            or self.reloc_spec.staticlib_fingerprint is None
+        ):
+            return False
+        shared = _current_runtime_target_artifact(
+            _wasm_runtime_wasm_candidates(
+                self.shared_spec.target_root, self.shared_spec.profile_dir
+            ),
+            build_state_root=self.build_state_root,
+            cargo_profile=self.shared_spec.cargo_profile,
+            target_label="wasm32-wasip1",
+            fingerprint=self.shared_spec.fingerprint,
+        )
+        reloc = _current_runtime_target_artifact(
+            _wasm_runtime_staticlib_candidates(
+                self.shared_spec.target_root, self.shared_spec.profile_dir
+            ),
+            build_state_root=self.build_state_root,
+            cargo_profile=self.shared_spec.cargo_profile,
+            target_label="wasm32-wasip1",
+            fingerprint=self.reloc_spec.staticlib_fingerprint,
+        )
+        return shared is not None and reloc is not None
+
+
+def _combined_runtime_wasm_command(
+    ctx: _CombinedRuntimeWasmBuild,
+) -> tuple[dict[str, str], list[str]]:
+    env = dict(ctx.shared_spec.env)
+    codegen_rustflags = _wasm_runtime_codegen_rustflags(
+        env.get("RUSTFLAGS", "").strip(),
+        simd_enabled=ctx.simd_enabled,
+        freestanding=ctx.freestanding,
+    )
+    if codegen_rustflags:
+        env["RUSTFLAGS"] = codegen_rustflags
+    else:
+        env.pop("RUSTFLAGS", None)
+    if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
+        _configure_wasm_cc_env(env)
+    _configure_wasi_sysroot_env(env)
+    _configure_wasm_long_double_env(env)
+    if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
+        _maybe_enable_sccache(env)
+    else:
+        env.pop("RUSTC_WRAPPER", None)
+    cmd = [
+        "cargo",
+        "rustc",
+        "--package",
+        "molt-runtime",
+        "--profile",
+        ctx.shared_spec.cargo_profile,
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+    ]
+    if ctx.shared_spec.no_default_features:
+        cmd.append("--no-default-features")
+    if ctx.shared_spec.wasm_cargo_features:
+        cmd.extend(["--features", ",".join(ctx.shared_spec.wasm_cargo_features)])
+    RUNTIME_WASM_COMBINED_ARTIFACTS.select_in(cmd)
+    cmd.append("--")
+    link_args = _wasm_link_args_from_rustflags(ctx.shared_spec.link_flags)
+    if link_args:
+        response_path = _write_wasm_link_args_response_file(
+            ctx.build_state_root / "wasm_link_args",
+            label=f"runtime.{ctx.shared_spec.cargo_profile}.combined",
+            link_args=link_args,
+        )
+        cmd.extend(["-C", f"link-arg=@{response_path}"])
+    return env, cmd
+
+
+def _publish_combined_runtime_wasm_target(
+    ctx: _CombinedRuntimeWasmBuild,
+    build: subprocess.CompletedProcess[str],
+    reported_cdylib: Path,
+) -> bool:
+    artifacts = _reported_runtime_artifacts_from_cargo_stdout(
+        build.stdout, target_root=ctx.shared_spec.target_root
+    )
+    cdylib = artifacts.get(RuntimeCrateType.CDYLIB, reported_cdylib)
+    staticlib = artifacts.get(RuntimeCrateType.STATICLIB)
+    if not cdylib.exists() or staticlib is None or not staticlib.exists():
+        if not ctx.json_output:
+            print(
+                "Runtime wasm combined build succeeded but Cargo did not report "
+                "both runtime crate-type artifacts (expected cdylib and staticlib).",
+                file=sys.stderr,
+            )
+        return False
+    if _inspect_wasm_binary(
+        cdylib
+    ) != "valid" or not _is_valid_shared_runtime_wasm_artifact(cdylib):
+        if not ctx.json_output:
+            print(
+                "Runtime wasm combined build produced an invalid cdylib artifact.",
+                file=sys.stderr,
+            )
+        return False
+    try:
+        for artifact, fingerprint in (
+            (cdylib, ctx.shared_spec.fingerprint),
+            (staticlib, ctx.reloc_spec.staticlib_fingerprint),
+        ):
+            fingerprint_path = _runtime_target_fingerprint_path(
+                ctx.build_state_root,
+                artifact,
+                cargo_profile=ctx.shared_spec.cargo_profile,
+                target_label="wasm32-wasip1",
+            )
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            assert fingerprint is not None
+            _write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=artifact)
+    except OSError:
+        if not ctx.json_output:
+            print(
+                "Runtime wasm combined build: failed to record target fingerprints.",
+                file=sys.stderr,
+            )
+        return False
+    return True
+
+
+def _prepopulate_combined_runtime_wasm_target(
+    *,
+    shared_spec: _RuntimeWasmBuildSpec,
+    reloc_spec: _RuntimeWasmBuildSpec,
+    json_output: bool,
+    cargo_timeout: float | None,
+    project_root: Path,
+    simd_enabled: bool,
+    freestanding: bool,
+    force_build: bool = False,
+) -> bool:
+    """Populate the exact shared+reloc target pair with one Cargo transaction."""
+    if (
+        shared_spec.fingerprint is None
+        or reloc_spec.fingerprint is None
+        or reloc_spec.staticlib_fingerprint is None
+    ):
+        return False
+    ctx = _CombinedRuntimeWasmBuild(
+        shared_spec,
+        reloc_spec,
+        json_output,
+        cargo_timeout,
+        project_root,
+        simd_enabled,
+        freestanding,
+    )
+    if not force_build and ctx.target_pair_is_current():
+        return True
+    if wasm_toolchain.rust_target_libdir("wasm32-wasip1") is None:
+        if not json_output:
+            print(
+                wasm_toolchain.rust_target_missing_message(
+                    "wasm32-wasip1",
+                    root=project_root,
+                    context="Runtime wasm combined build",
+                ),
+                file=sys.stderr,
+            )
+        return False
+    env, cmd = _combined_runtime_wasm_command(ctx)
+    if not json_output:
+        print(
+            "Building runtime wasm (single combined compile: staticlib+cdylib)...",
+            file=sys.stderr,
+        )
+    started = time.perf_counter()
+    try:
+        build, reported_cdylib = _run_runtime_wasm_cargo_build(
+            cmd=cmd,
+            root=project_root,
+            env=env,
+            cargo_timeout=cargo_timeout,
+            profile_dir=shared_spec.profile_dir,
+            target_root_override=shared_spec.target_root,
+            json_output=json_output,
+            artifact_kind=RuntimeCrateType.CDYLIB,
+        )
+    except subprocess.TimeoutExpired:
+        if not json_output:
+            print("Runtime wasm combined build timed out.", file=sys.stderr)
+        return False
+    if build.returncode != 0:
+        if not json_output:
+            detail = (build.stderr or build.stdout or "").strip()
+            print(
+                f"Runtime wasm combined build failed{f': {detail}' if detail else ''}",
+                file=sys.stderr,
+            )
+        return False
+    _record_runtime_wasm_build_phase(
+        "cargo_compile",
+        time.perf_counter() - started,
+        kind="combined",
+        mode="build",
+        detail=(
+            "target_dir=stable-incremental (cross-session dep cache)"
+            if shared_spec.incremental_enabled
+            else "target_dir=session"
+        ),
+    )
+    return _publish_combined_runtime_wasm_target(ctx, build, reported_cdylib)
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeWasmPairIdentity:
+    toolchain: RuntimeToolchainContentManifest
+    shared: RuntimeBuildIdentity
+    reloc: RuntimeBuildIdentity
+
+
+class _PairBuildOutcome(Enum):
+    ACCEPTED = auto()
+    BUILT = auto()
+    FAILED = auto()
+
+
+@dataclass(slots=True)
+class _RuntimeWasmPairBuild:
+    runtime_state: _RuntimeArtifactState
+    json_output: bool
+    cargo_profile: str
+    cargo_timeout: float | None
+    project_root: Path
+    simd_enabled: bool
+    freestanding: bool
+    stdlib_profile: str | None
+    resolved_modules: set[str] | frozenset[str] | None
+    required_link_features: frozenset[str]
+    required_exports: set[str] | frozenset[str] | None
+    runtime_wasm: Path
+    runtime_reloc_wasm: Path
+    shared_spec: _RuntimeWasmBuildSpec
+    reloc_spec: _RuntimeWasmBuildSpec
+    toolchain_manifest_path: Path
+    generation_manifest: Path
+    pre_identity: _RuntimeWasmPairIdentity | None
+
+    def accept_generation(self) -> bool:
+        identity = self.pre_identity
+        if identity is None:
+            return False
+        generation = read_runtime_wasm_generation(
+            self.generation_manifest,
+            expected_shared_identity=identity.shared,
+            expected_reloc_identity=identity.reloc,
+        )
+        if (
+            generation is None
+            or not _is_valid_shared_runtime_wasm_artifact(generation.shared)
+            or not _is_valid_runtime_wasm_artifact(generation.reloc)
+            or not _runtime_exports_satisfy_for_mode(
+                generation.shared, self.required_exports, reloc=False
+            )
+            or not _runtime_exports_satisfy_for_mode(
+                generation.reloc, self.required_exports, reloc=True
+            )
+        ):
+            return False
+        expected_path = (
+            _build_state_root(self.project_root)
+            / "runtime_wasm_generations"
+            / f"{identity.shared.pair_digest}.expected.json"
+        )
+        payload = {
+            "schema": "molt.runtime-wasm-expected-pair.v1",
+            "shared": identity.shared.to_dict(),
+            "reloc": identity.reloc.to_dict(),
+        }
+        try:
+            _atomic_write_text(
+                expected_path,
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            )
+        except OSError:
+            return False
+        self.runtime_state.runtime_wasm_generation = generation.manifest
+        self.runtime_state.runtime_wasm_selected = generation.shared
+        self.runtime_state.runtime_reloc_wasm_selected = generation.reloc
+        self.runtime_state.runtime_wasm_expected_identity = expected_path
+        for staging in (self.runtime_wasm, self.runtime_reloc_wasm):
+            with contextlib.suppress(OSError):
+                staging.unlink(missing_ok=True)
+        return True
+
+    def ensure_member(self, *, reloc: bool) -> bool:
+        requested_exports = (
+            None if self.required_exports is None else frozenset(self.required_exports)
+        )
+        requested_features = frozenset(self.required_link_features)
+        ready_export_sets = (
+            self.runtime_state.runtime_reloc_wasm_ready_export_sets
+            if reloc
+            else self.runtime_state.runtime_wasm_ready_export_sets
+        )
+        ready_feature_keys = (
+            self.runtime_state.runtime_reloc_wasm_ready_feature_keys
+            if reloc
+            else self.runtime_state.runtime_wasm_ready_feature_keys
+        )
+        ready_key = (requested_features, requested_exports)
+        if (
+            ready_key in ready_feature_keys
+            or (requested_features, None) in ready_feature_keys
+            or (
+                not requested_features
+                and (
+                    None in ready_export_sets or requested_exports in ready_export_sets
+                )
+            )
+        ):
+            return True
+        ready = (
+            self.runtime_state.runtime_reloc_wasm_ready
+            if reloc
+            else self.runtime_state.runtime_wasm_ready
+        )
+        if ready and self.required_exports is None and not requested_features:
+            ready_export_sets.add(None)
+            ready_feature_keys.add(ready_key)
+            return True
+        if not _ensure_runtime_wasm(
+            self.runtime_reloc_wasm if reloc else self.runtime_wasm,
+            reloc=reloc,
+            json_output=self.json_output,
+            cargo_profile=self.cargo_profile,
+            cargo_timeout=self.cargo_timeout,
+            project_root=self.project_root,
+            simd_enabled=self.simd_enabled,
+            freestanding=self.freestanding,
+            stdlib_profile=self.stdlib_profile,
+            resolved_modules=self.resolved_modules,
+            required_link_features=self.required_link_features,
+            required_exports=self.required_exports,
+            build_if_missing=False,
+        ):
+            return False
+        if reloc:
+            self.runtime_state.runtime_reloc_wasm_ready = True
+        else:
+            self.runtime_state.runtime_wasm_ready = True
+        ready_export_sets.add(requested_exports)
+        ready_feature_keys.add(ready_key)
+        return True
+
+
+def _resolve_runtime_wasm_pair_identity(
+    ctx: _RuntimeWasmPairBuild,
+    shared_spec: _RuntimeWasmBuildSpec,
+    reloc_spec: _RuntimeWasmBuildSpec,
+    *,
+    mode: Literal["pre_build", "post_build"],
+) -> _RuntimeWasmPairIdentity:
+    toolchain = _timed_runtime_identity_phase(
+        phase="runtime_toolchain_identity",
+        mode=mode,
+        operation=lambda: _provision_runtime_wasm_toolchain_manifest(shared_spec),
+        identity_tree=_runtime_toolchain_identity_tree,
+    )
+    shared, reloc = _timed_runtime_identity_phase(
+        phase="runtime_source_identity",
+        mode=mode,
+        operation=lambda: _resolved_runtime_wasm_pair_identities(
+            ctx.project_root,
+            shared_spec,
+            reloc_spec,
+            toolchain_manifest=toolchain,
+        ),
+        identity_tree=_runtime_source_identity_tree,
+    )
+    return _RuntimeWasmPairIdentity(toolchain, shared, reloc)
+
+
+def _prepare_runtime_wasm_pair_build(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+    project_root: Path,
+    simd_enabled: bool,
+    freestanding: bool,
+    stdlib_profile: str | None,
+    resolved_modules: set[str] | frozenset[str] | None,
+    required_link_features: frozenset[str],
+    required_exports: set[str] | frozenset[str] | None,
+) -> _RuntimeWasmPairBuild | None:
+    try:
+        linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        if not json_output:
+            print(f"Runtime WASM linker identity failed: {exc}", file=sys.stderr)
+        return None
+    runtime_wasm = runtime_state.runtime_wasm
+    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    if runtime_wasm is None or runtime_reloc_wasm is None or linker is None:
+        if linker is None and not json_output:
+            print(
+                "Runtime WASM linker identity failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
+        return None
+
+    def spec(path: Path, *, reloc: bool) -> _RuntimeWasmBuildSpec:
+        return _compute_runtime_wasm_build_spec(
+            project_root,
+            path,
+            reloc=reloc,
+            cargo_profile=cargo_profile,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+            wasm_linker_identity=linker,
+        )
+
+    shared_spec = spec(runtime_wasm, reloc=False)
+    reloc_spec = spec(runtime_reloc_wasm, reloc=True)
+    toolchain_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
+    try:
+        toolchain = RuntimeToolchainContentManifest.read(toolchain_path)
+    except ValueError:
+        toolchain = None
+    pre_identity: _RuntimeWasmPairIdentity | None = None
+    if toolchain is not None:
+        try:
+            shared, reloc = _resolved_runtime_wasm_pair_identities(
+                project_root,
+                shared_spec,
+                reloc_spec,
+                toolchain_manifest=toolchain,
+            )
+            pre_identity = _RuntimeWasmPairIdentity(toolchain, shared, reloc)
+        except (OSError, ValueError):
+            pass
+    return _RuntimeWasmPairBuild(
+        runtime_state,
+        json_output,
+        cargo_profile,
+        cargo_timeout,
+        project_root,
+        simd_enabled,
+        freestanding,
+        stdlib_profile,
+        resolved_modules,
+        required_link_features,
+        required_exports,
+        runtime_wasm,
+        runtime_reloc_wasm,
+        shared_spec,
+        reloc_spec,
+        toolchain_path,
+        runtime_wasm_generation_path(runtime_wasm),
+        pre_identity,
+    )
+
+
+def _materialize_runtime_wasm_pair(
+    ctx: _RuntimeWasmPairBuild,
+) -> _PairBuildOutcome:
+    if ctx.accept_generation():
+        return _PairBuildOutcome.ACCEPTED
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        return _PairBuildOutcome.FAILED
+    try:
+        ctx.pre_identity = _resolve_runtime_wasm_pair_identity(
+            ctx, ctx.shared_spec, ctx.reloc_spec, mode="pre_build"
+        )
+        ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
+    except (OSError, ValueError) as exc:
+        if not ctx.json_output:
+            print(f"Runtime WASM identity provisioning failed: {exc}", file=sys.stderr)
+        return _PairBuildOutcome.FAILED
+    if ctx.accept_generation():
+        return _PairBuildOutcome.ACCEPTED
+    assert ctx.pre_identity is not None
+    if hydrate_runtime_wasm_pair_from_shared_cache(
+        dest_shared=ctx.runtime_wasm,
+        dest_reloc=ctx.runtime_reloc_wasm,
+        shared_identity=ctx.pre_identity.shared,
+        reloc_identity=ctx.pre_identity.reloc,
+        is_valid_shared=_is_valid_shared_runtime_wasm_artifact,
+        is_valid_reloc=_is_valid_runtime_wasm_artifact,
+    ):
+        return (
+            _PairBuildOutcome.ACCEPTED
+            if ctx.accept_generation()
+            else _PairBuildOutcome.FAILED
+        )
+    if not _prepopulate_combined_runtime_wasm_target(
+        shared_spec=ctx.shared_spec,
+        reloc_spec=ctx.reloc_spec,
+        json_output=ctx.json_output,
+        cargo_timeout=ctx.cargo_timeout,
+        project_root=ctx.project_root,
+        simd_enabled=ctx.simd_enabled,
+        freestanding=ctx.freestanding,
+        force_build=True,
+    ):
+        return _PairBuildOutcome.FAILED
+    if not ctx.ensure_member(reloc=False) or not ctx.ensure_member(reloc=True):
+        return _PairBuildOutcome.FAILED
+    return _PairBuildOutcome.BUILT
+
+
+def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
+    try:
+        linker = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        if not ctx.json_output:
+            print(
+                f"Runtime WASM post-build linker identity failed: {exc}",
+                file=sys.stderr,
+            )
+        return False
+    if linker is None:
+        if not ctx.json_output:
+            print(
+                "Runtime WASM post-build linker identity failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
+        return False
+
+    def spec(path: Path, *, reloc: bool) -> _RuntimeWasmBuildSpec:
+        return _compute_runtime_wasm_build_spec(
+            ctx.project_root,
+            path,
+            reloc=reloc,
+            cargo_profile=ctx.cargo_profile,
+            simd_enabled=ctx.simd_enabled,
+            freestanding=ctx.freestanding,
+            stdlib_profile=ctx.stdlib_profile,
+            resolved_modules=ctx.resolved_modules,
+            required_link_features=ctx.required_link_features,
+            required_exports=ctx.required_exports,
+            wasm_linker_identity=linker,
+        )
+
+    post_shared = spec(ctx.runtime_wasm, reloc=False)
+    post_reloc = spec(ctx.runtime_reloc_wasm, reloc=True)
+    try:
+        post_identity = _resolve_runtime_wasm_pair_identity(
+            ctx, post_shared, post_reloc, mode="post_build"
+        )
+    except (OSError, ValueError) as exc:
+        if not ctx.json_output:
+            print(f"Runtime WASM post-build identity failed: {exc}", file=sys.stderr)
+        return False
+    if ctx.pre_identity is None or post_identity != ctx.pre_identity:
+        if not ctx.json_output:
+            print(
+                "Runtime build identity changed during Cargo; refusing publication.",
+                file=sys.stderr,
+            )
+        return False
+    try:
+        published = publish_runtime_wasm_generation(
+            ctx.runtime_wasm,
+            ctx.runtime_reloc_wasm,
+            shared_identity=post_identity.shared,
+            reloc_identity=post_identity.reloc,
+        )
+    except (OSError, ValueError) as exc:
+        if not ctx.json_output:
+            print(f"Runtime WASM pair publication failed: {exc}", file=sys.stderr)
+        return False
+    if not post_shared.incremental_enabled:
+        _warn_runtime_wasm_cache_publish_failure(
+            publish_runtime_wasm_pair_to_shared_cache(
+                shared=published.shared,
+                reloc=published.reloc,
+                shared_identity=post_identity.shared,
+                reloc_identity=post_identity.reloc,
+            ),
+            json_output=ctx.json_output,
+        )
+    return ctx.accept_generation()
+
+
+def _ensure_runtime_wasm_both(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+    project_root: Path,
+    simd_enabled: bool,
+    freestanding: bool,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
+    resolved_modules: set[str] | frozenset[str] | None = None,
+    required_link_features: frozenset[str] = frozenset(),
+    required_exports: set[str] | frozenset[str] | None = None,
+) -> bool:
+    ctx = _prepare_runtime_wasm_pair_build(
+        runtime_state,
+        json_output=json_output,
+        cargo_profile=cargo_profile,
+        cargo_timeout=cargo_timeout,
+        project_root=project_root,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
+    )
+    if ctx is None:
+        return False
+    outcome = _materialize_runtime_wasm_pair(ctx)
+    if outcome is _PairBuildOutcome.ACCEPTED:
+        return True
+    if outcome is _PairBuildOutcome.FAILED:
+        return False
+    return _publish_runtime_wasm_pair(ctx)

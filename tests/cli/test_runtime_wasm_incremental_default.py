@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import molt.cli.runtime_build as rb
+import molt.cli.runtime_wasm_build_policy as rb
 
 
 def _clear(monkeypatch: pytest.MonkeyPatch) -> None:

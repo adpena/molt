@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
 import inspect
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from molt.cli import native_link_deps
-from molt.cli import runtime_build
-from molt.cli import runtime_callable_symbols
+from molt.cli import cargo_execution, native_link_deps, runtime_callable_symbols
+from molt.cli import runtime_native_build as runtime_build
 from molt.cli import static_archive_identity as archive_identity
-from molt.cli import cargo_execution
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
@@ -27,9 +25,8 @@ from molt.cli.native_link_manifest import (
     read_native_link_flags,
     write_native_link_dependency_manifest,
 )
-from tests.cli.process_guard import run_cli_test_process
 from tests.cli.native_link_test_support import write_test_static_archive
-
+from tests.cli.process_guard import run_cli_test_process
 
 _SOURCE_FINGERPRINT = {
     "hash": "1" * 64,
@@ -1186,9 +1183,12 @@ def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -
     assert "read_native_link_flags(" in deps_source
     assert "source_fingerprint=source_fingerprint" in deps_source
 
-    build_source = inspect.getsource(runtime_build._ensure_runtime_lib)
-    assert "write_native_link_dependency_manifest(" in build_source
-    assert "_refresh_native_link_manifest(" in build_source
+    publication_source = inspect.getsource(runtime_build._publish_native_runtime_build)
+    assert "write_native_link_dependency_manifest(" in publication_source
+    refresh_source = inspect.getsource(
+        runtime_build._NativeRuntimeBuildPlan.refresh_manifest
+    )
+    assert "_refresh_native_link_manifest(" in refresh_source
     command_source = inspect.getsource(runtime_build._native_runtime_cargo_command)
     assert '"rustc"' in command_source
     assert "--message-format=json-render-diagnostics" in command_source

@@ -95,11 +95,13 @@ def test_runtime_identity_pre_and_post_wall_are_attributed_separately() -> None:
 def test_runtime_identity_phase_detail_attests_selected_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt.cli import runtime_build
+    from molt.cli import runtime_wasm_build_spec
 
-    monkeypatch.setattr(runtime_build, "_tree_hash_worker_count", lambda _count: 6)
+    monkeypatch.setattr(
+        runtime_wasm_build_spec, "_tree_hash_worker_count", lambda _count: 6
+    )
 
-    detail = runtime_build._runtime_identity_tree_phase_detail(
+    detail = runtime_wasm_build_spec._runtime_identity_tree_phase_detail(
         {"file_count": 17_983, "total_size": 249_161_774}, status="ok"
     )
 
@@ -109,9 +111,9 @@ def test_runtime_identity_phase_detail_attests_selected_workers(
 def test_atomic_pair_cache_hydration_precedes_combined_build() -> None:
     import inspect
 
-    from molt.cli import runtime_build
+    from molt.cli import runtime_wasm_pair_build
 
-    source = inspect.getsource(runtime_build._ensure_runtime_wasm_both)
+    source = inspect.getsource(runtime_wasm_pair_build._materialize_runtime_wasm_pair)
     hydrate_offset = source.index("hydrate_runtime_wasm_pair_from_shared_cache(")
     combined_build_offset = source.index("_prepopulate_combined_runtime_wasm_target(")
 
@@ -121,11 +123,19 @@ def test_atomic_pair_cache_hydration_precedes_combined_build() -> None:
 def test_exact_pair_build_records_pre_and_post_identity_phases() -> None:
     import inspect
 
-    from molt.cli import runtime_build
+    from molt.cli import runtime_wasm_pair_build
 
-    source = inspect.getsource(runtime_build._ensure_runtime_wasm_both)
+    identity_source = inspect.getsource(
+        runtime_wasm_pair_build._resolve_runtime_wasm_pair_identity
+    )
+    prebuild_source = inspect.getsource(
+        runtime_wasm_pair_build._materialize_runtime_wasm_pair
+    )
+    publication_source = inspect.getsource(
+        runtime_wasm_pair_build._publish_runtime_wasm_pair
+    )
 
-    assert source.count('"runtime_toolchain_identity"') == 2
-    assert source.count('"runtime_source_identity"') == 2
-    assert 'mode="pre_build"' in source
-    assert 'mode="post_build"' in source
+    assert identity_source.count('phase="runtime_toolchain_identity"') == 1
+    assert identity_source.count('phase="runtime_source_identity"') == 1
+    assert 'mode="pre_build"' in prebuild_source
+    assert 'mode="post_build"' in publication_source

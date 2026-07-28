@@ -8,16 +8,16 @@ import time
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _nm_candidate_binaries,
     _normalize_native_symbol_name,
 )
 from molt.cli.command_runtime import _run_completed_command
+from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.runtime_build import _ensure_native_runtime_lib_ready_before_link
+from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_before_link
 
 
 def _record_runtime_callable_stage_ms(

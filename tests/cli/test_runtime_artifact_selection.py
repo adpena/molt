@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 
-from molt.cli import runtime_build, runtime_fingerprints
+from molt.cli import runtime_fingerprints
+from molt.cli import runtime_native_build as runtime_build
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_CDYLIB_ARTIFACTS,
     RUNTIME_RLIB_ARTIFACTS,
@@ -14,7 +15,6 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
     RuntimeCrateType,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,7 +33,9 @@ def test_runtime_artifact_selections_are_exact_cargo_level_values() -> None:
     assert not RUNTIME_WASM_COMBINED_ARTIFACTS.includes(RuntimeCrateType.RLIB)
 
 
-def test_runtime_artifact_selection_rejects_empty_duplicate_and_rustc_level_use() -> None:
+def test_runtime_artifact_selection_rejects_empty_duplicate_and_rustc_level_use() -> (
+    None
+):
     with pytest.raises(ValueError, match="cannot be empty"):
         RuntimeArtifactSelection(())
     with pytest.raises(ValueError, match="cannot contain duplicates"):
@@ -68,12 +70,12 @@ def test_artifact_selection_is_part_of_runtime_cache_source_identity(
     monkeypatch.setattr(runtime_fingerprints, "_rustc_version", lambda: "rustc-test")
     monkeypatch.setattr(
         runtime_fingerprints,
-        "_compiler_clean_source_state",
-        lambda _root: None,
+        "_compiler_clean_pathspec_source_state",
+        lambda _root, _paths: None,
     )
     monkeypatch.setattr(
         runtime_fingerprints,
-        "_runtime_source_paths",
+        "runtime_source_paths",
         lambda _root, runtime_features=(): [],
     )
     staticlib = runtime_fingerprints._runtime_fingerprint(

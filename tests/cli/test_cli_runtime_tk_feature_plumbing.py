@@ -9,10 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import molt.cli as cli
-from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
+from molt.cli import commands as cli_commands
 from molt.cli import link_pipeline as cli_link_pipeline
 from tests.cli.native_link_test_support import (
     SOURCE_FINGERPRINT,
@@ -21,7 +21,7 @@ from tests.cli.native_link_test_support import (
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
-RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_native_build")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")

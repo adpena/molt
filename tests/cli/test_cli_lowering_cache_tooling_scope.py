@@ -233,6 +233,12 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
         "native_link_command.py",
         "native_toolchain.py",
         "runtime_build.py",
+        "runtime_native_build.py",
+        "runtime_wasm_build.py",
+        "runtime_wasm_build_policy.py",
+        "runtime_wasm_build_spec.py",
+        "runtime_wasm_build_support.py",
+        "runtime_wasm_pair_build.py",
         "wasm.py",
         "wasm_toolchain.py",
         "toolchain_validation.py",
@@ -276,8 +282,7 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
         CF._lowering_scope_source_files_cached.cache_clear()
         try:
             reached = {
-                Path(p).name
-                for p in CF._lowering_scope_source_files_cached(str(root))
+                Path(p).name for p in CF._lowering_scope_source_files_cached(str(root))
             }
         finally:
             CF._lowering_scope_source_files_cached.cache_clear()
@@ -339,7 +344,10 @@ def test_import_molt_cli_does_not_load_backend() -> None:
         "        'molt.cli.link_pipeline', 'molt.cli.wasm',\n"
         "        'molt.cli.mlir_backend', 'molt.cli.native_toolchain',\n"
         "        'molt.cli.native_binary', 'molt.cli.native_link_command',\n"
-        "        'molt.cli.runtime_build', 'molt.cli.setup_readiness',\n"
+        "        'molt.cli.runtime_build', 'molt.cli.runtime_native_build',\n"
+        "        'molt.cli.runtime_wasm_build', 'molt.cli.runtime_wasm_build_policy',\n"
+        "        'molt.cli.runtime_wasm_build_spec', 'molt.cli.runtime_wasm_build_support',\n"
+        "        'molt.cli.runtime_wasm_pair_build', 'molt.cli.setup_readiness',\n"
         "    }\n"
         ")\n"
         "assert not backend, 'backend loaded on import molt.cli: ' + repr(backend)\n"
@@ -462,10 +470,16 @@ def _build_leak_tree(root: Path) -> Path:
     cli = molt / "cli"
     # A ``frontend_*`` seed importing a sibling submodule *through the package* --
     # the exact edge that used to drag ``cli/__init__``'s command surface in.
-    _write(cli / "frontend_pipeline.py", "from molt.cli import frontend_execution as _fe\nMARKER = 1\n")
+    _write(
+        cli / "frontend_pipeline.py",
+        "from molt.cli import frontend_execution as _fe\nMARKER = 1\n",
+    )
     _write(cli / "frontend_execution.py", "MARKER = 1\n")
     # cli/__init__ eagerly imports a command-only orchestration module.
-    _write(cli / "__init__.py", "from molt.cli.orchestration_only import run as _run\nMARKER = 1\n")
+    _write(
+        cli / "__init__.py",
+        "from molt.cli.orchestration_only import run as _run\nMARKER = 1\n",
+    )
     _write(cli / "orchestration_only.py", "def run():\n    return 1\n")
     _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
     for rel in _AUX_FILES:

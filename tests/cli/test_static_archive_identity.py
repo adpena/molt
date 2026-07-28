@@ -19,7 +19,7 @@ from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
     _write_runtime_fingerprint,
 )
-from molt.cli.runtime_build import _runtime_archives_semantically_match
+from molt.cli.runtime_native_build import _runtime_archives_semantically_match
 from tools.native_link_benchmark import collect_input_facts
 
 

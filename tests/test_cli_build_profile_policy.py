@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
 from pathlib import Path
-import inspect
 from typing import Any, cast
 
-import molt.cli as cli
-from molt.cli import commands as cli_commands
-from molt.cli import build_inputs as cli_build_inputs
-from molt.cli import runtime_build as cli_runtime_build
 import pytest
+
+import molt.cli as cli
+from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import commands as cli_commands
+from molt.cli import runtime_wasm_build_policy as cli_runtime_build
+from molt.cli import wrapper_build
 
 
 def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
@@ -128,9 +130,7 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
     monkeypatch.setattr(
         cli_commands, "_find_molt_root", lambda start, cwd=None: project
     )
-    monkeypatch.setattr(
-        cli_runtime_build, "_run_completed_command", fake_subprocess_run
-    )
+    monkeypatch.setattr(wrapper_build, "_run_completed_command", fake_subprocess_run)
     monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
 
     rc = cli_commands.run_script(
