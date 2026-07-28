@@ -83,7 +83,14 @@ impl LuauBackend {
                 }
             }
             "const_bigint" => {
-                self.emit_unsupported_op(op);
+                if let Some(value) =
+                    molt_tir::target_admission::exact_integer_literal_value(op, 1_u128 << 53)
+                {
+                    let out = self.out_var(op);
+                    self.emit_line(&format!("local {out}: number = {value}"));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_not_implemented" => {
                 let out = self.out_var(op);

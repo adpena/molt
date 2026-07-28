@@ -50,6 +50,7 @@ from .schema import (
     _SCCP_CONSTANT_SEED_RULES,
     _SCEV_EXPR_RULES,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
+    _SIMPLEIR_FIELD_ROLE_FACT_SETS,
     _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS,
     _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS,
     _SROA_CONST_IMMEDIATE_RULES,
@@ -211,6 +212,42 @@ def load_table(table_path: Path = TABLE) -> dict:
             raise OpKindTableError(f"{key} must be a list of non-empty strings")
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
+
+    var_field_members: dict[str, str] = {}
+    for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
+        members = data.get(key, [])
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise OpKindTableError(f"{key} must be a list of non-empty strings")
+        if len(set(members)) != len(members):
+            raise OpKindTableError(f"{key} has duplicate members")
+        if key == "simpleir_out_metadata_kinds":
+            continue
+        for member in members:
+            prior = var_field_members.setdefault(member, key)
+            if prior != key:
+                raise OpKindTableError(
+                    f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
+                )
+
+    trailing_result_kinds: set[str] = set()
+    for row in data.get("simpleir_trailing_arg_result", []):
+        if set(row) != {"kind", "first_result_arg"}:
+            raise OpKindTableError(
+                "[[simpleir_trailing_arg_result]] rows require exactly kind and first_result_arg"
+            )
+        kind = row["kind"]
+        first = row["first_result_arg"]
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError("SimpleIR trailing-result kind must be non-empty")
+        if not isinstance(first, int) or first < 0:
+            raise OpKindTableError(
+                f"SimpleIR trailing-result {kind}: first_result_arg must be non-negative"
+            )
+        if kind in trailing_result_kinds:
+            raise OpKindTableError(f"duplicate SimpleIR trailing-result kind: {kind}")
+        trailing_result_kinds.add(kind)
 
     _validate_simpleir_control_kinds(data)
     _validate_literal_payload_facts(data, seen_opcodes)

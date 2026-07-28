@@ -365,6 +365,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn luau_terminal_drop_phase_does_not_materialize_target_dead_rc_authority() {
+        let func_ir = FunctionIR {
+            name: "luau_gc".into(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("owned".into()),
+                    out: Some("temporary".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
+        crate::tir::type_refine::refine_types(&mut tir);
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![tir],
+        };
+
+        let changed = finalize_module_drops(&mut module, &TargetInfo::luau_release_fast());
+        assert!(changed.is_empty());
+        assert!(!module.functions[0].attrs.contains_key(DROP_INSERTED_ATTR));
+        assert!(
+            module.functions[0]
+                .blocks
+                .values()
+                .flat_map(|block| block.ops.iter())
+                .all(|op| !matches!(
+                    op.opcode,
+                    super::super::ops::OpCode::DecRef | super::super::ops::OpCode::IncRef
+                )),
+            "Luau's GC target must not receive target-dead RC operations"
+        );
+    }
+
     /// Extern functions are skipped by the SimpleIR finalizer (no body to drop).
     #[test]
     fn simple_ir_finalizer_skips_extern() {

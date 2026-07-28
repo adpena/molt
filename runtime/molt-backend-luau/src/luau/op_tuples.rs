@@ -19,9 +19,10 @@ impl LuauBackend {
                 self.emit_line(&format!("local {out} = molt_pack_tuple({items})"));
             }
             "unpack_sequence" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(src_name) = args.first() {
-                    let expected = args.len() - 1;
+                let reads = molt_tir::tir::simple_def_use::simple_ir_read_names(op);
+                let outputs = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+                if let Some(src_name) = reads.first() {
+                    let expected = outputs.len();
                     let src = sanitize_ident(src_name);
                     let shape = match self.scalar_plan.name_container_kind(src_name) {
                         Some(ContainerKind::List | ContainerKind::Tuple) => "sequence",
@@ -34,7 +35,7 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "local {unpacked} = molt_unpack_sequence({src}, {expected}, \"{shape}\")"
                     ));
-                    for (i, out_name) in args[1..].iter().enumerate() {
+                    for (i, out_name) in outputs.iter().enumerate() {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!("local {out} = {unpacked}[{}]", i + 1));
                     }

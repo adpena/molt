@@ -5,6 +5,7 @@ use crate::json_boundary::{
     expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
     optional_string_list, required_field, required_string, required_string_list,
 };
+use crate::tir::simple_def_use::{SimpleIrReadField, simple_ir_defined_names, simple_ir_reads};
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -666,46 +667,39 @@ impl OpIR {
     }
 }
 
-fn op_uses(op: &OpIR) -> impl Iterator<Item = (&str, usize)> {
-    op.args
-        .iter()
-        .flat_map(|args| {
-            args.iter()
-                .enumerate()
-                .map(|(idx, value)| (value.as_str(), idx))
-        })
-        .chain(op.var.iter().map(|value| (value.as_str(), usize::MAX)))
-}
-
 fn is_defined_value_name(name: &str) -> bool {
     !name.is_empty() && name != "none"
 }
 
-fn allows_undefined_value(op: &OpIR, name: &str, position: usize) -> bool {
+fn allows_undefined_value(op: &OpIR, name: &str, field: SimpleIrReadField) -> bool {
     if !name.starts_with('v') {
         return false;
     }
-    position == 0 && matches!(op.kind.as_str(), "dict_set" | "index")
+    field == SimpleIrReadField::Arg(0) && matches!(op.kind.as_str(), "dict_set" | "index")
 }
 
 pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     validate_simple_ir_transport_contract(ir)?;
     for func in &ir.functions {
-        let mut defined: BTreeSet<&str> = func.params.iter().map(String::as_str).collect();
-        for op in &func.ops {
-            for (name, position) in op_uses(op) {
+        let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
+        for (op_index, op) in func.ops.iter().enumerate() {
+            for source in simple_ir_reads(op) {
+                let name = source.name;
                 if !is_defined_value_name(name) {
                     continue;
                 }
-                if defined.contains(name) || allows_undefined_value(op, name, position) {
+                if defined.contains(name) || allows_undefined_value(op, name, source.field) {
                     continue;
                 }
-                return Err(format!("op `{}` uses undefined value `{}`", op.kind, name));
+                return Err(format!(
+                    "function `{}` op#{op_index} `{}` uses undefined value `{name}`",
+                    func.name, op.kind
+                ));
             }
-            if let Some(out) = op.out.as_deref()
-                && is_defined_value_name(out)
-            {
-                defined.insert(out);
+            for name in simple_ir_defined_names(op) {
+                if is_defined_value_name(&name) {
+                    defined.insert(name);
+                }
             }
         }
     }

@@ -62,6 +62,9 @@ _PRE_SOURCE_NOT_ADMITTED = _kind_set(
     "simpleir_unstructured_control_semantics_kinds",
     "simpleir_host_capability_semantics_kinds",
 )
+_PRE_SOURCE_LITERAL_LIMITED = _kind_set(
+    "simpleir_integer_literal_semantics_kinds",
+)
 _PRE_SOURCE_TYPE_LIMITED = _kind_set(
     "simpleir_dynamic_add_semantics_kinds",
     "simpleir_dynamic_numeric_semantics_kinds",
@@ -78,7 +81,11 @@ for _table in ("simpleir_control_kind", "frontend_effect_kind"):
         row["kind"] for row in _OP_KIND_TABLE.get(_table, [])
     )
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
+_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_LITERAL_LIMITED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
+_REGISTERED_SIMPLEIR_KINDS.update(
+    _kind_set("simpleir_runtime_neutral_semantics_kinds")
+)
 
 
 @dataclass(frozen=True)
@@ -302,6 +309,12 @@ def _classify(op: str, body: str) -> Row:
             op,
             "not-admitted",
             "Shared generated target contract rejects this semantic family before source generation.",
+        )
+    if op in _PRE_SOURCE_LITERAL_LIMITED:
+        return Row(
+            op,
+            "implemented-target-limited",
+            "Shared target contract admits only concrete integer literals exactly representable by Luau's numeric carrier.",
         )
     if op in _PRE_SOURCE_TYPE_LIMITED:
         return Row(

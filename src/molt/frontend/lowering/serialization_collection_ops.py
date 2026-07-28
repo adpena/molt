@@ -8,6 +8,9 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+)
 from molt.frontend.lowering.serialization_context import SerializationContext
 
 if TYPE_CHECKING:
@@ -777,7 +780,13 @@ class SerializationCollectionOpsMixin(_MixinBase):
                 index_entry["container_type"] = "tuple"
             ctx.json_ops.append(index_entry)
         elif op.kind == "UNPACK_SEQUENCE":
-            # args[0] is the sequence, args[1:] are output variable names
+            first_result_arg = SIMPLEIR_FIRST_TRAILING_RESULT_ARG["unpack_sequence"]
+            if first_result_arg != 1:
+                raise AssertionError(
+                    "generated unpack_sequence field authority must preserve one source operand"
+                )
+            # Generated field authority owns args[0] as the source and args[1:]
+            # as output variable names.
             metadata = op.metadata or {}
             ctx.json_ops.append(
                 {

@@ -81,6 +81,8 @@ def _render_rs_unformatted(data: dict) -> str:
 
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
+    out.append(_render_simpleir_field_roles(data))
+    out.append("\n\n")
     out.append(_render_simpleir_integer_semantics(data))
     out.append("\n\n")
     out.append(_render_simpleir_runtime_semantics(data))
@@ -962,6 +964,58 @@ def _render_simpleir_control_facts(data: dict) -> str:
     return "".join(out)
 
 
+def _render_simpleir_field_roles(data: dict) -> str:
+    var_roles = (
+        ("simpleir_var_definition_kinds", "Definition"),
+        ("simpleir_var_result_kinds", "Result"),
+        ("simpleir_var_metadata_when_args_kinds", "MetadataWhenArgs"),
+    )
+    lines = [
+        "/// Canonical role of the optional SimpleIR `var` field.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrVarFieldRole {\n",
+        "    Read,\n",
+        "    Definition,\n",
+        "    Result,\n",
+        "    MetadataWhenArgs,\n",
+        "}\n\n",
+        "#[inline]\n",
+        "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
+        "    match kind {\n",
+    ]
+    for key, role in var_roles:
+        patterns = " | ".join(f'\"{member}\"' for member in data.get(key, []))
+        lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
+    lines.extend(
+        [
+            "        _ => SimpleIrVarFieldRole::Read,\n",
+            "    }\n",
+            "}\n\n",
+            "/// Whether `out` is transport metadata rather than an SSA result.\n",
+            "#[inline]\n",
+            "pub fn simpleir_out_field_is_metadata(kind: &str) -> bool {\n",
+            "    matches!(kind,\n",
+        ]
+    )
+    metadata = data.get("simpleir_out_metadata_kinds", [])
+    lines.append(" | ".join(f'        \"{member}\"' for member in metadata))
+    lines.extend(["\n    )\n", "}\n\n"])
+    lines.extend(
+        [
+            "/// First `args` position encoded as an output binding, if any.\n",
+            "#[inline]\n",
+            "pub fn simpleir_first_trailing_result_arg_table(kind: &str) -> Option<usize> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for row in data.get("simpleir_trailing_arg_result", []):
+        lines.append(
+            f'        "{row["kind"]}" => Some({row["first_result_arg"]}),\n'
+        )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
+    return "".join(lines)
+
+
 def _render_simpleir_integer_semantics(data: dict) -> str:
     roles = (
         ("simpleir_dynamic_add_semantics_kinds", "DynamicAdd"),
@@ -971,6 +1025,7 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
         ("simpleir_dynamic_power_semantics_kinds", "DynamicPower"),
         ("simpleir_dynamic_unary_numeric_semantics_kinds", "DynamicUnaryNumeric"),
         ("simpleir_integer_only_semantics_kinds", "IntegerOnly"),
+        ("simpleir_integer_literal_semantics_kinds", "IntegerLiteral"),
         ("simpleir_integer_producer_semantics_kinds", "IntegerProducer"),
     )
     lines = [
@@ -1046,6 +1101,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         registered.update(row["kind"] for row in data.get(table, []))
     for key, _ in roles:
         registered.update(data.get(key, []))
+    registered.update(data.get("simpleir_runtime_neutral_semantics_kinds", []))
 
     lines = [
         "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",

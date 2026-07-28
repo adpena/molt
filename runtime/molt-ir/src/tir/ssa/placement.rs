@@ -3,6 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use super::super::is_structural;
 use super::variables::is_variable;
 use super::*;
+use crate::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
 
 impl<'a> SsaContext<'a> {
     /// Scan the raw linear op stream for iter_next → index(pair,1) →
@@ -92,58 +93,16 @@ impl<'a> SsaContext<'a> {
                     op_indices.push(idx);
                 }
 
-                // Uses: args and var (when used as input).
-                if op.kind == "unpack_sequence" {
-                    if let Some(args) = &op.args {
-                        if let Some(seq) = args.first()
-                            && is_variable(seq)
-                            && !defs.contains(seq)
-                        {
-                            uses.insert(seq.clone());
-                        }
-                        for out in args.iter().skip(1) {
-                            if is_variable(out) {
-                                defs.insert(out.clone());
-                                self.all_vars.insert(out.clone());
-                            }
-                        }
-                    }
-                } else if let Some(args) = &op.args {
-                    for a in args {
-                        if is_variable(a) && !defs.contains(a) {
-                            uses.insert(a.clone());
-                        }
+                for name in simple_ir_read_names(op) {
+                    if is_variable(&name) && !defs.contains(&name) {
+                        uses.insert(name);
                     }
                 }
-                // `var` is used as an input for load-style ops (e.g. "load_var").
-                // For store-style ops the `var` names the target.
-                // Heuristic: if `out` is set, `var` is likely an input;
-                // if only `var` is set with no `out`, it could be a store target.
-                if let Some(v) = &op.var
-                    && is_variable(v)
-                {
-                    // For "store_var" the var is the destination and args[0] is input.
-                    // For most ops, var is read.
-                    if !matches!(op.kind.as_str(), "store_var" | "delete_var") && !defs.contains(v)
-                    {
-                        uses.insert(v.clone());
+                for name in simple_ir_defined_names(op) {
+                    if is_variable(&name) {
+                        defs.insert(name.clone());
+                        self.all_vars.insert(name);
                     }
-                }
-
-                // Definitions: `out` field names the variable being assigned.
-                if let Some(out) = &op.out
-                    && is_variable(out)
-                {
-                    defs.insert(out.clone());
-                    self.all_vars.insert(out.clone());
-                }
-                // `store_var`/`delete_var` with `var` field defines that variable.
-                if matches!(op.kind.as_str(), "store_var" | "delete_var")
-                    && let Some(v) = &op.var
-                    && is_variable(v)
-                {
-                    defs.insert(v.clone());
-                    self.all_vars.insert(v.clone());
                 }
             }
 

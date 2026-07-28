@@ -291,8 +291,9 @@ pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack
 # SimpleIR Python-integer semantic roles. String-dispatch backends consume the
 # generated role table instead of maintaining target-local op-name families.
 # Dynamic roles may be admitted only when canonical representation facts prove
-# that integer dispatch is impossible; integer-only and producer roles require
-# an arbitrary-precision integer value authority.
+# that integer dispatch is impossible. Concrete literal roles may instead use
+# a target's exact bounded value carrier; integer-only and general producer
+# roles require an arbitrary-precision integer value authority.
 simpleir_dynamic_add_semantics_kinds = [
     "add",
     "inplace_add",
@@ -323,8 +324,10 @@ simpleir_integer_only_semantics_kinds = [
     "lshift", "shl", "inplace_lshift",
     "rshift", "shr", "inplace_rshift",
 ]
-simpleir_integer_producer_semantics_kinds = [
+simpleir_integer_literal_semantics_kinds = [
     "const", "const_int", "const_bigint",
+]
+simpleir_integer_producer_semantics_kinds = [
     "box_from_raw_int", "unbox_to_raw_int", "checked_add", "checked_mul",
     "loop_index_start", "loop_index_next",
     "int", "cast_int", "builtin_int",
@@ -353,9 +356,33 @@ simpleir_exception_semantics_kinds = [
     "exceptiongroup_match", "exceptiongroup_combine",
 ]
 simpleir_deterministic_lifetime_semantics_kinds = [
-    "inc_ref", "dec_ref", "borrow", "release", "drop_inserted",
-    "exception_region_drops_inserted",
+    "inc_ref", "dec_ref", "borrow", "release",
 ]
+# Terminal drop-phase completion markers prove pipeline state but perform no
+# runtime lifetime action. They need explicit neutral classification because
+# they are preserved SimpleIR artifacts rather than first-class opcodes.
+simpleir_runtime_neutral_semantics_kinds = [
+    "drop_inserted", "exception_region_drops_inserted",
+    "frame_locals_set", "line", "trace_enter_slot", "trace_exit",
+]
+
+# SimpleIR field-role authority. `out` is the ordinary result slot unless the
+# kind appears in the metadata set. `var` defaults to a source read; the sets
+# below classify binding definitions, secondary result slots, and the legacy
+# local-name metadata spelling used only when args already carries the source.
+simpleir_out_metadata_kinds = [
+    "set_attr", "store_attr", "set_attr_name", "set_attr_generic_ptr",
+    "set_attr_generic_obj", "guarded_field_set", "guarded_field_init",
+    "module_cache_set", "module_cache_del", "module_set_attr",
+    "module_del_global", "module_del_global_if_present", "store", "store_init",
+    "store_index", "index_set", "del_attr", "del_attr_name",
+    "del_attr_generic_ptr", "del_attr_generic_obj", "del_index", "raise",
+    "raise_from", "inc_ref", "dec_ref",
+    "delete_var", "store_fast", "store_var",
+]
+simpleir_var_definition_kinds = ["delete_var", "store_fast", "store_var"]
+simpleir_var_result_kinds = ["checked_add", "checked_mul", "iter_next_unboxed"]
+simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
@@ -1813,6 +1840,10 @@ classifier_no_heap_move = [
     "load_var",
     "store_var",
 ]
+
+[[simpleir_trailing_arg_result]]
+kind = "unpack_sequence"
+first_result_arg = 1
 
 [[simpleir_control_kind]]
 kind = "label"
