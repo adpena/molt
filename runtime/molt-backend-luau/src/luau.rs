@@ -220,11 +220,11 @@ impl LuauBackend {
 
 impl LuauBackend {
     fn frame_context_expr(&self) -> &'static str {
-        if self.has_local_frame_context {
-            "__molt_frame_context"
-        } else {
-            "molt_frame_context()"
-        }
+        assert!(
+            self.has_local_frame_context,
+            "validated Luau IR requested execution-frame state without a Local or Inherited context"
+        );
+        "__molt_frame_context"
     }
 }
 

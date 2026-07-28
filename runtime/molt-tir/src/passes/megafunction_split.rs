@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // Cranelift's register allocator has O(n^2) behavior on very large functions.
 // When a function exceeds max_ops (default 2000, env: MOLT_MAX_FUNCTION_OPS),
 // this pass splits it at top-level statement boundaries (loop_depth=0,
-// if_depth=0) into private __molt_chunk_{name}_{n} functions.  The original
+// if_depth=0) into module-reserved, injectively named private chunk functions. The original
 // function is replaced with sequential call_internal ops to each chunk.
 //
 // Safety: never splits inside loops, if-blocks, or try-blocks.
@@ -236,6 +236,20 @@ fn split_rewrite_void_terminals_to_status(
     rewritten
 }
 
+fn split_insert_local_frame_exits(ops: Vec<OpIR>) -> Vec<OpIR> {
+    let mut with_exits = Vec::with_capacity(ops.len() + 4);
+    for op in ops {
+        if matches!(op.kind.as_str(), "ret" | "ret_void") {
+            with_exits.push(OpIR {
+                kind: "trace_exit".to_string(),
+                ..OpIR::default()
+            });
+        }
+        with_exits.push(op);
+    }
+    with_exits
+}
+
 pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), String> {
     let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
     for (idx, op) in func.ops.iter().enumerate() {
@@ -316,6 +330,19 @@ pub(super) fn is_drop_fact_marker_op(op: &OpIR) -> bool {
 /// Iterates to fixpoint (max 5 rounds) to catch cascading dead chains.
 const DEFAULT_MAX_FUNCTION_OPS: usize = 2000;
 
+pub(super) fn split_chunk_name(source_function_name: &str, index: usize) -> String {
+    let mut encoded_source_name = String::with_capacity(source_function_name.len() * 2);
+    for byte in source_function_name.as_bytes() {
+        use std::fmt::Write as _;
+        write!(&mut encoded_source_name, "{byte:02x}")
+            .expect("writing hexadecimal bytes to String cannot fail");
+    }
+    format!(
+        "__molt_chunk_v1_{}_{encoded_source_name}_{index}",
+        source_function_name.len()
+    )
+}
+
 /// Split a single large function into multiple chunk functions.
 ///
 /// Returns `Err(func)` (giving back the original) if the function is small
@@ -329,6 +356,7 @@ const DEFAULT_MAX_FUNCTION_OPS: usize = 2000;
 pub fn split_large_function(
     func: FunctionIR,
     max_ops: usize,
+    occupied_function_names: &mut BTreeSet<String>,
 ) -> Result<(FunctionIR, Vec<FunctionIR>), Box<FunctionIR>> {
     if is_protected_runtime_entrypoint(&func.name) {
         return Err(Box::new(func));
@@ -338,6 +366,27 @@ pub fn split_large_function(
         return Err(Box::new(func));
     }
     let original_for_split_failure = func.clone();
+    let execution_context = func.execution_context;
+    let local_trace_enter = if execution_context == ExecutionContextPolicy::Local {
+        let enters = func
+            .ops
+            .iter()
+            .filter(|op| op.kind == "trace_enter_slot")
+            .cloned()
+            .collect::<Vec<_>>();
+        if enters.len() != 1 {
+            return Err(Box::new(original_for_split_failure));
+        }
+        enters.into_iter().next()
+    } else {
+        None
+    };
+    let chunk_execution_context = match execution_context {
+        ExecutionContextPolicy::Local | ExecutionContextPolicy::Inherited => {
+            ExecutionContextPolicy::Inherited
+        }
+        ExecutionContextPolicy::None => ExecutionContextPolicy::None,
+    };
     let all_ops = &func.ops;
     let drop_fact_markers: Vec<OpIR> = all_ops
         .iter()
@@ -587,9 +636,15 @@ pub fn split_large_function(
         }
     }
 
-    let sanitized_name = func
-        .name
-        .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+    let chunk_names = (0..boundaries.len() - 1)
+        .map(|index| split_chunk_name(&func.name, index))
+        .collect::<Vec<_>>();
+    if chunk_names
+        .iter()
+        .any(|name| occupied_function_names.contains(name))
+    {
+        return Err(Box::new(original_for_split_failure));
+    }
 
     let func_returns_value = func.ops.iter().any(|op| op.kind == "ret");
     for (idx, op) in func.ops.iter().enumerate() {
@@ -712,7 +767,14 @@ pub fn split_large_function(
             return Err(Box::new(original_for_split_failure.clone()));
         }
 
-        let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
+        // The replacement stub is the sole Local frame owner. Chunks retain
+        // source-line/locals work on the bound inherited context, but may never
+        // create or destroy lifecycle state (including cloned cleanup tails).
+        if execution_context == ExecutionContextPolicy::Local {
+            chunk_ops.retain(|op| !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"));
+        }
+
+        let chunk_name = chunk_names[i].clone();
         let (returns_value, returns_control_status) = if func_returns_value {
             let terminal = if chunk_ops
                 .last()
@@ -799,9 +861,9 @@ pub fn split_large_function(
             params: chunk_params,
             ops: chunk_ops,
             param_types: chunk_param_types,
-            source_file: None,
+            source_file: func.source_file.clone(),
             is_extern: false,
-            execution_context: ExecutionContextPolicy::None,
+            execution_context: chunk_execution_context,
         });
         plans.push(ChunkPlan {
             name: chunk_name,
@@ -816,6 +878,9 @@ pub fn split_large_function(
     //    relying on per-function entry defaults.
     // ---------------------------------------------------------------
     let mut stub_ops: Vec<OpIR> = Vec::new();
+    if let Some(trace_enter) = local_trace_enter {
+        stub_ops.push(trace_enter);
+    }
     if uses_split_frame {
         let mut frame_init_args = Vec::with_capacity(frame_slot_for.len());
         for _ in 0..frame_slot_for.len() {
@@ -851,6 +916,7 @@ pub fn split_large_function(
             } else {
                 format!("__chunk_discard_{ci}")
             }),
+            passes_execution_context: chunk_execution_context == ExecutionContextPolicy::Inherited,
             ..OpIR::default()
         });
         stub_ops.push(OpIR {
@@ -926,15 +992,18 @@ pub fn split_large_function(
             ..OpIR::default()
         });
     }
+    if execution_context == ExecutionContextPolicy::Local {
+        stub_ops = split_insert_local_frame_exits(stub_ops);
+    }
 
     let stub = FunctionIR {
         name: func.name,
         params: func.params,
         ops: stub_ops,
         param_types: func.param_types,
-        source_file: None,
+        source_file: func.source_file,
         is_extern: false,
-        execution_context: func.execution_context,
+        execution_context,
     };
 
     for chunk in &chunks {
@@ -951,6 +1020,17 @@ pub fn split_large_function(
     if let Err(detail) = verify_split_generated_ops(&stub) {
         panic!("megafunction split produced non-canonical stub IR: {detail}");
     }
+    let transformed = SimpleIR {
+        functions: std::iter::once(stub.clone())
+            .chain(chunks.iter().cloned())
+            .collect(),
+        profile: None,
+    };
+    if let Err(detail) = crate::validate_simple_ir(&transformed) {
+        panic!("megafunction split produced invalid execution-context IR: {detail}");
+    }
+
+    occupied_function_names.extend(chunk_names);
 
     Ok((stub, chunks))
 }
@@ -978,6 +1058,10 @@ pub fn split_megafunctions_with_filter(
 
     let mut new_functions: Vec<FunctionIR> = Vec::new();
     let old_functions = std::mem::take(&mut ir.functions);
+    let mut occupied_function_names = old_functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect::<BTreeSet<_>>();
 
     for func in old_functions {
         let op_count = func.ops.len();
@@ -985,7 +1069,7 @@ pub fn split_megafunctions_with_filter(
             new_functions.push(func);
             continue;
         }
-        match split_large_function(func, max_ops) {
+        match split_large_function(func, max_ops, &mut occupied_function_names) {
             Ok((stub, chunks)) => {
                 eprintln!(
                     "MOLT_BACKEND: split `{}` ({} ops) into {} chunks",

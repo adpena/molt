@@ -20,7 +20,7 @@ pub mod trampolines;
 
 pub use molt_ir::{
     BackendIrDocument, ExecutionContextPolicy, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR,
-    SimpleIR, validate_simple_ir,
+    SimpleIR, validate_simple_ir, write_function_ir_contract,
 };
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,

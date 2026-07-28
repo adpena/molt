@@ -870,6 +870,7 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
         "before kind_to_opcode."
     ),
     "terminator": "Whether a SimpleIR kind terminates the current CFG block.",
+    "return_terminator": "Whether a SimpleIR kind is a normal function-return terminator.",
     "suspend": "Whether a SimpleIR kind is a generator/coroutine suspend point.",
     "repoll": "Whether resume dispatch re-enters at the suspend op itself.",
     "block_leader": "Whether a SimpleIR kind starts a CFG basic block.",
@@ -1184,18 +1185,9 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         [
             "        _ => None,\n",
             "    }\n",
-            "}\n\n",
-            "/// Whether args[0] is the dynamically invoked callable value.\n",
-            "#[inline]\n",
-            "pub fn simpleir_kind_has_callable_operand(kind: &str) -> bool {\n",
-            "    matches!(\n",
-            "        kind,\n",
+            "}\n",
         ]
     )
-    callable_kinds = sorted(data.get("simpleir_callable_operand_kinds", []))
-    if callable_kinds:
-        lines.append("            " + "\n            | ".join(f'"{kind}"' for kind in callable_kinds) + "\n")
-    lines.extend(["    )\n", "}\n"])
     lines.extend([
         "\n/// Whether s_value is a first-class function reference.\n",
         "#[inline]\n",
@@ -1205,33 +1197,6 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
     function_refs = sorted(data.get("simpleir_function_reference_s_value_kinds", []))
     lines.append(" | ".join(f'"{kind}"' for kind in function_refs) if function_refs else "\"\"")
     lines.extend([")\n", "}\n"])
-    lines.extend([
-        "\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum SimpleIrModuleIdentityAliasRole { Strong, Merge }\n\n",
-        "#[inline]\n",
-        "pub fn simpleir_module_identity_alias_role_table(kind: &str) -> Option<SimpleIrModuleIdentityAliasRole> {\n",
-        "    match kind {\n",
-    ])
-    for row in sorted(data.get("simpleir_module_identity_alias", []), key=lambda item: item["kind"]):
-        role = {"strong": "Strong", "merge": "Merge"}[row["role"]]
-        lines.append(f'        "{row["kind"]}" => Some(SimpleIrModuleIdentityAliasRole::{role}),\n')
-    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
-    lines.append("#[inline]\npub fn simpleir_module_identity_source_name_arg(kind: &str) -> Option<usize> {\n    match kind {\n")
-    for row in sorted(data.get("simpleir_module_identity_source", []), key=lambda item: item["kind"]):
-        lines.append(f'        "{row["kind"]}" => Some({row["module_name_arg"]}),\n')
-    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
-    lines.extend([
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum SimpleIrModuleSlotRole { Get, Set, Delete }\n\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub struct SimpleIrModuleSlotAccess { pub role: SimpleIrModuleSlotRole, pub module_arg: usize, pub name_arg: usize, pub value_arg: Option<usize> }\n\n",
-        "#[inline]\npub fn simpleir_module_slot_access_table(kind: &str) -> Option<SimpleIrModuleSlotAccess> {\n    match kind {\n",
-    ])
-    for row in sorted(data.get("simpleir_module_slot_access", []), key=lambda item: item["kind"]):
-        role = {"get": "Get", "set": "Set", "delete": "Delete"}[row["role"]]
-        value_arg = f'Some({row["value_arg"]})' if "value_arg" in row else "None"
-        lines.append(f'        "{row["kind"]}" => Some(SimpleIrModuleSlotAccess {{ role: SimpleIrModuleSlotRole::{role}, module_arg: {row["module_arg"]}, name_arg: {row["name_arg"]}, value_arg: {value_arg} }}),\n')
-    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines)
 
 

@@ -381,25 +381,7 @@ simpleir_frame_introspection_runtime_symbols = [
     "molt_sys_settrace", "molt_sys_gettrace",
     "molt_sys_setprofile", "molt_sys_getprofile",
 ]
-simpleir_callable_operand_kinds = [
-    "call_func", "call_function", "call_guarded", "call_bind", "call_indirect",
-]
 simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
-simpleir_module_identity_alias = [
-    { kind = "copy", role = "strong" },
-    { kind = "phi", role = "merge" },
-]
-simpleir_module_identity_source = [
-    { kind = "module_cache_get", module_name_arg = 0 },
-    { kind = "module_import", module_name_arg = 0 },
-]
-simpleir_module_slot_access = [
-    { kind = "module_set_attr", role = "set", module_arg = 0, name_arg = 1, value_arg = 2 },
-    { kind = "module_get_attr", role = "get", module_arg = 0, name_arg = 1 },
-    { kind = "module_get_global", role = "get", module_arg = 0, name_arg = 1 },
-    { kind = "module_del_global", role = "delete", module_arg = 0, name_arg = 1 },
-    { kind = "module_del_global_if_present", role = "delete", module_arg = 0, name_arg = 1 },
-]
 simpleir_runtime_qualified_callable = [
     { qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe" },
     { qualified = "sys._getframe", symbol = "molt_getframe" },
@@ -2162,6 +2144,7 @@ wasm_state_resume_at = false
 kind = "ret"
 structural = true
 terminator = true
+return_terminator = true
 suspend = false
 repoll = false
 block_leader = false
@@ -2180,6 +2163,7 @@ wasm_state_resume_at = false
 kind = "ret_void"
 structural = true
 terminator = true
+return_terminator = true
 suspend = false
 repoll = false
 block_leader = false
@@ -2198,6 +2182,7 @@ wasm_state_resume_at = false
 kind = "return"
 structural = true
 terminator = true
+return_terminator = true
 suspend = false
 repoll = false
 block_leader = false

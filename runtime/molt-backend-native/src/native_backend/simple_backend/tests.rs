@@ -41,12 +41,38 @@ fn acquire_backend_env_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+struct ScopedEnvVar {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ScopedEnvVar {
+    fn set(name: &'static str, value: Option<&str>) -> Self {
+        let previous = std::env::var_os(name);
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        Self { name, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
 fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
     let _guard = acquire_backend_env_lock();
-    match emit_traces_env {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_EMIT_TRACES", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") },
-    }
+    let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", emit_traces_env);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -73,9 +99,7 @@ fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
         }],
         profile: None,
     };
-    let output = SimpleBackend::new().compile(ir);
-    unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") };
-    output.bytes
+    SimpleBackend::new().compile(ir).bytes
 }
 
 fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {

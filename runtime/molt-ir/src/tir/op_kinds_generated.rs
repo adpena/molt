@@ -54,6 +54,14 @@ pub fn simpleir_kind_is_terminator(kind: &str) -> bool {
     )
 }
 
+/// Whether a SimpleIR kind is a normal function-return terminator.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_return_terminator(kind: &str) -> bool {
+    matches!(kind, "ret" | "ret_void" | "return")
+}
+
 /// Whether a SimpleIR kind is a generator/coroutine suspend point.
 /// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
@@ -869,97 +877,10 @@ pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'s
     }
 }
 
-/// Whether args[0] is the dynamically invoked callable value.
-#[inline]
-pub fn simpleir_kind_has_callable_operand(kind: &str) -> bool {
-    matches!(
-        kind,
-        "call_bind" | "call_func" | "call_function" | "call_guarded" | "call_indirect"
-    )
-}
-
 /// Whether s_value is a first-class function reference.
 #[inline]
 pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {
     matches!(kind, "func_new" | "func_new_closure")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SimpleIrModuleIdentityAliasRole {
-    Strong,
-    Merge,
-}
-
-#[inline]
-pub fn simpleir_module_identity_alias_role_table(
-    kind: &str,
-) -> Option<SimpleIrModuleIdentityAliasRole> {
-    match kind {
-        "copy" => Some(SimpleIrModuleIdentityAliasRole::Strong),
-        "phi" => Some(SimpleIrModuleIdentityAliasRole::Merge),
-        _ => None,
-    }
-}
-
-#[inline]
-pub fn simpleir_module_identity_source_name_arg(kind: &str) -> Option<usize> {
-    match kind {
-        "module_cache_get" => Some(0),
-        "module_import" => Some(0),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SimpleIrModuleSlotRole {
-    Get,
-    Set,
-    Delete,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SimpleIrModuleSlotAccess {
-    pub role: SimpleIrModuleSlotRole,
-    pub module_arg: usize,
-    pub name_arg: usize,
-    pub value_arg: Option<usize>,
-}
-
-#[inline]
-pub fn simpleir_module_slot_access_table(kind: &str) -> Option<SimpleIrModuleSlotAccess> {
-    match kind {
-        "module_del_global" => Some(SimpleIrModuleSlotAccess {
-            role: SimpleIrModuleSlotRole::Delete,
-            module_arg: 0,
-            name_arg: 1,
-            value_arg: None,
-        }),
-        "module_del_global_if_present" => Some(SimpleIrModuleSlotAccess {
-            role: SimpleIrModuleSlotRole::Delete,
-            module_arg: 0,
-            name_arg: 1,
-            value_arg: None,
-        }),
-        "module_get_attr" => Some(SimpleIrModuleSlotAccess {
-            role: SimpleIrModuleSlotRole::Get,
-            module_arg: 0,
-            name_arg: 1,
-            value_arg: None,
-        }),
-        "module_get_global" => Some(SimpleIrModuleSlotAccess {
-            role: SimpleIrModuleSlotRole::Get,
-            module_arg: 0,
-            name_arg: 1,
-            value_arg: None,
-        }),
-        "module_set_attr" => Some(SimpleIrModuleSlotAccess {
-            role: SimpleIrModuleSlotRole::Set,
-            module_arg: 0,
-            name_arg: 1,
-            value_arg: Some(2),
-        }),
-        _ => None,
-    }
 }
 
 /// Map a SimpleIR `kind` string to its first-class TIR `OpCode`, or

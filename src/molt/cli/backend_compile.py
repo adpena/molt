@@ -77,6 +77,23 @@ from molt.wasm_artifact import (
     read_wasm_split_runtime_callable_layout,
 )
 
+_BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
+
+
+def _apply_backend_compiler_fingerprint(
+    fingerprint: str | None,
+    *,
+    backend_env: dict[str, str] | None = None,
+) -> None:
+    if fingerprint:
+        os.environ[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
+        if backend_env is not None:
+            backend_env[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
+        return
+    os.environ.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
+    if backend_env is not None:
+        backend_env.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
+
 
 def _record_pipeline_stage_ms(
     stage_timings_ms: dict[str, float] | None,
@@ -187,6 +204,9 @@ def _prepare_backend_setup(
         return None, _fail(backend_ensure_result.message, json_output, command="build")
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
+    _apply_backend_compiler_fingerprint(
+        backend_ensure_result.cache_compiler_fingerprint
+    )
 
     cache_setup_start = time.perf_counter()
     cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
@@ -531,6 +551,10 @@ def _prepare_backend_dispatch(
             return None, _fail(
                 backend_ensure_result.message, json_output, command="build"
             )
+        _apply_backend_compiler_fingerprint(
+            backend_ensure_result.cache_compiler_fingerprint,
+            backend_env=backend_env,
+        )
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
 
