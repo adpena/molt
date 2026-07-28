@@ -12,26 +12,24 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
-from molt.cli import runtime_build as _runtime_build
+from molt.cli import build_inputs as _build_inputs
+from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.backend_diagnostics import (
     _env_requests_backend_diagnostics,
     _forward_compilation_warnings,
 )
 from molt.cli.build_diagnostics import _emit_build_diagnostics
-from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX
+from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
     STATIC_IMPORT_MODULES_ENV,
     _resolve_build_config,
 )
-from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.default_paths import _default_molt_bin
-from molt.cli import build_inputs as _build_inputs
-from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,
     _resolve_import_admission_policy,
 )
-from molt.file_hashing import _sha256_file
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.json_contract import (
     _coerce_json_path,
@@ -40,13 +38,13 @@ from molt.cli.json_contract import (
     _extract_payload_text_list,
     _wrapper_build_payload_data,
 )
-from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
-from molt.cli.module_resolution import _stdlib_root_path
-from molt.cli.module_source import _source_content_sha256
 from molt.cli.models import (
     _ResolvedBuildEntry,
     _WrapperBuildContract,
 )
+from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
+from molt.cli.module_resolution import _stdlib_root_path
+from molt.cli.module_source import _source_content_sha256
 from molt.cli.output import (
     coerce_process_text as _coerce_process_text,
     emit_json as _emit_json,
@@ -58,6 +56,7 @@ from molt.cli.target_python import (
     _parse_target_python_version,
     _resolve_target_python_version,
 )
+from molt.file_hashing import _sha256_file
 
 
 def _build_args_has_json_flag(args: Sequence[str]) -> bool:
@@ -609,7 +608,7 @@ def _run_wrapper_build(
     if verbose and not json_output:
         print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
     start = time.monotonic()
-    build_res = _runtime_build._run_completed_command(
+    build_res = _run_completed_command(
         build_cmd,
         env=dict(env),
         cwd=project_root,

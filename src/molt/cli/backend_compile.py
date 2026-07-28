@@ -46,11 +46,11 @@ from molt.cli.config_resolution import (
     ENTRY_OVERRIDE_ENV,
 )
 from molt.cli.models import (
+    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     BuildProfile,
     _BackendCacheSetup,
     _BackendExecutionResult,
     _CliFailure,
-    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalPackageNativeArtifactPlan,
     _ModuleGraphMetadata,
     _PreparedBackendCompile,
@@ -63,14 +63,12 @@ from molt.cli.output import (
     fail as _fail,
     subprocess_output_text as _subprocess_output_text,
 )
-from molt.cli.runtime_build import (
-    _ensure_runtime_wasm_both,
-    _initialize_runtime_artifact_state,
-    _maybe_start_native_runtime_lib_ready_async,
-)
+from molt.cli.runtime_build import _initialize_runtime_artifact_state
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
+from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
+from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
 from molt.cli.target_python import TargetPythonVersion
 from molt.wasm_artifact import (
     _read_wasm_data_end,

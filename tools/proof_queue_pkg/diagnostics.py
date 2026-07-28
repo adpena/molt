@@ -1858,7 +1858,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
                 scopes=(
                     "src/molt/_wasm_runtime_exports.py",
-                    "src/molt/cli/runtime_build.py",
+                    "src/molt/cli/runtime_wasm_build.py",
+                    "src/molt/cli/runtime_wasm_pair_build.py",
                     "runtime/molt-cpython-abi/build.rs",
                 ),
             )

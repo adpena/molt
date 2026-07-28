@@ -160,7 +160,9 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         module_stdlib_policy,
         runtime_build,
         runtime_callable_symbols,
+        runtime_native_build,
         runtime_paths,
+        runtime_wasm_build,
     )
 
     # Closure reader A: module_stdlib_policy core-module selection.
@@ -186,11 +188,11 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         backend_output_pipeline._emit_backend_pipeline_outputs,
         link_pipeline._prepare_native_link,
         runtime_build._initialize_runtime_artifact_state,
-        runtime_build._maybe_start_native_runtime_lib_ready_async,
-        runtime_build._ensure_runtime_lib_ready,
-        runtime_build._ensure_native_runtime_lib_ready_before_link,
-        runtime_build._ensure_runtime_lib,
-        runtime_build._ensure_runtime_wasm,
+        runtime_native_build._maybe_start_native_runtime_lib_ready_async,
+        runtime_native_build._ensure_runtime_lib_ready,
+        runtime_native_build._ensure_native_runtime_lib_ready_before_link,
+        runtime_native_build._ensure_runtime_lib,
+        runtime_wasm_build._ensure_runtime_wasm,
         runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen,
     ]
     for func in lower_artifact_functions:

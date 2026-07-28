@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -13,19 +12,20 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from molt.cli import wasm_toolchain
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-from molt.cli.runtime_build import (
+from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
+from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
     _provision_runtime_wasm_toolchain_manifest,
     _resolved_runtime_wasm_pair_identities,
     _runtime_wasm_toolchain_manifest_path,
 )
-from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
 from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path
 from molt.dx import CheckoutCustody, checkout_custody, development_artifact_env
 from molt.path_custody import (
@@ -34,6 +34,7 @@ from molt.path_custody import (
     canonical_host_path,
     host_path_is_within,
 )
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution

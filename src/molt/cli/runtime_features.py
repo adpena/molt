@@ -192,8 +192,9 @@ def profile_link_features(
     collecting the reachable molt-runtime feature names.  This is the canonical
     "what does profile P build" fact; both the reachability profile-ceiling
     check (``backend_ir._reachability_feature_refusal``) and the runtime archive
-    feature selection (``runtime_build``) read it, so they can no longer
-    disagree with the Cargo chain.
+    feature selection (``runtime_native_build`` and
+    ``runtime_wasm_build_spec``) read it, so they can no longer disagree with
+    the Cargo chain.
 
     Target-unavailable features are subtracted using the generated intrinsic
     availability authority so the profile and provider manifest cannot drift.

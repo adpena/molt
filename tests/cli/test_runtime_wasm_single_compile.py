@@ -13,18 +13,20 @@ Verifies the combined-compile design invariants that make the dedup correct:
 
 from __future__ import annotations
 
-import subprocess
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-import molt.cli.runtime_build as rb
-from molt.cli.runtime_artifact_selection import (
-    RUNTIME_CDYLIB_ARTIFACTS,
-    RUNTIME_STATICLIB_ARTIFACTS,
+from molt.cli import artifact_state as runtime_artifact_state
+from molt.cli import (
+    runtime_fingerprints,
+    runtime_wasm_build,
+    runtime_wasm_build_spec,
+    runtime_wasm_build_support,
+    runtime_wasm_pair_build,
 )
-from molt.cli.wasm_toolchain import WasmLinkerIdentity
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.models import (
     _ExternalNativeAbiSymbol,
@@ -32,11 +34,15 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifactPlan,
     _RuntimeArtifactState,
 )
+from molt.cli.runtime_artifact_selection import (
+    RUNTIME_CDYLIB_ARTIFACTS,
+    RUNTIME_STATICLIB_ARTIFACTS,
+)
 from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
     _runtime_wasm_build_timings_snapshot,
 )
-
+from molt.cli.wasm_toolchain import WasmLinkerIdentity
 
 _COMMON = dict(
     cargo_profile="release",
@@ -50,10 +56,10 @@ _COMMON = dict(
 
 
 def _specs(root: Path):
-    shared = rb._compute_runtime_wasm_build_spec(
+    shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root, root / "wasm" / "molt_runtime.wasm", reloc=False, **_COMMON
     )
-    reloc = rb._compute_runtime_wasm_build_spec(
+    reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
     )
     return shared, reloc
@@ -80,7 +86,7 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
 
 def test_reloc_cache_identity_tracks_exact_wasm_linker_binary() -> None:
     root = _compiler_root()
-    first = rb._compute_runtime_wasm_build_spec(
+    first = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime_reloc.wasm",
         reloc=True,
@@ -89,7 +95,7 @@ def test_reloc_cache_identity_tracks_exact_wasm_linker_binary() -> None:
         ),
         **_COMMON,
     )
-    second = rb._compute_runtime_wasm_build_spec(
+    second = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime_reloc.wasm",
         reloc=True,
@@ -158,13 +164,13 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         "cargo_profile": "release-fast",
         "stdlib_profile": "full",
     }
-    early = rb._compute_runtime_wasm_build_spec(
+    early = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "early_reloc.wasm",
         reloc=True,
         **{**common, "required_exports": {"add"}},
     )
-    final = rb._compute_runtime_wasm_build_spec(
+    final = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "final_reloc.wasm",
         reloc=True,
@@ -176,28 +182,34 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     assert early.staticlib_fingerprint == final.staticlib_fingerprint
 
     final = final._replace(target_root=target_root)
-    staticlib = rb._wasm_runtime_staticlib_path(target_root, final.profile_dir)
+    staticlib = runtime_wasm_build_support._wasm_runtime_staticlib_path(
+        target_root, final.profile_dir
+    )
     staticlib.parent.mkdir(parents=True, exist_ok=True)
     staticlib.write_bytes(b"!<arch>\n")
     state_root = target_root / ".molt_state"
-    staticlib_sidecar = rb._runtime_target_fingerprint_path(
+    staticlib_sidecar = runtime_artifact_state._runtime_target_fingerprint_path(
         state_root,
         staticlib,
         cargo_profile=final.cargo_profile,
         target_label="wasm32-wasip1",
     )
     staticlib_sidecar.parent.mkdir(parents=True, exist_ok=True)
-    rb._write_runtime_fingerprint(
+    runtime_fingerprints._write_runtime_fingerprint(
         staticlib_sidecar,
         early.staticlib_fingerprint,
         artifact=staticlib,
     )
 
     linked: list[tuple[Path, str]] = []
-    monkeypatch.setattr(rb, "_compute_runtime_wasm_build_spec", lambda *a, **k: final)
-    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
     monkeypatch.setattr(
-        rb,
+        runtime_wasm_build, "_compute_runtime_wasm_build_spec", lambda *a, **k: final
+    )
+    monkeypatch.setattr(
+        runtime_wasm_build, "_build_state_root", lambda _root: state_root
+    )
+    monkeypatch.setattr(
+        runtime_wasm_build,
         "_run_runtime_wasm_cargo_build",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("cross-export staticlib reuse must not invoke Cargo")
@@ -219,15 +231,19 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         output_path.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
-    monkeypatch.setattr(rb, "_link_runtime_staticlib_to_reloc_wasm", _relink)
     monkeypatch.setattr(
-        rb,
+        runtime_wasm_build, "_link_runtime_staticlib_to_reloc_wasm", _relink
+    )
+    monkeypatch.setattr(
+        runtime_wasm_build,
         "_runtime_missing_exports_for_mode",
         lambda _path, _required, *, reloc: set(),
     )
-    monkeypatch.setattr(rb, "_is_valid_runtime_wasm_artifact", lambda _path: True)
+    monkeypatch.setattr(
+        runtime_wasm_build, "_is_valid_runtime_wasm_artifact", lambda _path: True
+    )
     output = tmp_path / "molt_runtime_reloc.wasm"
-    assert rb._ensure_runtime_wasm(
+    assert runtime_wasm_build._ensure_runtime_wasm(
         output,
         reloc=True,
         json_output=True,
@@ -264,13 +280,13 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     }
 
     def _pair(label: str, required_exports: set[str]):
-        shared = rb._compute_runtime_wasm_build_spec(
+        shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
             tmp_path / f"{label}_shared.wasm",
             reloc=False,
             **{**common, "required_exports": required_exports},
         )
-        reloc = rb._compute_runtime_wasm_build_spec(
+        reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
             tmp_path / f"{label}_reloc.wasm",
             reloc=True,
@@ -318,19 +334,29 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         )
         return subprocess.CompletedProcess(cmd, 0, stdout, ""), cdylib
 
-    monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
-    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
-    monkeypatch.setattr(rb, "_inspect_wasm_binary", lambda _path: "valid")
     monkeypatch.setattr(
-        rb, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+        runtime_wasm_pair_build, "_run_runtime_wasm_cargo_build", _fake_build
     )
     monkeypatch.setattr(
-        rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: tmp_path
+        runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build.wasm_toolchain,
+        "rust_target_libdir",
+        lambda *a, **k: tmp_path,
     )
 
     _reset_runtime_wasm_build_timings()
     try:
-        assert rb._prepopulate_combined_runtime_wasm_target(
+        assert runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
             shared_spec=early_shared,
             reloc_spec=early_reloc,
             json_output=True,
@@ -339,7 +365,7 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
             simd_enabled=True,
             freestanding=False,
         )
-        assert rb._prepopulate_combined_runtime_wasm_target(
+        assert runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
             shared_spec=final_shared,
             reloc_spec=final_reloc,
             json_output=True,
@@ -367,7 +393,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
         "math_sqrt",
         "re_compile",
     }
-    shared = rb._compute_runtime_wasm_build_spec(
+    shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime.wasm",
         reloc=False,
@@ -377,7 +403,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
             "required_exports": required_exports,
         },
     )
-    reloc = rb._compute_runtime_wasm_build_spec(
+    reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime_reloc.wasm",
         reloc=True,
@@ -420,14 +446,22 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
             Path("unused"),
         )
 
-    monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
-    # Force a cold target dir so the fast-path reuse check misses and we build.
-    monkeypatch.setattr(rb, "_current_runtime_target_artifact", lambda *a, **k: None)
     monkeypatch.setattr(
-        rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: Path(tmp_path)
+        runtime_wasm_pair_build, "_run_runtime_wasm_cargo_build", _fake_build
+    )
+    # Force a cold target dir so the fast-path reuse check misses and we build.
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_current_runtime_target_artifact",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build.wasm_toolchain,
+        "rust_target_libdir",
+        lambda *a, **k: Path(tmp_path),
     )
 
-    ok = rb._prepopulate_combined_runtime_wasm_target(
+    ok = runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
         shared_spec=shared,
         reloc_spec=reloc,
         json_output=True,
@@ -504,19 +538,33 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         )
 
     state_root = tmp_path / ".molt_state"
-    monkeypatch.setattr(rb, "_run_runtime_wasm_cargo_build", _fake_build)
-    monkeypatch.setattr(rb, "_current_runtime_target_artifact", lambda *a, **k: None)
-    monkeypatch.setattr(rb, "_build_state_root", lambda _root: state_root)
-    monkeypatch.setattr(rb, "_inspect_wasm_binary", lambda _path: "valid")
     monkeypatch.setattr(
-        rb, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+        runtime_wasm_pair_build, "_run_runtime_wasm_cargo_build", _fake_build
     )
     monkeypatch.setattr(
-        rb.wasm_toolchain, "rust_target_libdir", lambda *a, **k: tmp_path
+        runtime_wasm_pair_build,
+        "_current_runtime_target_artifact",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build.wasm_toolchain,
+        "rust_target_libdir",
+        lambda *a, **k: tmp_path,
     )
 
     assert (
-        rb._prepopulate_combined_runtime_wasm_target(
+        runtime_wasm_pair_build._prepopulate_combined_runtime_wasm_target(
             shared_spec=shared,
             reloc_spec=reloc,
             json_output=True,
@@ -529,7 +577,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     )
 
     def _target_fingerprint(path: Path) -> Path:
-        return rb._runtime_target_fingerprint_path(
+        return runtime_artifact_state._runtime_target_fingerprint_path(
             state_root,
             path,
             cargo_profile=shared.cargo_profile,
