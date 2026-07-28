@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from molt.frontend._types import _MOLT_GLOBALS_BUILTIN, MoltOp, MoltValue
-
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
@@ -88,8 +87,26 @@ class ModuleGlobalsMixin(_MixinBase):
         else:
             module_val = self._get_or_emit_module_cache(self.module_name)
         res = MoltValue(self.next_var(), type_hint="Any")
+        module_name = self.imported_names.get(
+            name, self.global_imported_names.get(name)
+        )
+        attr_name = self.imported_attr_names.get(
+            name, self.global_imported_attr_names.get(name, name)
+        )
+        runtime_symbol = (
+            self._runtime_qualified_callable_symbol(module_name, attr_name)
+            if not self._local_name_shadows_import_binding(name)
+            else None
+        )
         self.emit(
-            MoltOp(kind="MODULE_GET_GLOBAL", args=[module_val, name_val], result=res)
+            MoltOp(
+                kind="MODULE_GET_GLOBAL",
+                args=[module_val, name_val],
+                result=res,
+                metadata=(
+                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
+                ),
+            )
         )
         return res
 

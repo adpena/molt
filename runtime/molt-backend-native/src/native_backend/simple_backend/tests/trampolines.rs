@@ -147,3 +147,72 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
         "split stub must retain the direct call to the final value-returning chunk:\n{clif}",
     );
 }
+
+#[test]
+fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
+    let mut ops = vec![OpIR {
+        kind: "trace_enter_slot".to_string(),
+        value: Some(5),
+        ..OpIR::default()
+    }];
+    for line in 1..=6 {
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(line),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "const_none".to_string(),
+            out: Some(format!("v{line}")),
+            ..OpIR::default()
+        });
+    }
+    ops.extend([
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
+    ]);
+    let original = FunctionIR {
+        name: "native_framed_large".to_string(),
+        ops,
+        execution_context: crate::ir::ExecutionContextPolicy::Local,
+        ..FunctionIR::default()
+    };
+    let mut occupied = BTreeSet::from([original.name.clone()]);
+    let (stub, chunks) = crate::passes::split_large_function(original, 3, &mut occupied).unwrap();
+    let stub_name = stub.name.clone();
+    let functions = std::iter::once(stub).chain(chunks).collect::<Vec<_>>();
+    crate::validate_simple_ir(&SimpleIR {
+        functions: functions.clone(),
+        profile: None,
+    })
+    .unwrap();
+    let object = {
+        let _guard = acquire_backend_env_lock();
+        let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", Some("1"));
+        SimpleBackend::new()
+            .compile(SimpleIR {
+                functions: functions.clone(),
+                profile: None,
+            })
+            .bytes
+    };
+    for symbol in [
+        b"molt_trace_enter_slot".as_slice(),
+        b"molt_trace_exit".as_slice(),
+    ] {
+        assert!(
+            object.windows(symbol.len()).any(|window| window == symbol),
+            "trace-enabled native object is missing {}",
+            String::from_utf8_lossy(symbol)
+        );
+    }
+
+    let clif = compile_function_to_clif_text(functions, &stub_name);
+    assert!(clif.matches("call fn").count() >= 2, "{clif}");
+}

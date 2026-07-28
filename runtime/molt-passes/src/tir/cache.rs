@@ -3,24 +3,29 @@
 //! Provides a content-addressed cache so unchanged functions are not
 //! recompiled between pipeline invocations.  Artifacts are stored on disk
 //! under `cache_dir/functions/<hash>.bin`; a plain-text index file at
-//! `cache_dir/index.txt` records metadata so the cache survives process
-//! restarts.
+//! `cache_dir/index.txt` records advisory access metadata. Artifact identity and
+//! location remain fully derivable from the content hash.
 //!
-//! Index file format (one entry per non-blank, non-comment line):
+//! Index file format (one entry per line after the required version header):
 //! ```text
-//! # hash|artifact_path|dep1,dep2,...|last_access_unix_secs
-//! abc123|functions/abc123.bin||1679900000
-//! def456|functions/def456.bin|abc123|1679900001
+//! # molt-cache-index-v2 hash|last_access_unix_secs
+//! <64 lowercase hex>|1679900000
 //! ```
 
-use std::cmp::Reverse;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BinaryHeap, HashMap};
-use std::hash::{Hash, Hasher};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v2-exception-regions";
+use sha2::{Digest, Sha256};
+
+const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v3-sha256-contract";
+const CACHE_INDEX_HEADER: &str = "# molt-cache-index-v2 hash|last_access_unix_secs";
+const BACKEND_COMPILER_FINGERPRINT_ENV: &str = "MOLT_BACKEND_COMPILER_FINGERPRINT";
 const DEFAULT_MEMORY_CACHE_BYTES_FALLBACK: usize = 64 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN: usize = 8 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_BYTES_MIN: usize = 32 * 1024 * 1024;
@@ -51,26 +56,94 @@ pub struct CompilationCache {
 
     /// Monotonic logical clock for in-memory LRU eviction.
     memory_clock: u64,
-
-    /// LRU queue ordered by `(memory_stamp, content_hash)`.
-    memory_order: BinaryHeap<Reverse<(u64, String)>>,
+    /// Indexed min-heap of resident entries. Touches mutate heap nodes in
+    /// place, so warm hits allocate nothing and stale nodes never accumulate.
+    memory_lru: Vec<MemoryLruNode>,
 }
 
 /// A single entry in the compilation cache.
 #[derive(Debug, Clone)]
-pub struct CacheEntry {
-    /// Hex-encoded hash of the function's content + type environment.
-    pub content_hash: String,
-    /// Path to the artifact file on disk.
-    pub artifact_path: PathBuf,
-    /// Hashes of callee functions this entry depends on.
-    pub dependencies: Vec<String>,
+struct CacheEntry {
     /// Unix timestamp (seconds) of last access.
-    pub last_access: u64,
+    last_access: u64,
     /// Cached artifact bytes — `None` until loaded on demand.
-    pub(crate) data: Option<Vec<u8>>,
+    data: Option<Arc<[u8]>>,
     /// Logical LRU stamp for in-memory artifact bytes.
-    pub(crate) memory_stamp: u64,
+    memory_stamp: u64,
+    /// Position in `CompilationCache::memory_lru` while data is resident.
+    memory_lru_index: Option<usize>,
+}
+
+#[derive(Debug)]
+struct MemoryLruNode {
+    stamp: u64,
+    content_hash: String,
+}
+
+static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Durable, ambiguity-resistant SHA-256 identity for persistent compiler cache
+/// artifacts. Every field is tagged and length-delimited; large semantic
+/// contracts can be streamed through a nested digest without an O(IR) buffer.
+pub struct CompilationCacheKey {
+    digest: Sha256,
+}
+
+struct Sha256Writer<'a>(&'a mut Sha256);
+
+impl Write for Sha256Writer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl CompilationCacheKey {
+    pub fn new(domain: &[u8]) -> Self {
+        let mut key = Self {
+            digest: Sha256::new(),
+        };
+        key.field(b"cache-key-domain", domain);
+        key
+    }
+
+    fn length_delimited(digest: &mut Sha256, bytes: &[u8]) {
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    }
+
+    pub fn field(&mut self, label: &[u8], value: &[u8]) {
+        self.digest.update([0]);
+        Self::length_delimited(&mut self.digest, label);
+        Self::length_delimited(&mut self.digest, value);
+    }
+
+    pub fn digest_field(
+        &mut self,
+        label: &[u8],
+        write_value: impl FnOnce(&mut dyn Write) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut field_digest = Sha256::new();
+        write_value(&mut Sha256Writer(&mut field_digest))?;
+        self.digest.update([1]);
+        Self::length_delimited(&mut self.digest, label);
+        Self::length_delimited(&mut self.digest, &field_digest.finalize());
+        Ok(())
+    }
+
+    pub fn finish_hex(self) -> String {
+        let bytes = self.digest.finalize();
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            write!(&mut hex, "{byte:02x}").expect("String formatting cannot fail");
+        }
+        hex
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,51 +167,22 @@ impl CompilationCache {
             memory_bytes: 0,
             max_memory_bytes,
             memory_clock: 0,
-            memory_order: BinaryHeap::new(),
+            memory_lru: Vec::new(),
         };
         cache.load_index();
         cache
     }
 
-    /// Compute a content hash for a function body.
-    ///
-    /// This preserves the historical body-only contract for callers that do
-    /// not need signature-sensitive cache invalidation.
-    pub fn compute_hash(func_name: &str, body: &[u8]) -> String {
-        Self::compute_hash_with_signature(func_name, &[], None, body)
-    }
-
-    /// Compute a content hash for a function.
-    ///
-    /// The hash is derived from the function signature surface plus the
-    /// serialized body bytes so cache hits remain valid when only parameter
-    /// metadata changes.
-    pub fn compute_hash_with_signature(
-        func_name: &str,
-        params: &[String],
-        param_types: Option<&[String]>,
-        body: &[u8],
-    ) -> String {
-        let mut h = DefaultHasher::new();
-        BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut h);
-        func_name.hash(&mut h);
-        params.hash(&mut h);
-        param_types.hash(&mut h);
-        body.hash(&mut h);
-        format!("{:016x}", h.finish())
-    }
-
     /// Look up a cached artifact by content hash.
     ///
-    /// Updates `last_access` on a hit.  If the artifact is not in memory it
-    /// is read from the path recorded in the index entry.  Returns `None`
-    /// when the hash is absent or the on-disk file is missing/unreadable.
-    pub fn get(&mut self, content_hash: &str) -> Option<Vec<u8>> {
+    /// Updates `last_access` on a hit. If advisory index metadata is missing,
+    /// the canonical content-addressed artifact path is still consulted so a
+    /// concurrent index writer cannot hide a valid artifact.
+    pub fn get(&mut self, content_hash: &str) -> Option<Arc<[u8]>> {
+        let path = self.artifact_path(content_hash)?;
         let now = unix_now();
         if let Some(entry) = self.index.get_mut(content_hash) {
             entry.last_access = now;
-        } else {
-            return None;
         }
 
         if let Some(bytes) = self
@@ -153,10 +197,18 @@ impl CompilationCache {
         // Lazily load from disk. Guard against partial/corrupted reads:
         // an empty file is treated as a cache miss (artifact writes are
         // atomic via rename, so an empty file means something went wrong).
-        let path = self.index.get(content_hash)?.artifact_path.clone();
         match std::fs::read(&path) {
             Ok(bytes) if !bytes.is_empty() => {
-                self.store_memory_data(content_hash, bytes.clone());
+                let bytes = Arc::<[u8]>::from(bytes);
+                self.index
+                    .entry(content_hash.to_owned())
+                    .or_insert_with(|| CacheEntry {
+                        last_access: now,
+                        data: None,
+                        memory_stamp: 0,
+                        memory_lru_index: None,
+                    });
+                self.store_memory_data(content_hash, Arc::clone(&bytes));
                 Some(bytes)
             }
             _ => {
@@ -169,25 +221,55 @@ impl CompilationCache {
     /// Store a compilation artifact in memory and on disk.
     ///
     /// Creates `cache_dir/functions/` if it does not exist.  If an entry
-    /// with the same `content_hash` already exists it is silently replaced
-    /// (idempotent for identical hashes).
-    pub fn put(&mut self, content_hash: &str, artifact: &[u8], deps: Vec<String>) {
+    /// with the same `content_hash` already exists, that immutable
+    /// content-addressed artifact is reused.
+    pub fn put(&mut self, content_hash: &str, artifact: &[u8]) {
+        assert!(
+            is_canonical_cache_hash(content_hash),
+            "persistent compilation cache requires a canonical lowercase SHA-256 key"
+        );
+        assert!(
+            !artifact.is_empty(),
+            "persistent compilation cache refuses zero-length artifacts"
+        );
         let funcs_dir = self.cache_dir.join("functions");
         if std::fs::create_dir_all(&funcs_dir).is_err() {
             return; // can't create cache dir — skip caching silently
         }
-        let artifact_path = funcs_dir.join(format!("{}.bin", content_hash));
-        // Atomic write: write to PID-unique temp file then rename to prevent
-        // partial reads and collisions between concurrent processes.
-        let tmp_path = funcs_dir.join(format!("{}.bin.tmp.{}", content_hash, std::process::id()));
-        if std::fs::write(&tmp_path, artifact).is_err() {
-            return; // disk full or permission error — skip
-        }
-        if std::fs::rename(&tmp_path, &artifact_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path); // cleanup temp
-            return;
+        let artifact_path = self
+            .artifact_path(content_hash)
+            .expect("validated cache hash has a canonical artifact path");
+        let mut stored_artifact = Cow::Borrowed(artifact);
+        match std::fs::read(&artifact_path) {
+            Ok(existing) if existing == artifact => {
+                stored_artifact = Cow::Owned(existing);
+            }
+            existing => {
+                if let Ok(existing) = &existing {
+                    eprintln!(
+                        "MOLT_CACHE: replacing mismatched artifact for {content_hash} (cached_bytes={}, rebuilt_bytes={})",
+                        existing.len(),
+                        artifact.len()
+                    );
+                }
+                let Ok(tmp_path) =
+                    write_unique_temp_file(&funcs_dir, &format!("{content_hash}.bin"), artifact)
+                else {
+                    return;
+                };
+                if !install_artifact_temp(&tmp_path, &artifact_path, artifact) {
+                    return;
+                }
+            }
         }
 
+        if let Some(lru_index) = self
+            .index
+            .get(content_hash)
+            .and_then(|entry| entry.memory_lru_index)
+        {
+            self.memory_lru_remove(lru_index);
+        }
         if let Some(previous) = self.index.remove(content_hash)
             && let Some(bytes) = previous.data
         {
@@ -195,103 +277,62 @@ impl CompilationCache {
         }
 
         let mut entry = CacheEntry {
-            content_hash: content_hash.to_owned(),
-            artifact_path,
-            dependencies: deps,
             last_access: unix_now(),
             data: None,
             memory_stamp: 0,
+            memory_lru_index: None,
         };
-        if artifact.len() <= self.max_memory_bytes && self.max_memory_bytes > 0 {
+        if stored_artifact.len() <= self.max_memory_bytes && self.max_memory_bytes > 0 {
             self.memory_clock = self.memory_clock.wrapping_add(1);
             entry.memory_stamp = self.memory_clock;
-            entry.data = Some(artifact.to_vec());
-            self.memory_bytes = self.memory_bytes.saturating_add(artifact.len());
-            self.memory_order
-                .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+            entry.data = Some(Arc::from(stored_artifact.as_ref()));
+            self.memory_bytes = self.memory_bytes.saturating_add(stored_artifact.len());
         }
+        let resident = entry.data.is_some();
         self.index.insert(content_hash.to_owned(), entry);
+        if resident {
+            self.memory_lru_insert(content_hash);
+        }
         self.evict_memory();
-    }
-
-    /// Invalidate cache entries whose dependency hashes appear in
-    /// `changed_hashes`.
-    ///
-    /// Any entry that lists a changed hash as a dependency is removed from
-    /// the cache, triggering recompilation on next lookup.
-    pub fn invalidate(&mut self, changed_hashes: &[String]) {
-        let changed: std::collections::HashSet<&str> =
-            changed_hashes.iter().map(String::as_str).collect();
-
-        let mut removed_bytes = 0usize;
-        self.index.retain(|_hash, entry| {
-            let keep = !entry
-                .dependencies
-                .iter()
-                .any(|d| changed.contains(d.as_str()));
-            if !keep && let Some(bytes) = &entry.data {
-                removed_bytes = removed_bytes.saturating_add(bytes.len());
-            }
-            keep
-        });
-        self.memory_bytes = self.memory_bytes.saturating_sub(removed_bytes);
-        self.compact_memory_order_if_needed();
-    }
-
-    /// Remove entries that have not been accessed within the last
-    /// `max_age_secs` seconds.
-    pub fn evict_stale(&mut self, max_age_secs: u64) {
-        let now = unix_now();
-        let mut removed_bytes = 0usize;
-        self.index.retain(|_hash, entry| {
-            let keep = now.saturating_sub(entry.last_access) <= max_age_secs;
-            if !keep && let Some(bytes) = &entry.data {
-                removed_bytes = removed_bytes.saturating_add(bytes.len());
-            }
-            keep
-        });
-        self.memory_bytes = self.memory_bytes.saturating_sub(removed_bytes);
-        self.compact_memory_order_if_needed();
     }
 
     /// Persist the cache index to `cache_dir/index.txt`.
     ///
-    /// Uses a simple pipe-delimited text format so no extra dependencies are
-    /// required.  Silently ignores I/O errors (cache is advisory).
+    /// Entries are sorted by hash so identical metadata serializes identically
+    /// across processes. Silently ignores I/O errors (cache is advisory).
     pub fn save_index(&self) {
         let _ = std::fs::create_dir_all(&self.cache_dir);
         let index_path = self.cache_dir.join("index.txt");
 
-        let mut lines = String::from(
-            "# molt cache index — hash|artifact_path|deps(comma-sep)|last_access_secs\n",
-        );
-
-        for entry in self.index.values() {
-            let artifact_path_str = entry.artifact_path.to_string_lossy();
-            let deps = entry.dependencies.join(",");
-            lines.push_str(&format!(
-                "{}|{}|{}|{}\n",
-                entry.content_hash, artifact_path_str, deps, entry.last_access,
-            ));
+        let mut lines = format!("{CACHE_INDEX_HEADER}\n");
+        let mut entries = self.index.iter().collect::<Vec<_>>();
+        entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        for (content_hash, entry) in entries {
+            lines.push_str(&format!("{content_hash}|{}\n", entry.last_access));
         }
 
         // Atomic write: write to PID-unique temp file then rename so concurrent
         // readers never see a partially-written index.
-        let tmp_path = self
-            .cache_dir
-            .join(format!("index.txt.tmp.{}", std::process::id()));
-        if std::fs::write(&tmp_path, &lines).is_err() {
+        let Ok(tmp_path) = write_unique_temp_file(&self.cache_dir, "index.txt", lines.as_bytes())
+        else {
             return;
-        }
+        };
         if std::fs::rename(&tmp_path, &index_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
+            // Windows rename does not replace an existing target. The index is
+            // advisory and artifacts are independently discoverable, so a
+            // same-directory remove+rename fallback is safe and bounded.
+            let _ = std::fs::remove_file(&index_path);
+            if std::fs::rename(&tmp_path, &index_path).is_err() {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
         }
     }
 
     /// Load the cache index from `cache_dir/index.txt`.
     ///
-    /// Artifacts are not read eagerly; they are loaded on demand by [`get`].
-    /// Malformed or missing index files are silently ignored.
+    /// Artifacts are not read eagerly; they are loaded on demand by [`get`]. A
+    /// missing/wrong version header rejects the whole old-format index. Invalid
+    /// hashes, timestamps, and extra columns are skipped fail-closed.
     pub fn load_index(&mut self) {
         let index_path = self.cache_dir.join("index.txt");
         let contents = match std::fs::read_to_string(&index_path) {
@@ -299,36 +340,43 @@ impl CompilationCache {
             Err(_) => return,
         };
 
-        for line in contents.lines() {
+        let mut lines = contents.lines();
+        if lines.next() != Some(CACHE_INDEX_HEADER) {
+            return;
+        }
+        for line in lines {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+            if line.is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.splitn(4, '|').collect();
-            if parts.len() != 4 {
+            let Some((content_hash, last_access)) = line.split_once('|') else {
                 continue;
-            }
-            let content_hash = parts[0].to_owned();
-            let artifact_path = PathBuf::from(parts[1]);
-            let dependencies: Vec<String> = if parts[2].is_empty() {
-                vec![]
-            } else {
-                parts[2].split(',').map(str::to_owned).collect()
             };
-            let last_access: u64 = parts[3].parse().unwrap_or(0);
+            if last_access.contains('|') || !is_canonical_cache_hash(content_hash) {
+                continue;
+            }
+            let Ok(last_access) = last_access.parse::<u64>() else {
+                continue;
+            };
 
             self.index.insert(
-                content_hash.clone(),
+                content_hash.to_owned(),
                 CacheEntry {
-                    content_hash,
-                    artifact_path,
-                    dependencies,
                     last_access,
                     data: None, // loaded on demand
                     memory_stamp: 0,
+                    memory_lru_index: None,
                 },
             );
         }
+    }
+
+    fn artifact_path(&self, content_hash: &str) -> Option<PathBuf> {
+        is_canonical_cache_hash(content_hash).then(|| {
+            self.cache_dir
+                .join("functions")
+                .join(format!("{content_hash}.bin"))
+        })
     }
 
     /// Return the number of entries currently in the cache.
@@ -349,20 +397,29 @@ impl CompilationCache {
     }
 
     fn touch_memory_entry(&mut self, content_hash: &str) {
-        let Some(entry) = self.index.get_mut(content_hash) else {
+        self.memory_clock = self.memory_clock.wrapping_add(1);
+        let Some(lru_index) = self.index.get_mut(content_hash).and_then(|entry| {
+            if entry.data.is_none() {
+                return None;
+            }
+            entry.memory_stamp = self.memory_clock;
+            entry.memory_lru_index
+        }) else {
             return;
         };
-        if entry.data.is_none() {
-            return;
-        }
-        self.memory_clock = self.memory_clock.wrapping_add(1);
-        entry.memory_stamp = self.memory_clock;
-        self.memory_order
-            .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+        self.memory_lru[lru_index].stamp = self.memory_clock;
+        self.memory_lru_sift_down(lru_index);
     }
 
-    fn store_memory_data(&mut self, content_hash: &str, bytes: Vec<u8>) {
+    fn store_memory_data(&mut self, content_hash: &str, bytes: Arc<[u8]>) {
         if self.max_memory_bytes == 0 || bytes.len() > self.max_memory_bytes {
+            if let Some(lru_index) = self
+                .index
+                .get(content_hash)
+                .and_then(|entry| entry.memory_lru_index)
+            {
+                self.memory_lru_remove(lru_index);
+            }
             if let Some(entry) = self.index.get_mut(content_hash)
                 && let Some(previous) = entry.data.take()
             {
@@ -382,50 +439,170 @@ impl CompilationCache {
         entry.memory_stamp = self.memory_clock;
         self.memory_bytes = self.memory_bytes.saturating_add(bytes.len());
         entry.data = Some(bytes);
-        self.memory_order
-            .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+        let lru_index = entry.memory_lru_index;
+        if let Some(lru_index) = lru_index {
+            self.memory_lru[lru_index].stamp = self.memory_clock;
+            self.memory_lru_sift_down(lru_index);
+        } else {
+            self.memory_lru_insert(content_hash);
+        }
         self.evict_memory();
     }
 
     fn evict_memory(&mut self) {
         while self.memory_bytes > self.max_memory_bytes {
-            let Some(Reverse((stamp, content_hash))) = self.memory_order.pop() else {
+            if self.memory_lru.is_empty() {
                 break;
-            };
-            let is_live = self
-                .index
-                .get(&content_hash)
-                .is_some_and(|entry| entry.memory_stamp == stamp && entry.data.is_some());
-            if !is_live {
-                continue;
             }
-            if let Some(entry) = self.index.get_mut(&content_hash)
+            let content_hash = self.memory_lru_remove(0).content_hash;
+            if let Some(entry) = self.index.get_mut(content_hash.as_str())
                 && let Some(bytes) = entry.data.take()
             {
                 self.memory_bytes = self.memory_bytes.saturating_sub(bytes.len());
                 entry.memory_stamp = 0;
             }
         }
-        self.compact_memory_order_if_needed();
     }
 
-    fn compact_memory_order_if_needed(&mut self) {
-        if self.memory_order.len() <= self.index.len().saturating_mul(8).saturating_add(32) {
-            return;
+    fn memory_lru_insert(&mut self, content_hash: &str) {
+        let stamp = self.index[content_hash].memory_stamp;
+        let index = self.memory_lru.len();
+        self.memory_lru.push(MemoryLruNode {
+            stamp,
+            content_hash: content_hash.to_owned(),
+        });
+        self.index.get_mut(content_hash).unwrap().memory_lru_index = Some(index);
+        self.memory_lru_sift_up(index);
+    }
+
+    fn memory_lru_remove(&mut self, index: usize) -> MemoryLruNode {
+        let last = self.memory_lru.len() - 1;
+        if index != last {
+            self.memory_lru_swap(index, last);
         }
-        let mut compacted = BinaryHeap::new();
-        for (hash, entry) in &self.index {
-            if entry.data.is_some() {
-                compacted.push(Reverse((entry.memory_stamp, hash.clone())));
+        let removed = self.memory_lru.pop().expect("LRU removal requires a node");
+        self.index
+            .get_mut(removed.content_hash.as_str())
+            .unwrap()
+            .memory_lru_index = None;
+        if index < self.memory_lru.len() {
+            let index = self.memory_lru_sift_up(index);
+            self.memory_lru_sift_down(index);
+        }
+        removed
+    }
+
+    fn memory_lru_sift_up(&mut self, mut index: usize) -> usize {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.memory_lru_less(index, parent) {
+                break;
             }
+            self.memory_lru_swap(index, parent);
+            index = parent;
         }
-        self.memory_order = compacted;
+        index
+    }
+
+    fn memory_lru_sift_down(&mut self, mut index: usize) {
+        loop {
+            let left = index * 2 + 1;
+            if left >= self.memory_lru.len() {
+                break;
+            }
+            let right = left + 1;
+            let smallest = if right < self.memory_lru.len() && self.memory_lru_less(right, left) {
+                right
+            } else {
+                left
+            };
+            if !self.memory_lru_less(smallest, index) {
+                break;
+            }
+            self.memory_lru_swap(index, smallest);
+            index = smallest;
+        }
+    }
+
+    fn memory_lru_less(&self, left: usize, right: usize) -> bool {
+        let left = &self.memory_lru[left];
+        let right = &self.memory_lru[right];
+        (left.stamp, left.content_hash.as_str()) < (right.stamp, right.content_hash.as_str())
+    }
+
+    fn memory_lru_swap(&mut self, left: usize, right: usize) {
+        self.memory_lru.swap(left, right);
+        let left_hash = self.memory_lru[left].content_hash.as_str();
+        self.index.get_mut(left_hash).unwrap().memory_lru_index = Some(left);
+        let right_hash = self.memory_lru[right].content_hash.as_str();
+        self.index.get_mut(right_hash).unwrap().memory_lru_index = Some(right);
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn is_canonical_cache_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn write_unique_temp_file(
+    directory: &std::path::Path,
+    stem: &str,
+    bytes: &[u8],
+) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(directory)?;
+    loop {
+        let serial = CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(".{stem}.tmp.{}.{}", std::process::id(), serial));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file.write_all(bytes) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        return Ok(path);
+    }
+}
+
+fn install_artifact_temp(
+    temp_path: &std::path::Path,
+    artifact_path: &std::path::Path,
+    expected: &[u8],
+) -> bool {
+    if std::fs::rename(temp_path, artifact_path).is_ok() {
+        return true;
+    }
+    if let Ok(racing_artifact) = std::fs::read(artifact_path)
+        && racing_artifact == expected
+    {
+        let _ = std::fs::remove_file(temp_path);
+        return true;
+    }
+    eprintln!(
+        "MOLT_CACHE: same-key writer produced different bytes; replacing `{}` fail-closed",
+        artifact_path.display()
+    );
+    let _ = std::fs::remove_file(artifact_path);
+    if std::fs::rename(temp_path, artifact_path).is_ok() {
+        true
+    } else {
+        let _ = std::fs::remove_file(temp_path);
+        false
+    }
+}
 
 /// Resolve the canonical cache namespace for the current backend binary.
 ///
@@ -443,7 +620,8 @@ pub fn backend_cache_dir() -> PathBuf {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    backend_cache_dir_for(&root, &exe, mtime)
+    let build_identity = backend_build_identity(&exe);
+    backend_cache_dir_for(&root, &exe, mtime, &build_identity)
 }
 
 /// Resolve the backend cache namespace for an explicit root/executable/mtime.
@@ -455,12 +633,63 @@ pub(crate) fn backend_cache_dir_for(
     root: &std::path::Path,
     exe: &std::path::Path,
     mtime: u64,
+    build_identity: &[u8],
 ) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut hasher);
-    exe.hash(&mut hasher);
-    mtime.hash(&mut hasher);
-    root.join(format!("{:016x}", hasher.finish()))
+    let mut key = CompilationCacheKey::new(b"molt-backend-cache-directory-v1");
+    key.field(
+        b"backend-cache-namespace",
+        BACKEND_CACHE_NAMESPACE_VERSION.as_bytes(),
+    );
+    let (path_encoding, path_bytes) = platform_os_str_identity(exe.as_os_str());
+    key.field(b"executable-path-encoding", path_encoding);
+    key.field(b"executable-path", &path_bytes);
+    key.field(b"executable-mtime", &mtime.to_be_bytes());
+    key.field(b"backend-build-identity", build_identity);
+    root.join(key.finish_hex())
+}
+
+fn backend_build_identity(executable: &std::path::Path) -> Vec<u8> {
+    if let Some(provided) = std::env::var_os(BACKEND_COMPILER_FINGERPRINT_ENV)
+        && !provided.is_empty()
+    {
+        let (encoding, bytes) = platform_os_str_identity(&provided);
+        let mut key = CompilationCacheKey::new(b"molt-provided-backend-build-identity-v1");
+        key.field(b"encoding", encoding);
+        key.field(b"fingerprint", &bytes);
+        return key.finish_hex().into_bytes();
+    }
+
+    let mut digest = Sha256::new();
+    let Ok(mut file) = std::fs::File::open(executable) else {
+        return b"missing-backend-executable".to_vec();
+    };
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(read) => digest.update(&buffer[..read]),
+            Err(_) => return b"unreadable-backend-executable".to_vec(),
+        }
+    }
+    digest.finalize().to_vec()
+}
+
+#[cfg(unix)]
+fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    (b"unix-bytes", value.as_bytes().to_vec())
+}
+
+#[cfg(windows)]
+fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let bytes = value
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    (b"windows-u16le", bytes)
 }
 
 /// Return the current time as seconds since the Unix epoch.
@@ -556,8 +785,6 @@ fn total_memory_bytes() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -577,8 +804,11 @@ mod tests {
         CompilationCache::open_with_memory_limit(tmp_cache_dir(), max_memory_bytes)
     }
 
-    fn hash(func_name: &str, body: &[u8]) -> String {
-        CompilationCache::compute_hash_with_signature(func_name, &[], None, body)
+    fn fixture_hash(func_name: &str, body: &[u8]) -> String {
+        let mut key = CompilationCacheKey::new(b"molt-cache-test-fixture-v1");
+        key.field(b"function-name", func_name.as_bytes());
+        key.field(b"body", body);
+        key.finish_hex()
     }
 
     fn env_lock() -> &'static Mutex<()> {
@@ -641,27 +871,105 @@ mod tests {
     #[test]
     fn test_put_get_roundtrip() {
         let mut cache = make_cache();
-        let hash = hash("my_func", b"op1 op2 op3");
+        let hash = fixture_hash("my_func", b"op1 op2 op3");
         let artifact = b"compiled artifact bytes";
 
-        cache.put(&hash, artifact, vec![]);
+        cache.put(&hash, artifact);
         let result = cache.get(&hash);
 
-        assert_eq!(result, Some(artifact.to_vec()));
+        assert_eq!(result.as_deref(), Some(artifact.as_slice()));
+    }
+
+    #[test]
+    fn warm_memory_hits_share_storage_and_do_not_copy_artifact_bytes() {
+        let mut cache = make_cache_with_memory_limit(2 * 1024 * 1024);
+        let hash = fixture_hash("warm", b"large-artifact");
+        let artifact = vec![0x5a; 1024 * 1024];
+        cache.put(&hash, &artifact);
+
+        let first = cache.get(&hash).unwrap();
+        let second = cache.get(&hash).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let lru_capacity = cache.memory_lru.capacity();
+        let start = std::time::Instant::now();
+        for _ in 0..10_000 {
+            let hit = std::hint::black_box(cache.get(&hash).unwrap());
+            assert!(Arc::ptr_eq(&first, &hit));
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "warm cache: 10000 shared 1MiB hits in {elapsed:?} ({:?}/hit)",
+            elapsed / 10_000
+        );
+        assert!(elapsed < std::time::Duration::from_secs(2));
+        assert_eq!(cache.memory_lru.len(), 1);
+        assert_eq!(
+            cache.memory_lru.capacity(),
+            lru_capacity,
+            "warm hits must mutate the indexed LRU node in place"
+        );
+    }
+
+    #[test]
+    fn indexed_lru_scales_with_many_metadata_entries_and_bounded_residency() {
+        const ENTRY_BYTES: usize = 1024;
+        const RESIDENT_ENTRIES: usize = 128;
+        const TOTAL_ENTRIES: usize = 20_000;
+
+        let mut cache = make_cache_with_memory_limit(ENTRY_BYTES * RESIDENT_ENTRIES);
+        let artifact = Arc::<[u8]>::from(vec![0x6b; ENTRY_BYTES]);
+        let start = std::time::Instant::now();
+        for index in 0..TOTAL_ENTRIES {
+            let hash = format!("{index:064x}");
+            cache.index.insert(
+                hash.clone(),
+                CacheEntry {
+                    last_access: 0,
+                    data: None,
+                    memory_stamp: 0,
+                    memory_lru_index: None,
+                },
+            );
+            cache.store_memory_data(&hash, Arc::clone(&artifact));
+        }
+        let elapsed = start.elapsed();
+
+        let resident_entries = cache
+            .index
+            .values()
+            .filter(|entry| entry.data.is_some())
+            .count();
+        assert_eq!(resident_entries, RESIDENT_ENTRIES);
+        assert_eq!(cache.memory_lru.len(), RESIDENT_ENTRIES);
+        assert_eq!(cache.memory_bytes(), ENTRY_BYTES * RESIDENT_ENTRIES);
+        for (heap_index, node) in cache.memory_lru.iter().enumerate() {
+            assert_eq!(
+                cache.index[&node.content_hash].memory_lru_index,
+                Some(heap_index)
+            );
+            if heap_index > 0 {
+                let parent = (heap_index - 1) / 2;
+                assert!(!cache.memory_lru_less(heap_index, parent));
+            }
+        }
+        eprintln!(
+            "indexed LRU: inserted {TOTAL_ENTRIES} metadata rows with {RESIDENT_ENTRIES} resident artifacts in {elapsed:?}"
+        );
+        assert!(elapsed < std::time::Duration::from_secs(5));
     }
 
     #[test]
     fn memory_cache_evicts_lru_bytes_without_dropping_disk_index() {
         let mut cache = make_cache_with_memory_limit(8);
-        let h1 = hash("fn_1", b"body 1");
-        let h2 = hash("fn_2", b"body 2");
-        let h3 = hash("fn_3", b"body 3");
+        let h1 = fixture_hash("fn_1", b"body 1");
+        let h2 = fixture_hash("fn_2", b"body 2");
+        let h3 = fixture_hash("fn_3", b"body 3");
 
-        cache.put(&h1, b"1111", vec![]);
-        cache.put(&h2, b"2222", vec![]);
+        cache.put(&h1, b"1111");
+        cache.put(&h2, b"2222");
         assert_eq!(cache.memory_bytes(), 8);
 
-        cache.put(&h3, b"3333", vec![]);
+        cache.put(&h3, b"3333");
         assert_eq!(
             cache.len(),
             3,
@@ -679,7 +987,7 @@ mod tests {
             "least-recently-used artifact bytes should be evicted first"
         );
 
-        assert_eq!(cache.get(&h1), Some(b"1111".to_vec()));
+        assert_eq!(cache.get(&h1).as_deref(), Some(b"1111".as_slice()));
         assert_eq!(cache.len(), 3);
         assert!(cache.memory_bytes() <= 8);
     }
@@ -687,9 +995,9 @@ mod tests {
     #[test]
     fn memory_cache_does_not_retain_oversized_artifacts() {
         let mut cache = make_cache_with_memory_limit(4);
-        let hash = hash("large_func", b"body");
+        let hash = fixture_hash("large_func", b"body");
 
-        cache.put(&hash, b"artifact-too-large", vec![]);
+        cache.put(&hash, b"artifact-too-large");
 
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.memory_bytes(), 0);
@@ -699,53 +1007,15 @@ mod tests {
                 .get(&hash)
                 .is_some_and(|entry| entry.data.is_none())
         );
-        assert_eq!(cache.get(&hash), Some(b"artifact-too-large".to_vec()));
+        assert_eq!(
+            cache.get(&hash).as_deref(),
+            Some(b"artifact-too-large".as_slice())
+        );
         assert_eq!(
             cache.memory_bytes(),
             0,
             "oversized disk hits must not be retained in memory"
         );
-    }
-
-    #[test]
-    fn replacing_cache_entry_updates_memory_byte_accounting() {
-        let mut cache = make_cache_with_memory_limit(64);
-        let hash = hash("replace_func", b"body");
-
-        cache.put(&hash, b"old", vec![]);
-        assert_eq!(cache.memory_bytes(), 3);
-
-        cache.put(&hash, b"new-data", vec![]);
-
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.memory_bytes(), 8);
-        assert_eq!(cache.get(&hash), Some(b"new-data".to_vec()));
-        assert_eq!(cache.memory_bytes(), 8);
-    }
-
-    #[test]
-    fn invalidate_and_stale_eviction_update_memory_byte_accounting() {
-        let mut cache = make_cache_with_memory_limit(64);
-        let dep_hash = hash("dep_func", b"dep body");
-        let caller_hash = hash("caller_func", b"caller body");
-        let stale_hash = hash("stale_func", b"stale body");
-
-        cache.put(&dep_hash, b"dep", vec![]);
-        cache.put(&caller_hash, b"caller", vec![dep_hash.clone()]);
-        cache.put(&stale_hash, b"stale", vec![]);
-        assert_eq!(
-            cache.memory_bytes(),
-            b"dep".len() + b"caller".len() + b"stale".len()
-        );
-
-        cache.invalidate(std::slice::from_ref(&dep_hash));
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.memory_bytes(), b"dep".len() + b"stale".len());
-
-        cache.index.get_mut(&stale_hash).unwrap().last_access = 1;
-        cache.evict_stale(60);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.memory_bytes(), b"dep".len());
     }
 
     #[test]
@@ -797,10 +1067,11 @@ mod tests {
         let root = tmp_cache_dir();
         let exe_a = PathBuf::from("/tmp/molt-backend-a");
         let exe_b = PathBuf::from("/tmp/molt-backend-b");
-        let dir_a_1 = backend_cache_dir_for(&root, &exe_a, 111);
-        let dir_a_2 = backend_cache_dir_for(&root, &exe_a, 111);
-        let dir_b = backend_cache_dir_for(&root, &exe_b, 111);
-        let dir_time = backend_cache_dir_for(&root, &exe_a, 222);
+        let dir_a_1 = backend_cache_dir_for(&root, &exe_a, 111, b"build-a");
+        let dir_a_2 = backend_cache_dir_for(&root, &exe_a, 111, b"build-a");
+        let dir_b = backend_cache_dir_for(&root, &exe_b, 111, b"build-a");
+        let dir_time = backend_cache_dir_for(&root, &exe_a, 222, b"build-a");
+        let dir_build = backend_cache_dir_for(&root, &exe_a, 111, b"build-b");
 
         assert_eq!(
             dir_a_1, dir_a_2,
@@ -808,9 +1079,45 @@ mod tests {
         );
         assert_ne!(dir_a_1, dir_b, "exe path must affect the cache namespace");
         assert_ne!(dir_a_1, dir_time, "mtime must affect the cache namespace");
+        assert_ne!(
+            dir_a_1, dir_build,
+            "build identity must invalidate same-path/same-mtime replacements"
+        );
         assert!(
             dir_a_1.starts_with(&root),
             "cache namespace must stay under the provided root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backend_cache_dir_distinguishes_non_utf8_paths_with_same_lossy_display() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let root = tmp_cache_dir();
+        let exe_a = PathBuf::from(std::ffi::OsString::from_vec(vec![b'm', 0x80]));
+        let exe_b = PathBuf::from(std::ffi::OsString::from_vec(vec![b'm', 0x81]));
+        assert_eq!(exe_a.to_string_lossy(), exe_b.to_string_lossy());
+        assert_ne!(
+            backend_cache_dir_for(&root, &exe_a, 111, b"build"),
+            backend_cache_dir_for(&root, &exe_b, 111, b"build"),
+            "raw Unix executable path bytes must own cache namespace identity"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn backend_cache_dir_distinguishes_unpaired_utf16_paths_with_same_lossy_display() {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        let root = tmp_cache_dir();
+        let exe_a = PathBuf::from(std::ffi::OsString::from_wide(&[b'm' as u16, 0xd800]));
+        let exe_b = PathBuf::from(std::ffi::OsString::from_wide(&[b'm' as u16, 0xd801]));
+        assert_eq!(exe_a.to_string_lossy(), exe_b.to_string_lossy());
+        assert_ne!(
+            backend_cache_dir_for(&root, &exe_a, 111, b"build"),
+            backend_cache_dir_for(&root, &exe_b, 111, b"build"),
+            "raw Windows executable UTF-16 units must own cache namespace identity"
         );
     }
 
@@ -821,130 +1128,83 @@ mod tests {
         assert_eq!(cache.get("nonexistent_hash"), None);
     }
 
-    /// 3. invalidate removes dependent entries but not independent ones
+    /// 5. Fixture keys are consistent for identical inputs.
     #[test]
-    fn test_invalidate_removes_dependents() {
-        let mut cache = make_cache();
-
-        let dep_hash = hash("dep_func", b"dep body");
-        let caller_hash = hash("caller_func", b"caller body");
-        let other_hash = hash("other_func", b"other body");
-
-        cache.put(&dep_hash, b"dep artifact", vec![]);
-        cache.put(&caller_hash, b"caller artifact", vec![dep_hash.clone()]);
-        cache.put(&other_hash, b"other artifact", vec![]);
-
-        assert_eq!(cache.len(), 3);
-
-        cache.invalidate(std::slice::from_ref(&dep_hash));
-
-        assert!(cache.get(&dep_hash).is_some(), "dep entry should remain");
-        assert!(
-            cache.get(&caller_hash).is_none(),
-            "caller should be invalidated"
-        );
-        assert!(
-            cache.get(&other_hash).is_some(),
-            "unrelated entry should remain"
-        );
-    }
-
-    /// 4. evict_stale removes old entries
-    #[test]
-    fn test_evict_stale() {
-        let mut cache = make_cache();
-        let hash = hash("old_func", b"old body");
-        cache.put(&hash, b"old artifact", vec![]);
-
-        cache.index.get_mut(&hash).unwrap().last_access = 1;
-
-        cache.evict_stale(60);
-
-        assert_eq!(cache.get(&hash), None);
-    }
-
-    /// 5. compute_hash produces consistent results for identical inputs
-    #[test]
-    fn test_compute_hash_consistent() {
-        let h1 = hash("func_a", b"body bytes");
-        let h2 = hash("func_a", b"body bytes");
+    fn fixture_hash_is_consistent() {
+        let h1 = fixture_hash("func_a", b"body bytes");
+        let h2 = fixture_hash("func_a", b"body bytes");
         assert_eq!(h1, h2, "same inputs must produce the same hash");
     }
 
-    /// compute_hash produces different results for different inputs
+    /// Fixture keys differ for different inputs.
     #[test]
-    fn test_compute_hash_different_inputs() {
-        let h1 = hash("func_a", b"body A");
-        let h2 = hash("func_a", b"body B");
+    fn fixture_hash_distinguishes_inputs() {
+        let h1 = fixture_hash("func_a", b"body A");
+        let h2 = fixture_hash("func_a", b"body B");
         assert_ne!(h1, h2, "different bodies must produce different hashes");
 
-        let h3 = hash("func_x", b"body A");
-        let h4 = hash("func_y", b"body A");
+        let h3 = fixture_hash("func_x", b"body A");
+        let h4 = fixture_hash("func_y", b"body A");
         assert_ne!(h3, h4, "different names must produce different hashes");
     }
 
     #[test]
-    fn test_compute_hash_with_signature_tracks_param_surface() {
-        let params_a = vec!["lhs".to_string()];
-        let params_b = vec!["rhs".to_string()];
-        let types_a = vec!["module".to_string()];
-        let types_b = vec!["bool".to_string()];
-
-        let base = CompilationCache::compute_hash_with_signature("func", &params_a, None, b"body");
-        let renamed =
-            CompilationCache::compute_hash_with_signature("func", &params_b, None, b"body");
-        let typed = CompilationCache::compute_hash_with_signature(
-            "func",
-            &params_a,
-            Some(&types_a),
-            b"body",
-        );
-        let typed_changed = CompilationCache::compute_hash_with_signature(
-            "func",
-            &params_a,
-            Some(&types_b),
-            b"body",
-        );
-
-        assert_ne!(base, renamed, "parameter names must affect the cache key");
-        assert_ne!(base, typed, "parameter types must affect the cache key");
-        assert_ne!(
-            typed, typed_changed,
-            "type metadata changes must invalidate cache"
-        );
-    }
-
-    #[test]
-    fn test_compute_hash_includes_backend_namespace() {
-        let params: Vec<String> = Vec::new();
-        let mut legacy = DefaultHasher::new();
-        "func".hash(&mut legacy);
-        params.hash(&mut legacy);
-        Option::<&[String]>::None.hash(&mut legacy);
-        b"body".hash(&mut legacy);
-
-        let namespaced =
-            CompilationCache::compute_hash_with_signature("func", &params, None, b"body");
-        assert_ne!(
-            namespaced,
-            format!("{:016x}", legacy.finish()),
-            "backend cache namespace must invalidate stale body-only TIR artifacts"
-        );
-    }
-
-    /// Stale eviction does NOT remove recently-accessed entries
-    #[test]
-    fn test_evict_stale_keeps_recent_entries() {
+    fn zero_length_artifacts_are_rejected_before_disk_or_index_mutation() {
         let mut cache = make_cache();
-        let hash = hash("recent_func", b"recent body");
-        cache.put(&hash, b"recent artifact", vec![]);
-
-        cache.evict_stale(60);
-
+        let key = fixture_hash("empty", b"body");
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.put(&key, &[]);
+        }));
+        assert!(rejected.is_err());
+        assert!(cache.get(&key).is_none());
         assert!(
-            cache.get(&hash).is_some(),
-            "recent entry must not be evicted"
+            !cache
+                .cache_dir
+                .join("functions")
+                .join(format!("{key}.bin"))
+                .exists()
         );
+    }
+
+    #[test]
+    fn canonical_cache_key_is_length_delimited_typed_and_streamable() {
+        let build_partitioned = |first: &[u8], second: &[u8]| {
+            let mut key = CompilationCacheKey::new(b"ambiguity-test-v1");
+            key.field(b"part", first);
+            key.field(b"part", second);
+            key.finish_hex()
+        };
+        assert_ne!(
+            build_partitioned(b"a", b"bc"),
+            build_partitioned(b"ab", b"c"),
+            "length-delimited fields must resist concatenation ambiguity"
+        );
+
+        let mut raw = CompilationCacheKey::new(b"typed-field-test-v1");
+        raw.field(b"value", &[7; 32]);
+        let raw = raw.finish_hex();
+        let mut streamed = CompilationCacheKey::new(b"typed-field-test-v1");
+        streamed
+            .digest_field(b"value", |writer| {
+                writer
+                    .write_all(&[7; 32])
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_ne!(
+            raw,
+            streamed.finish_hex(),
+            "raw and digest fields are domain-separated"
+        );
+    }
+
+    #[test]
+    fn fixture_key_is_namespaced_sha256_and_process_deterministic() {
+        let first = fixture_hash("func", b"body");
+        let second = fixture_hash("func", b"body");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     /// 6. save_index + load_index round-trip
@@ -955,47 +1215,199 @@ mod tests {
         // Write entries to disk.
         {
             let mut cache = CompilationCache::open(dir.clone());
-            let h1 = hash("fn_a", b"body a");
-            let h2 = hash("fn_b", b"body b");
-            cache.put(&h1, b"artifact a", vec![]);
-            cache.put(&h2, b"artifact b", vec![h1.clone()]);
+            let h1 = fixture_hash("fn_a", b"body a");
+            let h2 = fixture_hash("fn_b", b"body b");
+            cache.put(&h1, b"artifact a");
+            cache.put(&h2, b"artifact b");
             cache.save_index();
         }
 
         // Open a fresh cache from the same directory — index loads from disk.
         let mut cache2 = CompilationCache::open(dir);
-        let h1 = hash("fn_a", b"body a");
-        let h2 = hash("fn_b", b"body b");
+        let h1 = fixture_hash("fn_a", b"body a");
+        let h2 = fixture_hash("fn_b", b"body b");
 
         // Entries should be present (loaded lazily from disk).
-        assert_eq!(cache2.get(&h1), Some(b"artifact a".to_vec()));
-        assert_eq!(cache2.get(&h2), Some(b"artifact b".to_vec()));
+        assert_eq!(cache2.get(&h1).as_deref(), Some(b"artifact a".as_slice()));
+        assert_eq!(cache2.get(&h2).as_deref(), Some(b"artifact b".as_slice()));
 
-        // Dependency metadata should survive.
-        assert!(
-            cache2.index[&h2].dependencies.contains(&h1),
-            "dependency must be preserved across save/load"
-        );
+        assert_eq!(cache2.len(), 2);
     }
 
-    /// 7. get returns None when artifact file is missing even if index entry exists
     #[test]
     fn test_get_missing_artifact_file() {
         let dir = tmp_cache_dir();
         let mut cache = CompilationCache::open(dir);
-        let hash = "deadbeef00000000".to_owned();
-        // Insert an entry pointing at a non-existent file.
-        cache.index.insert(
-            hash.clone(),
-            CacheEntry {
-                content_hash: hash.clone(),
-                artifact_path: PathBuf::from("/nonexistent/path/deadbeef.bin"),
-                dependencies: vec![],
-                last_access: unix_now(),
-                data: None,
-                memory_stamp: 0,
-            },
-        );
+        let hash = fixture_hash("missing", b"artifact");
         assert_eq!(cache.get(&hash), None);
+    }
+
+    #[test]
+    fn canonical_artifact_is_discovered_without_an_index_row() {
+        let dir = tmp_cache_dir();
+        let hash = fixture_hash("concurrent", b"artifact");
+        let functions = dir.join("functions");
+        std::fs::create_dir_all(&functions).unwrap();
+        std::fs::write(functions.join(format!("{hash}.bin")), b"artifact").unwrap();
+
+        let mut cache = CompilationCache::open(dir);
+        assert!(cache.is_empty());
+        assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+        assert_eq!(
+            cache.len(),
+            1,
+            "a discovered artifact should restore advisory metadata"
+        );
+    }
+
+    #[test]
+    fn concurrent_index_save_cannot_hide_an_existing_artifact() {
+        let dir = tmp_cache_dir();
+        let hash = fixture_hash("writer-a", b"artifact");
+        let mut writer_a = CompilationCache::open(dir.clone());
+        writer_a.put(&hash, b"artifact");
+
+        let writer_b = CompilationCache::open(dir.clone());
+        writer_b.save_index();
+
+        let mut reader = CompilationCache::open(dir);
+        assert!(reader.is_empty());
+        assert_eq!(reader.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+    }
+
+    #[test]
+    fn same_process_concurrent_writers_use_collision_free_temp_files() {
+        let dir = tmp_cache_dir();
+        let h1 = fixture_hash("thread-a", b"artifact-a");
+        let h2 = fixture_hash("thread-b", b"artifact-b");
+        std::thread::scope(|scope| {
+            for (hash, artifact) in [
+                (h1.clone(), b"artifact-a".as_slice()),
+                (h2.clone(), b"artifact-b".as_slice()),
+            ] {
+                let dir = dir.clone();
+                scope.spawn(move || {
+                    let mut cache = CompilationCache::open(dir);
+                    cache.put(&hash, artifact);
+                    cache.save_index();
+                });
+            }
+        });
+
+        let mut reader = CompilationCache::open(dir.clone());
+        assert_eq!(reader.get(&h1).as_deref(), Some(b"artifact-a".as_slice()));
+        assert_eq!(reader.get(&h2).as_deref(), Some(b"artifact-b".as_slice()));
+        for directory in [dir.clone(), dir.join("functions")] {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let name = entry.unwrap().file_name();
+                assert!(
+                    !name.to_string_lossy().contains(".tmp."),
+                    "completed writers must clean every unique temp file"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_nonempty_and_concurrent_same_key_artifacts_are_replaced_whole() {
+        let dir = tmp_cache_dir();
+        let hash = fixture_hash("same-key", b"semantic-contract");
+        let functions = dir.join("functions");
+        std::fs::create_dir_all(&functions).unwrap();
+        let artifact_path = functions.join(format!("{hash}.bin"));
+        std::fs::write(&artifact_path, b"truncated-poison").unwrap();
+
+        let mut repair = CompilationCache::open(dir.clone());
+        repair.put(&hash, b"rebuilt-artifact");
+        assert_eq!(std::fs::read(&artifact_path).unwrap(), b"rebuilt-artifact");
+
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            for artifact in [b"writer-a".as_slice(), b"writer-b-complete".as_slice()] {
+                let dir = dir.clone();
+                let hash = hash.clone();
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    let mut cache = CompilationCache::open(dir);
+                    barrier.wait();
+                    cache.put(&hash, artifact);
+                });
+            }
+            barrier.wait();
+        });
+        let final_bytes = std::fs::read(&artifact_path).unwrap();
+        assert!(
+            final_bytes == b"writer-a" || final_bytes == b"writer-b-complete",
+            "same-key races must leave one complete artifact, got {final_bytes:?}"
+        );
+    }
+
+    #[test]
+    fn index_is_versioned_strict_and_rejects_old_or_malformed_rows() {
+        let dir = tmp_cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = fixture_hash("valid", b"row");
+        let malformed = format!(
+            "{CACHE_INDEX_HEADER}\n../escape|1\nABCDEF{}|2\n{valid}|not-a-time\n{valid}|3|extra\n{valid}|4\n",
+            "0".repeat(58)
+        );
+        std::fs::write(dir.join("index.txt"), malformed).unwrap();
+        let cache = CompilationCache::open(dir.clone());
+        assert_eq!(cache.len(), 1);
+        assert!(cache.index.contains_key(&valid));
+
+        std::fs::write(
+            dir.join("index.txt"),
+            format!("# hash|artifact_path|deps|last_access\n{valid}|../../escape||5\n"),
+        )
+        .unwrap();
+        assert!(
+            CompilationCache::open(dir).is_empty(),
+            "old index formats must not be parsed"
+        );
+    }
+
+    #[test]
+    fn invalid_hashes_cannot_escape_the_canonical_artifact_directory() {
+        let dir = tmp_cache_dir();
+        let mut cache = CompilationCache::open(dir.clone());
+        assert!(cache.get("../escape").is_none());
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.put("../escape", b"artifact");
+        }));
+        assert!(rejected.is_err());
+        assert!(!dir.join("escape.bin").exists());
+    }
+
+    #[test]
+    fn sorted_index_serialization_is_process_stable() {
+        fn cache_with_metadata(dir: PathBuf, rows: &[(String, u64)]) -> CompilationCache {
+            let mut cache = CompilationCache::open(dir);
+            for (hash, last_access) in rows {
+                cache.index.insert(
+                    hash.clone(),
+                    CacheEntry {
+                        last_access: *last_access,
+                        data: None,
+                        memory_stamp: 0,
+                        memory_lru_index: None,
+                    },
+                );
+            }
+            cache
+        }
+
+        let h1 = fixture_hash("a", b"body");
+        let h2 = fixture_hash("b", b"body");
+        let dir_a = tmp_cache_dir();
+        let dir_b = tmp_cache_dir();
+        let cache_a = cache_with_metadata(dir_a.clone(), &[(h2.clone(), 2), (h1.clone(), 1)]);
+        let cache_b = cache_with_metadata(dir_b.clone(), &[(h1, 1), (h2, 2)]);
+        cache_a.save_index();
+        cache_b.save_index();
+        assert_eq!(
+            std::fs::read(dir_a.join("index.txt")).unwrap(),
+            std::fs::read(dir_b.join("index.txt")).unwrap()
+        );
     }
 }

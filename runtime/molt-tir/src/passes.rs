@@ -59,7 +59,8 @@ pub use self::unbound_checks::eliminate_unbound_local_checks;
 
 #[cfg(test)]
 use self::megafunction_split::{
-    is_drop_fact_marker_op, verify_split_function_def_use, verify_split_generated_ops,
+    is_drop_fact_marker_op, split_chunk_name, verify_split_function_def_use,
+    verify_split_generated_ops,
 };
 #[cfg(test)]
 use self::method_fusion::fuse_method_dispatch_inner;

@@ -6,7 +6,9 @@ use crate::json_boundary::{
     optional_string_list, required_field, required_string, required_string_list,
 };
 use crate::tir::op_kinds_generated::{
-    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_call_graph_user_call,
+    SimpleIrRuntimeRequirements, simpleir_kind_has_function_reference_s_value,
+    simpleir_kind_is_call_graph_user_call, simpleir_kind_is_return_terminator,
+    simpleir_runtime_requirements_table,
 };
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
@@ -296,6 +298,25 @@ pub struct FunctionIR {
     /// Target-neutral execution-context ABI policy.
     #[serde(default)]
     pub execution_context: ExecutionContextPolicy,
+}
+
+/// Stream the complete versioned FunctionIR contract into a cache digest or
+/// artifact writer without materializing a duplicate O(IR) buffer.
+pub fn write_function_ir_contract(
+    function: &FunctionIR,
+    writer: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v1\0";
+    // MessagePack's f64 carrier is total and bit-preserving for every legal IR
+    // value, including NaN payloads, infinities, and signed zero. JSON is not:
+    // serde_json rejects those valid Python float constants. Named struct
+    // encoding retains automatic whole-FunctionIR field coverage.
+    writer
+        .write_all(FUNCTION_IR_CONTRACT_VERSION)
+        .map_err(|error| format!("FunctionIR contract prefix write failed: {error}"))?;
+    let mut serializer = rmp_serde::Serializer::new(writer).with_struct_map();
+    serde::Serialize::serialize(function, &mut serializer)
+        .map_err(|error| format!("FunctionIR contract serialization failed: {error}"))
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -764,8 +785,16 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             &func.params,
             func.param_types.as_deref(),
         )?;
-        let trace_enters = func
+        let frame_ops = func
             .ops
+            .iter()
+            .filter(|op| {
+                simpleir_runtime_requirements_table(op.kind.as_str()).is_some_and(|requirements| {
+                    requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+                })
+            })
+            .collect::<Vec<_>>();
+        let trace_enters = frame_ops
             .iter()
             .filter(|op| op.kind == "trace_enter_slot")
             .count();
@@ -789,6 +818,63 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                 ));
             }
             _ => {}
+        }
+        match func.execution_context {
+            ExecutionContextPolicy::Local => {
+                if func
+                    .ops
+                    .first()
+                    .is_none_or(|op| op.kind != "trace_enter_slot")
+                {
+                    return Err(format!(
+                        "function `{}` with local execution context requires trace_enter_slot in the entry region",
+                        func.name
+                    ));
+                }
+                for (op_index, op) in func.ops.iter().enumerate() {
+                    if op.kind == "trace_exit"
+                        && func
+                            .ops
+                            .get(op_index + 1)
+                            .is_none_or(|next| !simpleir_kind_is_return_terminator(&next.kind))
+                    {
+                        return Err(format!(
+                            "function `{}` has stray trace_exit at op#{op_index}; lifecycle exits must occur exactly once immediately before normal return terminators",
+                            func.name
+                        ));
+                    }
+                    if simpleir_kind_is_return_terminator(&op.kind)
+                        && func
+                            .ops
+                            .get(op_index.wrapping_sub(1))
+                            .is_none_or(|previous| previous.kind != "trace_exit")
+                    {
+                        return Err(format!(
+                            "function `{}` normal return op#{op_index} `{}` requires exactly one immediately preceding trace_exit",
+                            func.name, op.kind
+                        ));
+                    }
+                }
+            }
+            ExecutionContextPolicy::Inherited => {
+                if let Some(lifecycle) = frame_ops
+                    .iter()
+                    .find(|op| matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
+                {
+                    return Err(format!(
+                        "function `{}` with inherited execution context cannot own lifecycle op `{}`",
+                        func.name, lifecycle.kind
+                    ));
+                }
+            }
+            ExecutionContextPolicy::None => {
+                if let Some(frame_op) = frame_ops.first() {
+                    return Err(format!(
+                        "function `{}` without an execution context cannot contain generated frame op `{}`",
+                        func.name, frame_op.kind
+                    ));
+                }
+            }
         }
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;
@@ -832,7 +918,76 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
 
 #[cfg(test)]
 mod json_parse_tests {
-    use super::SimpleIR;
+    use super::{FunctionIR, OpIR, SimpleIR, write_function_ir_contract};
+
+    fn contract_bytes(function: &FunctionIR) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_function_ir_contract(function, &mut bytes)
+            .expect("Vec-backed test writer cannot fail");
+        bytes
+    }
+
+    #[test]
+    fn function_ir_contract_encoding_is_total_bit_exact_and_deterministic() {
+        let function_with_float = |value: f64| FunctionIR {
+            name: "float_contract".to_string(),
+            params: vec!["x".to_string()],
+            ops: vec![OpIR {
+                kind: "const_float".to_string(),
+                f_value: Some(value),
+                bytes: Some(vec![0, 1, 127, 128, 255]),
+                out: Some("value".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: Some(vec!["float".to_string()]),
+            source_file: Some("float_contract.py".to_string()),
+            is_extern: false,
+            execution_context: super::ExecutionContextPolicy::None,
+        };
+        let cases = [
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            f64::from_bits(0xfff8_0000_0000_0042),
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.0,
+            0.0,
+        ];
+        let encoded = cases
+            .into_iter()
+            .map(|value| {
+                let function = function_with_float(value);
+                let first = contract_bytes(&function);
+                assert_eq!(first, contract_bytes(&function));
+                first
+            })
+            .collect::<Vec<_>>();
+        for left in 0..encoded.len() {
+            for right in left + 1..encoded.len() {
+                assert_ne!(
+                    encoded[left], encoded[right],
+                    "the contract must preserve every distinct f64 bit pattern"
+                );
+            }
+        }
+
+        let with_bytes = function_with_float(1.0);
+        let mut different_bytes = with_bytes.clone();
+        different_bytes.ops[0].bytes = Some(vec![0, 1, 127, 128, 254]);
+        assert_ne!(
+            contract_bytes(&with_bytes),
+            contract_bytes(&different_bytes)
+        );
+
+        let mut absent = with_bytes.clone();
+        absent.ops[0].type_hint = None;
+        let mut present = absent.clone();
+        present.ops[0].type_hint = Some(String::new());
+        assert_ne!(
+            contract_bytes(&absent),
+            contract_bytes(&present),
+            "absent optional metadata and a present default-like value are distinct contracts"
+        );
+    }
 
     #[test]
     fn simple_ir_from_json_str_applies_optional_defaults() {
@@ -943,6 +1098,77 @@ mod json_parse_tests {
             err.contains("execution-context call metadata requires call_internal, found `call`"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn execution_context_policy_validates_the_complete_generated_frame_op_family() {
+        let parse = |policy: &str, ops: &str| {
+            SimpleIR::from_json_str(&format!(
+                r#"{{"functions":[{{"name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
+            ))
+        };
+        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let line = r#"{"kind":"line","value":2}"#;
+        let locals = r#"{"kind":"frame_locals_set","args":["locals"]}"#;
+        let exit = r#"{"kind":"trace_exit"}"#;
+
+        parse(
+            "local",
+            &format!("{enter},{line},{locals},{exit},{{\"kind\":\"ret_void\"}}"),
+        )
+        .expect("a Local frame owns one enter, frame state, and lifecycle exits");
+        parse("inherited", &format!("{line},{locals}"))
+            .expect("Inherited consumes only the bound context's non-lifecycle frame state");
+
+        for lifecycle in [enter, exit] {
+            let error = parse("inherited", lifecycle)
+                .expect_err("Inherited must not create or destroy its caller's frame");
+            assert!(
+                error.contains("inherit") || error.contains("lifecycle"),
+                "{error}"
+            );
+        }
+        for frame_op in [enter, line, locals, exit] {
+            let error = parse("none", frame_op)
+                .expect_err("None must reject every generated execution-frame operation");
+            assert!(
+                error.contains("execution context") || error.contains("trace_enter_slot"),
+                "{error}"
+            );
+        }
+        for ops in [line.to_string(), format!("{enter},{enter}")] {
+            let error = parse("local", &ops)
+                .expect_err("Local requires exactly one generated trace_enter_slot");
+            assert!(error.contains("exactly one trace_enter_slot"), "{error}");
+        }
+
+        for (ops, expected) in [
+            (
+                format!(r#"{enter},{{"kind":"ret_void"}}"#),
+                "immediately preceding trace_exit",
+            ),
+            (
+                format!(
+                    r#"{enter},{exit},{{"kind":"const_none","out":"v"}},{{"kind":"ret_void"}}"#
+                ),
+                "stray trace_exit",
+            ),
+            (
+                format!(r#"{enter},{exit},{exit},{{"kind":"ret_void"}}"#),
+                "stray trace_exit",
+            ),
+        ] {
+            let error = parse("local", &ops).expect_err("invalid Local lifecycle must fail");
+            assert!(error.contains(expected), "{error}");
+        }
+
+        parse(
+            "local",
+            &format!(
+                r#"{enter},{{"kind":"if","args":["condition"]}},{exit},{{"kind":"ret_void"}},{{"kind":"else"}},{exit},{{"kind":"ret","var":"condition"}},{{"kind":"end_if"}}"#
+            ),
+        )
+        .expect("each normal return in a multi-return Local function owns one exit");
     }
 
     #[test]

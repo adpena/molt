@@ -132,6 +132,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                 type_facts_name=func_name,
                 needs_return_slot=has_return,
             )
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.current_method_first_param = params[0] if params else None
             self.async_context = True
             self.global_decls = self._collect_global_decls(node.body)
@@ -336,6 +337,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                 params=func_params,
                 type_facts_name=func_name,
             )
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
             if has_closure:
                 self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
                     _MOLT_CLOSURE_PARAM, type_hint="tuple"
@@ -480,6 +482,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             type_facts_name=func_name,
             needs_return_slot=has_return,
         )
+        self._inherit_free_var_import_resolution(free_vars, prev_state)
         self.current_method_first_param = params[0] if params else None
         self.async_context = True
         self.global_decls = self._collect_global_decls(node.body)
@@ -622,6 +625,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             params=func_params,
             type_facts_name=func_name,
         )
+        self._inherit_free_var_import_resolution(free_vars, prev_state)
         if has_closure:
             self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"

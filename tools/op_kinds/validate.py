@@ -84,6 +84,12 @@ def load_table(table_path: Path = TABLE) -> dict:
     if not table_path.exists():
         raise OpKindTableError(f"op-kind table missing: {table_path}")
     data = tomllib.loads(table_path.read_text(encoding="utf-8"))
+    # Normal returns are a refinement of the existing exhaustive control-kind
+    # table. False is the closed-world default; only the three canonical return
+    # rows opt in, while consumers still observe a total generated fact column.
+    for row in data.get("simpleir_control_kind", []):
+        if isinstance(row, dict):
+            row.setdefault("return_terminator", False)
 
     opcodes = data.get("opcode", [])
     if not opcodes:
@@ -224,10 +230,16 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_frame_introspection_runtime_symbols has duplicate members"
         )
+    for symbol in runtime_symbols:
+        if symbol != symbol.strip() or re.fullmatch(r"molt_[a-z0-9_]+", symbol) is None:
+            raise OpKindTableError(
+                "simpleir_frame_introspection_runtime_symbols must use exact canonical molt_* spellings"
+            )
 
     qualified_callables = data.get("simpleir_runtime_qualified_callable", [])
     if not isinstance(qualified_callables, list) or not all(
         isinstance(row, dict)
+        and set(row) == {"qualified", "symbol"}
         and isinstance(row.get("qualified"), str)
         and row["qualified"]
         and isinstance(row.get("symbol"), str)
@@ -242,6 +254,18 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_runtime_qualified_callable has duplicate qualified names"
         )
+    qualified_symbols = [row["symbol"] for row in qualified_callables]
+    if len(set(qualified_symbols)) != len(qualified_symbols):
+        raise OpKindTableError(
+            "simpleir_runtime_qualified_callable has duplicate runtime symbols"
+        )
+    for qualified in qualified_names:
+        if qualified != qualified.strip() or re.fullmatch(
+            r"(?:inspect|sys)\.[A-Za-z_][A-Za-z0-9_]*", qualified
+        ) is None:
+            raise OpKindTableError(
+                "simpleir_runtime_qualified_callable must use exact canonical sys/inspect spellings, not source aliases"
+            )
     unknown_symbols = {
         row["symbol"] for row in qualified_callables
     } - set(runtime_symbols)
@@ -251,15 +275,6 @@ def load_table(table_path: Path = TABLE) -> dict:
             + ", ".join(sorted(unknown_symbols))
         )
 
-    callable_operand_kinds = data.get("simpleir_callable_operand_kinds", [])
-    if not isinstance(callable_operand_kinds, list) or not all(
-        isinstance(kind, str) and kind for kind in callable_operand_kinds
-    ):
-        raise OpKindTableError(
-            "simpleir_callable_operand_kinds must be a list of non-empty strings"
-        )
-    if len(set(callable_operand_kinds)) != len(callable_operand_kinds):
-        raise OpKindTableError("simpleir_callable_operand_kinds has duplicate members")
     function_reference_kinds = data.get(
         "simpleir_function_reference_s_value_kinds", []
     )
@@ -269,35 +284,10 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_function_reference_s_value_kinds must be a list of non-empty strings"
         )
-
-    for table_name, required_fields in (
-        ("simpleir_module_identity_alias", {"kind", "role"}),
-        ("simpleir_module_identity_source", {"kind", "module_name_arg"}),
-        ("simpleir_module_slot_access", {"kind", "role", "module_arg", "name_arg"}),
-    ):
-        rows = data.get(table_name, [])
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            raise OpKindTableError(f"{table_name} must be an array of tables")
-        kinds = []
-        for row in rows:
-            if not required_fields.issubset(row):
-                raise OpKindTableError(f"{table_name} row missing required fields")
-            if not isinstance(row["kind"], str) or not row["kind"]:
-                raise OpKindTableError(f"{table_name} kind must be non-empty")
-            kinds.append(row["kind"])
-            for field in required_fields - {"kind", "role"}:
-                if not isinstance(row[field], int) or row[field] < 0:
-                    raise OpKindTableError(f"{table_name} {field} must be non-negative")
-            if table_name == "simpleir_module_identity_alias":
-                if row["role"] not in {"strong", "merge"}:
-                    raise OpKindTableError(f"{table_name} has invalid role")
-            if table_name == "simpleir_module_slot_access":
-                if row["role"] not in {"get", "set", "delete"}:
-                    raise OpKindTableError(f"{table_name} has invalid role")
-                if row["role"] == "set" and not isinstance(row.get("value_arg"), int):
-                    raise OpKindTableError(f"{table_name} set row requires value_arg")
-        if len(set(kinds)) != len(kinds):
-            raise OpKindTableError(f"{table_name} has duplicate kinds")
+    if len(set(function_reference_kinds)) != len(function_reference_kinds):
+        raise OpKindTableError(
+            "simpleir_function_reference_s_value_kinds has duplicate members"
+        )
 
     var_field_members: dict[str, str] = {}
     for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
@@ -1598,7 +1588,7 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             )
         seen.add(kind)
         for field in _SIMPLEIR_CONTROL_FACT_FIELDS:
-            if not isinstance(row.get(field), bool):
+            if not isinstance(row.get(field, False), bool):
                 raise OpKindTableError(
                     f"simpleir_control_kind {kind}: {field!r} must be a bool"
                 )
@@ -1608,7 +1598,9 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
                 f"simpleir_control_kind {kind}: unknown fields {sorted(unknown)}"
             )
         if row["ssa_only"] and any(
-            row[field] for field in _SIMPLEIR_CONTROL_FACT_FIELDS if field != "ssa_only"
+            row.get(field, False)
+            for field in _SIMPLEIR_CONTROL_FACT_FIELDS
+            if field != "ssa_only"
         ):
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: ssa_only cannot overlap runtime facts"
@@ -1624,6 +1616,10 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
         if row["terminator"] and not row["structural"]:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: terminator requires structural"
+            )
+        if row.get("return_terminator", False) and not row["terminator"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: return_terminator requires terminator"
             )
         if row["wasm_dispatch_block_leader"] and not row["wasm_split_barrier"]:
             raise OpKindTableError(
@@ -1647,7 +1643,7 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: wasm resume-at requires dispatch block leader"
             )
-        if not any(row[field] for field in _SIMPLEIR_CONTROL_FACT_FIELDS):
+        if not any(row.get(field, False) for field in _SIMPLEIR_CONTROL_FACT_FIELDS):
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: at least one fact must be true"
             )

@@ -192,7 +192,7 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
             param_types: None,
             source_file: None,
             is_extern: false,
-            execution_context: ExecutionContextPolicy::None,
+            execution_context: ExecutionContextPolicy::Inherited,
             ops: vec![
                 OpIR {
                     kind: "exception_push".into(),

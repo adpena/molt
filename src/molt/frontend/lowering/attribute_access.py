@@ -834,6 +834,33 @@ class AttributeAccessMixin(_MixinBase):
                         )
                     )
                     return res
+        # Canonical imported-module callable acquisition is a producer fact.
+        # It must be stamped before type-driven attribute lowering: a module
+        # alias loaded through a function's module globals intentionally has an
+        # ``Any`` value hint, yet lexical import resolution still proves the
+        # exact sys/inspect binding. Target admission rejects this op itself, so
+        # no use-sensitive callable/heap taint lane is necessary downstream.
+        module_name = (
+            self._imported_module_binding_target(obj_name)
+            if obj_name is not None
+            else None
+        )
+        runtime_symbol = self._runtime_qualified_callable_symbol(
+            module_name, node.attr
+        )
+        if runtime_symbol is not None:
+            attr_name = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
+            result = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="MODULE_GET_ATTR",
+                    args=[obj, attr_name],
+                    result=result,
+                    metadata={"runtime_symbol": runtime_symbol},
+                )
+            )
+            return result
         class_info = self.classes.get(obj.type_hint)
         if class_info:
             getattribute_info, _ = self._resolve_method_info(

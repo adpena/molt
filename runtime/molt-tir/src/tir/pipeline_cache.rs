@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
-use super::cache::{CompilationCache, backend_cache_dir};
+use super::cache::{CompilationCache, CompilationCacheKey, backend_cache_dir};
 use super::function::{TirFunction, TirModule};
 use super::target_info::TargetInfo;
 
@@ -179,36 +179,20 @@ struct TirOptimizationOutput {
     tir_func: TirFunction,
 }
 
-pub fn cached_tir_hash_body(
-    cache_flavor: TirPipelineCacheFlavor,
-    target_info: &TargetInfo,
-    simple_body_bytes: &[u8],
-) -> Vec<u8> {
-    let mut body = cache_flavor.cache_prefix().to_vec();
-    body.extend_from_slice(tir_pipeline_target_fingerprint(target_info).as_bytes());
-    body.push(0);
-    body.extend_from_slice(simple_body_bytes);
-    body
-}
-
 pub fn content_hash_for_function(
     func_ir: &FunctionIR,
     cache_flavor: TirPipelineCacheFlavor,
     target_info: &TargetInfo,
 ) -> String {
-    let body_bytes = super::serialize::serialize_ops(&func_ir.ops);
-    let mut cache_hash_body = cached_tir_hash_body(cache_flavor, target_info, &body_bytes);
-    cache_hash_body.extend_from_slice(b"source-file\0");
-    if let Some(source_file) = &func_ir.source_file {
-        cache_hash_body.extend_from_slice(source_file.as_bytes());
-    }
-    cache_hash_body.push(0);
-    CompilationCache::compute_hash_with_signature(
-        &func_ir.name,
-        &func_ir.params,
-        func_ir.param_types.as_deref(),
-        &cache_hash_body,
-    )
+    let mut key = CompilationCacheKey::new(b"molt-cached-tir-function-key-v1");
+    key.field(b"cache-flavor", cache_flavor.cache_prefix());
+    let target_fingerprint = tir_pipeline_target_fingerprint(target_info);
+    key.field(b"target-contract", target_fingerprint.as_bytes());
+    key.digest_field(b"function-ir-contract", |writer| {
+        crate::write_function_ir_contract(func_ir, writer)
+    })
+    .expect("digest-backed FunctionIR contract serialization cannot fail");
+    key.finish_hex()
 }
 
 pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
@@ -554,8 +538,14 @@ where
             for output in results {
                 let func_ir = &mut functions[output.index];
                 func_ir.ops = output.simple_ops;
-                let bytes = super::serialize::serialize_tir_function(&output.tir_func);
-                tir_cache.put(&output.content_hash, &bytes, vec![]);
+                let bytes = super::serialize::serialize_tir_function(&output.tir_func)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "cached TIR serialization failed for '{}': {error}",
+                            output.tir_func.name
+                        )
+                    });
+                tir_cache.put(&output.content_hash, &bytes);
                 cached_tir_custody.insert(func_ir.name.clone(), output.tir_func);
             }
         }
@@ -1053,6 +1043,115 @@ mod tests {
 
         assert_ne!(without_source, with_source);
         assert_ne!(with_source, with_other_source);
+
+        let baseline = func.clone();
+        let baseline_hash =
+            content_hash_for_function(&baseline, TirPipelineCacheFlavor::Native, &native);
+        let mut contract_mutations = Vec::new();
+        let mut changed = baseline.clone();
+        changed.params.push("y".to_string());
+        contract_mutations.push(changed);
+        let mut changed = baseline.clone();
+        changed.ops.push(OpIR {
+            kind: "ret_void".to_string(),
+            ..Default::default()
+        });
+        contract_mutations.push(changed);
+        let mut changed = baseline.clone();
+        changed.param_types = Some(vec!["float".to_string(), "int".to_string()]);
+        contract_mutations.push(changed);
+        let mut changed = baseline.clone();
+        changed.source_file = Some("third.py".to_string());
+        contract_mutations.push(changed);
+        let mut changed = baseline.clone();
+        changed.is_extern = true;
+        contract_mutations.push(changed);
+        for policy in [
+            crate::ExecutionContextPolicy::Local,
+            crate::ExecutionContextPolicy::Inherited,
+        ] {
+            let mut changed = baseline.clone();
+            changed.execution_context = policy;
+            contract_mutations.push(changed);
+        }
+        for changed in contract_mutations {
+            assert_ne!(
+                baseline_hash,
+                content_hash_for_function(&changed, TirPipelineCacheFlavor::Native, &native),
+                "every non-name FunctionIR semantic/ABI field must participate in cache identity"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_policy_separates_none_local_inherited_and_wrong_policy_preseed_cannot_hit() {
+        let target_info = TargetInfo::native_release_fast();
+        let cache_dir = std::env::temp_dir().join(format!(
+            "molt-tir-execution-policy-cache-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let base = FunctionIR {
+            name: "policy_separation".to_string(),
+            params: Vec::new(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..Default::default()
+            }],
+            param_types: None,
+            source_file: Some("policy.py".to_string()),
+            is_extern: false,
+            execution_context: crate::ExecutionContextPolicy::None,
+        };
+        let hash = |policy| {
+            let mut function = base.clone();
+            function.execution_context = policy;
+            content_hash_for_function(&function, TirPipelineCacheFlavor::FactGraph, &target_info)
+        };
+        assert_ne!(
+            hash(crate::ExecutionContextPolicy::None),
+            hash(crate::ExecutionContextPolicy::Local)
+        );
+        assert_ne!(
+            hash(crate::ExecutionContextPolicy::None),
+            hash(crate::ExecutionContextPolicy::Inherited)
+        );
+        assert_ne!(
+            hash(crate::ExecutionContextPolicy::Local),
+            hash(crate::ExecutionContextPolicy::Inherited)
+        );
+
+        let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
+            target_info: target_info.clone(),
+            cache_flavor: TirPipelineCacheFlavor::FactGraph,
+            cache_dir: Some(cache_dir.to_path_buf()),
+            process_externs: false,
+            verify_lir: false,
+            tir_dump: false,
+            tir_stats: false,
+            progress_prefix: None,
+            resource_plan: TirOptimizationResourcePlan {
+                threads: 1,
+                wave_function_limit: 1,
+                wave_op_budget: 16,
+            },
+        };
+        let mut wrong_policy = vec![base.clone()];
+        let seeded = run_cached_tir_pipeline(&mut wrong_policy, options(&cache_dir), |_| {});
+        assert_eq!(seeded.uncached_count, 1);
+
+        let mut requested = vec![FunctionIR {
+            execution_context: crate::ExecutionContextPolicy::Inherited,
+            ..base.clone()
+        }];
+        let miss = run_cached_tir_pipeline(&mut requested, options(&cache_dir), |_| {});
+        assert_eq!(
+            miss.uncached_count, 1,
+            "a cache artifact preseeded under the wrong execution policy must not hit"
+        );
+        let hit = run_cached_tir_pipeline(&mut requested, options(&cache_dir), |_| {});
+        assert_eq!(hit.uncached_count, 0);
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     #[test]

@@ -293,6 +293,7 @@ _CANONICALIZE_BINARY_ACTIONS = {
 _SIMPLEIR_CONTROL_FACT_FIELDS = (
     "structural",
     "terminator",
+    "return_terminator",
     "suspend",
     "repoll",
     "block_leader",
