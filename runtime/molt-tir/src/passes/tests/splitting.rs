@@ -1,5 +1,68 @@
 use super::*;
 
+fn split_for_test(
+    func: FunctionIR,
+    max_ops: usize,
+) -> Result<(FunctionIR, Vec<FunctionIR>), Box<FunctionIR>> {
+    let mut occupied = std::collections::BTreeSet::from([func.name.clone()]);
+    split_large_function(func, max_ops, &mut occupied)
+}
+
+fn adversarial_named_large_function(name: &str) -> FunctionIR {
+    FunctionIR {
+        name: name.to_string(),
+        execution_context: ExecutionContextPolicy::Inherited,
+        ops: vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            make_const_int("first", 1),
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            make_const_int("second", 2),
+            make_op("ret_void"),
+        ],
+        ..FunctionIR::default()
+    }
+}
+
+#[test]
+fn split_chunk_names_are_injective_and_reserved_against_the_full_module_namespace() {
+    let first = adversarial_named_large_function("a-b");
+    let second = adversarial_named_large_function("a_b");
+    let mut occupied = BTreeSet::from([first.name.clone(), second.name.clone()]);
+    let (_, first_chunks) = split_large_function(first, 2, &mut occupied).unwrap();
+    let (_, second_chunks) = split_large_function(second, 2, &mut occupied).unwrap();
+    let first_names = first_chunks
+        .iter()
+        .map(|chunk| chunk.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let second_names = second_chunks
+        .iter()
+        .map(|chunk| chunk.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(first_names.is_disjoint(&second_names));
+
+    let colliding_source = "user";
+    let reserved = split_chunk_name(colliding_source, 0);
+    let mut occupied = BTreeSet::from([colliding_source.to_string(), reserved.clone()]);
+    let result = split_large_function(
+        adversarial_named_large_function(colliding_source),
+        2,
+        &mut occupied,
+    );
+    assert!(
+        result.is_err(),
+        "an existing exact chunk symbol must fail the split closed"
+    );
+    assert!(occupied.contains(&reserved));
+}
+
 #[test]
 fn split_large_function_preserves_protected_runtime_import_entrypoint() {
     let func = FunctionIR {
@@ -22,7 +85,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         ],
     };
 
-    let result = split_large_function(func, 2);
+    let result = split_for_test(func, 2);
 
     let original = result.expect_err("protected import entrypoint must not split");
     assert_eq!(original.name, "molt_isolate_import");
@@ -48,7 +111,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
         ],
     };
 
-    let result = split_large_function(func, 2);
+    let result = split_for_test(func, 2);
 
     let original = result.expect_err("protected bootstrap entrypoint must not split");
     assert_eq!(original.name, "molt_isolate_bootstrap");
@@ -64,7 +127,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -98,7 +161,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         ],
     };
 
-    let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+    let (stub, chunks) = split_for_test(func, 2).expect("expected split");
 
     assert_eq!(stub.name, "user_large");
     assert!(!chunks.is_empty());
@@ -153,7 +216,7 @@ fn split_large_function_still_splits_regular_large_functions() {
     assert!(
         chunks
             .iter()
-            .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
+            .all(|chunk| chunk.name.starts_with("__molt_chunk_v1_"))
     );
     assert!(
         chunks.iter().any(|chunk| chunk.ops.iter().any(|op| {
@@ -175,7 +238,7 @@ fn split_large_function_preserves_drop_authority_on_chunks_only() {
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
             OpIR {
@@ -212,7 +275,7 @@ fn split_large_function_preserves_drop_authority_on_chunks_only() {
         ],
     };
 
-    let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+    let (stub, chunks) = split_for_test(func, 2).expect("expected split");
 
     assert!(
         !stub.ops.iter().any(is_drop_fact_marker_op),
@@ -254,7 +317,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -280,7 +343,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         ],
     };
 
-    let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+    let (stub, chunks) = split_for_test(func, 2).expect("expected split");
 
     assert!(
         chunks.iter().skip(1).any(|chunk| chunk
@@ -471,11 +534,11 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
 
-    let (stub, chunks) = split_large_function(func, 40)
+    let (stub, chunks) = split_for_test(func, 40)
         .expect("shared suffix exception handler should not block splitting");
 
     assert_eq!(stub.name, "builtins__molt_module_chunk_2");
@@ -623,12 +686,12 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
 
-    let (stub, chunks) = split_large_function(func, 8)
-        .expect("later safe split point should carry cleanup suffix inputs");
+    let (stub, chunks) =
+        split_for_test(func, 8).expect("later safe split point should carry cleanup suffix inputs");
 
     assert_eq!(stub.name, "cleanup_suffix");
     assert_eq!(
@@ -672,7 +735,7 @@ fn split_large_function_void_only_stub_returns_none() {
         param_types: None,
         source_file: None,
         is_extern: false,
-        execution_context: Default::default(),
+        execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -693,7 +756,7 @@ fn split_large_function_void_only_stub_returns_none() {
         ],
     };
 
-    let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+    let (stub, chunks) = split_for_test(func, 2).expect("expected split");
 
     assert!(!chunks.is_empty());
     assert_eq!(
@@ -701,6 +764,92 @@ fn split_large_function_void_only_stub_returns_none() {
         Some("ret_void"),
         "void-only split stubs must terminate explicitly with ret_void",
     );
+}
+
+#[test]
+fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chunks() {
+    let mut ops = vec![
+        OpIR {
+            kind: "trace_enter_slot".to_string(),
+            value: Some(17),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "frame_locals_set".to_string(),
+            args: Some(vec!["locals".to_string()]),
+            ..OpIR::default()
+        },
+    ];
+    for line in 1..=6 {
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(line),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "const_none".to_string(),
+            out: Some(format!("value_{line}")),
+            ..OpIR::default()
+        });
+    }
+    ops.extend([
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
+    ]);
+    let original = FunctionIR {
+        name: "framed_large".to_string(),
+        params: vec!["locals".to_string()],
+        ops,
+        source_file: Some("framed_large.py".to_string()),
+        execution_context: ExecutionContextPolicy::Local,
+        ..FunctionIR::default()
+    };
+
+    let (stub, chunks) = split_for_test(original, 3).expect("expected framed split");
+    assert_eq!(stub.execution_context, ExecutionContextPolicy::Local);
+    assert_eq!(
+        stub.ops
+            .iter()
+            .filter(|op| op.kind == "trace_enter_slot")
+            .count(),
+        1
+    );
+    for (index, op) in stub.ops.iter().enumerate() {
+        if matches!(op.kind.as_str(), "ret" | "ret_void") {
+            assert_eq!(stub.ops[index - 1].kind, "trace_exit");
+        }
+    }
+    let calls = stub
+        .ops
+        .iter()
+        .filter(|op| op.kind == "call_internal")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), chunks.len());
+    assert!(calls.iter().all(|op| op.passes_execution_context));
+    assert!(chunks.iter().all(|chunk| {
+        chunk.execution_context == ExecutionContextPolicy::Inherited
+            && chunk
+                .ops
+                .iter()
+                .all(|op| !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
+    }));
+    assert!(
+        chunks
+            .iter()
+            .flat_map(|chunk| &chunk.ops)
+            .any(|op| matches!(op.kind.as_str(), "line" | "frame_locals_set"))
+    );
+    crate::validate_simple_ir(&SimpleIR {
+        functions: std::iter::once(stub).chain(chunks).collect(),
+        profile: None,
+    })
+    .expect("the transformed SimpleIR execution-context ABI must validate");
 }
 
 #[test]
@@ -728,7 +877,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             param_types: None,
             source_file: None,
             is_extern: false,
-            execution_context: Default::default(),
+            execution_context: ExecutionContextPolicy::Inherited,
             ops,
         }],
         profile: None,
@@ -744,7 +893,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
     assert!(
         names
             .iter()
-            .any(|name| name.starts_with("__molt_chunk_builtins__molt_module_chunk_2_")),
+            .any(|name| name.starts_with("__molt_chunk_v1_")),
         "module chunk should be split into backend private chunks at the native default threshold"
     );
 

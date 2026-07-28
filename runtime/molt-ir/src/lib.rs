@@ -24,7 +24,7 @@ pub mod tir;
 
 pub use crate::ir::{
     BackendIrDocument, ExecutionContextPolicy, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR,
-    SimpleIR, validate_simple_ir,
+    SimpleIR, validate_simple_ir, write_function_ir_contract,
 };
 pub use crate::repr::Repr;
 

@@ -834,7 +834,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             self.imported_modules.pop(target.id, None)
             self.local_imported_names.discard(target.id)
             self.local_imported_modules.discard(target.id)
-            if self.current_func_name == "molt_main":
+            if self.current_func_name == "molt_main" or target.id in self.global_decls:
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)

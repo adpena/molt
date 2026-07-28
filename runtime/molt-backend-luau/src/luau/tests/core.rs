@@ -22,6 +22,98 @@ fn test_sanitize_ident() {
             .len(),
         4
     );
+    let closure_family = ["$molt_closure", "_molt_closure", "__molt_closure"];
+    assert_eq!(
+        closure_family
+            .map(sanitize_ident)
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        closure_family.len()
+    );
+}
+
+#[test]
+fn definitions_and_references_share_injective_user_and_helper_namespaces() {
+    let adversarial_params = [
+        "a-b",
+        "a_b",
+        "and",
+        "__molt_frame_context",
+        "molt_bool",
+        "_m_user_612d62",
+    ];
+    let mut framed_ops = vec![OpIR {
+        kind: "trace_enter_slot".to_string(),
+        value: Some(1),
+        ..OpIR::default()
+    }];
+    framed_ops.push(OpIR {
+        kind: "tuple_new".to_string(),
+        args: Some(
+            adversarial_params
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+        ),
+        out: Some("result".to_string()),
+        ..OpIR::default()
+    });
+    framed_ops.extend([
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret".to_string(),
+            var: Some("result".to_string()),
+            ..OpIR::default()
+        },
+    ]);
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "a-b".to_string(),
+                params: adversarial_params
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect(),
+                execution_context: ExecutionContextPolicy::Local,
+                ops: framed_ops,
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "a_b".to_string(),
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    let mapped = adversarial_params.map(sanitize_ident);
+    assert_eq!(mapped.iter().collect::<BTreeSet<_>>().len(), mapped.len());
+    for ident in mapped {
+        assert!(
+            source.contains(&format!("{ident}: any")),
+            "{ident}: {source}"
+        );
+        assert!(source.contains(&ident), "{ident}: {source}");
+    }
+    assert!(source.contains("local _m_user_612d62"), "{source}");
+    assert!(source.contains("local a_b"), "{source}");
+    assert!(source.contains("local __molt_frame_context"), "{source}");
 }
 
 #[test]
@@ -1034,7 +1126,10 @@ for _sweep = 1, 32 do
 	end
 	contexts_after_abandonment = context_count()
 end
-assert(contexts_after_abandonment <= context_baseline + 2)
+assert(
+	contexts_after_abandonment <= context_baseline + 2,
+	string.format("abandoned_context_leak baseline=%d after=%d", context_baseline, contexts_after_abandonment)
+)
 
 local completed_wrappers = table.create(2000)
 local completed_closers = table.create(2000)
@@ -1056,13 +1151,66 @@ for _sweep = 1, 64 do
 	end
 end
 local contexts_after_completed = context_count()
-assert(contexts_after_completed <= context_baseline + 2)
+assert(
+	contexts_after_completed <= context_baseline + 2,
+	string.format("completed_context_leak baseline=%d after=%d", context_baseline, contexts_after_completed)
+)
 local finalized_ok, finalized_error = pcall(completed_wrappers[1])
 assert(not finalized_ok and finalized_error.__type == "RuntimeError")
 completed_closers[1]()
 
+local live_identity: any = nil
+local live = coroutine.create(function()
+	for _iteration = 1, 256 do
+		local context = molt_frame_context()
+		if live_identity == nil then live_identity = context end
+		assert(context == live_identity)
+		coroutine.yield(context)
+	end
+end)
+local live_ok, live_context = coroutine.resume(live)
+assert(live_ok and live_context == live_identity)
+local allocations_after_live_warm = molt_frame_context_allocations
+for iteration = 2, 256 do
+	local pressure = table.create(20000, iteration)
+	assert(pressure[20000] == iteration)
+	pressure = nil
+	local resumed, context = coroutine.resume(live)
+	assert(resumed and context == live_identity)
+end
+assert(
+	molt_frame_context_allocations == allocations_after_live_warm,
+	"bare_live_coroutine_allocated_after_warm"
+)
+coroutine.close(live)
+
+local wrapped_identity: any = nil
+local wrapped_resume, wrapped_close = molt_coroutine_execution_wrap(function()
+	for _iteration = 1, 256 do
+		local context = molt_frame_context()
+		if wrapped_identity == nil then wrapped_identity = context end
+		assert(context == wrapped_identity)
+		coroutine.yield(context)
+	end
+end)
+assert(wrapped_resume() == wrapped_identity)
+local allocations_after_wrapped_warm = molt_frame_context_allocations
+for iteration = 2, 256 do
+	local pressure = table.create(20000, iteration)
+	assert(pressure[20000] == iteration)
+	pressure = nil
+	assert(wrapped_resume() == wrapped_identity)
+end
+assert(
+	molt_frame_context_allocations == allocations_after_wrapped_warm,
+	"wrapped_live_coroutine_allocated_after_warm"
+)
+wrapped_resume()
+wrapped_close()
+
 local warm_context, warm_depth, warm_identity, warm_owner = molt_frame_enter(outer_code)
 molt_frame_exit(warm_context, warm_depth, warm_identity, warm_owner)
+local allocations_after_main_warm = molt_frame_context_allocations
 local baseline_total = 0
 local baseline_started = os.clock()
 for index = 1, 100000 do baseline_total += index end
@@ -1077,15 +1225,31 @@ end
 local elapsed = os.clock() - started
 local heap_delta_kib = gcinfo() - heap_before
 assert(baseline_total > 0 and elapsed < 5 and heap_delta_kib < 64)
+assert(
+	molt_frame_context_allocations == allocations_after_main_warm,
+	"main_context_allocated_after_warm"
+)
 local weak_mode = getmetatable(molt_frame_contexts).__mode
-assert(string.find(weak_mode, "k") ~= nil and string.find(weak_mode, "v") ~= nil)
-print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
+assert(weak_mode == "kv", "frame_registry_is_not_non_owning_kv")
+print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
 "#
     );
-    assert!(frame_runtime::FRAME_RUNTIME.len() < 9_000);
+    assert!(frame_runtime::FRAME_RUNTIME.len() < 9_500);
     assert!(!frame_runtime::FRAME_RUNTIME.contains("owner = key"));
     assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
-    assert!(frame_runtime::FRAME_RUNTIME.contains("molt_frame_contexts[owner] ~= context"));
+    assert!(frame_runtime::FRAME_RUNTIME.contains("{__mode = \"kv\"}"));
+    assert!(frame_runtime::FRAME_RUNTIME.contains("molt_frame_owned_context(owner) ~= context"));
+    assert!(
+        !frame_runtime::FRAME_RUNTIME
+            .contains("owner ~= current_owner or molt_frame_contexts[owner]")
+    );
+    assert_eq!(
+        frame_runtime::FRAME_RUNTIME
+            .matches("molt_frame_contexts[owner]")
+            .count(),
+        2,
+        "direct owner lookup/removal belongs only to the ownership helper pair"
+    );
     validate_luau_source(&source).expect("execution-frame oracle must pass source validation");
     let path = std::env::temp_dir().join(format!(
         "molt_luau_execution_frame_{}.luau",
@@ -1106,7 +1270,7 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000"),
+        stdout.contains("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0"),
         "{stdout}"
     );
     eprintln!(
@@ -2952,43 +3116,139 @@ fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
 
 #[test]
 fn execution_frame_siblings_have_real_luau_lowering() {
-    for kind in ["trace_enter_slot", "trace_exit", "line", "frame_locals_set"] {
-        let mut op = OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
-        };
-        match kind {
-            "trace_enter_slot" | "line" => op.value = Some(7),
-            "frame_locals_set" => op.args = Some(vec!["locals".to_string()]),
-            _ => {}
-        }
-        let params = (kind == "frame_locals_set")
-            .then(|| vec!["locals".to_string()])
-            .unwrap_or_default();
-        let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                name: format!("frame_state_{kind}"),
-                params,
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![op],
-            }],
-            profile: None,
-        };
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "local_frame".to_string(),
+                params: vec!["locals".to_string()],
+                execution_context: ExecutionContextPolicy::Local,
+                ops: vec![
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_internal".to_string(),
+                        s_value: Some("inherited_frame".to_string()),
+                        args: Some(vec!["locals".to_string()]),
+                        out: Some("none".to_string()),
+                        passes_execution_context: true,
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "inherited_frame".to_string(),
+                params: vec!["locals".to_string()],
+                execution_context: ExecutionContextPolicy::Inherited,
+                ops: vec![
+                    OpIR {
+                        kind: "line".to_string(),
+                        value: Some(8),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "frame_locals_set".to_string(),
+                        args: Some(vec!["locals".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
 
-        let mut unchecked_backend = LuauBackend::new();
-        let unchecked = unchecked_backend.compile(&ir);
-        assert!(
-            !unchecked_backend
-                .unsupported_ops
-                .iter()
-                .any(|unsupported| unsupported.contains(&format!("`{kind}`"))),
-            "execution-frame op must have effectful lowering for {kind}: {unchecked}"
-        );
-        assert!(unchecked.contains("molt_frame_"), "{kind}: {unchecked}");
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("the complete Local/Inherited frame ABI must lower");
+    assert!(source.contains("molt_frame_enter(molt_code_slots[7])"));
+    assert!(source.contains("molt_frame_exit(__molt_frame_context"));
+    assert!(source.contains("inherited_frame(locals, __molt_frame_context)"));
+    assert!(source.contains("molt_frame_set_line(__molt_frame_context, 8"));
+    assert!(source.contains("molt_frame_locals_set(__molt_frame_context, locals)"));
+    assert!(!source.contains("molt_frame_set_line(molt_frame_context()"));
+    assert!(!source.contains("molt_frame_locals_set(molt_frame_context()"));
+}
+
+#[test]
+fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
+    let mut ops = vec![OpIR {
+        kind: "trace_enter_slot".to_string(),
+        value: Some(3),
+        ..OpIR::default()
+    }];
+    for line in 1..=6 {
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(line),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "const_none".to_string(),
+            out: Some(format!("v{line}")),
+            ..OpIR::default()
+        });
     }
+    ops.extend([
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
+    ]);
+    let original = FunctionIR {
+        name: "luau_framed_large".to_string(),
+        execution_context: ExecutionContextPolicy::Local,
+        ops,
+        ..FunctionIR::default()
+    };
+    let mut occupied = std::collections::BTreeSet::from([original.name.clone()]);
+    let (stub, chunks) = molt_tir::passes::split_large_function(original, 3, &mut occupied)
+        .expect("expected Luau framed megafunction split");
+    let chunk_names = chunks
+        .iter()
+        .map(|chunk| chunk.name.clone())
+        .collect::<Vec<_>>();
+    let source = LuauBackend::new()
+        .compile_checked(&SimpleIR {
+            functions: std::iter::once(stub).chain(chunks).collect(),
+            profile: None,
+        })
+        .expect("Luau must compile the validated split execution-context ABI");
+    for name in chunk_names {
+        let emitted = emit_function_ident(&name);
+        assert!(
+            source.contains(&format!("{emitted} = function(__molt_frame_context: any)"))
+                || source.contains(&format!(
+                    "local function {emitted}(__molt_frame_context: any)"
+                )),
+            "{name}: {source}"
+        );
+    }
+    assert_eq!(
+        source
+            .matches("molt_frame_enter(molt_code_slots[3])")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -3048,7 +3308,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
 }
 
 #[test]
-fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
+fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "code_frame_metadata_test".to_string(),
@@ -3099,24 +3359,21 @@ fn unchecked_luau_code_slot_metadata_does_not_hide_missing_frame_state() {
         }],
         profile: None,
     };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
+    let checked_error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("None policy must reject frame_locals_set before source generation");
+    assert!(checked_error.contains("without an execution context"));
 
-    assert!(
-        source.contains("code_frame_metadata_test"),
-        "compiled code/frame metadata function should be emitted, got:\n{source}"
-    );
-    assert!(source.contains("molt_code_slots = table.create(2)"));
-    assert!(source.contains("molt_code_slots[1] = code"));
-    assert!(
-        !source.contains("[internal: code_slots_init]")
-            && !source.contains("[internal: code_slot_set]")
-            && !source.contains("[internal: frame_locals_set]")
-            && !source.contains("[unsupported op: code_slots_init]")
-            && !source.contains("[unsupported op: code_slot_set]"),
-        "code-slot state may emit without stub markers, got:\n{source}"
-    );
-    assert!(backend.unsupported_ops.is_empty());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        LuauBackend::new().compile(&ir)
+    }))
+    .expect_err("unchecked lowering must fail closed instead of inventing ambient frame state");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic");
+    assert!(message.contains("without a Local or Inherited context"));
 }
 
 #[test]

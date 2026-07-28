@@ -1,6 +1,6 @@
 use super::*;
 use crate::tir::effect_proof::EffectProof;
-use crate::{FunctionIR, OpIR, SimpleIR};
+use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;
 
 fn make_op(kind: &str) -> OpIR {

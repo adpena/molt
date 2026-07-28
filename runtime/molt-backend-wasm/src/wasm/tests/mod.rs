@@ -4,6 +4,7 @@ mod async_work_poll;
 mod call_indirect_table;
 mod container_scalar;
 mod exception_eh;
+mod execution_context_split;
 mod import_codegen;
 mod native_callable;
 mod runtime_callable;

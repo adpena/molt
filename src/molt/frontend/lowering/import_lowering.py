@@ -96,9 +96,23 @@ class ImportLoweringMixin(_MixinBase):
         if self._local_name_shadows_import_binding(binding_name):
             return None
         module_name = self.imported_modules.get(binding_name)
-        if module_name is None:
+        if (
+            module_name is None
+            and binding_name not in self.free_vars
+            and binding_name not in self.nonlocal_decls
+        ):
             module_name = self.global_imported_modules.get(binding_name)
         return module_name
+
+    def _runtime_qualified_callable_symbol(
+        self, module_name: str | None, attr_name: str
+    ) -> str | None:
+        normalized = self._normalize_allowlist_module(module_name) or module_name
+        if normalized is None:
+            return None
+        return SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
+            f"{normalized}.{attr_name}"
+        )
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool:
         if module_name in self.known_modules:
@@ -278,12 +292,8 @@ class ImportLoweringMixin(_MixinBase):
         # missing attribute raises ImportError ("cannot import name ...") after
         # a sys.modules submodule fallback, NOT the AttributeError that a plain
         # `MODULE.name` (MODULE_GET_ATTR) read raises.
-        runtime_symbol = (
-            SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
-                f"{module_name}.{attr_name}"
-            )
-            if module_name is not None
-            else None
+        runtime_symbol = self._runtime_qualified_callable_symbol(
+            module_name, attr_name
         )
         self.emit(
             MoltOp(

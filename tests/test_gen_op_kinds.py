@@ -237,9 +237,9 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         "loop_break_if_true": {"structural", "conditional_branch"},
         "loop_break_if_false": {"structural", "conditional_branch"},
         "loop_break_if_exception": {"structural", "conditional_branch"},
-        "ret": {"structural", "terminator"},
-        "ret_void": {"structural", "terminator"},
-        "return": {"structural", "terminator"},
+        "ret": {"structural", "terminator", "return_terminator"},
+        "ret_void": {"structural", "terminator", "return_terminator"},
+        "return": {"structural", "terminator", "return_terminator"},
         "nop": {"structural"},
         "state_switch": {"structural", "block_ender"},
         "state_yield": {"suspend", "block_ender"},
@@ -5203,6 +5203,67 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
     assert "simpleir_runtime_symbol_requirements_table" in rendered
     for symbol in frame_symbols:
         assert f'"{symbol}"' in rendered
+    assert "simpleir_qualified_callable_runtime_symbol" in rendered
+    for dead_callable_transport_authority in (
+        "simpleir_kind_has_callable_operand",
+        "SimpleIrModuleIdentityAliasRole",
+        "simpleir_module_identity_alias_role_table",
+        "simpleir_module_identity_source_name_arg",
+        "SimpleIrModuleSlotAccess",
+        "simpleir_module_slot_access_table",
+    ):
+        assert dead_callable_transport_authority not in rendered
+
+
+def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_extra_keys(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+
+    mutations = {
+        "source alias": source.replace(
+            'qualified = "inspect.currentframe"',
+            'qualified = "inspection.currentframe"',
+            1,
+        ),
+        "unknown symbol": source.replace(
+            'qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe"',
+            'qualified = "inspect.currentframe", symbol = "molt_unknown_frame_callable"',
+            1,
+        ),
+        "duplicate qualified": source.replace(
+            'qualified = "sys._getframe"',
+            'qualified = "inspect.currentframe"',
+            1,
+        ),
+        "duplicate symbol": source.replace(
+            'qualified = "sys._getframe", symbol = "molt_getframe"',
+            'qualified = "sys._getframe", symbol = "molt_inspect_currentframe"',
+            1,
+        ),
+        "extra row key": source.replace(
+            'qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe"',
+            'qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe", alias = "inspection.currentframe"',
+            1,
+        ),
+        "noncanonical symbol": source.replace(
+            '"molt_getframe", "molt_inspect_currentframe"',
+            '"MOLT_getframe", "molt_inspect_currentframe"',
+            1,
+        ),
+        "duplicate function-reference kind": source.replace(
+            'simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]',
+            'simpleir_function_reference_s_value_kinds = ["func_new", "func_new"]',
+            1,
+        ),
+    }
+    for label, mutated in mutations.items():
+        assert mutated != source, label
+        path = tmp_path / f"{label.replace(' ', '_')}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(gen.OpKindTableError):
+            gen.load_table(path)
 
 
 def test_result_validity_rejects_bad_rows() -> None:

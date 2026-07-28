@@ -5,30 +5,43 @@
 /// tracing hooks, or `__traceback__.tb_frame`; those require a separate exact
 /// introspection capability that Luau rejects before source generation.
 pub(super) const FRAME_RUNTIME: &str = r#"
--- Both sides are weak. Active generated code keeps its context in stack locals;
--- the registry must not keep an abandoned coroutine/context cycle alive when
--- Python globals or captured values point back to that coroutine.
+-- Luau does not implement ephemeron tables, so this lookup is non-owning in
+-- both directions. Local frames and wrappers strongly own live contexts; the
+-- root coroutine has the separate strong slot below.
 local molt_frame_contexts: {[any]: any} = setmetatable({}, {__mode = "kv"})
-local molt_main_context_key = {}
+local molt_main_context_key = coroutine.running() or {}
+local molt_main_context: any = nil
+local molt_frame_context_allocations = 0
 
 local function molt_frame_invariant(message: string): never
 	error({__type="RuntimeError", __msg="Luau execution-frame invariant: " .. message}, 0)
 end
 
+local function molt_frame_new_context(): any
+	molt_frame_context_allocations += 1
+	return {depth=0, codes={}, lines={}, lastis={}, cols={}, end_cols={}, globals={}}
+end
+
+local function molt_frame_owned_context(owner: any): any
+	return if owner == molt_main_context_key then molt_main_context else molt_frame_contexts[owner]
+end
+
+local function molt_frame_forget_context(owner: any): nil
+	if owner == molt_main_context_key then
+		molt_main_context = nil
+	else molt_frame_contexts[owner] = nil end
+	return nil
+end
+
 local function molt_frame_context(): (any, any)
-	local thread = coroutine.running()
-	local key: any = thread or molt_main_context_key
+	local key: any = coroutine.running() or molt_main_context_key
+	if key == molt_main_context_key then
+		molt_main_context = molt_main_context or molt_frame_new_context()
+		return molt_main_context, key
+	end
 	local context = molt_frame_contexts[key]
 	if context == nil then
-		context = {
-			depth = 0,
-			codes = {},
-			lines = {},
-			lastis = {},
-			cols = {},
-			end_cols = {},
-			globals = {},
-		}
+		context = molt_frame_new_context()
 		molt_frame_contexts[key] = context
 	end
 	return context, key
@@ -96,7 +109,7 @@ local function molt_frame_exit(context: any, entry_depth: number, code: any, own
 	local index = context.depth
 	local thread = coroutine.running()
 	local current_owner: any = thread or molt_main_context_key
-	if owner ~= current_owner or molt_frame_contexts[owner] ~= context or index < 1 or index ~= entry_depth or context.codes[index] ~= code then
+	if owner ~= current_owner or molt_frame_owned_context(owner) ~= context or index < 1 or index ~= entry_depth or context.codes[index] ~= code then
 		molt_frame_invariant("trace_exit cookie does not match the active execution-context frame")
 	end
 	context.codes[index] = nil
@@ -166,9 +179,7 @@ local function molt_frame_finalize(context: any, owner: any, baseline_depth: num
 	end
 	local restoration = table.pack(pcall(molt_frame_restore_depth, context, baseline_depth))
 	if not restoration[1] then
-		if molt_frame_contexts[owner] == context then
-			molt_frame_contexts[owner] = nil
-		end
+		molt_frame_forget_context(owner)
 		return {
 			__type="RuntimeError",
 			__msg="execution-frame restoration failed",

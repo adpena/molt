@@ -248,6 +248,34 @@ class FunctionLifecycleMixin(_MixinBase):
     def _restore_function_state(self, state: dict[str, Any]) -> None:
         self._restore_function_scope_state(state)
 
+    def _inherit_free_var_import_resolution(
+        self, free_vars: list[str], enclosing_state: dict[str, Any]
+    ) -> None:
+        """Project lexical import provenance onto captured cells only.
+
+        Function entry resets import maps to module globals. A closure needs the
+        enclosing binding's acquisition provenance instead, including an exact
+        absence after that binding was shadowed or rebound. Clearing each free
+        name before copying prevents an unrelated same-named module global from
+        leaking through the cell boundary.
+        """
+        enclosing_modules = enclosing_state["imported_modules"]
+        enclosing_names = enclosing_state["imported_names"]
+        enclosing_attrs = enclosing_state["imported_attr_names"]
+        for name in free_vars:
+            self.imported_modules.pop(name, None)
+            self.imported_names.pop(name, None)
+            self.imported_attr_names.pop(name, None)
+            self.local_imported_modules.discard(name)
+            self.local_imported_names.discard(name)
+            if name in enclosing_modules:
+                self.imported_modules[name] = enclosing_modules[name]
+                self.local_imported_modules.add(name)
+            elif name in enclosing_names:
+                self.imported_names[name] = enclosing_names[name]
+                self.imported_attr_names[name] = enclosing_attrs.get(name, name)
+                self.local_imported_names.add(name)
+
     def _init_return_slot(self) -> None:
         if self.return_label is not None:
             return

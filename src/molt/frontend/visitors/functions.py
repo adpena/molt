@@ -292,6 +292,7 @@ class FunctionVisitorMixin(_MixinBase):
                 type_facts_name=func_name,
                 needs_return_slot=has_return,
             )
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.global_decls = self._collect_global_decls(node.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
             assigned = self._collect_assigned_names(node.body)
@@ -602,6 +603,7 @@ class FunctionVisitorMixin(_MixinBase):
             needs_return_slot=has_return,
             has_exception_handlers=self._body_has_exception_handlers(node.body),
         )
+        self._inherit_free_var_import_resolution(free_vars, prev_state)
         prev_gpu_kernel_context = self.current_gpu_kernel_context
         self.current_gpu_kernel_context = is_gpu_kernel
         self.current_method_first_param = params[0] if params else None
@@ -874,6 +876,7 @@ class FunctionVisitorMixin(_MixinBase):
                 type_facts_name=func_symbol,
                 needs_return_slot=False,
             )
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.current_method_first_param = params[0] if params else None
             assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
             self.global_decls = set()
@@ -1111,6 +1114,7 @@ class FunctionVisitorMixin(_MixinBase):
             # post-may-raise checks are needed.
             has_exception_handlers=False,
         )
+        self._inherit_free_var_import_resolution(free_vars, prev_state)
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}

@@ -319,13 +319,16 @@ class SerializationFunctionOpsMixin(_MixinBase):
                     entry["runtime_symbol"] = runtime_symbol
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_GET_GLOBAL":
-            ctx.json_ops.append(
-                {
-                    "kind": "module_get_global",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "module_get_global",
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            if op.metadata is not None:
+                runtime_symbol = op.metadata.get("runtime_symbol")
+                if isinstance(runtime_symbol, str) and runtime_symbol:
+                    entry["runtime_symbol"] = runtime_symbol
+            ctx.json_ops.append(entry)
         elif op.kind == "MODULE_DEL_GLOBAL":
             ctx.json_ops.append(
                 {

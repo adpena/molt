@@ -2005,6 +2005,228 @@ set_trace = system.settrace
     }
 
 
+@pytest.mark.parametrize(
+    ("transport", "source", "function_suffix", "symbol"),
+    [
+        (
+            "direct-in-function",
+            "import sys as system\ndef f():\n    return system._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "function-local-module-alias",
+            "def f():\n    import sys as s\n    return s._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "branch-local-module-alias",
+            "def f(flag):\n    if flag:\n        import sys as s\n    return s._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "function-local-from-alias",
+            "def f():\n    from sys import _getframe as gf\n    return gf\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "function-local-inspect-from",
+            "def f():\n    from inspect import currentframe\n    return currentframe\n",
+            "__f",
+            "molt_inspect_currentframe",
+        ),
+        (
+            "stdlib-dotted-module-alias",
+            "def f():\n    import molt.stdlib.inspect as inspection\n    return inspection.currentframe\n",
+            "__f",
+            "molt_inspect_currentframe",
+        ),
+        (
+            "stdlib-dotted-from-alias",
+            "def f():\n    from molt.stdlib.sys import _getframe as gf\n    return gf\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "imported-global-in-function",
+            "from sys import gettrace as global_trace\ndef f():\n    return global_trace\n",
+            "__f",
+            "molt_sys_gettrace",
+        ),
+        (
+            "parameter",
+            "import sys as system\ndef sink(value):\n    return value\ndef f():\n    return sink(system.gettrace)\n",
+            "__f",
+            "molt_sys_gettrace",
+        ),
+        (
+            "return",
+            "import inspect as inspection\ndef f():\n    return inspection.currentframe\n",
+            "__f",
+            "molt_inspect_currentframe",
+        ),
+        (
+            "closure",
+            "import sys as system\ndef f():\n    captured = system.setprofile\n    def inner():\n        return captured\n    return inner\n",
+            "__f",
+            "molt_sys_setprofile",
+        ),
+        (
+            "list",
+            "import sys as system\ndef f():\n    return [system.getprofile]\n",
+            "__f",
+            "molt_sys_getprofile",
+        ),
+        (
+            "dict",
+            "import sys as system\ndef f():\n    return {'hook': system.settrace}\n",
+            "__f",
+            "molt_sys_settrace",
+        ),
+        (
+            "object",
+            "import sys as system\nclass Box:\n    pass\ndef f(box):\n    box.hook = system._getframe\n    return box\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "dynamic-call-moot-at-producer",
+            "import sys as system\ndef f():\n    target = system._getframe\n    return target()\n",
+            "__f",
+            "molt_getframe",
+        ),
+    ],
+)
+def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acquisition(
+    transport: str,
+    source: str,
+    function_suffix: str,
+    symbol: str,
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    function_ops = [
+        op
+        for function in ir["functions"]
+        if function["name"].endswith(function_suffix)
+        for op in function["ops"]
+    ]
+    acquisitions = [
+        op for op in function_ops if op.get("runtime_symbol") == symbol
+    ]
+    assert acquisitions, transport
+    assert all(
+        op["kind"] in {"module_get_attr", "module_get_global", "module_import_from"}
+        for op in acquisitions
+    ), (transport, acquisitions)
+    if transport == "dynamic-call-moot-at-producer":
+        assert any(op["kind"].startswith("call") for op in function_ops)
+        assert function_ops.index(acquisitions[0]) < next(
+            index
+            for index, op in enumerate(function_ops)
+            if op["kind"].startswith("call")
+        )
+
+
+def test_runtime_callable_import_provenance_respects_lexical_shadowing() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "import sys as system\n"
+            "def f(system):\n"
+            "    return system._getframe\n"
+        )
+    )
+    function = next(
+        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+    )
+    assert all("runtime_symbol" not in op for op in function["ops"])
+
+
+@pytest.mark.parametrize(
+    ("scope", "source", "function_suffix"),
+    [
+        (
+            "local-shadow-after-import",
+            "def f(value):\n"
+            "    import sys as s\n"
+            "    before = s._getframe\n"
+            "    s = value\n"
+            "    after = s._getframe\n"
+            "    return before, after\n",
+            "__f",
+        ),
+        (
+            "global-rebind",
+            "import sys as s\n"
+            "def f(value):\n"
+            "    global s\n"
+            "    before = s._getframe\n"
+            "    s = value\n"
+            "    after = s._getframe\n"
+            "    return before, after\n",
+            "__f",
+        ),
+        (
+            "nonlocal-rebind",
+            "def outer():\n"
+            "    import sys as s\n"
+            "    def inner(value):\n"
+            "        nonlocal s\n"
+            "        before = s._getframe\n"
+            "        s = value\n"
+            "        after = s._getframe\n"
+            "        return before, after\n"
+            "    return inner\n",
+            "__inner",
+        ),
+    ],
+)
+def test_runtime_callable_provenance_stops_exactly_at_lexical_rebinding(
+    scope: str, source: str, function_suffix: str
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith(function_suffix)
+    )
+    frame_reads = [
+        op
+        for op in function["ops"]
+        if op.get("kind") == "module_get_attr"
+        and op.get("runtime_symbol") == "molt_getframe"
+    ]
+    assert len(frame_reads) == 1, (scope, frame_reads)
+
+
+def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "def f(flag):\n"
+            "    if flag:\n"
+            "        from sys import _getframe as gf\n"
+            "    return gf\n"
+        )
+    )
+    function = next(
+        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+    )
+    producers = [
+        op
+        for op in function["ops"]
+        if op.get("runtime_symbol") == "molt_getframe"
+    ]
+    assert len(producers) == 1
+    assert producers[0]["kind"] == "module_import_from"
+
+
 def test_module_control_flow_class_calls_use_load_global_semantics() -> None:
     source = """
 flag = False
