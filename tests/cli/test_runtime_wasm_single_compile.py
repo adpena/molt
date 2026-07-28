@@ -407,17 +407,16 @@ def _test_pair_identity():
     )
 
 
-def test_pair_member_staging_is_identity_local_and_never_process_cached(
-    monkeypatch: pytest.MonkeyPatch,
+def _test_pair_context(
     tmp_path: Path,
-) -> None:
+    *,
+    required_exports: set[str] | None = None,
+) -> runtime_wasm_pair_build._RuntimeWasmPairBuild:
     shared, reloc = _specs(_compiler_root())
-    state = _RuntimeArtifactState()
     canonical_shared = tmp_path / "wasm" / "molt_runtime.wasm"
     canonical_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
-    identity = _test_pair_identity()
-    ctx = runtime_wasm_pair_build._RuntimeWasmPairBuild(
-        runtime_state=state,
+    return runtime_wasm_pair_build._RuntimeWasmPairBuild(
+        runtime_state=_RuntimeArtifactState(),
         json_output=True,
         cargo_profile="dev-fast",
         cargo_timeout=5.0,
@@ -427,7 +426,7 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
         stdlib_profile="micro",
         resolved_modules=None,
         required_link_features=frozenset(),
-        required_exports=None,
+        required_exports=required_exports,
         runtime_wasm=canonical_shared,
         runtime_reloc_wasm=canonical_reloc,
         shared_spec=shared,
@@ -436,15 +435,34 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
         generation_manifest=canonical_shared.with_name(
             "molt_runtime.generation.json"
         ),
-        pre_identity=identity,
+        pre_identity=_test_pair_identity(),
     )
-    calls: list[tuple[Path, bool]] = []
 
-    def ensure(path: Path, *, reloc: bool, **_kwargs) -> bool:  # noqa: ANN003
-        calls.append((path, reloc))
+
+def test_pair_member_staging_is_identity_local_and_never_process_cached(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx = _test_pair_context(tmp_path)
+    identity = ctx.pre_identity
+    assert identity is not None
+    canonical_shared = ctx.runtime_wasm
+    canonical_reloc = ctx.runtime_reloc_wasm
+    shared = ctx.shared_spec
+    reloc = ctx.reloc_spec
+    calls: list[tuple[Path, bool, object]] = []
+
+    def ensure(  # noqa: ANN003
+        path: Path, *, reloc: bool, spec: object, **_kwargs
+    ) -> bool:
+        calls.append((path, reloc, spec))
         return True
 
-    monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm", ensure)
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_materialize_runtime_wasm_member_from_target",
+        ensure,
+    )
     ctx.provision_staging()
     first_root = ctx.staging_root
     assert first_root is not None
@@ -456,10 +474,10 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     assert ctx.ensure_member(reloc=True)
     assert ctx.ensure_member(reloc=True)
     assert calls == [
-        (ctx.staging_member(reloc=False), False),
-        (ctx.staging_member(reloc=False), False),
-        (ctx.staging_member(reloc=True), True),
-        (ctx.staging_member(reloc=True), True),
+        (ctx.staging_member(reloc=False), False, shared),
+        (ctx.staging_member(reloc=False), False, shared),
+        (ctx.staging_member(reloc=True), True, reloc),
+        (ctx.staging_member(reloc=True), True, reloc),
     ]
     concurrent_ctx = replace(
         ctx,
@@ -476,6 +494,63 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     assert not concurrent_root.exists()
     ctx.cleanup_staging()
     assert not first_root.exists()
+
+
+def test_reloc_pair_acceptance_uses_linking_definitions_with_fallback_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx = _test_pair_context(tmp_path, required_exports={"add"})
+    observed: list[dict[str, str]] = []
+
+    def defined_names(_path: Path, expected: dict[str, str]) -> frozenset[str]:
+        observed.append(expected)
+        return frozenset({"molt_add"})
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "wasm_linking_defined_names",
+        defined_names,
+    )
+    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == set()
+    assert observed == [{"molt_add": "function"}]
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "wasm_linking_defined_names",
+        lambda _path, _expected: frozenset(),
+    )
+    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == {
+        "molt_add"
+    }
+
+
+def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shared, _reloc = _specs(_compiler_root())
+    destination = tmp_path / "staging" / "molt_runtime.wasm"
+    observed: list[tuple[Path, object, bool]] = []
+
+    def reuse(ctx, *, persist_output_fingerprint: bool):  # noqa: ANN001
+        observed.append(
+            (ctx.runtime_wasm, ctx.spec, persist_output_fingerprint)
+        )
+        return True
+
+    monkeypatch.setattr(runtime_wasm_build, "_reuse_target_runtime_wasm", reuse)
+    assert runtime_wasm_build._materialize_runtime_wasm_member_from_target(
+        destination,
+        reloc=False,
+        json_output=True,
+        cargo_timeout=5.0,
+        project_root=tmp_path,
+        required_exports=None,
+        resolved_modules=None,
+        spec=shared,
+    )
+    assert observed == [(destination, shared, False)]
 
 
 def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:

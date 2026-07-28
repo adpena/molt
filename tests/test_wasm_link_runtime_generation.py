@@ -66,12 +66,15 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    wasm_link._verify_runtime_generation(
+    selected = wasm_link._verify_runtime_generation(
         reloc=generation.reloc,
         shared=generation.shared,
         generation_manifest=generation.manifest,
         expected_identity=expected,
     )
+    assert selected == generation
+    assert selected.reloc.name.endswith(".runtime-wasm-member")
+    assert selected.shared.name.endswith(".runtime-wasm-member")
 
     generation.reloc.write_bytes(b"tampered")
     with pytest.raises(SystemExit, match="trusted caller identity"):

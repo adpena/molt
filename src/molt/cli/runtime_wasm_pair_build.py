@@ -12,6 +12,10 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Literal
 
+from molt._wasm_runtime_exports import (
+    wasm_runtime_missing_required_exports,
+    wasm_runtime_required_export_symbol_kinds,
+)
 from molt.cli import wasm_toolchain
 from molt.cli.artifact_state import (
     _build_state_root,
@@ -40,7 +44,7 @@ from molt.cli.runtime_build_identity import (
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
-from molt.cli.runtime_wasm_build import _ensure_runtime_wasm
+from molt.cli.runtime_wasm_build import _materialize_runtime_wasm_member_from_target
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
@@ -60,6 +64,7 @@ from molt.cli.runtime_wasm_build_support import (
     _reported_runtime_artifacts_from_cargo_stdout,
     _run_runtime_wasm_cargo_build,
     _runtime_exports_satisfy_for_mode,
+    _runtime_missing_exports_for_mode,
     _wasm_runtime_codegen_rustflags,
     _wasm_runtime_staticlib_candidates,
     _wasm_runtime_wasm_candidates,
@@ -79,6 +84,8 @@ from molt.cli.runtime_wasm_generation import (
 from molt.cli.runtime_wasm_validation import (
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
+    _runtime_wasm_artifact_validation_error,
+    _shared_runtime_wasm_validation_error,
 )
 from molt.cli.wasm_link_args import (
     wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
@@ -89,6 +96,7 @@ from molt.cli.wasm_link_args import (
 from molt.wasm_artifact import (
     inspect_wasm_binary as _inspect_wasm_binary,
 )
+from molt.wasm_linking_symbols import wasm_linking_defined_names
 
 
 def _warn_runtime_wasm_cache_publish_failure(
@@ -393,6 +401,16 @@ class _RuntimeWasmPairBuild:
     staging_shared: Path | None = None
     staging_reloc: Path | None = None
 
+    def reloc_missing_required_symbols(self, path: Path) -> set[str]:
+        expected_kinds = wasm_runtime_required_export_symbol_kinds(
+            self.required_exports
+        )
+        available = wasm_linking_defined_names(path, expected_kinds)
+        return wasm_runtime_missing_required_exports(
+            available,
+            self.required_exports,
+        )
+
     def failure_details(self) -> dict[str, object]:
         identity = self.pre_identity
         return {
@@ -442,17 +460,20 @@ class _RuntimeWasmPairBuild:
             expected_shared_identity=identity.shared,
             expected_reloc_identity=identity.reloc,
         )
-        if (
-            generation is None
-            or not _is_valid_shared_runtime_wasm_artifact(generation.shared)
-            or not _is_valid_runtime_wasm_artifact(generation.reloc)
-            or not _runtime_exports_satisfy_for_mode(
-                generation.shared, self.required_exports, reloc=False
+        if generation is None:
+            return False
+        try:
+            rejected = (
+                not _is_valid_shared_runtime_wasm_artifact(generation.shared)
+                or not _is_valid_runtime_wasm_artifact(generation.reloc)
+                or not _runtime_exports_satisfy_for_mode(
+                    generation.shared, self.required_exports, reloc=False
+                )
+                or bool(self.reloc_missing_required_symbols(generation.reloc))
             )
-            or not _runtime_exports_satisfy_for_mode(
-                generation.reloc, self.required_exports, reloc=True
-            )
-        ):
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+        if rejected:
             return False
         expected_path = (
             _build_state_root(self.project_root)
@@ -476,6 +497,41 @@ class _RuntimeWasmPairBuild:
         self.runtime_state.runtime_reloc_wasm_selected = generation.reloc
         self.runtime_state.runtime_wasm_expected_identity = expected_path
         return True
+
+    def generation_rejection_details(self) -> dict[str, object]:
+        identity = self.pre_identity
+        if identity is None:
+            return {"generation": "missing expected pair identity"}
+        generation = read_runtime_wasm_generation(
+            self.generation_manifest,
+            expected_shared_identity=identity.shared,
+            expected_reloc_identity=identity.reloc,
+        )
+        if generation is None:
+            return {
+                "generation": "manifest, member content, or identity validation failed"
+            }
+        shared_error = _shared_runtime_wasm_validation_error(generation.shared)
+        reloc_error = _runtime_wasm_artifact_validation_error(generation.reloc)
+        shared_missing = _runtime_missing_exports_for_mode(
+            generation.shared, self.required_exports, reloc=False
+        )
+        try:
+            reloc_missing = self.reloc_missing_required_symbols(generation.reloc)
+            reloc_linking_error = None
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            reloc_missing = set()
+            reloc_linking_error = str(exc)
+        return {
+            "generation": str(generation.manifest),
+            "shared": str(generation.shared),
+            "shared_validation_error": shared_error,
+            "shared_missing_exports": sorted(shared_missing),
+            "reloc": str(generation.reloc),
+            "reloc_linking_error": reloc_linking_error,
+            "reloc_validation_error": reloc_error,
+            "reloc_missing_symbols": sorted(reloc_missing),
+        }
 
     def provision_staging(self) -> None:
         identity = self.pre_identity
@@ -508,20 +564,15 @@ class _RuntimeWasmPairBuild:
         return member
 
     def ensure_member(self, *, reloc: bool) -> bool:
-        if not _ensure_runtime_wasm(
+        if not _materialize_runtime_wasm_member_from_target(
             self.staging_member(reloc=reloc),
             reloc=reloc,
             json_output=self.json_output,
-            cargo_profile=self.cargo_profile,
             cargo_timeout=self.cargo_timeout,
             project_root=self.project_root,
-            simd_enabled=self.simd_enabled,
-            freestanding=self.freestanding,
-            stdlib_profile=self.stdlib_profile,
             resolved_modules=self.resolved_modules,
-            required_link_features=self.required_link_features,
             required_exports=self.required_exports,
-            build_if_missing=False,
+            spec=self.reloc_spec if reloc else self.shared_spec,
         ):
             return False
         return True
@@ -800,7 +851,8 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
         return True
     return ctx.fail(
         "generation-acceptance",
-        "Published Runtime WASM generation failed immutable acceptance.",
+        "Published Runtime WASM generation failed immutable acceptance: "
+        + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
     )
 
 

@@ -16,7 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
@@ -38,7 +38,10 @@ from molt.cli.external_link_providers import (  # noqa: E402
     wasm_external_link_provider_symbols,
 )
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
-from molt.cli.runtime_wasm_generation import read_runtime_wasm_generation  # noqa: E402
+from molt.cli.runtime_wasm_generation import (  # noqa: E402
+    RuntimeWasmGeneration,
+    read_runtime_wasm_generation,
+)
 from molt.cli.wasm_link_cache import (  # noqa: E402
     WasmLinkCacheEntry,
     _default_wasm_link_cache,
@@ -68,8 +71,11 @@ from molt.wasm_artifact import (  # noqa: E402
     read_wasm_split_runtime_callable_layout,
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+RuntimeLinkInputRole = Literal["reloc", "shared"]
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -99,7 +105,6 @@ from wasm_link_format import (  # noqa: E402
     _collect_func_names as _collect_func_names,
     _collect_function_exports as _collect_function_exports,
     _collect_imports as _collect_imports,
-    _collect_linking_function_symbols as _collect_linking_function_symbols,
     _collect_module_imports as _collect_module_imports,
     _count_func_imports as _count_func_imports,
     _ensure_table_export as _ensure_table_export,
@@ -316,7 +321,7 @@ def _verify_runtime_generation(
     shared: Path,
     generation_manifest: Path,
     expected_identity: Path,
-) -> None:
+) -> RuntimeWasmGeneration:
     """Verify both runtime members against caller-produced trusted identity."""
 
     for path in (reloc, shared, generation_manifest, expected_identity):
@@ -351,6 +356,7 @@ def _verify_runtime_generation(
             "Runtime link inputs are not the immutable members selected by "
             f"{generation_manifest}"
         )
+    return generation
 
 
 def _read_wasm_bytes_with_retry(
@@ -404,8 +410,6 @@ def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
 def _preflight_relocatable_runtime(
     wasm_ld: str, runtime: Path, temp_dir: Any
 ) -> str | None:
-    if not runtime.name.endswith("_reloc.wasm"):
-        return None
     output = Path(temp_dir.name) / "runtime_reloc_preflight.wasm"
     result = _run_external_tool(
         [wasm_ld, "-r", "-o", str(output), str(runtime)],
@@ -440,7 +444,11 @@ def _dump_symbols(
         print(f"Failed to read wasm symbols from {path}: {exc}", file=sys.stderr)
         return []
     try:
-        parsed = _collect_linking_function_symbols(data)
+        parsed = [
+            (symbol.flags, symbol.index, symbol.name, "")
+            for symbol in parse_wasm_linking_symbols(data).function_symbols
+            if symbol.index is not None
+        ]
     except ValueError as exc:
         print(
             f"Failed to parse linking symbol table from {path}: {exc}",
@@ -997,50 +1005,10 @@ def _iter_linking_data_symbols(
     For defined data symbols, yields ``(name, data_offset, size)``. For
     undefined symbols, ``data_offset`` and ``size`` are ``None``.
     """
-    for section_id, payload in _parse_sections(data):
-        if section_id != 0:
+    for symbol in parse_wasm_linking_symbols(data).data_symbols:
+        if undefined != (not symbol.is_defined):
             continue
-        name, custom_payload = _parse_custom_section(payload)
-        if name != "linking":
-            continue
-        _version, subsections = _parse_linking_payload(custom_payload)
-        for sub_id, sub_payload in subsections:
-            if sub_id != SYMTAB_SUBSECTION_ID:
-                continue
-            count, offset = _read_varuint(sub_payload, 0)
-            for _ in range(count):
-                if offset >= len(sub_payload):
-                    raise ValueError("Unexpected EOF while reading linking symbols")
-                kind = sub_payload[offset]
-                offset += 1
-                flags, offset = _read_varuint(sub_payload, offset)
-                if kind == SYMBOL_KIND_FUNCTION:
-                    _index, _name, offset = _parse_indexed_symbol(
-                        sub_payload, offset, flags
-                    )
-                    continue
-                if kind in (2, 4, 5):
-                    _index, _name, offset = _parse_indexed_symbol(
-                        sub_payload, offset, flags
-                    )
-                    continue
-                if kind == 3:
-                    _index, offset = _read_varuint(sub_payload, offset)
-                    continue
-                if kind != _SYMBOL_KIND_DATA:
-                    raise ValueError(f"Unknown linking symbol kind: {kind}")
-                symbol_name, offset = _read_string(sub_payload, offset)
-                is_undefined = bool(flags & FLAG_UNDEFINED)
-                if is_undefined:
-                    if undefined:
-                        yield symbol_name, None, None
-                    continue
-                segment_index, offset = _read_varuint(sub_payload, offset)
-                data_offset, offset = _read_varuint(sub_payload, offset)
-                size, offset = _read_varuint(sub_payload, offset)
-                del segment_index
-                if not undefined:
-                    yield symbol_name, data_offset, size
+        yield symbol.name, symbol.data_offset, symbol.size
 
 
 def _defined_runtime_data_symbol_offsets(
@@ -1279,16 +1247,14 @@ def _build_runtime_data_alias_object(
     return _build_sections(sections)
 
 
-def _resolve_deploy_runtime(
-    runtime: Path, deploy_runtime_override: Path | None
-) -> Path:
+def _resolve_deploy_runtime(deploy_runtime_override: Path | None) -> Path:
     """Resolve the deploy-ready (non-relocatable) runtime shared at run time.
 
     Mirrors the split-runtime publication path: honor
-    ``MOLT_WASM_DEPLOY_RUNTIME`` / an explicit override, otherwise fall back to
-    ``runtime`` and prefer its non-relocatable sibling (``*_reloc.wasm`` ->
-    ``*.wasm``). The returned artifact is the one whose linear-memory data
-    addresses the split app must agree with.
+    ``MOLT_WASM_DEPLOY_RUNTIME`` / an explicit override. The returned artifact
+    is the one whose linear-memory data addresses the split app must agree with.
+    Trusted immutable members have content suffixes, so deriving one member from
+    another member's filename is not an admissible custody authority.
     """
     if deploy_runtime_override is not None:
         if not deploy_runtime_override.exists():
@@ -1301,13 +1267,9 @@ def _resolve_deploy_runtime(
         ambient = Path(env_deploy_runtime).expanduser()
         if ambient.exists():
             return ambient
-    if runtime.name.endswith("_reloc.wasm"):
-        non_reloc = runtime.with_name(runtime.name.replace("_reloc.wasm", ".wasm"))
-        if non_reloc.exists():
-            return non_reloc
-    if runtime.exists():
-        return runtime
-    raise FileNotFoundError(f"split deploy runtime not found: {runtime}")
+    raise FileNotFoundError(
+        "split deploy runtime requires one explicit trusted shared member"
+    )
 
 
 def _split_runtime_data_alias_object(
@@ -3591,6 +3553,7 @@ def _run_wasm_ld_with_custodied_inputs(
     output: Path,
     linked: Path,
     *,
+    runtime_role: RuntimeLinkInputRole,
     allowlist_override: Path | None = None,
     optimize: bool = False,
     optimize_level: str = "Oz",
@@ -3627,44 +3590,18 @@ def _run_wasm_ld_with_custodied_inputs(
         return 1
     runtime_exports: set[str]
     try:
-        runtime_exports = _collect_exports(runtime.read_bytes())
-    except ValueError as exc:
+        runtime_data = runtime.read_bytes()
+        runtime_exports = (
+            set(parse_wasm_linking_symbols(runtime_data).defined_names)
+            if runtime_role == "reloc"
+            else _collect_exports(runtime_data)
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(
-            f"Failed to parse runtime wasm exports ({runtime}): {exc}", file=sys.stderr
+            f"Failed to parse {runtime_role} runtime symbols ({runtime}): {exc}",
+            file=sys.stderr,
         )
         runtime_exports = set()
-    if not runtime_exports and runtime.name.endswith("_reloc.wasm"):
-        fallback = runtime.with_name(runtime.name.replace("_reloc", ""))
-        if fallback.exists():
-            try:
-                runtime_exports = _collect_exports(fallback.read_bytes())
-            except ValueError as exc:
-                print(
-                    f"Failed to parse fallback runtime wasm exports ({fallback}): {exc}",
-                    file=sys.stderr,
-                )
-                runtime_exports = set()
-    if not runtime_exports:
-        # The runtime might be a relocatable object with no export section.
-        # Search sibling directories for a non-relocatable build that has
-        # exports (e.g. wasm-release profile).
-        for sibling_dir in (
-            runtime.parent.parent / "wasm-release",
-            runtime.parent.parent / "debug",
-        ):
-            candidate = sibling_dir / runtime.name
-            if candidate.exists() and candidate != runtime:
-                try:
-                    runtime_exports = _collect_exports(candidate.read_bytes())
-                except ValueError:
-                    runtime_exports = set()
-                if runtime_exports:
-                    print(
-                        f"Using exports from {candidate} "
-                        f"({len(runtime_exports)} exports)",
-                        file=sys.stderr,
-                    )
-                    break
     if not runtime_exports:
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
@@ -3714,9 +3651,7 @@ def _run_wasm_ld_with_custodied_inputs(
             temp_dir.cleanup()
             return 1
         try:
-            deploy_runtime_path = _resolve_deploy_runtime(
-                runtime, deploy_runtime_override
-            )
+            deploy_runtime_path = _resolve_deploy_runtime(deploy_runtime_override)
             runtime_callable_layout = read_wasm_split_runtime_callable_layout(
                 deploy_runtime_path
             )
@@ -3866,40 +3801,18 @@ def _run_wasm_ld_with_custodied_inputs(
     # will resolve them â€” no extra action needed.  If the link runtime is
     # the non-relocatable module itself, we need the relocatable variant.
     if force_exports:
-        is_reloc_runtime = runtime.name.endswith("_reloc.wasm")
-        if is_reloc_runtime:
+        if runtime_role == "reloc":
             # The relocatable runtime retains all symbols â€” the pre-check
             # against the non-reloc export list was overly conservative.
             pass
         else:
-            # Non-reloc runtime is missing these exports; try the reloc.
-            reloc_candidate = runtime.with_name(
-                runtime.name.replace(".wasm", "_reloc.wasm")
+            missing_list = ", ".join(sorted(set(force_exports)))
+            print(
+                f"Wasm link failed: {len(force_exports)} import(s) missing from "
+                f"the explicitly selected shared runtime: {missing_list}",
+                file=sys.stderr,
             )
-            if reloc_candidate.exists():
-                print(
-                    f"Wasm link: switching to relocatable runtime "
-                    f"{reloc_candidate.name} to resolve "
-                    f"{len(force_exports)} missing export(s)",
-                    file=sys.stderr,
-                )
-                runtime = reloc_candidate
-            else:
-                missing_list = ", ".join(sorted(set(force_exports)))
-                print(
-                    f"Wasm link failed: {len(force_exports)} import(s) "
-                    f"missing from runtime exports and no relocatable "
-                    f"runtime available: {missing_list}",
-                    file=sys.stderr,
-                )
-                return 1
-
-    if not runtime.name.endswith("_reloc.wasm"):
-        reloc_candidate = runtime.with_name(
-            runtime.name.replace(".wasm", "_reloc.wasm")
-        )
-        if reloc_candidate.exists():
-            runtime = reloc_candidate
+            return 1
 
     # The published linked artifact is a runnable Node/WASI artifact, even when
     # the deployment output is split-runtime. Keep split app deforestation in
@@ -3907,8 +3820,10 @@ def _run_wasm_ld_with_custodied_inputs(
     # unreachable runtime stub.
     link_runtime_path = runtime
 
-    preflight_error = _preflight_relocatable_runtime(
-        wasm_ld, link_runtime_path, temp_dir
+    preflight_error = (
+        _preflight_relocatable_runtime(wasm_ld, link_runtime_path, temp_dir)
+        if runtime_role == "reloc"
+        else None
     )
     if preflight_error is not None:
         print(f"Wasm link failed: {preflight_error}", file=sys.stderr)
@@ -4785,6 +4700,7 @@ def _run_wasm_ld(
     output: Path,
     linked: Path,
     *,
+    runtime_role: RuntimeLinkInputRole,
     allowlist_override: Path | None = None,
     optimize: bool = False,
     optimize_level: str = "Oz",
@@ -4817,40 +4733,13 @@ def _run_wasm_ld(
                         is None
                     )
                 )
-                if runtime.name.endswith("_reloc.wasm")
+                if runtime_role == "reloc"
                 else None,
                 retry_delay_seconds=0.25,
             )
             runtime_snapshot = (
                 runtime_snapshot_root / runtime_snapshot.parent.name / runtime.name
             )
-            for sibling_name in {
-                runtime.name.replace("_reloc.wasm", ".wasm"),
-                runtime.name.replace(".wasm", "_reloc.wasm"),
-            }:
-                sibling = runtime.with_name(sibling_name)
-                if sibling != runtime and sibling.exists():
-                    sibling_snapshot = _snapshot_link_input(
-                        sibling,
-                        runtime_snapshot_root,
-                        label=f"sibling-{sibling_name}",
-                        accept_path=(
-                            lambda path: (
-                                _preflight_relocatable_runtime(
-                                    wasm_ld,
-                                    path,
-                                    type("CustodyDir", (), {"name": tmp})(),
-                                )
-                                is None
-                            )
-                        )
-                        if sibling.name.endswith("_reloc.wasm")
-                        else None,
-                        retry_delay_seconds=0.25,
-                    )
-                    target = runtime_snapshot.parent / sibling.name
-                    if sibling_snapshot != target:
-                        target.write_bytes(sibling_snapshot.read_bytes())
             output_snapshot = _snapshot_link_input(
                 output,
                 snapshot_root,
@@ -4878,17 +4767,20 @@ def _run_wasm_ld(
                     )
                 native_snapshot_list.append(native_snapshot)
             native_snapshots = tuple(native_snapshot_list)
-            deploy_runtime = _resolve_deploy_runtime(runtime, deploy_runtime_override)
-            deploy_runtime_snapshot = _snapshot_link_input(
-                deploy_runtime,
-                snapshot_root,
-                label="deploy-runtime",
-            )
+            deploy_runtime_snapshot = None
+            if split_runtime:
+                deploy_runtime = _resolve_deploy_runtime(deploy_runtime_override)
+                deploy_runtime_snapshot = _snapshot_link_input(
+                    deploy_runtime,
+                    snapshot_root,
+                    label="deploy-runtime",
+                )
             return _run_wasm_ld_with_custodied_inputs(
                 wasm_ld,
                 runtime_snapshot,
                 output_snapshot,
                 linked,
+                runtime_role=runtime_role,
                 allowlist_override=allowlist_override,
                 optimize=optimize,
                 optimize_level=optimize_level,
@@ -4976,12 +4868,23 @@ def main() -> int:
     if not runtime.exists():
         print(f"Runtime wasm not found: {runtime}", file=sys.stderr)
         return 1
-    _verify_runtime_generation(
+    generation = _verify_runtime_generation(
         reloc=runtime,
         shared=args.runtime_shared,
         generation_manifest=args.runtime_generation,
         expected_identity=args.runtime_expected_identity,
     )
+    runtime = generation.reloc
+    if args.deploy_runtime_override is not None and (
+        args.deploy_runtime_override.resolve(strict=False)
+        != generation.shared.resolve(strict=False)
+    ):
+        print(
+            "Explicit deploy runtime is not the shared member selected by the "
+            "trusted generation.",
+            file=sys.stderr,
+        )
+        return 1
     if not output.exists():
         print(f"Output wasm not found: {output}", file=sys.stderr)
         return 1
@@ -5000,12 +4903,13 @@ def main() -> int:
         runtime,
         output,
         linked,
+        runtime_role="reloc",
         optimize=args.optimize,
         optimize_level=args.optimize_level,
         freestanding=args.freestanding,
         split_runtime=args.split_runtime,
         split_output_dir=args.split_output_dir,
-        deploy_runtime_override=args.deploy_runtime_override,
+        deploy_runtime_override=generation.shared if args.split_runtime else None,
         native_objects=tuple(args.native_objects),
         preserve_debug_sections=args.preserve_debug_sections,
         phase_timings_file=args.phase_timings_file,
