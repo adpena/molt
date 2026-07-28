@@ -31,7 +31,7 @@ from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,
     _resolve_import_admission_policy,
 )
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.json_contract import (
     _coerce_json_path,

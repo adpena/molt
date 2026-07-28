@@ -44,7 +44,7 @@ from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.file_hashing import (
+from molt.file_hashing import (
     _hash_source_tree_metadata,
     _iter_source_fingerprint_files,
 )

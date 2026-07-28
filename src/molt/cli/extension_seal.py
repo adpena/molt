@@ -20,7 +20,7 @@ from molt.cli.external_native import (
     _manifest_has_sealed_extension_custody,
     _validate_module_attr_callable_export_custody,
 )
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload

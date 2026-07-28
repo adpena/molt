@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import file_hashing
+from molt import file_hashing
 
 
 def test_source_fingerprint_files_are_deterministic_and_filtered(

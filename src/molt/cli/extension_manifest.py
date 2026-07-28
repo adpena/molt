@@ -13,7 +13,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any, Mapping
 
 from molt.cli.capability_spec import _split_tokens
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,

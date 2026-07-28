@@ -34,7 +34,7 @@ from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_finge
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.llvm_wasi_tools import llvm_tool_candidates
 from molt.cli import function_references as _function_references
 from molt.cli.models import _ModuleGraphMetadata

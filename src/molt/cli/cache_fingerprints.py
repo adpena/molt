@@ -17,7 +17,7 @@ from molt.cli.compiler_metadata import (
     _rustc_version,
 )
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.file_hashing import (
+from molt.file_hashing import (
     _hash_source_tree_metadata,
     _sha256_file,
     _source_fingerprint_files,

@@ -16,7 +16,7 @@ from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
 from molt import process_guard
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.file_hashing import _content_change_time_ns
+from molt.file_hashing import _content_change_time_ns
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.dx import _memory_bounded_worker_count

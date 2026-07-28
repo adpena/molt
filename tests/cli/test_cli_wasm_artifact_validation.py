@@ -803,7 +803,7 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
         cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True
     )
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_hash_source_tree_metadata",
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,

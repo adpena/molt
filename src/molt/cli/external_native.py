@@ -30,7 +30,7 @@ from molt.cli.extension_manifest import (
     _py_methoddef_names,
     _validate_extension_manifest,
 )
-from molt.cli.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file
 from molt.cli.external_link_providers import (
     wasm_external_link_provider_symbol_classes,
 )
