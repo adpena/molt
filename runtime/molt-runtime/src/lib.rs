@@ -232,7 +232,52 @@ mod wasm_abi_exports;
 /// dependent crates that need to call init/shutdown without going through
 /// C ABI extern blocks.
 pub mod lifecycle {
-    use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown};
+    use crate::concurrency::{GilGuard, gil_held};
+    use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown, runtime_is_ready};
+
+    struct RuntimeExecutionAttachment<'gil> {
+        gil: &'gil GilGuard,
+        clear_worker_state: bool,
+        #[cfg(not(target_arch = "wasm32"))]
+        established: bool,
+    }
+
+    impl<'gil> RuntimeExecutionAttachment<'gil> {
+        fn enter(gil: &'gil GilGuard, acquired_runtime_guard: bool) -> Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let attached_before =
+                    molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+                molt_cpython_abi::api::object::attach_runtime_execution_thread();
+                let established = !attached_before
+                    && molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+                Self {
+                    gil,
+                    clear_worker_state: acquired_runtime_guard || established,
+                    established,
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                Self {
+                    gil,
+                    clear_worker_state: acquired_runtime_guard,
+                }
+            }
+        }
+    }
+
+    impl Drop for RuntimeExecutionAttachment<'_> {
+        fn drop(&mut self) {
+            if self.clear_worker_state {
+                crate::state::clear_worker_thread_state(&self.gil.token());
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.established {
+                molt_cpython_abi::api::object::detach_runtime_execution_thread();
+            }
+        }
+    }
 
     /// Initialize the runtime.  Returns 1 on success, 0 if already shut down.
     /// Idempotent: repeated calls after the first return 1 immediately.
@@ -251,6 +296,97 @@ pub mod lifecycle {
     #[inline]
     pub fn shutdown() -> u64 {
         molt_runtime_shutdown()
+    }
+
+    /// Return whether the runtime is accepting new calls.
+    ///
+    /// This is the public embedding projection of the canonical runtime
+    /// lifecycle. It is true only in the ready phase: initialization and
+    /// finalization are not callable states.
+    #[inline]
+    pub fn is_ready() -> bool {
+        runtime_is_ready()
+    }
+
+    /// Run one embedding call while the runtime remains ready and alive.
+    ///
+    /// The initial atomic projection keeps pre-init and post-shutdown callers
+    /// from materializing runtime TLS. A call that observes readiness then
+    /// acquires the GIL and rechecks under that custody, closing the race with
+    /// shutdown. Native callers also attach their CPython thread state for the
+    /// duration of the operation; shutdown cannot free the runtime until the
+    /// attachment is detached and GIL custody is released. When this call
+    /// establishes outermost execution custody, it also drains ref-owning
+    /// worker TLS before releasing that custody, matching the public GIL API.
+    pub fn with_ready_execution<R>(operation: impl FnOnce() -> R) -> Option<R> {
+        if !runtime_is_ready() {
+            return None;
+        }
+        crate::state::touch_tls_guard();
+        let held_before = gil_held();
+        let _gil = GilGuard::new();
+        if !runtime_is_ready() {
+            return None;
+        }
+        let _attachment = RuntimeExecutionAttachment::enter(&_gil, !held_before);
+        Some(operation())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::time::Duration;
+
+        #[test]
+        fn ready_execution_lease_blocks_shutdown_and_refuses_late_calls() {
+            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                let release = Arc::new(Barrier::new(2));
+                let (entered_tx, entered_rx) = mpsc::channel();
+                let worker_release = Arc::clone(&release);
+                let worker = std::thread::spawn(move || {
+                    with_ready_execution(|| {
+                        entered_tx.send(()).unwrap();
+                        worker_release.wait();
+                        37_u64
+                    })
+                });
+                entered_rx.recv().unwrap();
+                assert_eq!(
+                    molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                    1,
+                    "ready execution must publish one shutdown-visible attachment"
+                );
+
+                let (attempted_tx, attempted_rx) = mpsc::channel();
+                let (shutdown_tx, shutdown_rx) = mpsc::channel();
+                let shutdown = std::thread::spawn(move || {
+                    attempted_tx.send(()).unwrap();
+                    shutdown_tx.send(molt_runtime_shutdown()).unwrap();
+                });
+                attempted_rx.recv().unwrap();
+                assert!(
+                    shutdown_rx
+                        .recv_timeout(Duration::from_millis(100))
+                        .is_err(),
+                    "shutdown must wait for the live execution lease"
+                );
+
+                release.wait();
+                assert_eq!(worker.join().unwrap(), Some(37));
+                assert_eq!(shutdown_rx.recv().unwrap(), 1);
+                shutdown.join().unwrap();
+
+                let mut late_call_ran = false;
+                assert_eq!(
+                    with_ready_execution(|| {
+                        late_call_ran = true;
+                    }),
+                    None
+                );
+                assert!(!late_call_ran, "post-shutdown operation must not run");
+            });
+        }
     }
 }
 
