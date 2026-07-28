@@ -40,14 +40,10 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     # deterministic on developer hosts that have an external (non-C:) artifact
     # drive attached; _base_env() -> development_artifact_env() prefers an
     # external root whenever one is available.
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     for key in (
-        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-        "MOLT_USE_EXTERNAL_ARTIFACTS",
-        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
-        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
-        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+        *molt_dx.CANONICAL_RUN_ENV_KEYS,
+        *molt_dx.DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        *molt_dx.DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS,
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
