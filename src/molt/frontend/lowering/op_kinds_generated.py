@@ -299,6 +299,66 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
     }
 )
 
+SIMPLEIR_VAR_RESULT_KINDS: frozenset[str] = frozenset(
+    {
+        "checked_add",
+        "checked_mul",
+        "iter_next_unboxed",
+    }
+)
+
+SIMPLEIR_VAR_DEFINITION_KINDS: frozenset[str] = frozenset(
+    {
+        "delete_var",
+        "store_fast",
+        "store_var",
+    }
+)
+
+SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS: frozenset[str] = frozenset(
+    {
+        "copy_var",
+        "load_var",
+    }
+)
+
+SIMPLEIR_OUT_METADATA_KINDS: frozenset[str] = frozenset(
+    {
+        "dec_ref",
+        "del_attr",
+        "del_attr_generic_obj",
+        "del_attr_generic_ptr",
+        "del_attr_name",
+        "del_index",
+        "delete_var",
+        "guarded_field_init",
+        "guarded_field_set",
+        "inc_ref",
+        "index_set",
+        "module_cache_del",
+        "module_cache_set",
+        "module_del_global",
+        "module_del_global_if_present",
+        "module_set_attr",
+        "raise",
+        "raise_from",
+        "set_attr",
+        "set_attr_generic_obj",
+        "set_attr_generic_ptr",
+        "set_attr_name",
+        "store",
+        "store_attr",
+        "store_fast",
+        "store_index",
+        "store_init",
+        "store_var",
+    }
+)
+
+SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[str, int] = {
+    "unpack_sequence": 1,
+}
+
 # Frontend `op.kind`s that can raise at runtime — emit() attaches the
 # expression-level col_offset for traceback caret annotations. Each row
 # is either an opcode-mapped may_throw kind (cross-checked against the

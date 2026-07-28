@@ -1,33 +1,20 @@
 use super::rust_ident;
 use crate::{FunctionIR, OpIR};
+use molt_tir::tir::simple_def_use::{simple_ir_defined_names, simple_ir_read_names};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Return every Python binding defined by one SimpleIR operation.
 ///
-/// Most operations define their optional `out` binding. `unpack_sequence` is
-/// the variable-result exception: `args[0]` is the sole operand and every
-/// remaining argument is an independently-defined output binding. Keeping
-/// this shape in one Rust-backend authority prevents scope analysis, alias
-/// invalidation, and source emission from independently guessing which names
-/// are definitions.
+/// Field roles come from the generated shared authority; Rust only maps the
+/// canonical names into target identifiers.
 pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
-    if op.kind == "unpack_sequence" {
-        return op
-            .args
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .skip(1)
-            .filter(|name| !name.is_empty() && name.as_str() != "none")
-            .map(|name| rust_ident(name))
-            .collect();
+    if op.kind.starts_with("nop") {
+        return Vec::new();
     }
-
-    op.out
-        .as_deref()
-        .filter(|name| !name.is_empty() && *name != "none" && !op.kind.starts_with("nop"))
-        .map(rust_ident)
+    simple_ir_defined_names(op)
         .into_iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| rust_ident(&name))
         .collect()
 }
 
@@ -37,17 +24,10 @@ pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
 /// outputs as operands creates false scope dependencies and masks missing
 /// declarations in generated Rust.
 fn op_operand_vars(op: &OpIR) -> Vec<String> {
-    let args = op.args.as_deref().unwrap_or(&[]);
-    let args = if op.kind == "unpack_sequence" {
-        &args[..args.len().min(1)]
-    } else {
-        args
-    };
-    let mut refs: Vec<String> = args.iter().map(|name| rust_ident(name)).collect();
-    if let Some(value) = op.var.as_deref() {
-        refs.push(rust_ident(value));
-    }
-    refs
+    simple_ir_read_names(op)
+        .into_iter()
+        .map(|name| rust_ident(&name))
+        .collect()
 }
 
 // ── IR lowering passes (shared logic, simpler than Luau variants) ─────────────

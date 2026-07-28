@@ -2179,7 +2179,7 @@ fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
 }
 
 #[test]
-fn test_compile_checked_rejects_sys_bootstrap_without_object_model() {
+fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -2268,16 +2268,76 @@ fn test_compile_checked_rejects_sys_bootstrap_without_object_model() {
         profile: None,
     };
 
-    let error = LuauBackend::new()
+    let source = LuauBackend::new()
         .compile_checked(&ir)
-        .expect_err("sys bootstrap requires an exact object/module model");
-    assert!(
-        error.contains("rejected before source generation")
-            && (error.contains("arbitrary-precision value authority")
-                || error.contains("structured catchable Python exceptions")
-                || error.contains("Python aliasing, cycles")),
-        "sys bootstrap must fail at semantic admission, got: {error}"
-    );
+        .expect("bounded sys bootstrap literals and the Luau module model are exact");
+    assert!(source.contains("local major: number = 3"));
+    assert!(source.contains("local minor: number = 14"));
+    assert!(source.contains("molt_sys_set_version_info("));
+    assert!(source.contains("local sys_module = molt_luau_import_module(sys_name)"));
+}
+
+#[test]
+fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_overflow() {
+    let exact_ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(42),
+                    out: Some("plain".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_int".to_string(),
+                    value: Some(-(1_i64 << 53)),
+                    out: Some("typed".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_bigint".to_string(),
+                    s_value: Some((1_u64 << 53).to_string()),
+                    out: Some("decimal".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&exact_ir)
+        .expect("every concrete literal spelling must share exact bounded admission");
+    assert!(source.contains("local plain: number = 42"));
+    assert!(source.contains("local typed: number = -9007199254740992"));
+    assert!(source.contains("local decimal: number = 9007199254740992"));
+
+    for payload in ["9007199254740993", "-9007199254740993"] {
+        let overflow_ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "const_bigint".to_string(),
+                    s_value: Some(payload.to_string()),
+                    out: Some("overflow".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let error = LuauBackend::new()
+            .compile_checked(&overflow_ir)
+            .expect_err("Luau must not round an unsafe bigint literal");
+        assert!(error.contains("exact concrete value authority"), "{error}");
+    }
 }
 
 #[test]
@@ -2645,7 +2705,7 @@ fn test_compile_checked_lowers_code_slot_metadata_to_reachable_luau_state() {
 }
 
 #[test]
-fn test_compile_checked_accepts_shared_drop_artifacts_as_gc_noops() {
+fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "drop_artifact_test".to_string(),
@@ -2662,6 +2722,27 @@ fn test_compile_checked_accepts_shared_drop_artifacts_as_gc_noops() {
                     kind: "exception_region_drops_inserted".to_string(),
                     ..OpIR::default()
                 },
+            ],
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("phase-completion markers carry no deterministic lifetime operation");
+    assert!(!source.contains("[unsupported op: drop_inserted]"));
+    assert!(!source.contains("[unsupported op: exception_region_drops_inserted]"));
+}
+
+#[test]
+fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifacts() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "drop_operation_test".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
                 OpIR {
                     kind: "const_str".to_string(),
                     out: Some("v0".to_string()),
@@ -2693,9 +2774,12 @@ fn test_compile_checked_accepts_shared_drop_artifacts_as_gc_noops() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("explicit RC operations require deterministic lifetime semantics");
+    assert!(error.contains("deterministic Python lifetime/finalizer semantics"));
+
     let source = backend.compile(&ir);
-    assert!(!source.contains("[unsupported op: drop_inserted]"));
-    assert!(!source.contains("[unsupported op: exception_region_drops_inserted]"));
     assert!(!source.contains("[unsupported op: inc_ref]"));
     assert!(!source.contains("[unsupported op: dec_ref]"));
     assert!(!source.contains("[unsupported op: release]"));

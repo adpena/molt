@@ -17,6 +17,9 @@ pub(super) fn emit_iterator_op(
     match op.kind.as_str() {
         "iter_next_unboxed" => {
             let args = op.args.as_ref().unwrap();
+            let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+            let value_name = results.first().copied();
+            let done_name = results.get(1).copied();
             let iter = locals[&args[0]];
             let pair = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(iter));
@@ -26,7 +29,7 @@ pub(super) fn emit_iterator_op(
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IterNext],
             );
             func.instruction(&Instruction::LocalSet(pair));
-            if let Some(done_name) = op.out.as_ref()
+            if let Some(done_name) = done_name
                 && done_name != "none"
             {
                 func.instruction(&Instruction::LocalGet(pair));
@@ -38,7 +41,7 @@ pub(super) fn emit_iterator_op(
                 );
                 func.instruction(&Instruction::LocalSet(locals[done_name]));
             }
-            if let Some(val_name) = op.var.as_ref()
+            if let Some(val_name) = value_name
                 && val_name != "none"
             {
                 func.instruction(&Instruction::LocalGet(pair));

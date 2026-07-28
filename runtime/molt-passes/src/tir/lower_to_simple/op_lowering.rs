@@ -1,4 +1,7 @@
 use crate::ir::OpIR;
+use crate::tir::op_kinds_generated::{
+    SimpleIrVarFieldRole, simpleir_first_trailing_result_arg_table, simpleir_var_field_role_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::simple_value_names::value_var;
 
@@ -10,6 +13,28 @@ use super::op_utils::{
 // ---------------------------------------------------------------------------
 // Op lowering
 // ---------------------------------------------------------------------------
+
+fn assign_multi_result_transport(simple: &mut OpIR, op: &TirOp) {
+    let names = op.results.iter().map(|value| value_var(*value));
+    if simpleir_var_field_role_table(simple.kind.as_str()) == SimpleIrVarFieldRole::Result {
+        let mut names = names;
+        simple.var = names.next();
+        simple.out = names.next();
+        debug_assert!(
+            names.next().is_none(),
+            "var/out transport holds exactly two results"
+        );
+    } else if let Some(first_result) =
+        simpleir_first_trailing_result_arg_table(simple.kind.as_str())
+    {
+        let args = simple.args.get_or_insert_with(Vec::new);
+        debug_assert_eq!(args.len(), first_result);
+        args.extend(names);
+    } else {
+        debug_assert!(op.results.len() <= 1);
+        simple.out = names.into_iter().next();
+    }
+}
 
 /// Convert a single TirOp to an OpIR. Returns None for ops that are
 /// dialect-internal and have no SimpleIR equivalent (yet).
@@ -127,29 +152,25 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // OpCode::CheckedAdd with the same var/out → results order); without
         // the pair it would fall to the Copy fallback and silently vanish.
         OpCode::CheckedAdd => {
-            let sum_var = op.results.first().map(|v| value_var(*v));
-            let flag_var = op.results.get(1).map(|v| value_var(*v));
-            Some(OpIR {
+            let mut simple = OpIR {
                 kind: "checked_add".to_string(),
                 args: Some(operand_args(op)),
-                out: flag_var,
-                var: sum_var,
                 ..OpIR::default()
-            })
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
         }
         // CheckedMul mirrors CheckedAdd exactly: `var` = results[0] (wrapping
         // product), `out` = results[1] (overflow flag). Same round-trip
         // requirement — ssa.rs maps "checked_mul" back to OpCode::CheckedMul.
         OpCode::CheckedMul => {
-            let product_var = op.results.first().map(|v| value_var(*v));
-            let flag_var = op.results.get(1).map(|v| value_var(*v));
-            Some(OpIR {
+            let mut simple = OpIR {
                 kind: "checked_mul".to_string(),
                 args: Some(operand_args(op)),
-                out: flag_var,
-                var: product_var,
                 ..OpIR::default()
-            })
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
         }
 
         // Comparison.
@@ -404,27 +425,23 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::GetIter => Some(unary_op("get_iter", op, out_var)),
         OpCode::IterNext => Some(unary_op("iter_next", op, out_var)),
         OpCode::IterNextUnboxed => {
-            // Emit as iter_next_unboxed with two output vars:
-            // results[0] = value, results[1] = done_flag.
-            let val_var = op.results.first().map(|v| value_var(*v));
-            let done_var = op.results.get(1).map(|v| value_var(*v));
-            Some(OpIR {
+            let mut simple = OpIR {
                 kind: "iter_next_unboxed".to_string(),
                 args: Some(operand_args(op)),
-                out: done_var,
-                var: val_var,
                 ..OpIR::default()
-            })
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
         }
         OpCode::UnpackSequence => {
-            let mut args = operand_args(op);
-            args.extend(op.results.iter().map(|v| value_var(*v)));
-            Some(OpIR {
+            let mut simple = OpIR {
                 kind: "unpack_sequence".to_string(),
-                args: Some(args),
+                args: Some(operand_args(op)),
                 value: attr_int(&op.attrs, "value"),
                 ..OpIR::default()
-            })
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
         }
         OpCode::ForIter => Some(OpIR {
             kind: "for_iter".to_string(),

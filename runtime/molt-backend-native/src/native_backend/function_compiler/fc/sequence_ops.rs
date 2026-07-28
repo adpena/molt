@@ -244,24 +244,20 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             def_var_named(&mut *builder, vars, out_name, tuple_bits);
         }
         "unpack_sequence" => {
-            // Outlined sequence unpacking: args[0] is the sequence,
-            // args[1..] are the output variable names.
+            // Generated SimpleIR field authority separates the sole sequence
+            // source from every output binding.
             // op.value holds the expected element count.
-            let args = op
-                .args
-                .as_ref()
-                .expect("unpack_sequence must carry source and result bindings");
+            let reads = crate::tir::simple_def_use::simple_ir_read_names(op);
+            let outputs = crate::tir::simple_def_use::simple_ir_result_names(op);
             let raw_expected = op
                 .value
                 .expect("unpack_sequence must carry an exact result count");
             let expected_count = usize::try_from(raw_expected)
                 .expect("unpack_sequence result count must fit the active target");
             assert_eq!(
-                args.len(),
-                expected_count
-                    .checked_add(1)
-                    .expect("unpack_sequence shape overflow"),
-                "unpack_sequence source/result bindings must match its exact count"
+                (reads.len(), outputs.len()),
+                (1, expected_count),
+                "unpack_sequence must carry one source and its exact result count"
             );
             let seq_val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -270,7 +266,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                &args[0],
+                &reads[0],
                 representation_plan,
             )
             .expect("Unpack sequence source not found");
@@ -314,7 +310,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     i32::try_from(i.checked_mul(8).expect("unpack offset overflow"))
                         .expect("unpack offset exceeds Cranelift's i32 limit"),
                 );
-                def_var_named(&mut *builder, vars, &args[1 + i], elem);
+                def_var_named(&mut *builder, vars, outputs[i], elem);
             }
         }
         "tuple_count" => {

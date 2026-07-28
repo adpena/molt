@@ -20,16 +20,17 @@ pub(super) fn emit_unpack_sequence(
     op: &OpIR,
     ctx: &AggregateRuntimeContext<'_>,
 ) {
-    let args = op.args.as_deref().unwrap_or(&[]);
+    let reads = molt_tir::tir::simple_def_use::simple_ir_read_names(op);
+    let outputs = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
     let expected_count = usize::try_from(op.value.unwrap_or_default())
         .expect("verified unpack_sequence count must fit usize");
     assert_eq!(
-        args.len(),
-        expected_count + 1,
-        "verified unpack_sequence must name its source and every result"
+        (reads.len(), outputs.len()),
+        (1, expected_count),
+        "verified unpack_sequence must name one source and every result"
     );
 
-    let seq = ctx.locals[&args[0]];
+    let seq = ctx.locals[reads[0].as_str()];
     let unpack_import =
         ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::UnpackSequence];
 
@@ -47,9 +48,9 @@ pub(super) fn emit_unpack_sequence(
     // Result locals are transactionally initialized before allocation. The
     // checked scratch allocator raises on failure; success transfers exactly
     // one owned result from the runtime buffer into each local.
-    for out_name in &args[1..] {
+    for out_name in &outputs {
         func.instruction(&Instruction::I64Const(box_none_bits() as i64));
-        func.instruction(&Instruction::LocalSet(ctx.locals[out_name]));
+        func.instruction(&Instruction::LocalSet(ctx.locals[*out_name]));
     }
 
     let scratch = ctx.locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
@@ -74,11 +75,11 @@ pub(super) fn emit_unpack_sequence(
     emit_call(func, ctx.reloc_enabled, unpack_import);
     func.instruction(&Instruction::Drop);
 
-    for (index, out_name) in args[1..].iter().enumerate() {
+    for (index, out_name) in outputs.iter().enumerate() {
         func.instruction(&Instruction::LocalGet(scratch));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::I64Load(result_memarg(index)));
-        func.instruction(&Instruction::LocalSet(ctx.locals[out_name]));
+        func.instruction(&Instruction::LocalSet(ctx.locals[*out_name]));
     }
 
     func.instruction(&Instruction::LocalGet(scratch));

@@ -93,8 +93,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let flag_out = op.out.as_deref().map(sanitize_ident);
-                    let sum_out = op.var.as_deref().map(sanitize_ident);
+                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+                    let sum_out = results.first().copied().map(sanitize_ident);
+                    let flag_out = results.get(1).copied().map(sanitize_ident);
                     match (sum_out, flag_out) {
                         (Some(sum), Some(flag)) => {
                             self.emit_line(&format!(
@@ -120,8 +121,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let flag_out = op.out.as_deref().map(sanitize_ident);
-                    let product_out = op.var.as_deref().map(sanitize_ident);
+                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+                    let product_out = results.first().copied().map(sanitize_ident);
+                    let flag_out = results.get(1).copied().map(sanitize_ident);
                     match (product_out, flag_out) {
                         (Some(product), Some(flag)) => {
                             self.emit_line(&format!(

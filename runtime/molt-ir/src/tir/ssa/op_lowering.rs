@@ -5,7 +5,8 @@ use crate::ir::OpIR;
 use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
 use super::super::dominators;
 use super::super::op_kinds_generated::{
-    kind_to_opcode_table, opcode_ssa_s_value_attr_key_table, simpleir_kind_is_async_work_poll,
+    kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
+    simpleir_first_trailing_result_arg_table, simpleir_kind_is_async_work_poll,
     simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -29,13 +30,10 @@ impl<'a> SsaContext<'a> {
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
-            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence"
-            {
-                Box::new(args.iter().take(1))
-            } else {
-                Box::new(args.iter())
-            };
-            for a in args_iter {
+            let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+                .unwrap_or(args.len())
+                .min(args.len());
+            for a in args.iter().take(read_arity) {
                 if let Some(vid) = self.resolve_known_var(a, var_stacks) {
                     // Resolved as a variable
                     operands.push(vid);

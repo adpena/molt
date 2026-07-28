@@ -342,9 +342,11 @@ _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS = (
     "simpleir_dynamic_power_semantics_kinds",
     "simpleir_dynamic_unary_numeric_semantics_kinds",
     "simpleir_integer_only_semantics_kinds",
+    "simpleir_integer_literal_semantics_kinds",
     "simpleir_integer_producer_semantics_kinds",
 )
 _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS = (
+    "simpleir_runtime_neutral_semantics_kinds",
     "simpleir_identity_semantics_kinds",
     "simpleir_tuple_semantics_kinds",
     "simpleir_exception_semantics_kinds",
@@ -358,6 +360,12 @@ _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS = (
     "simpleir_async_runtime_semantics_kinds",
     "simpleir_unstructured_control_semantics_kinds",
     "simpleir_host_capability_semantics_kinds",
+)
+_SIMPLEIR_FIELD_ROLE_FACT_SETS = (
+    "simpleir_out_metadata_kinds",
+    "simpleir_var_definition_kinds",
+    "simpleir_var_result_kinds",
+    "simpleir_var_metadata_when_args_kinds",
 )
 _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_box_opcodes", "box_op"),
@@ -499,6 +507,7 @@ __all__ = (
     "_SIMPLEIR_CONTROL_FACT_FIELDS",
     "_SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS",
     "_SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS",
+    "_SIMPLEIR_FIELD_ROLE_FACT_SETS",
     "_SROA_CONST_IMMEDIATE_RULES",
     "_SSA_S_VALUE_ATTR_KEYS",
     "_STRENGTH_REDUCTION_RULES",

@@ -191,6 +191,37 @@ def render_py(data: dict) -> str:
     out.append("    }\n")
     out.append(")\n\n")
 
+    # SimpleIR multi-result transport field roles. Frontend serializers and
+    # Rust def/use consumers read the same generated authority.
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_VAR_RESULT_KINDS",
+            data.get("simpleir_var_result_kinds", []),
+        )
+    )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_VAR_DEFINITION_KINDS",
+            data.get("simpleir_var_definition_kinds", []),
+        )
+    )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS",
+            data.get("simpleir_var_metadata_when_args_kinds", []),
+        )
+    )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_OUT_METADATA_KINDS",
+            data.get("simpleir_out_metadata_kinds", []),
+        )
+    )
+    out.append("SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[str, int] = {\n")
+    for row in data.get("simpleir_trailing_arg_result", []):
+        out.append(f'    "{row["kind"]}": {row["first_result_arg"]},\n')
+    out.append("}\n\n")
+
     # -- frontend op.kind tables (F2a) --------------------------------------
     raising = data.get("frontend_raising_kind", [])
     out.append(

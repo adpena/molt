@@ -77,12 +77,12 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_unpack_sequence(&mut self, op: &OpIR) {
-        let args = op.args.as_deref().unwrap_or(&[]);
-        let Some(source) = args.first() else {
+        let reads = molt_tir::tir::simple_def_use::simple_ir_read_names(op);
+        let outputs = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
+        let Some(source) = reads.first() else {
             self.emit_unsupported_op(op, "unpacking requires one source operand");
             return;
         };
-        let outputs = &args[1..];
         let expected = op.value.and_then(|value| usize::try_from(value).ok());
         if expected != Some(outputs.len()) {
             self.emit_unsupported_op(
@@ -99,7 +99,7 @@ impl RustBackend {
             rust_value(source),
             outputs.len(),
         ));
-        for output in outputs {
+        for output in &outputs {
             let output = rust_ident(output);
             let assignment = declare_molt_value(
                 &output,
