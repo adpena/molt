@@ -1480,7 +1480,9 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     cmd = captured["cmd"]
     assert cmd[:2] == ["cargo", "rustc"]
     assert "--lib" in cmd
-    assert "--crate-type=staticlib" in cmd
+    selector = cmd.index("--crate-type")
+    assert cmd[selector : selector + 2] == ["--crate-type", "staticlib"]
+    assert "--" not in cmd
     cargo_rustflags = captured["env"].get("RUSTFLAGS", "")
     assert "--export-if-defined=molt_reloc_required_export" not in cargo_rustflags
     assert "link-arg=@" not in cargo_rustflags

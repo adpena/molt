@@ -77,6 +77,13 @@ from molt.cli.runtime_features import (
     runtime_cargo_feature_for_profile,
     runtime_stdlib_profile_for_required_features,
 )
+from molt.cli.runtime_artifact_selection import (
+    RUNTIME_CDYLIB_ARTIFACTS,
+    RUNTIME_STATICLIB_ARTIFACTS,
+    RUNTIME_WASM_COMBINED_ARTIFACTS,
+    RuntimeArtifactSelection,
+    RuntimeCrateType,
+)
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
     _refresh_runtime_fingerprint_metadata,
@@ -633,6 +640,7 @@ def _native_runtime_cargo_command(
         cmd.extend(["--features", ",".join(full_features)])
     if target_triple:
         cmd.extend(["--target", target_triple])
+    RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)
     cmd.extend(["--", "--print", "native-static-libs"])
     return cmd
 
@@ -862,6 +870,7 @@ def _ensure_runtime_lib(
         target_triple=target_triple,
         rustflags=rustflags,
         runtime_features=fingerprint_features,
+        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         stored_fingerprint=stored_fingerprint,
     )
     _record_runtime_build_stage_ms(
@@ -1396,8 +1405,8 @@ def _prebuild_runtime_wasm(
     artifacts: dict[str, str] = {}
     if kind == "both":
         # V1 dual-compile burn-down: a single combined `cargo rustc --lib`
-        # (no --crate-type override) emits both the staticlib and cdylib, so the
-        # reloc and shared artifacts are produced from ONE compile instead of two.
+        # selects exactly staticlib+cdylib at Cargo level, so the reloc and shared
+        # artifacts are produced from ONE compile instead of two (and no rlib).
         if (
             runtime_state.runtime_wasm is None
             or runtime_state.runtime_reloc_wasm is None
@@ -1643,6 +1652,7 @@ def _ensure_wasm_cpython_abi_staticlib(
         target_triple="wasm32-wasip1",
         rustflags=rustflags,
         runtime_features=("molt-cpython-abi-static-link",),
+        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         stored_fingerprint=stored_fingerprint,
     )
     candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
@@ -1706,9 +1716,8 @@ def _ensure_wasm_cpython_abi_staticlib(
             "--target",
             "wasm32-wasip1",
             "--lib",
-            "--",
-            "--crate-type=staticlib",
         ]
+        RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)
         cargo_cmd = _cargo_cmd_with_json_artifact_messages(cmd)
         with _build_slot() as _slot:
             build = _run_cargo_with_sccache_retry(
@@ -1834,9 +1843,9 @@ def _current_runtime_target_artifact(
 def _runtime_cargo_report_missing_artifact_path(
     target_root: Path,
     profile_dir: str,
-    artifact_kind: Literal["cdylib", "staticlib"],
+    artifact_kind: RuntimeCrateType,
 ) -> Path:
-    suffix = "a" if artifact_kind == "staticlib" else "wasm"
+    suffix = "a" if artifact_kind is RuntimeCrateType.STATICLIB else "wasm"
     return (
         _wasm_runtime_deps_dir(target_root, profile_dir)
         / f".molt_runtime.cargo-report-missing.{suffix}"
@@ -1861,7 +1870,7 @@ def _reported_runtime_artifact_matches(
     path: Path,
     *,
     target_root: Path,
-    artifact_kind: Literal["cdylib", "staticlib"],
+    artifact_kind: RuntimeCrateType,
 ) -> bool:
     try:
         resolved_path = path.resolve(strict=False)
@@ -1873,7 +1882,7 @@ def _reported_runtime_artifact_matches(
     ):
         return False
     name = resolved_path.name
-    if artifact_kind == "staticlib":
+    if artifact_kind is RuntimeCrateType.STATICLIB:
         return name == "libmolt_runtime.a" or (
             name.startswith("libmolt_runtime-") and name.endswith(".a")
         )
@@ -1886,7 +1895,7 @@ def _reported_runtime_artifact_from_cargo_stdout(
     stdout: str,
     *,
     target_root: Path,
-    artifact_kind: Literal["cdylib", "staticlib"],
+    artifact_kind: RuntimeCrateType,
 ) -> Path | None:
     return _reported_runtime_artifacts_from_cargo_stdout(
         stdout,
@@ -1947,9 +1956,9 @@ def _reported_runtime_artifacts_from_cargo_stdout(
     stdout: str,
     *,
     target_root: Path,
-) -> dict[Literal["cdylib", "staticlib"], Path]:
+) -> dict[RuntimeCrateType, Path]:
     """Return the exact runtime crate-type artifacts reported by this Cargo run."""
-    reported: dict[Literal["cdylib", "staticlib"], Path] = {}
+    reported: dict[RuntimeCrateType, Path] = {}
     paths = _reported_cargo_artifact_paths_from_stdout(
         stdout,
         target_root=target_root,
@@ -1957,7 +1966,7 @@ def _reported_runtime_artifacts_from_cargo_stdout(
         target_names=frozenset({"molt_runtime", "molt-runtime"}),
     )
     for path in paths:
-        for kind in ("cdylib", "staticlib"):
+        for kind in (RuntimeCrateType.CDYLIB, RuntimeCrateType.STATICLIB):
             if _reported_runtime_artifact_matches(
                 path,
                 target_root=target_root,
@@ -2033,11 +2042,11 @@ def _runtime_wasm_incremental_family_key(
 
     Deliberately EXCLUDES link-args (export allowlist, ``--import-memory`` /
     ``--import-table`` / ``--growable-table``) which are the *only* thing that
-    differs between the reloc/staticlib and shared/cdylib passes.  ``molt-runtime``
-    declares ``crate-type = ["staticlib", "rlib", "cdylib"]`` so a single rustc
-    codegen already emits every crate-type; link-args only re-drive the final
-    link.  Keying the shared incremental dir on the codegen family therefore lets
-    the second pass reuse the first pass's object code (near-pure re-link) and
+    differs between the reloc/staticlib and shared/cdylib passes.  The combined
+    producer selects exactly ``staticlib,cdylib`` with Cargo's crate-type option;
+    link-args only re-drive the final cdylib link.  Keying the shared incremental
+    dir on the codegen family therefore lets the second pass reuse the first pass's
+    object code (near-pure re-link) and
     lets consecutive same-config iterations recompile incrementally instead of
     from scratch.
     """
@@ -2120,7 +2129,7 @@ def _run_runtime_wasm_cargo_build(
     profile_dir: str,
     target_root_override: Path | None = None,
     json_output: bool,
-    artifact_kind: Literal["cdylib", "staticlib"] = "cdylib",
+    artifact_kind: RuntimeCrateType = RuntimeCrateType.CDYLIB,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     build_env = env.copy()
     if target_root_override is not None:
@@ -2440,6 +2449,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     profile_dir: str
     incremental_enabled: bool
     env: dict[str, str]
+    artifact_selection: RuntimeArtifactSelection
     runtime_exports: str
     link_flags: str
     cargo_link_response_path: Path | None
@@ -2565,6 +2575,9 @@ def _compute_runtime_wasm_build_spec(
             f'--cfg molt_wasm_linker_identity="{linker_token}"',
         )
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
+    artifact_selection = (
+        RUNTIME_STATICLIB_ARTIFACTS if reloc else RUNTIME_CDYLIB_ARTIFACTS
+    )
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
@@ -2602,6 +2615,7 @@ def _compute_runtime_wasm_build_spec(
         target_triple="wasm32-wasip1",
         rustflags=fingerprint_rustflags,
         runtime_features=fingerprint_features,
+        artifact_selection=artifact_selection,
         stored_fingerprint=stored_fingerprint,
     )
     # Cargo's staticlib is a pre-link compile product.  Its bytes depend on the
@@ -2638,6 +2652,7 @@ def _compute_runtime_wasm_build_spec(
         target_triple="wasm32-wasip1",
         rustflags=staticlib_identity_rustflags,
         runtime_features=fingerprint_features,
+        artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         stored_fingerprint=None,
     )
     return _RuntimeWasmBuildSpec(
@@ -2646,6 +2661,7 @@ def _compute_runtime_wasm_build_spec(
         profile_dir=profile_dir,
         incremental_enabled=incremental_enabled,
         env=env,
+        artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,
         link_flags=link_flags,
         cargo_link_response_path=cargo_link_response_path,
@@ -2742,6 +2758,7 @@ def _ensure_runtime_wasm(
         profile_dir,
         incremental_enabled,
         env,
+        artifact_selection,
         runtime_exports,
         link_flags,
         cargo_link_response_path,
@@ -3164,38 +3181,24 @@ def _ensure_runtime_wasm(
             _maybe_enable_sccache(env)
         else:
             env.pop("RUSTC_WRAPPER", None)
-        if reloc:
-            cmd = [
-                "cargo",
-                "rustc",
-                "--package",
-                "molt-runtime",
-                "--profile",
-                cargo_profile,
-                "--target",
-                "wasm32-wasip1",
-                "--lib",
-            ]
-        else:
-            cmd = [
-                "cargo",
-                "rustc",
-                "--package",
-                "molt-runtime",
-                "--profile",
-                cargo_profile,
-                "--target",
-                "wasm32-wasip1",
-                "--lib",
-            ]
+        cmd = [
+            "cargo",
+            "rustc",
+            "--package",
+            "molt-runtime",
+            "--profile",
+            cargo_profile,
+            "--target",
+            "wasm32-wasip1",
+            "--lib",
+        ]
         if no_default_features:
             cmd.append("--no-default-features")
         if wasm_cargo_features:
             cmd.extend(["--features", ",".join(wasm_cargo_features)])
-        if reloc:
-            cmd.extend(["--", "--crate-type=staticlib"])
-        else:
-            cmd.extend(["--", "--crate-type=cdylib"])
+        artifact_selection.select_in(cmd)
+        if not reloc:
+            cmd.append("--")
             if cargo_link_response_path is not None:
                 cmd.extend(["-C", f"link-arg=@{cargo_link_response_path}"])
         _cargo_compile_started = time.perf_counter()
@@ -3208,7 +3211,11 @@ def _ensure_runtime_wasm(
                 profile_dir=profile_dir,
                 target_root_override=target_root,
                 json_output=json_output,
-                artifact_kind="staticlib" if reloc else "cdylib",
+                artifact_kind=(
+                    RuntimeCrateType.STATICLIB
+                    if reloc
+                    else RuntimeCrateType.CDYLIB
+                ),
             )
         except subprocess.TimeoutExpired:
             if not json_output:
@@ -3555,7 +3562,7 @@ def _single_compile_split_runtime_enabled() -> bool:
     """Whether ``--kind both`` uses ONE combined cargo compile (V1 dedup).
 
     Default ON.  Kill switch ``MOLT_RUNTIME_WASM_SINGLE_COMPILE=0`` reverts to the
-    proven sequential dual-compile (two ``cargo rustc --crate-type=...`` passes),
+    proven sequential dual-compile (two exact Cargo-level crate-type selections),
     the fallback also taken automatically whenever the combined compile fails.
     """
     return os.environ.get(
@@ -3573,10 +3580,11 @@ def _prepopulate_combined_runtime_wasm_target(
     simd_enabled: bool,
     freestanding: bool,
 ) -> bool:
-    """Run ONE ``cargo rustc --lib`` emitting BOTH staticlib and cdylib (V1).
+    """Run ONE ``cargo rustc --lib`` selecting BOTH staticlib and cdylib (V1).
 
-    ``molt-runtime`` declares ``crate-type = ["staticlib","rlib","cdylib"]`` so a
-    single rustc codegen emits every crate-type.  The shared cdylib link args
+    The typed Cargo-level ``staticlib,cdylib`` selector overrides the manifest's
+    dependency-only rlib default, so one rustc codegen emits exactly the two final
+    artifacts this producer consumes.  The shared cdylib link args
     (``--import-memory``/``--import-table``/``--growable-table`` plus the
     ``--export-if-defined`` allowlist) are passed as ``-- -C link-arg=@resp``
     extra rustc args; rustc applies them only to the cdylib link (the staticlib
@@ -3672,7 +3680,7 @@ def _prepopulate_combined_runtime_wasm_target(
         cmd.append("--no-default-features")
     if shared_spec.wasm_cargo_features:
         cmd.extend(["--features", ",".join(shared_spec.wasm_cargo_features)])
-    # NO `--crate-type` override: build every declared crate-type in one compile.
+    RUNTIME_WASM_COMBINED_ARTIFACTS.select_in(cmd)
     cmd.append("--")
     shared_link_args = _wasm_link_args_from_rustflags(shared_spec.link_flags)
     if shared_link_args:
@@ -3698,7 +3706,7 @@ def _prepopulate_combined_runtime_wasm_target(
             profile_dir=profile_dir,
             target_root_override=target_root,
             json_output=json_output,
-            artifact_kind="cdylib",
+            artifact_kind=RuntimeCrateType.CDYLIB,
         )
     except subprocess.TimeoutExpired:
         if not json_output:
@@ -3735,8 +3743,8 @@ def _prepopulate_combined_runtime_wasm_target(
         build.stdout,
         target_root=target_root,
     )
-    cdylib = reported_artifacts.get("cdylib", reported_cdylib)
-    staticlib = reported_artifacts.get("staticlib")
+    cdylib = reported_artifacts.get(RuntimeCrateType.CDYLIB, reported_cdylib)
+    staticlib = reported_artifacts.get(RuntimeCrateType.STATICLIB)
     if not cdylib.exists() or staticlib is None or not staticlib.exists():
         if not json_output:
             print(

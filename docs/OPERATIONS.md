@@ -155,11 +155,11 @@ wasm-tools validate "$RUNTIME"
 # Compare release vs release-fast wasm runtime outputs directly.
 export TEST_ROOT=/Volumes/APDataStore/Molt/cargo-target-wasm-profile-check
 export CARGO_TARGET_DIR="$TEST_ROOT/release"
-cargo build --package molt-runtime --profile release --target wasm32-wasip1
+cargo rustc --package molt-runtime --profile release --target wasm32-wasip1 --crate-type cdylib
 xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release/molt_runtime.wasm"
 
 export CARGO_TARGET_DIR="$TEST_ROOT/release-fast"
-cargo build --package molt-runtime --profile release-fast --target wasm32-wasip1
+cargo rustc --package molt-runtime --profile release-fast --target wasm32-wasip1 --crate-type cdylib
 xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
 wasm-tools validate "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
 ```
