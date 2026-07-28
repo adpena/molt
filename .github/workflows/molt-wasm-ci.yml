@@ -72,11 +72,9 @@ jobs:
 
       - name: Setup canonical native and WASM linker SDK
         uses: ./.github/actions/setup-llvm
-
-      - name: Install WASI libc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wasi-libc
+        with:
+          profile: wasm
+          wasi: "true"
 
       - name: Execute WASM, Luau, and parity partitions
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
