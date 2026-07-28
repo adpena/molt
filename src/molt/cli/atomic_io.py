@@ -8,10 +8,12 @@ import json
 import os
 import shutil
 import stat
+import sys
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Protocol
 import zipfile
 
 
@@ -20,25 +22,46 @@ _MOVEFILE_WRITE_THROUGH = 0x8
 _WINDOWS_REPLACE_RETRY_ERRORS = frozenset({5, 32, 33})
 
 
+class _MoveFileEx(Protocol):
+    def __call__(self, source: str, destination: str, flags: int, /) -> int: ...
+
+
+_GetLastError = Callable[[], int]
+
+
+def _windows_move_file_api() -> tuple[_MoveFileEx, _GetLastError]:
+    """Resolve the Win32 namespace API only on its owning platform."""
+
+    if sys.platform != "win32":
+        raise OSError("MoveFileExW is available only on Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file_ex = kernel32.MoveFileExW
+    move_file_ex.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+    move_file_ex.restype = ctypes.c_int
+    return move_file_ex, ctypes.get_last_error
+
+
+def _windows_error(error_code: int) -> OSError:
+    if sys.platform == "win32":
+        return ctypes.WinError(error_code)
+    return OSError(error_code, "Windows namespace commit failed")
+
+
 def _move_file_ex_write_through(
     staged: Path,
     destination: Path,
     *,
-    move_file_ex: Any | None = None,
-    get_last_error: Any | None = None,
+    move_file_ex: _MoveFileEx | None = None,
+    get_last_error: _GetLastError | None = None,
 ) -> None:
     """Commit one Windows namespace change with write-through durability."""
 
     if move_file_ex is None:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        move_file_ex = kernel32.MoveFileExW
-        move_file_ex.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
-        move_file_ex.restype = ctypes.c_int
-        get_last_error = ctypes.get_last_error
+        move_file_ex, get_last_error = _windows_move_file_api()
     flags = _MOVEFILE_REPLACE_EXISTING | _MOVEFILE_WRITE_THROUGH
     if not move_file_ex(os.fspath(staged), os.fspath(destination), flags):
         assert get_last_error is not None
-        raise ctypes.WinError(get_last_error())
+        raise _windows_error(get_last_error())
 
 
 def _windows_replace_write_through(
