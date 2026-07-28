@@ -34,8 +34,11 @@ _TREE_HASH_LOCAL = threading.local()
 
 def _freeze_json(value: object) -> object:
     if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("runtime identity JSON object keys must be strings")
+        typed = cast(Mapping[str, object], value)
         return MappingProxyType(
-            {str(key): _freeze_json(item) for key, item in value.items()}
+            {key: _freeze_json(item) for key, item in typed.items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json(item) for item in value)
@@ -46,7 +49,10 @@ def _freeze_json(value: object) -> object:
 
 def _thaw_json(value: object) -> object:
     if isinstance(value, Mapping):
-        return {str(key): _thaw_json(item) for key, item in value.items()}
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("runtime identity JSON object keys must be strings")
+        typed = cast(Mapping[str, object], value)
+        return {key: _thaw_json(item) for key, item in typed.items()}
     if isinstance(value, (list, tuple)):
         return [_thaw_json(item) for item in value]
     return value
@@ -63,6 +69,14 @@ def _canonical_json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _json_object_mapping(value: object) -> Mapping[str, object] | None:
+    """Narrow one validated JSON object without coercing or aliasing keys."""
+
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        return None
+    return cast(Mapping[str, object], value)
 
 
 def _sha256_file(path: Path) -> str:
@@ -688,18 +702,12 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
 
     @classmethod
     def from_dict(cls, value: object) -> RuntimeToolchainContentManifest:
-        if (
-            not isinstance(value, dict)
-            or value.get("schema") != _TOOLCHAIN_MANIFEST_SCHEMA
-        ):
+        outer = _json_object_mapping(value)
+        if outer is None or outer.get("schema") != _TOOLCHAIN_MANIFEST_SCHEMA:
             raise ValueError("runtime toolchain manifest schema is invalid")
-        digest = value.get("digest")
-        payload = value.get("payload")
-        if (
-            not isinstance(digest, str)
-            or not isinstance(payload, dict)
-            or digest != _digest(payload)
-        ):
+        digest = outer.get("digest")
+        payload = _json_object_mapping(outer.get("payload"))
+        if not isinstance(digest, str) or payload is None or digest != _digest(payload):
             raise ValueError("runtime toolchain manifest digest is invalid")
         return cls(digest=digest, payload=payload)
 
@@ -756,21 +764,22 @@ class RuntimeBuildIdentity(Mapping[str, object]):
 
     @classmethod
     def from_dict(cls, value: object) -> RuntimeBuildIdentity:
-        if not isinstance(value, dict) or value.get("schema") != _SCHEMA:
+        outer = _json_object_mapping(value)
+        if outer is None or outer.get("schema") != _SCHEMA:
             raise ValueError("runtime build identity schema is invalid")
-        payload = value.get("payload")
-        digest = value.get("digest")
-        pair_digest = value.get("pair_digest")
+        payload = _json_object_mapping(outer.get("payload"))
+        digest = outer.get("digest")
+        pair_digest = outer.get("pair_digest")
         if (
-            not isinstance(payload, dict)
+            payload is None
             or not isinstance(digest, str)
             or not isinstance(pair_digest, str)
         ):
             raise ValueError("runtime build identity is incomplete")
-        pair = payload.get("pair")
+        pair = _json_object_mapping(payload.get("pair"))
         if (
             digest != _digest(payload)
-            or not isinstance(pair, dict)
+            or pair is None
             or pair.get("schema") != _PAIR_SCHEMA
             or pair_digest != _digest(pair)
         ):

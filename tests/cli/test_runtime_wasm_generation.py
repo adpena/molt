@@ -8,6 +8,7 @@ import pytest
 
 from molt.cli.runtime_build_identity import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
+    _generation_receipts,
     hydrate_runtime_wasm_generation,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
@@ -69,6 +70,19 @@ def _publish_pair(
         source_reloc=source_reloc,
     )
     return generation, shared_identity, reloc_identity
+
+
+def test_generation_receipts_require_exact_string_keyed_pair() -> None:
+    shared = {"sha256": "a" * 64, "size": 1}
+    reloc = {"sha256": "b" * 64, "size": 2}
+
+    assert _generation_receipts({"shared": shared, "reloc": reloc}) == {
+        "shared": shared,
+        "reloc": reloc,
+    }
+    assert _generation_receipts({"shared": shared}) is None
+    assert _generation_receipts({"shared": shared, "reloc": reloc, "old": {}}) is None
+    assert _generation_receipts({"shared": {1: "alias"}, "reloc": reloc}) is None
 
 
 def test_generation_requires_exact_pair_and_both_immutable_artifact_hashes(
