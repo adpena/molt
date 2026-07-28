@@ -415,21 +415,6 @@ def _system_memory_bytes() -> tuple[int | None, int | None]:
     return total, available
 
 
-def _total_system_memory_bytes() -> int | None:
-    """Best-effort total physical memory in bytes, or ``None`` if unknown.
-
-    Uses only stdlib probes so the resource authority does not depend on
-    ``psutil`` or the ``tools/`` memory-guard package (a layering boundary).
-    """
-    return _system_memory_bytes()[0]
-
-
-def _available_system_memory_bytes() -> int | None:
-    """Best-effort currently available physical memory in bytes."""
-
-    return _system_memory_bytes()[1]
-
-
 def _memory_bounded_worker_count(
     *,
     bytes_per_worker: int,
@@ -476,11 +461,11 @@ def _memory_bounded_worker_count_from_samples(
 
 
 def _memory_bounded_cargo_jobs() -> int | None:
-    """Cargo ``--jobs`` ceiling that fits total memory, or ``None`` if unknown.
+    """Cargo ``--jobs`` ceiling from the canonical live resource snapshot.
 
-    Caps parallel rustc jobs to roughly one per ``_BYTES_PER_CARGO_JOB`` of total
-    RAM, never exceeding the CPU count. Returns ``None`` when memory can't be
-    probed so callers leave cargo's default job count untouched.
+    Caps parallel rustc jobs by CPU, total physical memory, live available
+    memory, and active Linux cgroup capacity. Returns ``None`` only when neither
+    memory dimension can be observed, leaving Cargo's default untouched.
     """
     total_memory_bytes, available_memory_bytes = _system_memory_bytes()
     if total_memory_bytes is None and available_memory_bytes is None:

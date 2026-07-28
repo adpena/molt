@@ -21,10 +21,7 @@ from molt.cargo_execution_policy import (
 )
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
-    _BYTES_PER_CARGO_JOB,  # noqa: F401 (re-exported for compat)
-    _CARGO_JOB_MEMORY_HEADROOM,  # noqa: F401 (re-exported for compat)
     _memory_bounded_cargo_jobs,
-    _total_system_memory_bytes,  # noqa: F401 (re-exported for compat)
     development_artifact_env,
     development_artifacts_requested,
 )
