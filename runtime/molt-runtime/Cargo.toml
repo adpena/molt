@@ -8,7 +8,9 @@ license = "Apache-2.0"
 build = "build.rs"
 
 [lib]
-crate-type = ["staticlib", "rlib", "cdylib"]
+# The dependency/default build is an rlib. Final artifact producers select the
+# exact external crate types they consume with Cargo-level `--crate-type`.
+crate-type = ["rlib"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(miri)', 'cfg(feature, values("audit", "refcount_verify", "free-threaded"))'] }

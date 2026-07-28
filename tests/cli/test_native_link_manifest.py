@@ -998,7 +998,13 @@ def test_runtime_manifest_refresh_uses_exact_cargo_json_command(
         "dev-fast",
         "--message-format=json-render-diagnostics",
     ]
-    assert command[-3:] == ["--", "--print", "native-static-libs"]
+    assert command[-5:] == [
+        "--crate-type",
+        "staticlib",
+        "--",
+        "--print",
+        "native-static-libs",
+    ]
     captured: list[list[str]] = []
     cargo_stdout = _cargo_output(
         _cargo_message(
@@ -1186,6 +1192,7 @@ def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -
     command_source = inspect.getsource(runtime_build._native_runtime_cargo_command)
     assert '"rustc"' in command_source
     assert "--message-format=json-render-diagnostics" in command_source
+    assert "RUNTIME_STATICLIB_ARTIFACTS.select_in(cmd)" in command_source
     assert "native-static-libs" in command_source
     manifest_source = inspect.getsource(native_link_deps.read_native_link_flags)
     assert "source_fingerprint=source_fingerprint" in manifest_source

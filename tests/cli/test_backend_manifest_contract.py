@@ -358,22 +358,15 @@ def test_runtime_micro_tls_from_fd_stub_matches_intrinsic_arity() -> None:
     assert stub_signature.group(1).count(": u64") == 2
 
 
-def test_runtime_manifest_crate_types_include_all_link_targets() -> None:
-    """Validate the runtime ships staticlib + rlib + cdylib.
-
-    cdylib is required so ``cargo build -p molt-runtime --target wasm32-…``
-    emits a stable ``.wasm`` artifact consumed by the WASM split-runtime lane.
-    See ``build.rs`` for the authoritative rationale.
-    """
+def test_runtime_manifest_defaults_to_dependency_only_rlib() -> None:
+    """Final artifact producers must opt into their exact external crate types."""
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
 
     crate_types = runtime_manifest["lib"]["crate-type"]
 
-    assert "staticlib" in crate_types
-    assert "rlib" in crate_types
-    assert "cdylib" in crate_types
+    assert crate_types == ["rlib"]
 
 
 def test_backend_manifest_gates_loop_continue_to_native_backend() -> None:

@@ -538,8 +538,11 @@ If you want to modify Molt, follow these steps:
 1.  **Setup**: Ensure you have Rust (stable) and Python 3.12+ installed.
 2.  **Build**:
     ```bash
-    cargo build --release --package molt-runtime
+    cargo rustc --release --package molt-runtime --crate-type staticlib -- --print native-static-libs
     ```
+    The `molt-runtime` manifest defaults to the dependency-only `rlib`. Final
+    artifact producers select the exact crate type they consume; the command
+    above is the direct native-staticlib producer.
     For day-to-day compiler/runtime iteration, prefer the dev profile:
     ```bash
     uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
