@@ -818,7 +818,9 @@ class StatementScopeVisitorMixin(_MixinBase):
                 return None
             attr_name = alias.name
             bind_name = alias.asname or attr_name
-            attr_val = self._emit_module_import_from_value(module_val, attr_name)
+            attr_val = self._emit_module_import_from_value(
+                module_val, attr_name, module_name=module_name
+            )
             imported_child_module = f"{module_name}.{attr_name}"
             imported_child_is_module = (
                 imported_child_module in self.known_modules

@@ -15,6 +15,7 @@ fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -225,6 +226,7 @@ fn validate_simple_ir_rejects_param_type_arity_mismatch() {
             param_types: Some(vec!["int".to_string(), "bool".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -248,6 +250,7 @@ fn validate_simple_ir_rejects_conflicting_fast_scalar_flags() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -339,6 +342,7 @@ fn validate_simple_ir_rejects_unknown_container_type() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -361,6 +365,7 @@ fn validate_simple_ir_rejects_legacy_list_int_container_type() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -383,6 +388,7 @@ fn validate_simple_ir_accepts_bce_safe_without_container_type() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -404,6 +410,7 @@ fn validate_simple_ir_rejects_arena_eligible_on_non_allocation() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

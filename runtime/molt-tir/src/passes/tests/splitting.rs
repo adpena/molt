@@ -8,6 +8,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_const_int("v0", 1),
             make_const_int("v1", 2),
@@ -37,6 +38,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_op("const_none"),
             make_op("const_none"),
@@ -62,6 +64,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -172,6 +175,7 @@ fn split_large_function_preserves_drop_authority_on_chunks_only() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
             OpIR {
@@ -250,6 +254,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -327,6 +332,7 @@ fn split_generated_op_verifier_rejects_noncanonical_frame_load() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             OpIR {
                 kind: "const".to_string(),
@@ -465,6 +471,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops,
     };
 
@@ -616,6 +623,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops,
     };
 
@@ -664,6 +672,7 @@ fn split_large_function_void_only_stub_returns_none() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops: vec![
             OpIR {
                 kind: "line".to_string(),
@@ -719,6 +728,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
             ops,
         }],
         profile: None,

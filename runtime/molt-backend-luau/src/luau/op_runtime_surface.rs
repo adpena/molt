@@ -75,10 +75,10 @@ impl LuauBackend {
                 }
             }
             "getframe" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "Python-visible frame objects require exact whole-program locals activation",
+                );
             }
             "bridge_unavailable" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -113,6 +113,7 @@ impl LuauBackend {
                         "molt_code_slots[{slot}] = {}",
                         sanitize_ident(code)
                     ));
+                    self.emit_line(&format!("molt_frame_bind_code({})", sanitize_ident(code)));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -133,13 +134,43 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "frame_locals_set" | "trace_enter_slot" | "trace_exit" | "line" => {
-                // These operations are observable through frame locals,
-                // traceback positions, and active-frame inspection. Target
-                // admission rejects them before source generation; keep the
-                // emitter fail-closed too so a future capability flip cannot
-                // silently revive the retired no-op lane.
-                self.emit_unsupported_op(op);
+            "trace_enter_slot" => {
+                let code_id = op.value.unwrap_or(0);
+                self.emit_line(&format!(
+                    "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter(molt_code_slots[{code_id}])"
+                ));
+            }
+            "trace_exit" => {
+                self.emit_line(
+                    "molt_frame_exit(__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner)",
+                );
+            }
+            "frame_locals_set" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(locals) = args.first() {
+                    let context = self.frame_context_expr();
+                    self.emit_line(&format!(
+                        "molt_frame_locals_set({context}, {})",
+                        sanitize_ident(locals)
+                    ));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
+            }
+            "line" => {
+                let context = self.frame_context_expr();
+                let line = op.value.unwrap_or(0);
+                let col = op
+                    .col_offset
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "nil".to_string());
+                let end_col = op
+                    .end_col_offset
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "nil".to_string());
+                self.emit_line(&format!(
+                    "molt_frame_set_line({context}, {line}, {col}, {end_col})"
+                ));
             }
             "json_parse" | "msgpack_parse" | "cbor_parse" => {
                 self.emit_unsupported_op(op);

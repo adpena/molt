@@ -43,6 +43,17 @@ pub(super) fn annotate_lowered_op(
     original_to_new_label: &HashMap<i64, i64>,
 ) {
     annotate_type_flags(opir, tir_op);
+    // Canonical callable provenance and execution-context threading are typed
+    // SimpleIR transport fields carried as TIR attrs during optimization. They
+    // must survive every relift/back-conversion before target admission and
+    // source emission consume them.
+    if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("runtime_symbol") {
+        opir.runtime_symbol = Some(symbol.clone());
+    }
+    opir.passes_execution_context = matches!(
+        tir_op.attrs.get("passes_execution_context"),
+        Some(AttrValue::Bool(true))
+    );
     // Result-lifetime facts are TIR attrs, not opcode-local syntax. Preserve
     // them through every TIR -> SimpleIR custody boundary so native's
     // optimize-roundtrip -> terminal-drop relift sees the same finalizer facts

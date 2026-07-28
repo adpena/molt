@@ -84,6 +84,7 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -126,6 +127,7 @@ fn compile_retained_alias_after_source_dec_ref(alias_kind: &str) {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

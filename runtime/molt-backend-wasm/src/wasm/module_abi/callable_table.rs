@@ -519,6 +519,7 @@ mod tests {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             }],
             profile: None,
         }

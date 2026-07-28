@@ -13,6 +13,7 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -63,6 +64,7 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -100,6 +102,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }];
     let ctx = SimpleBackend::build_module_context(&stdlib_funcs);
     assert!(ctx.closure_functions.contains("contextlib___inner"));
@@ -153,6 +156,7 @@ fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "helper_poll".to_string(),
@@ -165,6 +169,7 @@ fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ];
 
@@ -201,6 +206,7 @@ fn tir_roundtrip_preserves_store_var_return_alias_summary() {
         param_types: Some(vec!["str".to_string()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let roundtripped = roundtrip_function_through_tir(&func);
@@ -231,6 +237,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
         FunctionIR {
             name: "void_helper".to_string(),
@@ -242,6 +249,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         },
     ];
 

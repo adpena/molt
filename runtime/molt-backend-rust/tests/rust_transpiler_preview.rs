@@ -118,6 +118,7 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -169,6 +170,7 @@ fn rust_backend_lowers_module_attr_round_trip() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -224,6 +226,7 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -263,6 +266,7 @@ fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -301,6 +305,7 @@ fn rust_backend_keeps_unstructured_branch_fail_closed() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -414,6 +419,7 @@ fn rust_backend_stamps_target_python_version_state() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -539,6 +545,7 @@ fn rust_backend_imports_sys_version_metadata_without_placeholder_diagnostics() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -603,6 +610,7 @@ fn rust_backend_rejects_class_merge_layout_without_class_representation() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };

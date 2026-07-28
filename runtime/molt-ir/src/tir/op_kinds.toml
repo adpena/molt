@@ -364,11 +364,49 @@ simpleir_deterministic_lifetime_semantics_kinds = [
 simpleir_runtime_neutral_semantics_kinds = [
     "drop_inserted", "exception_region_drops_inserted",
 ]
-# Observable Python frame state. These operations maintain the active frame
-# stack, f_locals snapshot, and traceback source position; targets must either
-# implement that state coherently or reject before emitting source.
-simpleir_frame_state_semantics_kinds = [
+# Internal execution-frame state used to preserve source-location and unwind
+# custody. This does not authorize Python-visible frame objects, tracing hooks,
+# or traceback-frame introspection.
+simpleir_execution_frame_semantics_kinds = [
     "frame_locals_set", "line", "trace_enter_slot", "trace_exit",
+]
+# Python-visible frame introspection. A target claiming this capability must
+# provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
+simpleir_frame_introspection_semantics_kinds = ["getframe"]
+# Canonical runtime-call spellings that expose the same Python-visible frame
+# and tracing surface when carried by call/builtin metadata rather than a
+# dedicated SimpleIR opcode.
+simpleir_frame_introspection_runtime_symbols = [
+    "molt_getframe", "molt_inspect_currentframe",
+    "molt_sys_settrace", "molt_sys_gettrace",
+    "molt_sys_setprofile", "molt_sys_getprofile",
+]
+simpleir_callable_operand_kinds = [
+    "call_func", "call_function", "call_guarded", "call_bind", "call_indirect",
+]
+simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
+simpleir_module_identity_alias = [
+    { kind = "copy", role = "strong" },
+    { kind = "phi", role = "merge" },
+]
+simpleir_module_identity_source = [
+    { kind = "module_cache_get", module_name_arg = 0 },
+    { kind = "module_import", module_name_arg = 0 },
+]
+simpleir_module_slot_access = [
+    { kind = "module_set_attr", role = "set", module_arg = 0, name_arg = 1, value_arg = 2 },
+    { kind = "module_get_attr", role = "get", module_arg = 0, name_arg = 1 },
+    { kind = "module_get_global", role = "get", module_arg = 0, name_arg = 1 },
+    { kind = "module_del_global", role = "delete", module_arg = 0, name_arg = 1 },
+    { kind = "module_del_global_if_present", role = "delete", module_arg = 0, name_arg = 1 },
+]
+simpleir_runtime_qualified_callable = [
+    { qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe" },
+    { qualified = "sys._getframe", symbol = "molt_getframe" },
+    { qualified = "sys.getprofile", symbol = "molt_sys_getprofile" },
+    { qualified = "sys.gettrace", symbol = "molt_sys_gettrace" },
+    { qualified = "sys.setprofile", symbol = "molt_sys_setprofile" },
+    { qualified = "sys.settrace", symbol = "molt_sys_settrace" },
 ]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the

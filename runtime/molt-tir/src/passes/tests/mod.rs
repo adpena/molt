@@ -65,6 +65,7 @@ fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
         ops,
     }
 }

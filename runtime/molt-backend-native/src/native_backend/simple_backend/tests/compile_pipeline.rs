@@ -22,6 +22,7 @@ fn native_compiles_canonical_bare_get_attr() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
     // Must not panic at the dispatch's no-codegen catch-all; the canonical
     // `get_attr` lowers to the generic-by-name runtime attribute fetch.
@@ -113,6 +114,7 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -167,6 +169,7 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -211,6 +214,7 @@ fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         name,
     );
@@ -367,6 +371,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -510,6 +515,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let roundtripped = roundtrip_function_through_tir(&func);
@@ -640,6 +646,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let roundtripped = roundtrip_function_through_tir(&func);

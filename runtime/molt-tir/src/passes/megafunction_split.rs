@@ -1,6 +1,6 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
-use crate::{FunctionIR, OpIR, SimpleIR};
+use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
@@ -801,6 +801,7 @@ pub fn split_large_function(
             param_types: chunk_param_types,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
         });
         plans.push(ChunkPlan {
             name: chunk_name,
@@ -933,6 +934,7 @@ pub fn split_large_function(
         param_types: func.param_types,
         source_file: None,
         is_extern: false,
+        execution_context: func.execution_context,
     };
 
     for chunk in &chunks {

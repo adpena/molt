@@ -28,6 +28,7 @@ fn single_block_func(ops: Vec<TirOp>, return_type: TirType, next_value: u32) -> 
     blocks.insert(entry_id, block);
     TirFunction {
         name: "test".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type,
@@ -179,6 +180,7 @@ fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
         ],
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir = lower_to_tir(&func_ir);
@@ -219,6 +221,7 @@ fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
         ],
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir = lower_to_tir(&func_ir);
@@ -305,6 +308,7 @@ fn lower_dynbox_add_to_dynbox_repr() {
     blocks.insert(entry_id, block);
     let func = TirFunction {
         name: "dynbox_add".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into(), "y".into()],
         param_types: vec![TirType::DynBox, TirType::I64],
         return_type: TirType::DynBox,
@@ -412,6 +416,7 @@ fn lower_box_and_unbox_align_with_verifier_contract() {
     blocks.insert(entry_id, block);
     let func = TirFunction {
         name: "box_unbox".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into()],
         param_types: vec![TirType::I64],
         return_type: TirType::I64,
@@ -490,6 +495,7 @@ fn lower_truthy_condition_materializes_bool1_before_branch() {
 
     let func = TirFunction {
         name: "truthy_branch".into(),
+        execution_context: Default::default(),
         param_names: vec!["x".into()],
         param_types: vec![TirType::DynBox],
         return_type: TirType::None,

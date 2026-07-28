@@ -89,7 +89,22 @@ impl LuauBackend {
                     .map(|(index, value)| format!("[{}]={}", index + 1, sanitize_ident(value)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.emit_line(&format!("local {out} = {{__molt_code=true, {fields}}}"));
+                if args.len() >= 9 {
+                    self.emit_line(&format!(
+                        "local {out} = {{__molt_code=true, co_filename={}, co_name={}, co_firstlineno={}, co_linetable={}, co_varnames={}, co_names={}, co_argcount={}, co_posonlyargcount={}, co_kwonlyargcount={}, {fields}}}",
+                        sanitize_ident(&args[0]),
+                        sanitize_ident(&args[1]),
+                        sanitize_ident(&args[2]),
+                        sanitize_ident(&args[3]),
+                        sanitize_ident(&args[4]),
+                        sanitize_ident(&args[5]),
+                        sanitize_ident(&args[6]),
+                        sanitize_ident(&args[7]),
+                        sanitize_ident(&args[8]),
+                    ));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "builtin_func" => {
                 if let Some(ref out_name) = op.out {
@@ -232,16 +247,19 @@ impl LuauBackend {
             "call" | "call_guarded" => {
                 let out = self.out_var(op);
                 // First check for s_value function name (pedagogical IR form).
-                if let Some(ref func_name) = op.s_value {
-                    let func_name = self.invocation_target_ident(func_name);
-                    let call_args = op
+                if let Some(ref raw_func_name) = op.s_value {
+                    let func_name = self.invocation_target_ident(raw_func_name);
+                    let mut call_args = op
                         .args
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
                         .map(|a| sanitize_ident(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                        .collect::<Vec<_>>();
+                    if op.passes_execution_context {
+                        call_args.push(self.frame_context_expr().to_string());
+                    }
+                    let call_args = call_args.join(", ");
                     // Map Python builtins to Luau equivalents.
                     let mapped = match func_name.as_str() {
                         "len" | "molt_len" => format!("molt_len({call_args})"),
@@ -289,16 +307,19 @@ impl LuauBackend {
                 }
             }
             "call_internal" => {
-                if let Some(ref s_val) = op.s_value {
-                    let func_name = self.invocation_target_ident(s_val);
-                    let call_args = op
+                if let Some(ref raw_func_name) = op.s_value {
+                    let func_name = self.invocation_target_ident(raw_func_name);
+                    let mut call_args = op
                         .args
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
                         .map(|a| sanitize_ident(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                        .collect::<Vec<_>>();
+                    if op.passes_execution_context {
+                        call_args.push(self.frame_context_expr().to_string());
+                    }
+                    let call_args = call_args.join(", ");
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!("local {out} = {func_name}({call_args})"));

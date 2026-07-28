@@ -237,11 +237,13 @@ mod tests {
     }
 
     #[test]
-    fn test_tir_function_roundtrip() {
+    fn test_tir_function_execution_context_roundtrip() {
+        use crate::ExecutionContextPolicy;
         use crate::tir::blocks::Terminator;
         use crate::tir::types::TirType;
 
         let mut func = TirFunction::new("cached".into(), vec![TirType::DynBox], TirType::DynBox);
+        func.execution_context = ExecutionContextPolicy::Inherited;
         let arg = func.blocks[&func.entry_block].args[0].id;
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
             Terminator::Return { values: vec![arg] };
@@ -249,6 +251,11 @@ mod tests {
         assert!(bytes.starts_with(TIR_FUNCTION_CACHE_MAGIC));
         let restored = deserialize_tir_function(&bytes).expect("TIR cache artifact roundtrip");
         assert_eq!(restored.name, func.name);
+        assert_eq!(
+            restored.execution_context,
+            ExecutionContextPolicy::Inherited,
+            "cached TIR must preserve the typed execution-context ABI"
+        );
         assert_eq!(restored.entry_block, func.entry_block);
         assert_eq!(restored.blocks.len(), func.blocks.len());
         assert!(matches!(

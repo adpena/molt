@@ -805,6 +805,25 @@ class MidendCanonicalizationMixin(_MixinBase):
         if not self._is_cse_eligible_op(op.kind):
             return None
         effect_class = self._op_effect_class(op.kind)
+        runtime_symbol = (
+            op.metadata.get("runtime_symbol") if op.metadata is not None else None
+        )
+        if isinstance(runtime_symbol, str) and runtime_symbol:
+            normalized_args = [
+                self._normalize_operand_key_for_value_numbering(
+                    arg, const_int_values
+                )
+                for arg in op.args
+            ]
+            if all(arg is not None for arg in normalized_args):
+                return (
+                    "RUNTIME_CALLABLE_READ",
+                    runtime_symbol,
+                    memory_epoch,
+                    op.kind,
+                    tuple(normalized_args),
+                )
+            return None
 
         const_key = self._const_cache_key_for_op(op)
         if const_key is not None:

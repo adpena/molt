@@ -34,6 +34,7 @@ fn hello_world_ir() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -48,6 +49,7 @@ fn empty_main_ir() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -63,6 +65,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "molt_main".to_string(),
@@ -71,6 +74,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -91,6 +95,7 @@ fn ir_with_async_ops() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -110,6 +115,7 @@ fn ir_with_os_name() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -146,6 +152,7 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
             FunctionIR {
                 name: "callee".to_string(),
@@ -154,6 +161,7 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
                 param_types: None,
                 source_file: None,
                 is_extern: false,
+                execution_context: Default::default(),
             },
         ],
         profile: None,
@@ -190,6 +198,7 @@ fn ir_with_socket_ops() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }
@@ -208,6 +217,7 @@ fn ir_with_time_ops() -> SimpleIR {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     }

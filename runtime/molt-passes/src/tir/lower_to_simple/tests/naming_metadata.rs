@@ -102,6 +102,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         }],
         profile: None,
     };
@@ -436,6 +437,7 @@ fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -553,6 +555,7 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -594,6 +597,7 @@ fn tir_round_trip_preserves_guarded_field_init_offset() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -626,6 +630,7 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -672,6 +677,7 @@ fn tir_round_trip_preserves_guarded_field_init_metadata() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -704,6 +710,7 @@ fn tir_round_trip_preserves_call_async_metadata() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -794,6 +801,7 @@ fn tir_round_trip_preserves_typed_field_class_identity() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -877,6 +885,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = lower_to_tir(&func_ir);
@@ -896,6 +905,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     });
     let relowered_op = relowered
         .blocks
@@ -1046,6 +1056,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         param_types: Some(vec!["i64".into()]),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let mut tir_func = lower_to_tir(&func_ir);

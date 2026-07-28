@@ -213,6 +213,92 @@ def load_table(table_path: Path = TABLE) -> dict:
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 
+    runtime_symbols = data.get("simpleir_frame_introspection_runtime_symbols", [])
+    if not isinstance(runtime_symbols, list) or not all(
+        isinstance(symbol, str) and symbol for symbol in runtime_symbols
+    ):
+        raise OpKindTableError(
+            "simpleir_frame_introspection_runtime_symbols must be a list of non-empty strings"
+        )
+    if len(set(runtime_symbols)) != len(runtime_symbols):
+        raise OpKindTableError(
+            "simpleir_frame_introspection_runtime_symbols has duplicate members"
+        )
+
+    qualified_callables = data.get("simpleir_runtime_qualified_callable", [])
+    if not isinstance(qualified_callables, list) or not all(
+        isinstance(row, dict)
+        and isinstance(row.get("qualified"), str)
+        and row["qualified"]
+        and isinstance(row.get("symbol"), str)
+        and row["symbol"]
+        for row in qualified_callables
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_qualified_callable rows require non-empty qualified and symbol strings"
+        )
+    qualified_names = [row["qualified"] for row in qualified_callables]
+    if len(set(qualified_names)) != len(qualified_names):
+        raise OpKindTableError(
+            "simpleir_runtime_qualified_callable has duplicate qualified names"
+        )
+    unknown_symbols = {
+        row["symbol"] for row in qualified_callables
+    } - set(runtime_symbols)
+    if unknown_symbols:
+        raise OpKindTableError(
+            "simpleir_runtime_qualified_callable references unclassified runtime symbols: "
+            + ", ".join(sorted(unknown_symbols))
+        )
+
+    callable_operand_kinds = data.get("simpleir_callable_operand_kinds", [])
+    if not isinstance(callable_operand_kinds, list) or not all(
+        isinstance(kind, str) and kind for kind in callable_operand_kinds
+    ):
+        raise OpKindTableError(
+            "simpleir_callable_operand_kinds must be a list of non-empty strings"
+        )
+    if len(set(callable_operand_kinds)) != len(callable_operand_kinds):
+        raise OpKindTableError("simpleir_callable_operand_kinds has duplicate members")
+    function_reference_kinds = data.get(
+        "simpleir_function_reference_s_value_kinds", []
+    )
+    if not isinstance(function_reference_kinds, list) or not all(
+        isinstance(kind, str) and kind for kind in function_reference_kinds
+    ):
+        raise OpKindTableError(
+            "simpleir_function_reference_s_value_kinds must be a list of non-empty strings"
+        )
+
+    for table_name, required_fields in (
+        ("simpleir_module_identity_alias", {"kind", "role"}),
+        ("simpleir_module_identity_source", {"kind", "module_name_arg"}),
+        ("simpleir_module_slot_access", {"kind", "role", "module_arg", "name_arg"}),
+    ):
+        rows = data.get(table_name, [])
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise OpKindTableError(f"{table_name} must be an array of tables")
+        kinds = []
+        for row in rows:
+            if not required_fields.issubset(row):
+                raise OpKindTableError(f"{table_name} row missing required fields")
+            if not isinstance(row["kind"], str) or not row["kind"]:
+                raise OpKindTableError(f"{table_name} kind must be non-empty")
+            kinds.append(row["kind"])
+            for field in required_fields - {"kind", "role"}:
+                if not isinstance(row[field], int) or row[field] < 0:
+                    raise OpKindTableError(f"{table_name} {field} must be non-negative")
+            if table_name == "simpleir_module_identity_alias":
+                if row["role"] not in {"strong", "merge"}:
+                    raise OpKindTableError(f"{table_name} has invalid role")
+            if table_name == "simpleir_module_slot_access":
+                if row["role"] not in {"get", "set", "delete"}:
+                    raise OpKindTableError(f"{table_name} has invalid role")
+                if row["role"] == "set" and not isinstance(row.get("value_arg"), int):
+                    raise OpKindTableError(f"{table_name} set row requires value_arg")
+        if len(set(kinds)) != len(kinds):
+            raise OpKindTableError(f"{table_name} has duplicate kinds")
+
     var_field_members: dict[str, str] = {}
     for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
         members = data.get(key, [])

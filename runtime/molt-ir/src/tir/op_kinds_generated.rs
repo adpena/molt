@@ -466,12 +466,16 @@ impl SimpleIrRuntimeRequirements {
     pub const ASYNC_RUNTIME: Self = Self(1 << 10);
     pub const UNSTRUCTURED_CONTROL: Self = Self(1 << 11);
     pub const HOST_CAPABILITY: Self = Self(1 << 12);
-    pub const FRAME_STATE: Self = Self(1 << 13);
+    pub const EXECUTION_FRAME: Self = Self(1 << 13);
+    pub const FRAME_INTROSPECTION: Self = Self(1 << 14);
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
     pub const fn contains(self, requirement: Self) -> bool {
         self.0 & requirement.0 != 0
+    }
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 }
 
@@ -832,6 +836,128 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         "frame_locals_set" | "line" | "trace_enter_slot" | "trace_exit" => {
             Some(SimpleIrRuntimeRequirements(8192))
         }
+        "getframe" => Some(SimpleIrRuntimeRequirements(16384)),
+        _ => None,
+    }
+}
+
+/// Runtime-call metadata requirements keyed by canonical intrinsic symbol.
+#[inline]
+pub fn simpleir_runtime_symbol_requirements_table(symbol: &str) -> SimpleIrRuntimeRequirements {
+    match symbol {
+        "molt_getframe"
+        | "molt_inspect_currentframe"
+        | "molt_sys_getprofile"
+        | "molt_sys_gettrace"
+        | "molt_sys_setprofile"
+        | "molt_sys_settrace" => SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,
+        _ => SimpleIrRuntimeRequirements::NONE,
+    }
+}
+
+/// Canonical runtime symbol for a statically resolved Python module callable.
+#[inline]
+pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'static str> {
+    match qualified {
+        "inspect.currentframe" => Some("molt_inspect_currentframe"),
+        "sys._getframe" => Some("molt_getframe"),
+        "sys.getprofile" => Some("molt_sys_getprofile"),
+        "sys.gettrace" => Some("molt_sys_gettrace"),
+        "sys.setprofile" => Some("molt_sys_setprofile"),
+        "sys.settrace" => Some("molt_sys_settrace"),
+        _ => None,
+    }
+}
+
+/// Whether args[0] is the dynamically invoked callable value.
+#[inline]
+pub fn simpleir_kind_has_callable_operand(kind: &str) -> bool {
+    matches!(
+        kind,
+        "call_bind" | "call_func" | "call_function" | "call_guarded" | "call_indirect"
+    )
+}
+
+/// Whether s_value is a first-class function reference.
+#[inline]
+pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {
+    matches!(kind, "func_new" | "func_new_closure")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrModuleIdentityAliasRole {
+    Strong,
+    Merge,
+}
+
+#[inline]
+pub fn simpleir_module_identity_alias_role_table(
+    kind: &str,
+) -> Option<SimpleIrModuleIdentityAliasRole> {
+    match kind {
+        "copy" => Some(SimpleIrModuleIdentityAliasRole::Strong),
+        "phi" => Some(SimpleIrModuleIdentityAliasRole::Merge),
+        _ => None,
+    }
+}
+
+#[inline]
+pub fn simpleir_module_identity_source_name_arg(kind: &str) -> Option<usize> {
+    match kind {
+        "module_cache_get" => Some(0),
+        "module_import" => Some(0),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrModuleSlotRole {
+    Get,
+    Set,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimpleIrModuleSlotAccess {
+    pub role: SimpleIrModuleSlotRole,
+    pub module_arg: usize,
+    pub name_arg: usize,
+    pub value_arg: Option<usize>,
+}
+
+#[inline]
+pub fn simpleir_module_slot_access_table(kind: &str) -> Option<SimpleIrModuleSlotAccess> {
+    match kind {
+        "module_del_global" => Some(SimpleIrModuleSlotAccess {
+            role: SimpleIrModuleSlotRole::Delete,
+            module_arg: 0,
+            name_arg: 1,
+            value_arg: None,
+        }),
+        "module_del_global_if_present" => Some(SimpleIrModuleSlotAccess {
+            role: SimpleIrModuleSlotRole::Delete,
+            module_arg: 0,
+            name_arg: 1,
+            value_arg: None,
+        }),
+        "module_get_attr" => Some(SimpleIrModuleSlotAccess {
+            role: SimpleIrModuleSlotRole::Get,
+            module_arg: 0,
+            name_arg: 1,
+            value_arg: None,
+        }),
+        "module_get_global" => Some(SimpleIrModuleSlotAccess {
+            role: SimpleIrModuleSlotRole::Get,
+            module_arg: 0,
+            name_arg: 1,
+            value_arg: None,
+        }),
+        "module_set_attr" => Some(SimpleIrModuleSlotAccess {
+            role: SimpleIrModuleSlotRole::Set,
+            module_arg: 0,
+            name_arg: 1,
+            value_arg: Some(2),
+        }),
         _ => None,
     }
 }

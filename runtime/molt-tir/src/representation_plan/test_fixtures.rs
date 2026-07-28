@@ -36,6 +36,7 @@ pub(crate) fn function(
         param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 

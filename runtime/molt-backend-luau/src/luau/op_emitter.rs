@@ -2,6 +2,19 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_op(&mut self, op: &OpIR) {
+        if molt_tir::target_admission::simpleir_op_runtime_requirements(op).is_some_and(
+            |requirements| {
+                requirements.contains(
+                    molt_tir::tir::op_kinds_generated::SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,
+                )
+            },
+        ) {
+            self.emit_unsupported_op_with_reason(
+                op,
+                "Python-visible frame objects and trace/profile hooks require exact whole-program locals activation",
+            );
+            return;
+        }
         if self.emit_list_op(op) {
             return;
         }

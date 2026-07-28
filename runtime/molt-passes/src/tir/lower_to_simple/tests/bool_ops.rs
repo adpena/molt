@@ -51,6 +51,7 @@ fn bool_method_return_preserves_const_bool_value() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: Default::default(),
         };
 
         let tir = lower_to_tir(&func);
@@ -126,6 +127,7 @@ fn not_true_roundtrip_preserves_operand() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir = lower_to_tir(&func);

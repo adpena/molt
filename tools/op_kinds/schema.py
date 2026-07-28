@@ -347,7 +347,8 @@ _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS = (
 )
 _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS = (
     "simpleir_runtime_neutral_semantics_kinds",
-    "simpleir_frame_state_semantics_kinds",
+    "simpleir_execution_frame_semantics_kinds",
+    "simpleir_frame_introspection_semantics_kinds",
     "simpleir_identity_semantics_kinds",
     "simpleir_tuple_semantics_kinds",
     "simpleir_exception_semantics_kinds",

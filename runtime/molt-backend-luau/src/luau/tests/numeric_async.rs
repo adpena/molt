@@ -9,6 +9,7 @@ fn test_compile_checked_lowers_checked_add_helper() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "checked_add".to_string(),
@@ -44,6 +45,7 @@ fn test_compile_checked_lowers_checked_mul_helper() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "checked_mul".to_string(),
@@ -81,6 +83,7 @@ fn test_compile_checked_lowers_zero_division_guards() {
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "div".to_string(),
@@ -136,6 +139,7 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
             ]),
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "pow_mod".to_string(),
@@ -176,6 +180,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
                 param_types: Some(vec!["list".to_string()]),
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
                         kind: "vec_sum_i64".to_string(),
@@ -196,6 +201,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
                 param_types: Some(vec!["list".to_string()]),
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
                         kind: "vec_min_i64".to_string(),
@@ -237,6 +243,7 @@ fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -299,6 +306,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
                 ]),
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
                         kind: "string_split_ws_dict_inc".to_string(),
@@ -333,6 +341,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
                 ]),
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
                         kind: "string_split_sep_dict_inc".to_string(),
@@ -366,6 +375,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
                 ]),
                 source_file: None,
                 is_extern: false,
+                execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
                         kind: "taq_ingest_line".to_string(),
@@ -418,6 +428,7 @@ fn test_compile_checked_lowers_labeled_branch_ops() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: ExecutionContextPolicy::None,
         ops: vec![
             OpIR {
                 kind: "const_bool".to_string(),
@@ -488,6 +499,7 @@ fn test_compile_via_ir_rejects_unsupported_output() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "unknown_luau_op".to_string(),
                 out: Some("v0".to_string()),
@@ -519,6 +531,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 // No `out`: dispatch still records the unsupported operation.
                 kind: "molt_synthetic_unsupported_sink_probe".to_string(),
@@ -550,6 +563,7 @@ fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "call".to_string(),
@@ -600,6 +614,7 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "matmul".to_string(),
                 out: Some("v0".to_string()),
@@ -633,6 +648,7 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const_not_implemented".to_string(),
@@ -672,6 +688,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "inplace_matmul".to_string(),
                 out: Some("v0".to_string()),
@@ -705,6 +722,7 @@ fn test_compile_checked_rejects_async_marker() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "spawn".to_string(),
                 out: Some("v0".to_string()),
@@ -734,6 +752,7 @@ fn test_compile_checked_lowers_call_async_poll_target_directly() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "const".to_string(),
@@ -779,6 +798,7 @@ fn test_compile_checked_lowers_is_native_awaitable_target_fact() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
                     kind: "object_new".to_string(),
@@ -817,6 +837,7 @@ fn test_compile_checked_rejects_file_marker() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "file_open".to_string(),
                 out: Some("v0".to_string()),
@@ -846,6 +867,7 @@ fn test_compile_checked_rejects_context_marker() {
             param_types: None,
             source_file: None,
             is_extern: false,
+            execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "context_enter".to_string(),
                 out: Some("v0".to_string()),

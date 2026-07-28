@@ -167,6 +167,7 @@ mod tests {
         );
         TirFunction {
             name: "pipeline_shape".into(),
+            execution_context: Default::default(),
             param_names: Vec::new(),
             param_types: Vec::new(),
             return_type: TirType::None,

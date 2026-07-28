@@ -113,6 +113,7 @@ fn make_comprehension_ir() -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -155,6 +156,7 @@ fn make_legacy_scalar_hint_ir() -> FunctionIR {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     }
 }
 
@@ -269,6 +271,7 @@ fn roundtrip_preserves_structural_source_site() {
         param_types: None,
         source_file: None,
         is_extern: false,
+        execution_context: Default::default(),
     };
 
     let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(&ir);

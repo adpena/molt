@@ -118,6 +118,7 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
         param_types: ir.param_types.clone(),
         source_file: ir.source_file.clone(),
         is_extern: false,
+        execution_context: ir.execution_context,
     };
     let ir_ref = &tmp_ir;
     let ops = &working_ops[..];
@@ -242,6 +243,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
 
     TirFunction {
         name: ir.name.clone(),
+        execution_context: ir.execution_context,
         param_names: ir.params.clone(),
         param_types,
         return_type,

@@ -104,6 +104,7 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
     blocks.insert(entry_id, block);
     TirFunction {
         name: "test".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,
@@ -138,6 +139,7 @@ fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirF
     blocks.insert(successor_id, successor);
     TirFunction {
         name: "two_block_test".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::None,

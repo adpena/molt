@@ -58,6 +58,7 @@ fn exception_label_forwarding_args_widen_downstream_merge_args() {
     label_id_map.insert(handler.0, 10);
     let mut func = TirFunction {
         name: "exception_label_forwarding_args_widen_downstream_merge_args".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::DynBox,
@@ -177,6 +178,7 @@ fn block_arg_meet_same_types() {
 
     let mut func = TirFunction {
         name: "join_test".into(),
+        execution_context: Default::default(),
         param_names: vec!["p0".into()],
         param_types: vec![TirType::Bool],
         return_type: TirType::I64,
@@ -284,6 +286,7 @@ fn block_arg_meet_different_types_produces_union() {
 
     let mut func = TirFunction {
         name: "union_test".into(),
+        execution_context: Default::default(),
         param_names: vec!["p0".into()],
         param_types: vec![TirType::Bool],
         return_type: TirType::DynBox,
@@ -370,6 +373,7 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
     blocks.insert(entry_id, block);
     let mut func = TirFunction {
         name: "dynbox_test".into(),
+        execution_context: Default::default(),
         param_names: vec!["p0".into(), "p1".into()],
         param_types: vec![TirType::DynBox, TirType::DynBox],
         return_type: TirType::DynBox,
@@ -460,6 +464,7 @@ fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
 
     let mut func = TirFunction {
         name: "never_bottom_late_dominator".into(),
+        execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
         return_type: TirType::I64,

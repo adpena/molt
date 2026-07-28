@@ -264,6 +264,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     } else if op.builtin_name.is_some() {
         return Err(format!("op `{}` cannot carry builtin_name", op.kind));
     }
+    if let Some(runtime_symbol) = op.runtime_symbol.as_deref() {
+        validate_clean_symbol(runtime_symbol, &format!("op `{}` runtime_symbol", op.kind))?;
+        if !matches!(op.kind.as_str(), "module_get_attr" | "module_import_from") {
+            return Err(format!("op `{}` cannot carry runtime_symbol", op.kind));
+        }
+    }
     if let Some(effect_proof) = op.effect_proof.as_deref() {
         validate_clean_symbol(effect_proof, &format!("op `{}` effect_proof", op.kind))?;
         let Some(proof) = EffectProof::from_name(effect_proof) else {

@@ -1256,7 +1256,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_module_global_del_safe(self, name: str) -> None: ...
 
     def _emit_module_import_from_value(
-        self, module_val: MoltValue, attr_name: str
+        self,
+        module_val: MoltValue,
+        attr_name: str,
+        *,
+        module_name: str | None = None,
     ) -> MoltValue: ...
 
     def _emit_module_load(self, module_name: str) -> MoltValue: ...

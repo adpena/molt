@@ -24,6 +24,12 @@ impl LuauBackend {
             }
             "pcall_wrap_begin" => {
                 let n = op.value.unwrap_or(0) as u32;
+                self.emit_line(&format!(
+                    "local __molt_pcall_frame_context_{n}, __molt_pcall_frame_owner_{n} = molt_frame_context()"
+                ));
+                self.emit_line(&format!(
+                    "local __molt_frame_depth_{n} = __molt_pcall_frame_context_{n}.depth"
+                ));
                 self.emit_line(&format!("local __ok_{n}, __err_{n}"));
                 self.emit_line(&format!("__ok_{n}, __err_{n} = pcall(function()"));
                 self.push_indent();
@@ -31,8 +37,17 @@ impl LuauBackend {
                 self.inside_pcall_body = true;
             }
             "pcall_wrap_end" => {
+                let n = op.value.unwrap_or(0) as u32;
                 self.pop_indent();
                 self.emit_line("end)");
+                self.emit_line(&format!("if not __ok_{n} then"));
+                self.push_indent();
+                self.emit_line(&format!("local __molt_pcall_restored_{n}: boolean"));
+                self.emit_line(&format!(
+                    "__err_{n}, __molt_pcall_restored_{n} = molt_frame_finalize(__molt_pcall_frame_context_{n}, __molt_pcall_frame_owner_{n}, __molt_frame_depth_{n}, __err_{n}, true)"
+                ));
+                self.pop_indent();
+                self.emit_line("end");
                 self.inside_pcall_body = false;
             }
             "pcall_handler_end" => {

@@ -5,6 +5,9 @@ use crate::json_boundary::{
     expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
     optional_string_list, required_field, required_string, required_string_list,
 };
+use crate::tir::op_kinds_generated::{
+    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_call_graph_user_call,
+};
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
@@ -267,6 +270,15 @@ impl<'de> Deserialize<'de> for BackendIrDocument {
     }
 }
 
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionContextPolicy {
+    #[default]
+    None,
+    Local,
+    Inherited,
+}
+
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
@@ -281,6 +293,9 @@ pub struct FunctionIR {
     /// the linker resolves the symbol from the shared object.
     #[serde(default)]
     pub is_extern: bool,
+    /// Target-neutral execution-context ABI policy.
+    #[serde(default)]
+    pub execution_context: ExecutionContextPolicy,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -334,6 +349,14 @@ pub struct OpIR {
     /// `s_value` remains the executable runtime symbol; this field names the
     /// metadata/default authority used by `molt_func_new_builtin_named`.
     pub builtin_name: Option<String>,
+    /// Canonical runtime callable provenance resolved by the frontend from a
+    /// statically known module attribute/import. Target admission propagates
+    /// this fact through SSA aliases before any backend emits source.
+    pub runtime_symbol: Option<String>,
+    /// Direct-call marker paired with `ExecutionContextPolicy::Inherited` on
+    /// the callee; the backend must thread its active context at this call site.
+    #[serde(default)]
+    pub passes_execution_context: bool,
     /// Transitional semantic hint preserved on the transport surface for
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
@@ -621,6 +644,19 @@ impl FunctionIR {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             is_extern: false,
+            execution_context: obj
+                .get("execution_context")
+                .and_then(|value| value.as_str())
+                .map(|value| match value {
+                    "none" => Ok(ExecutionContextPolicy::None),
+                    "local" => Ok(ExecutionContextPolicy::Local),
+                    "inherited" => Ok(ExecutionContextPolicy::Inherited),
+                    _ => Err(format!(
+                        "{ctx}.execution_context has invalid policy `{value}`"
+                    )),
+                })
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
 }
@@ -653,6 +689,9 @@ impl OpIR {
             native_callable_symbol: optional_string(obj, "native_callable_symbol", ctx)?,
             native_callable_abi: optional_string(obj, "native_callable_abi", ctx)?,
             builtin_name: optional_string(obj, "builtin_name", ctx)?,
+            runtime_symbol: optional_string(obj, "runtime_symbol", ctx)?,
+            passes_execution_context: optional_bool(obj, "passes_execution_context", ctx)?
+                .unwrap_or(false),
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
             source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
@@ -713,14 +752,79 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
 }
 
 fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
+    let inherited = ir
+        .functions
+        .iter()
+        .filter(|func| func.execution_context == ExecutionContextPolicy::Inherited)
+        .map(|func| func.name.as_str())
+        .collect::<BTreeSet<_>>();
     for func in &ir.functions {
         ir_schema::validate_function_param_types(
             &func.name,
             &func.params,
             func.param_types.as_deref(),
         )?;
+        let trace_enters = func
+            .ops
+            .iter()
+            .filter(|op| op.kind == "trace_enter_slot")
+            .count();
+        match func.execution_context {
+            ExecutionContextPolicy::Local if trace_enters != 1 => {
+                return Err(format!(
+                    "function `{}` with local execution context requires exactly one trace_enter_slot",
+                    func.name
+                ));
+            }
+            ExecutionContextPolicy::Inherited if trace_enters != 0 => {
+                return Err(format!(
+                    "function `{}` cannot both inherit and create an execution context",
+                    func.name
+                ));
+            }
+            ExecutionContextPolicy::None if trace_enters != 0 => {
+                return Err(format!(
+                    "function `{}` with trace_enter_slot must declare local execution context",
+                    func.name
+                ));
+            }
+            _ => {}
+        }
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;
+            if op.passes_execution_context {
+                let Some(target) = op.s_value.as_deref() else {
+                    return Err("execution-context call metadata requires a direct target".into());
+                };
+                if op.kind != "call_internal" {
+                    return Err(format!(
+                        "execution-context call metadata requires call_internal, found `{}`",
+                        op.kind
+                    ));
+                }
+                if !inherited.contains(target) {
+                    return Err(format!(
+                        "execution-context call metadata targets non-inherited function `{target}`"
+                    ));
+                }
+            }
+            if simpleir_kind_is_call_graph_user_call(op.kind.as_str())
+                && let Some(target) = op.s_value.as_deref()
+                && inherited.contains(target)
+                && !op.passes_execution_context
+            {
+                return Err(format!(
+                    "inherited execution-context function `{target}` requires direct threaded call metadata"
+                ));
+            }
+            if simpleir_kind_has_function_reference_s_value(op.kind.as_str())
+                && let Some(target) = op.s_value.as_deref()
+                && inherited.contains(target)
+            {
+                return Err(format!(
+                    "inherited execution-context function `{target}` cannot escape as an indirect callable"
+                ));
+            }
         }
     }
     Ok(())
@@ -750,6 +854,95 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn execution_context_validation_uses_typed_call_roles_not_string_collisions() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "module_chunk",
+                        "params": [],
+                        "execution_context": "inherited",
+                        "ops": [{"kind": "ret_void"}]
+                    },
+                    {
+                        "name": "caller",
+                        "params": ["module_chunk"],
+                        "ops": [
+                            {"kind": "const_str", "s_value": "module_chunk", "out": "same_text"},
+                            {"kind": "call_internal", "s_value": "module_chunk", "passes_execution_context": true},
+                            {"kind": "ret_void"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect("non-call strings and SSA names must not be mistaken for function references");
+
+        assert_eq!(ir.functions.len(), 2);
+        assert!(ir.functions[1].ops[1].passes_execution_context);
+    }
+
+    #[test]
+    fn execution_context_validation_rejects_first_class_inherited_function_escape() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "module_chunk",
+                        "params": [],
+                        "execution_context": "inherited",
+                        "ops": [{"kind": "ret_void"}]
+                    },
+                    {
+                        "name": "caller",
+                        "params": [],
+                        "ops": [
+                            {"kind": "func_new", "s_value": "module_chunk", "out": "escaped"},
+                            {"kind": "ret_void"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("inherited execution contexts require a direct threaded call edge");
+
+        assert!(
+            err.contains("cannot escape as an indirect callable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn execution_context_validation_rejects_ambiguous_call_metadata() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "module_chunk",
+                        "params": [],
+                        "execution_context": "inherited",
+                        "ops": [{"kind": "ret_void"}]
+                    },
+                    {
+                        "name": "caller",
+                        "params": [],
+                        "ops": [
+                            {"kind": "call", "s_value": "module_chunk", "passes_execution_context": true},
+                            {"kind": "ret_void"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("only canonical direct-local calls may thread an execution context");
+
+        assert!(
+            err.contains("execution-context call metadata requires call_internal, found `call`"),
+            "{err}"
+        );
     }
 
     #[test]
