@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde_json::Value as JsonValue;
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -148,8 +150,68 @@ fn read_varuint(data: &[u8], mut offset: usize) -> (usize, usize) {
     }
 }
 
+fn reported_runtime_cdylib(stdout: &str, target_dir: &Path) -> PathBuf {
+    let target_dir = fs::canonicalize(target_dir).expect("canonical target dir");
+    let mut reported = BTreeSet::new();
+    for line in stdout.lines() {
+        let Ok(message) = serde_json::from_str::<JsonValue>(line) else {
+            continue;
+        };
+        if message.get("reason").and_then(JsonValue::as_str) != Some("compiler-artifact") {
+            continue;
+        }
+        let package_id = message
+            .get("package_id")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default();
+        let target = message.get("target").and_then(JsonValue::as_object);
+        let target_name = target
+            .and_then(|target| target.get("name"))
+            .and_then(JsonValue::as_str);
+        let crate_types = target
+            .and_then(|target| target.get("crate_types"))
+            .and_then(JsonValue::as_array);
+        if !package_id.contains("molt-runtime")
+            || target_name != Some("molt_runtime")
+            || !crate_types.is_some_and(|crate_types| {
+                crate_types
+                    .iter()
+                    .any(|crate_type| crate_type.as_str() == Some("cdylib"))
+            })
+        {
+            continue;
+        }
+        let Some(filenames) = message.get("filenames").and_then(JsonValue::as_array) else {
+            continue;
+        };
+        for filename in filenames {
+            let Some(filename) = filename.as_str() else {
+                continue;
+            };
+            let path = PathBuf::from(filename);
+            if path.extension().and_then(|extension| extension.to_str()) != Some("wasm") {
+                continue;
+            }
+            let path = fs::canonicalize(&path)
+                .unwrap_or_else(|error| panic!("canonicalize Cargo artifact {path:?}: {error}"));
+            assert!(
+                path.starts_with(&target_dir),
+                "Cargo reported runtime cdylib outside target dir: {}",
+                path.display()
+            );
+            reported.insert(path);
+        }
+    }
+    assert_eq!(
+        reported.len(),
+        1,
+        "Cargo must report exactly one runtime cdylib artifact, got {reported:?}"
+    );
+    reported.into_iter().next().expect("one reported cdylib")
+}
+
 #[test]
-fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
+fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
     let root = workspace_root();
     let target_dir = root.join("target/wasm-cdylib-exports-test");
     let tmp_dir = root.join("tmp");
@@ -219,16 +281,20 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         .env("CARGO_INCREMENTAL", "0")
         .env("RUSTFLAGS", rustflags)
         .args([
-            "build",
+            "rustc",
             "--package",
             "molt-runtime",
             "--profile",
             "dev-fast",
             "--target",
             "wasm32-wasip1",
+            "--lib",
             "--no-default-features",
             "--features",
             &runtime_features.join(","),
+            "--crate-type",
+            "cdylib",
+            "--message-format=json-render-diagnostics",
         ])
         .output()
         .expect("run cargo build for wasm runtime");
@@ -240,12 +306,8 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let runtime_wasm = target_dir.join("wasm32-wasip1/dev-fast/molt_runtime.wasm");
-    assert!(
-        runtime_wasm.exists(),
-        "cargo build did not emit stable runtime wasm artifact at {}",
-        runtime_wasm.display()
-    );
+    let runtime_wasm =
+        reported_runtime_cdylib(&String::from_utf8_lossy(&output.stdout), &target_dir);
     let export_names = read_export_names(&runtime_wasm);
     let expected = expected_fixed_exports(&runtime_features);
     let missing: Vec<String> = expected.difference(&export_names).cloned().collect();
