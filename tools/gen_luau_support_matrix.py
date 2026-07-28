@@ -44,6 +44,7 @@ def _kind_set(*keys: str) -> frozenset[str]:
 
 
 _PRE_SOURCE_NOT_ADMITTED = _kind_set(
+    "simpleir_frame_state_semantics_kinds",
     "simpleir_dynamic_divmod_semantics_kinds",
     "simpleir_dynamic_power_semantics_kinds",
     "simpleir_integer_only_semantics_kinds",

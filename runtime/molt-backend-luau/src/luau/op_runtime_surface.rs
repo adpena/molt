@@ -133,23 +133,14 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "frame_locals_set" => {
-                if let Some(ref out_name) = op.out
-                    && out_name != "none"
-                {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
+            "frame_locals_set" | "trace_enter_slot" | "trace_exit" | "line" => {
+                // These operations are observable through frame locals,
+                // traceback positions, and active-frame inspection. Target
+                // admission rejects them before source generation; keep the
+                // emitter fail-closed too so a future capability flip cannot
+                // silently revive the retired no-op lane.
+                self.emit_unsupported_op(op);
             }
-            "trace_enter_slot" | "trace_exit" => {
-                if let Some(ref out_name) = op.out
-                    && out_name != "none"
-                {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
-            }
-            "line" => {}
             "json_parse" | "msgpack_parse" | "cbor_parse" => {
                 self.emit_unsupported_op(op);
             }

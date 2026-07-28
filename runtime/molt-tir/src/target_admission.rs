@@ -42,6 +42,7 @@ impl NumericTargetCapabilities {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeTargetCapabilities {
+    pub python_frame_state: bool,
     pub python_identity: bool,
     pub tuple_representation: bool,
     pub exception_model: bool,
@@ -59,6 +60,7 @@ pub struct RuntimeTargetCapabilities {
 
 impl RuntimeTargetCapabilities {
     pub const NONE: Self = Self {
+        python_frame_state: false,
         python_identity: false,
         tuple_representation: false,
         exception_model: false,
@@ -119,6 +121,7 @@ pub fn validate_runtime_target_contract(
     target: &str,
     capabilities: RuntimeTargetCapabilities,
 ) -> Result<(), String> {
+    let admission_checks = runtime_admission_checks(capabilities);
     for function in &ir.functions {
         for (index, op) in function.ops.iter().enumerate() {
             let Some(requirements) = simpleir_runtime_requirements_table(op.kind.as_str()) else {
@@ -127,7 +130,10 @@ pub fn validate_runtime_target_contract(
                     function.name, op.kind,
                 ));
             };
-            for (requirement, supported, reason) in runtime_admission_checks(capabilities) {
+            if requirements.is_empty() {
+                continue;
+            }
+            for &(requirement, supported, reason) in &admission_checks {
                 if requirements.contains(requirement) && !supported {
                     return Err(format!(
                         "{target} target rejected before source generation: {}:op#{index} `{}`: {reason}",
@@ -142,8 +148,13 @@ pub fn validate_runtime_target_contract(
 
 fn runtime_admission_checks(
     capabilities: RuntimeTargetCapabilities,
-) -> [(SimpleIrRuntimeRequirements, bool, &'static str); 13] {
+) -> [(SimpleIrRuntimeRequirements, bool, &'static str); 14] {
     [
+        (
+            SimpleIrRuntimeRequirements::FRAME_STATE,
+            capabilities.python_frame_state,
+            "operation requires observable Python frame stack, locals, and traceback line state",
+        ),
         (
             SimpleIrRuntimeRequirements::IDENTITY,
             capabilities.python_identity,
@@ -487,5 +498,42 @@ mod tests {
             NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
         )
         .expect("generic const float payload must stay outside integer admission");
+    }
+
+    #[test]
+    fn frame_state_siblings_share_one_effectful_capability() {
+        for kind in ["frame_locals_set", "line", "trace_enter_slot", "trace_exit"] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "frame_state".to_string(),
+                    params: vec!["locals".to_string()],
+                    ops: vec![OpIR {
+                        kind: kind.to_string(),
+                        args: (kind == "frame_locals_set").then(|| vec!["locals".to_string()]),
+                        value: matches!(kind, "line" | "trace_enter_slot").then_some(7),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                }],
+                profile: None,
+            };
+
+            let error =
+                validate_runtime_target_contract(&ir, "no-frames", RuntimeTargetCapabilities::NONE)
+                    .expect_err("observable frame state must not degrade to a target no-op");
+            assert!(error.contains("frame stack, locals, and traceback line"));
+
+            validate_runtime_target_contract(
+                &ir,
+                "frames",
+                RuntimeTargetCapabilities {
+                    python_frame_state: true,
+                    ..RuntimeTargetCapabilities::NONE
+                },
+            )
+            .expect("the shared frame-state capability admits every sibling");
+        }
     }
 }

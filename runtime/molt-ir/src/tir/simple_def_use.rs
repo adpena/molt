@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 use crate::ir::OpIR;
@@ -32,34 +33,39 @@ pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
     }
 }
 
-/// Names defined directly by an operation result.
-pub fn simple_ir_result_names(op: &OpIR) -> Vec<&str> {
-    let mut defined = Vec::new();
+/// Visit names defined directly by an operation result without allocating.
+pub fn visit_simple_ir_result_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
     if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result
         && let Some(var) = op.var.as_deref()
         && var != "none"
     {
-        defined.push(var);
+        visit(var);
     }
     if !simpleir_out_field_is_metadata(op.kind.as_str())
         && let Some(out) = op.out.as_deref()
         && out != "none"
     {
-        defined.push(out);
+        visit(out);
     }
     if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind.as_str())
         && let Some(args) = op.args.as_deref()
     {
-        defined.extend(
-            args.iter()
-                .skip(first_result)
-                .map(String::as_str)
-                .filter(|name| *name != "none"),
-        );
+        for name in args.iter().skip(first_result).map(String::as_str) {
+            if name != "none" {
+                visit(name);
+            }
+        }
     }
+}
+
+#[cfg(test)]
+fn simple_ir_result_names(op: &OpIR) -> Vec<&str> {
+    let mut defined = Vec::new();
+    visit_simple_ir_result_names(op, |name| defined.push(name));
     defined
 }
 
+#[cfg(test)]
 fn push_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
     if name != "none" && seen.insert(name.to_string()) {
         out.push(name.to_string());
@@ -69,57 +75,66 @@ fn push_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
 /// Every source read and its canonical field role, in deterministic order.
 ///
 /// Consumers that need positional diagnostics or narrowly-scoped transport
-/// exceptions use this API directly. Name-set consumers should use
-/// [`simple_ir_read_names`], which projects from this same authority.
-pub fn simple_ir_reads(op: &OpIR) -> Vec<SimpleIrRead<'_>> {
-    let mut reads = Vec::new();
+/// exceptions use this API directly. Name-set consumers should insert the
+/// borrowed names into their own long-lived set.
+pub fn visit_simple_ir_reads<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrRead<'a>)) {
     if let Some(args) = op.args.as_ref() {
         let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
             .unwrap_or(args.len())
             .min(args.len());
-        reads.extend(
-            args.iter()
-                .take(read_arity)
-                .enumerate()
-                .map(|(index, name)| SimpleIrRead {
-                    name,
-                    field: SimpleIrReadField::Arg(index),
-                }),
-        );
+        for (index, name) in args.iter().take(read_arity).enumerate() {
+            visit(SimpleIrRead {
+                name,
+                field: SimpleIrReadField::Arg(index),
+            });
+        }
     }
     if simple_ir_var_field_is_read(op)
         && let Some(name) = op.var.as_deref()
     {
-        reads.push(SimpleIrRead {
+        visit(SimpleIrRead {
             name,
             field: SimpleIrReadField::Var,
         });
     }
+}
+
+#[cfg(test)]
+fn simple_ir_reads(op: &OpIR) -> Vec<SimpleIrRead<'_>> {
+    let mut reads = Vec::new();
+    visit_simple_ir_reads(op, |source| reads.push(source));
     reads
 }
 
-/// All SimpleIR names read by `op`, in deterministic field order.
-pub fn simple_ir_read_names(op: &OpIR) -> Vec<String> {
+#[cfg(test)]
+fn simple_ir_read_names(op: &OpIR) -> Vec<String> {
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
-    for source in simple_ir_reads(op) {
+    visit_simple_ir_reads(op, |source| {
         push_name(&mut read, &mut seen, source.name);
-    }
+    });
     read
 }
 
-/// All SimpleIR names defined by `op`, in deterministic field order.
-pub fn simple_ir_defined_names(op: &OpIR) -> Vec<String> {
-    let mut defined = Vec::new();
-    let mut seen = BTreeSet::new();
-    for name in simple_ir_result_names(op) {
-        push_name(&mut defined, &mut seen, name);
-    }
+/// Visit every name defined by an operation without per-op allocation.
+/// Consumers that retain names must copy them into their own long-lived set.
+pub fn visit_simple_ir_defined_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
+    visit_simple_ir_result_names(op, &mut visit);
     if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Definition
         && let Some(var) = op.var.as_deref().or(op.out.as_deref())
+        && var != "none"
     {
-        push_name(&mut defined, &mut seen, var);
+        visit(var);
     }
+}
+
+#[cfg(test)]
+fn simple_ir_defined_names(op: &OpIR) -> Vec<String> {
+    let mut defined = Vec::new();
+    let mut seen = BTreeSet::new();
+    visit_simple_ir_defined_names(op, |name| {
+        push_name(&mut defined, &mut seen, name);
+    });
     defined
 }
 

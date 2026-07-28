@@ -111,18 +111,18 @@ impl OpLiveThroughSnapshot {
     pub(in crate::native_backend::function_compiler) fn capture(
         builder: &mut FunctionBuilder<'_>,
         live_after: &BTreeSet<String>,
-        defined_by_op: &[String],
+        defining_op: &OpIR,
         vars: &BTreeMap<String, Variable>,
         slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     ) -> Self {
-        let defined: BTreeSet<&str> = defined_by_op.iter().map(String::as_str).collect();
         let mut snapshot_vars = Vec::new();
         let mut values = Vec::new();
         for name in live_after {
-            if name == "none"
-                || defined.contains(name.as_str())
-                || slot_backed_join_slots.contains_key(name)
-            {
+            let mut defined_here = false;
+            crate::tir::simple_def_use::visit_simple_ir_defined_names(defining_op, |defined| {
+                defined_here |= defined == name.as_str();
+            });
+            if name == "none" || defined_here || slot_backed_join_slots.contains_key(name) {
                 continue;
             }
             let Some(&var) = vars.get(name) else {

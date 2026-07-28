@@ -5173,6 +5173,24 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
     assert '"unpack_sequence": 1' in rendered_py
 
 
+def test_observable_frame_state_siblings_share_one_generated_requirement() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+
+    frame_state = {
+        "frame_locals_set",
+        "line",
+        "trace_enter_slot",
+        "trace_exit",
+    }
+    assert set(data["simpleir_frame_state_semantics_kinds"]) == frame_state
+    assert frame_state.isdisjoint(data["simpleir_runtime_neutral_semantics_kinds"])
+    for kind in frame_state:
+        assert f'"{kind}"' in rendered
+    assert "pub const FRAME_STATE: Self" in rendered
+
+
 def test_result_validity_rejects_bad_rows() -> None:
     gen = _gen()
     data = gen.load_table()

@@ -10,6 +10,7 @@ use super::super::op_kinds_generated::{
     simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::super::simple_def_use::visit_simple_ir_defined_names;
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
@@ -114,9 +115,13 @@ impl<'a> SsaContext<'a> {
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
-        for _ in self.get_def_vars(op) {
-            let vid = self.fresh_value_typed();
-            results.push(vid);
+        let mut result_count = 0;
+        visit_simple_ir_defined_names(op, |name| {
+            result_count += usize::from(is_variable(name));
+        });
+        results.reserve(result_count);
+        for _ in 0..result_count {
+            results.push(self.fresh_value_typed());
         }
 
         // Build attrs from literal values on the op.

@@ -1051,11 +1051,10 @@ impl SimpleBackend {
             ) {
                 OpLiveThroughSnapshot::empty()
             } else {
-                let defined_by_op = crate::tir::simple_def_use::simple_ir_defined_names(&op);
                 OpLiveThroughSnapshot::capture(
                     &mut builder,
                     cfg_liveness.live_after(op_idx),
-                    &defined_by_op,
+                    &op,
                     &vars,
                     &slot_backed_join_slots,
                 )

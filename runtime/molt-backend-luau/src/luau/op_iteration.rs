@@ -23,9 +23,15 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
-                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-                    let value_out = results.first().copied().map(sanitize_ident);
-                    let done_out = results.get(1).copied().map(sanitize_ident);
+                    let mut results = [None, None];
+                    let mut result_count = 0;
+                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                        results[result_count] = Some(name);
+                        result_count += 1;
+                    });
+                    let [value_out, done_out] = results;
+                    let value_out = value_out.map(sanitize_ident);
+                    let done_out = done_out.map(sanitize_ident);
                     let tmp_seed = done_out
                         .as_deref()
                         .or(value_out.as_deref())

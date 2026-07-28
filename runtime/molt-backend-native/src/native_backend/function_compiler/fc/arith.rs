@@ -633,9 +633,13 @@ fn handle_checked_add_op(
     // loop — same semantics, no speedup). This mirrors the
     // Luau lowering exactly.
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let result_names = crate::tir::simple_def_use::simple_ir_result_names(op);
-    let sum_name = result_names.first().copied();
-    let flag_name = result_names.get(1).copied();
+    let mut results = [None, None];
+    let mut result_count = 0;
+    crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+        results[result_count] = Some(name);
+        result_count += 1;
+    });
+    let [sum_name, flag_name] = results;
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
     let rhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
     if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -782,9 +786,13 @@ fn handle_checked_mul_op(
     // CONSTANT FALSE (the peel's slow path is correctly dead; the
     // "fast" loop IS the boxed loop — same semantics, no speedup).
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let result_names = crate::tir::simple_def_use::simple_ir_result_names(op);
-    let prod_name = result_names.first().copied();
-    let flag_name = result_names.get(1).copied();
+    let mut results = [None, None];
+    let mut result_count = 0;
+    crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+        results[result_count] = Some(name);
+        result_count += 1;
+    });
+    let [prod_name, flag_name] = results;
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
     let rhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
     if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {

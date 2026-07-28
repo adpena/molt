@@ -93,9 +93,15 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-                    let sum_out = results.first().copied().map(sanitize_ident);
-                    let flag_out = results.get(1).copied().map(sanitize_ident);
+                    let mut results = [None, None];
+                    let mut result_count = 0;
+                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                        results[result_count] = Some(name);
+                        result_count += 1;
+                    });
+                    let [sum_out, flag_out] = results;
+                    let sum_out = sum_out.map(sanitize_ident);
+                    let flag_out = flag_out.map(sanitize_ident);
                     match (sum_out, flag_out) {
                         (Some(sum), Some(flag)) => {
                             self.emit_line(&format!(
@@ -121,9 +127,15 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let results = molt_tir::tir::simple_def_use::simple_ir_result_names(op);
-                    let product_out = results.first().copied().map(sanitize_ident);
-                    let flag_out = results.get(1).copied().map(sanitize_ident);
+                    let mut results = [None, None];
+                    let mut result_count = 0;
+                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                        results[result_count] = Some(name);
+                        result_count += 1;
+                    });
+                    let [product_out, flag_out] = results;
+                    let product_out = product_out.map(sanitize_ident);
+                    let flag_out = flag_out.map(sanitize_ident);
                     match (product_out, flag_out) {
                         (Some(product), Some(flag)) => {
                             self.emit_line(&format!(
