@@ -637,7 +637,7 @@ falls back to the host process version when a target is selected.
 | `*_TIMEOUT_SEC` / `MOLT_TEST_PROCESS_TIMEOUT_SEC` | Guarded command wall-clock timeout. |
 | `*_KEEPALIVE_SEC` / `MOLT_SUBPROCESS_KEEPALIVE_SECS` | Interval for streamed guarded-command progress lines. |
 | `MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC` | Bounded wait after guard termination before reporting an un-settled process tree. |
-| `*_CHILD_RLIMIT_GB` / `MOLT_CHILD_RLIMIT_GB` | Direct-child virtual-address-space clamp; use `0` only when RSS/tree/global guard telemetry is the authoritative signal. |
+| `*_CHILD_RLIMIT_GB` / `MOLT_CHILD_RLIMIT_GB` | Direct-child `RLIMIT_RSS` backstop; use `0` only to disable that kernel layer while recursive RSS/tree/global telemetry remains authoritative. |
 
 ### Registry / Publishing
 

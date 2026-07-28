@@ -467,7 +467,15 @@ def _apply_child_resource_limit(limit_kb: int) -> None:
     except Exception:
         return
     limit_bytes = int(limit_kb * 1024)
-    for name in ("RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_RSS"):
+    # The guard budget is a committed-memory/RSS policy, not a virtual-address
+    # policy.  Treating the same number as RLIMIT_AS breaks healthy children
+    # that reserve sparse address space: V8's trap-based WebAssembly bounds
+    # checks, sanitizers, and compiler allocators all reserve substantially more
+    # virtual space than they commit. RLIMIT_DATA also constrains mmap on modern
+    # Linux, so it has the same false-OOM failure mode for sparse reservations.
+    # The parent guard already measures every owned descendant's RSS; apply only
+    # the matching kernel RSS resource where the host implements it.
+    for name in ("RLIMIT_RSS",):
         res = getattr(resource, name, None)
         if res is None:
             continue
@@ -2642,9 +2650,10 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Apply an OS resource limit to the direct guarded child before exec; "
-            "defaults to an adaptive virtual-memory clamp distinct from RSS. "
-            "Set <=0 to disable this layer."
+            "Apply an RLIMIT_RSS backstop to the direct guarded child before "
+            "exec; defaults to the adaptive per-process RSS budget and never "
+            "constrains sparse virtual-address reservations. Set <=0 to disable "
+            "this layer."
         ),
     )
     parser.add_argument(
@@ -3030,7 +3039,7 @@ def main(
         )
         print(
             "memory_guard: next action: inspect child stderr/logs or host signal "
-            "source, including direct-child resource limits such as RLIMIT_AS; "
+            "source, including the direct-child RLIMIT_RSS backstop; "
             "the guard did not classify this as an RSS limit trip.",
             file=sys.stderr,
         )

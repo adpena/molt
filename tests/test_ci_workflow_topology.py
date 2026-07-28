@@ -1191,7 +1191,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
     )
-    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in wasm_text
+    assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in wasm_text
     assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
     assert "CARGO_INCREMENTAL:" not in wasm_text
