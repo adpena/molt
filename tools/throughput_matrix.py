@@ -600,7 +600,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Optional explicit child virtual-memory rlimit for diff children. "
+            "Optional explicit child RLIMIT_RSS backstop for diff children. "
             "Unset inherits tests/molt_diff.py adaptive defaults; use only for "
             "a deliberate narrower-cap investigation."
         ),

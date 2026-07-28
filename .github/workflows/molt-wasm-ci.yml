@@ -31,7 +31,6 @@ jobs:
       MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
       MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
-      MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"
       MOLT_WASM_TEST_KEEPALIVE_SEC: "20"
       MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"
       MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}

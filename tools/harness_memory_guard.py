@@ -769,7 +769,7 @@ def _guard_exit_signal_message(
         f"{signame} status ({returncode}); no RSS violation observed: "
         f"observed_at={observed_at} elapsed={_elapsed_text(elapsed_s)}\n"
         "memory_guard: next action: inspect child stderr/logs or host signal "
-        "source, including direct-child resource limits such as RLIMIT_AS; if "
+        "source, including the direct-child RLIMIT_RSS backstop; if "
         "host memory pressure was involved, rerun with guard samples and lower "
         "parallelism.\n"
     )

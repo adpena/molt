@@ -1869,8 +1869,8 @@ def _memory_limit_bytes() -> int | None:
         if mb <= 0:
             return None
         return int(mb * 1024 * 1024)
-    # Default to the adaptive child resource budget. RSS enforcement remains
-    # process/tree/global sampling; this layer bounds inherited virtual memory.
+    # Default to the adaptive child RSS budget. Recursive process/tree/global
+    # sampling remains authoritative; this is only the matching kernel backstop.
     child_rlimit_kb = _diff_memory_guard_config().child_rlimit_kb
     return None if child_rlimit_kb is None else child_rlimit_kb * 1024
 
