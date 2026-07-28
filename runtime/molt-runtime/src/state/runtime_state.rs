@@ -833,6 +833,10 @@ pub(crate) fn runtime_is_initialized() -> bool {
     )
 }
 
+pub(crate) fn runtime_is_ready() -> bool {
+    runtime_ready_ptr().is_some()
+}
+
 #[inline(always)]
 fn runtime_ready_ptr() -> Option<*mut RuntimeState> {
     let ptr = RUNTIME_READY_PTR.load(AtomicOrdering::Acquire);
