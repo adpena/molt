@@ -111,7 +111,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Section/symbol size attribution; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
 | **WASM launch (host/JS)** | `wasm/run_wasm.js` (`new WebAssembly.Module(buffer)` ~4552, `WebAssembly.instantiate(runtimeBuffer/wasmBuffer)` ~5584/5612); `deploy/cloudflare/worker.js` (serves 13.4 MB `falcon-ocr.wasm`) | Eager compile + instantiate from a fully-downloaded buffer | No `compileStreaming`/`instantiateStreaming`; no compiled-`Module` cache across cold invokes (§3.3) |
-| **Cargo ship profiles** | `Cargo.toml` `[profile.release-output]` (opt-`z`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true`) | Already size-optimal for the shipped runtime | The page-in lever is *post-compile layout*, not a profile change — release-output is already correct (§3.2) |
+| **Cargo ship profiles** | `Cargo.toml` `[profile.release-output]` (opt-`z`, ThinLTO, cgu=16, debug=0, panic=abort, strip) | Memory-bounded shipping policy; exact staticlib is 63.67 MB before final dead stripping | The page-in lever remains *post-compile layout* after the measured profile correction (§3.2) |
 | **Cold-start measurement core (64)** | `tools/perf_scoreboard.py` `startup_tax_ms` / `cold_*` fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts | The board that *records* cold + warm per cell (schema v3) | Arc 64 gates it in CI; **this arc supplies the new `first-launch` dimension + the codesign-isolated cell + the order-file before/after** that 64's board projects |
 
 **North-star alignment.** Doc 51 §2 names the matrix dimension ("4 profiles × 5
@@ -346,7 +346,7 @@ generated, one-authority ordering fact, exhaustive over the cold-path symbol set
 honored identically across linkers.
 
 **Backends/profiles:** native (ld64 + ELF + COFF), all profiles. The order is a
-*layout* fact — orthogonal to opt-level/LTO, so `release-output` (fat-LTO, cgu=1)
+*layout* fact — orthogonal to opt-level/LTO, so `release-output` (ThinLTO, cgu=16)
 benefits without a profile change. WASM: N/A in the same form (WASM has no demand
 paging of an image; its analogue is §3.3 streaming). Luau: N/A (source, no image).
 
@@ -829,8 +829,8 @@ made a release-gating correctness property, not an aspiration.**
   `falcon-ocr.wasm`, ~1025), `deploy/browser/*.js`.
 - **Size convergence (Phase 2/6):** `tools/binary_size_analysis.py`,
   `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py`;
-  ship profile `Cargo.toml [profile.release-output]` (opt-`z`, fat-LTO, cgu=1,
-  panic=abort, strip — already size-optimal, **no change**).
+  ship profile `Cargo.toml [profile.release-output]` (opt-`z`, ThinLTO, cgu=16,
+  debug=0, panic=abort, strip — measured memory-bounded authority).
 - **NOT a startup mechanism (scope guard):** `runtime/molt-snapshot/` (WASM
   execution pause/resume across machines — *not* startup; do not repurpose).
 

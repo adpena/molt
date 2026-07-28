@@ -285,9 +285,9 @@ def _prepare_backend_runtime_context(
         required_exports: set[str] | frozenset[str] | None = None,
     ) -> bool:
         # The pair authority selects the exact staticlib+cdylib producer once,
-        # validates both finalizers, and commits one immutable generation. It
-        # fails closed rather than falling back to per-member compilation or
-        # publication.
+        # validates both nested finalizers with per-member Cargo building
+        # disabled, and commits one immutable generation. It fails closed rather
+        # than falling back to per-member compilation or publication.
         required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_both(
             runtime_state,
@@ -460,11 +460,7 @@ def _prepare_backend_dispatch(
                 warnings.append(
                     "Failed to read runtime memory layout; using default data base."
                 )
-        if (
-            linked
-            and not split_runtime
-            and runtime_wasm is None
-        ):
+        if linked and not split_runtime and runtime_wasm is None:
             if not ensure_runtime_wasm_both(None):
                 return None, _fail(
                     "Runtime wasm build failed",

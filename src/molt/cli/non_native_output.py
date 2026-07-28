@@ -737,7 +737,9 @@ def _prepare_non_native_build_result(
             runtime_wasm = runtime_state.runtime_wasm_selected
             runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
             runtime_wasm_generation = runtime_state.runtime_wasm_generation
-            runtime_wasm_expected_identity = runtime_state.runtime_wasm_expected_identity
+            runtime_wasm_expected_identity = (
+                runtime_state.runtime_wasm_expected_identity
+            )
             if runtime_reloc_wasm is None or not runtime_reloc_wasm.is_file():
                 return None, _fail(
                     "Runtime WASM generation has no selected reloc member",

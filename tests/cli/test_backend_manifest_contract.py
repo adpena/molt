@@ -142,7 +142,7 @@ def test_workspace_dev_fast_does_not_force_opt_level() -> None:
     assert "opt-level" not in dev_fast_profile
 
 
-def test_release_fast_profile_stays_iteration_only_not_shipped_lto() -> None:
+def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
 
@@ -153,15 +153,56 @@ def test_release_fast_profile_stays_iteration_only_not_shipped_lto() -> None:
     assert release_fast["debug"] == 0
     assert release_fast["panic"] == "unwind"
 
-    release_output = profiles["release-output"]
-    assert release_output["lto"] == "fat"
-    assert release_output["codegen-units"] == 1
-    assert release_output["panic"] == "abort"
+    shipping_policy = {
+        "inherits": "release",
+        "opt-level": "z",
+        "lto": "thin",
+        "codegen-units": 16,
+        "debug": 0,
+        "panic": "abort",
+        "strip": True,
+    }
+    for profile_name in ("release-output", "release-size", "wasm-release"):
+        shipping_profile = profiles[profile_name]
+        assert {
+            key: shipping_profile[key] for key in shipping_policy
+        } == shipping_policy
 
-    wasm_release = profiles["wasm-release"]
-    assert wasm_release["lto"] == "fat"
-    assert wasm_release["codegen-units"] == 1
-    assert wasm_release["panic"] == "abort"
+    assert "wasm-release-fallback" not in profiles
+
+    for profile_name, profile in profiles.items():
+        for package_name, package_policy in profile.get("package", {}).items():
+            assert "codegen-units" not in package_policy, (
+                f"{profile_name}.{package_name} duplicates profile-owned "
+                "codegen partitioning"
+            )
+
+    dev_release = profiles["dev-release"]
+    assert dev_release["debug"] == 1
+    assert dev_release["strip"] == "none"
+
+
+def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
+    runtime_build = (ROOT / "src" / "molt" / "cli" / "runtime_build.py").read_text()
+    non_native_output = (
+        ROOT / "src" / "molt" / "cli" / "non_native_output.py"
+    ).read_text()
+
+    for deleted_authority in (
+        "MOLT_WASM_RUNTIME_FALLBACK_PROFILE",
+        "MOLT_RUNTIME_WASM_DUAL_COMPILE",
+        "MOLT_RUNTIME_WASM_SINGLE_COMPILE",
+        "_wasm_runtime_recovery_target_root",
+        "_app_split_runtime_dual_compile_forced",
+    ):
+        assert deleted_authority not in runtime_build
+        assert deleted_authority not in non_native_output
+
+    assert "build_if_missing=False" in runtime_build
+    assert "if not _prepopulate_combined_runtime_wasm_target(" in runtime_build
+    assert "ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(" in (
+        non_native_output
+    )
 
 
 def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:

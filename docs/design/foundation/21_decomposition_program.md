@@ -10,6 +10,11 @@ refactored in the session that produced it. -->
 
 **God-file inventory · crate graph · phased move-only extraction plan**
 
+> Historical decomposition audit. Cargo-profile line references and snapshots
+> are retained with the original evidence; current profile authority is
+> `Cargo.toml` plus
+> `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
+
 Status: **IN EXECUTION.** T1 (`molt-tir` crate) LANDED (`cd8a62a30`); M1
 (`function_compiler` function-split) in progress. Base commit: `9e93503bb`.
 Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — see §0.3).

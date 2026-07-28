@@ -1,5 +1,9 @@
 <!-- Foundation blueprint (architect swarm wf_18b24759-006, 2026-06-04). Arc: DX / shortest-wall-clock: decompose the molt-runtime/molt-backend monoliths for fast incremental builds + parallel agent throughput -->
 
+> Historical design record. Profile snapshots and prescriptions below are
+> retained as evidence of the 2026-06-04 aperture; current profile authority is
+> `Cargo.toml` plus `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
+
 # Build-Time / DX Architecture Blueprint
 
 ## 1. Precise Problem Statement

@@ -261,13 +261,6 @@ def test_inspect_wasm_binary_reports_missing(tmp_path: Path) -> None:
     assert wasm_artifact.inspect_wasm_binary(artifact) == "missing"
 
 
-def test_wasm_runtime_recovery_target_root_suffix(tmp_path: Path) -> None:
-    target_root = tmp_path / "cargo-target"
-    assert RUNTIME_BUILD._wasm_runtime_recovery_target_root(target_root) == (
-        tmp_path / "cargo-target-wasm-runtime-recovery"
-    )
-
-
 @pytest.mark.slow
 def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -336,8 +329,8 @@ def test_shared_runtime_publication_still_uses_final_artifact_strip(
     assert seen == {"final_artifact": True, "preserve_debug": False}
 
 
-def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
-    tmp_path: Path, monkeypatch
+def test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_root = tmp_path / "repo"
     project_root.mkdir()
@@ -368,25 +361,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
-    # The synthetic recovery artifact carries valid wasm magic but no export /
-    # shared-memory-import ABI sections; this test exercises the recovery
-    # target-dir control flow, not the export ABI (which has dedicated tests),
-    # so stub the two post-build ABI validators (same pattern as the other
-    # reloc=False tests in this module).
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_runtime_wasm_missing_exports",
-        lambda path, required: set(),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_is_valid_shared_runtime_wasm_artifact",
-        lambda path: True,
-        raising=True,
-    )
-
-    seen_target_roots: list[Path] = []
+    seen_commands: list[list[str]] = []
 
     def fake_run_runtime_wasm_cargo_build(
         *,
@@ -401,13 +376,10 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         del env, cargo_timeout, json_output, artifact_kind
         target_root = target_root_override or cli._cargo_target_root(root)
-        seen_target_roots.append(target_root)
+        seen_commands.append(cmd)
         src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
-        if len(seen_target_roots) == 1:
-            src.write_bytes(b"\x00" * 64)
-        else:
-            src.write_bytes(_valid_wasm_bytes(b"ok"))
+        src.write_bytes(b"\x00" * 64)
         return subprocess.CompletedProcess(cmd, 0, "", ""), src
 
     monkeypatch.setattr(
@@ -417,7 +389,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         raising=True,
     )
 
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
+    assert not RUNTIME_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -425,121 +397,9 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         cargo_timeout=5.0,
         project_root=project_root,
     )
-    assert wasm_artifact.is_valid_wasm_binary(runtime_wasm)
-    assert len(seen_target_roots) == 2
-    assert seen_target_roots[0] == primary_target
-    assert seen_target_roots[1] == RUNTIME_BUILD._wasm_runtime_recovery_target_root(
-        primary_target
-    )
-
-
-def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invalid(
-    tmp_path: Path, monkeypatch
-) -> None:
-    project_root = tmp_path / "repo"
-    project_root.mkdir()
-    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
-    primary_target = tmp_path / "target-release"
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(primary_target))
-    # The fallback MUST preserve wasm-release's size + panic contract; the
-    # recommended (and default) fallback is wasm-release-fallback. The previous
-    # `release-fast` value (opt-3, panic=unwind) inflated the wasm runtime past
-    # the 3MB Cloudflare ceiling and is no longer the contract.
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback")
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_runtime_fingerprint",
-        lambda *args, **kwargs: _test_runtime_fingerprint("02"),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_runtime_fingerprint_path",
-        lambda *args, **kwargs: tmp_path / "fingerprint.json",
-        raising=True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_runtime_artifact_fingerprint_matches",
-        lambda *args, **kwargs: False,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_build_lock",
-        lambda *args, **kwargs: contextlib.nullcontext(),
-        raising=True,
-    )
-    # The synthetic fallback artifact carries valid wasm magic but no export /
-    # shared-memory-import ABI sections; this test exercises the fallback-profile
-    # selection control flow, not the export ABI (which has dedicated tests), so
-    # stub the two post-build ABI validators (same pattern as the other
-    # reloc=False tests in this module).
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_runtime_wasm_missing_exports",
-        lambda path, required: set(),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_is_valid_shared_runtime_wasm_artifact",
-        lambda path: True,
-        raising=True,
-    )
-
-    seen_profiles: list[str] = []
-    seen_targets: list[Path] = []
-
-    def fake_run_runtime_wasm_cargo_build(
-        *,
-        cmd: list[str],
-        root: Path,
-        env: dict[str, str],
-        cargo_timeout: float | None,
-        profile_dir: str,
-        target_root_override: Path | None = None,
-        json_output: bool,
-        artifact_kind: str = "cdylib",
-    ) -> tuple[subprocess.CompletedProcess[str], Path]:
-        del env, cargo_timeout, json_output, artifact_kind
-        profile = cmd[5]
-        target_root = target_root_override or cli._cargo_target_root(root)
-        seen_profiles.append(profile)
-        seen_targets.append(target_root)
-        src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
-        src.parent.mkdir(parents=True, exist_ok=True)
-        if profile == "wasm-release-fallback":
-            src.write_bytes(_valid_wasm_bytes(b"ok"))
-        else:
-            src.write_bytes(b"\x00" * 64)
-        return subprocess.CompletedProcess(cmd, 0, "", ""), src
-
-    monkeypatch.setattr(
-        RUNTIME_BUILD,
-        "_run_runtime_wasm_cargo_build",
-        fake_run_runtime_wasm_cargo_build,
-        raising=True,
-    )
-
-    assert RUNTIME_BUILD._ensure_runtime_wasm(
-        runtime_wasm,
-        reloc=False,
-        json_output=True,
-        cargo_profile="release",
-        cargo_timeout=5.0,
-        project_root=project_root,
-    )
-    assert wasm_artifact.is_valid_wasm_binary(runtime_wasm)
-    assert seen_profiles == [
-        "wasm-release",
-        "wasm-release",
-        "wasm-release-fallback",
-    ]
-    assert seen_targets[0] == primary_target
-    assert seen_targets[1] == RUNTIME_BUILD._wasm_runtime_recovery_target_root(
-        primary_target
-    )
+    assert len(seen_commands) == 1
+    assert seen_commands[0][5] == "dev-fast"
+    assert not runtime_wasm.exists()
 
 
 def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
