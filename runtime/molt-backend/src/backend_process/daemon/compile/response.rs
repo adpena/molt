@@ -12,6 +12,7 @@ pub(super) fn unsupported_backend_response(job: DaemonJobRequest) -> DaemonJobRe
     daemon_job_error_response(job.id, unsupported)
 }
 
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 pub(super) fn daemon_job_probe_cache_miss_response(id: String) -> DaemonJobResponse {
     DaemonJobResponse {
         id,
@@ -25,6 +26,7 @@ pub(super) fn daemon_job_probe_cache_miss_response(id: String) -> DaemonJobRespo
     }
 }
 
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 pub(super) fn daemon_job_success_response(id: String, warnings: Vec<String>) -> DaemonJobResponse {
     DaemonJobResponse {
         id,

@@ -16,6 +16,30 @@ fn write_cached_output_can_skip_disk_write_when_synced() {
 }
 
 #[test]
+fn write_cached_output_publishes_through_atomic_output_authority() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("molt-backend-cache-publish-{nonce}"));
+    let output = root.join("nested").join("artifact.wasm");
+
+    let written = write_cached_output(
+        output.to_str().expect("utf8 path"),
+        b"cached artifact",
+        false,
+    )
+    .expect("cache output publication succeeds");
+
+    assert!(written);
+    assert_eq!(
+        std::fs::read(&output).expect("read cached output"),
+        b"cached artifact"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn ensure_output_parent_dir_creates_nested_directories() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

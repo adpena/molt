@@ -1,6 +1,7 @@
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod entries;
 mod health;
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod job;
 mod state;
 
