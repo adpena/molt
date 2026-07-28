@@ -836,6 +836,26 @@ def test_monolithic_callable_merge_preserves_realistic_runtime_gap_and_app() -> 
     )
 
 
+@pytest.mark.parametrize("runtime_base", [1, 10])
+def test_monolithic_empty_prefix_runtime_growth_starts_at_first_occupied_slot(
+    runtime_base: int,
+) -> None:
+    # Slot 1 is wasm-ld's shape after its null-function-pointer hole; slot 10
+    # is the existing Rust publication sibling proving that an empty prefix
+    # declares no stronger occupancy base.
+    layout = wasm_link.CallableTableLayout(0, 0, 20, 1)
+    entry_plan = wasm_link._CallableTableEntryPlan(
+        (), (200,), owns_runtime_region=True
+    )
+    rows = [
+        [runtime_base, 100, 0, 0],
+        [runtime_base + 1, 101, 0, 0],
+        [20, 200, 0, 0],
+    ]
+
+    assert wasm_link._merge_linked_callable_table(rows, layout, entry_plan) == 21
+
+
 def test_monolithic_callable_merge_accepts_prelink_stub_then_publishes_direct_runtime() -> (
     None
 ):
@@ -962,6 +982,16 @@ def test_linked_callable_merge_rejects_sparse_runtime_and_suffix_growth() -> Non
         wasm_link._merge_linked_callable_table(
             [*owned_rows, [4, 40, 0, 0]], layout, entry_plan
         )
+    empty_prefix_layout = wasm_link.CallableTableLayout(0, 0, 8, 1)
+    empty_prefix_plan = wasm_link._CallableTableEntryPlan(
+        (), (80,), owns_runtime_region=True
+    )
+    with pytest.raises(ValueError, match="runtime callable-table growth is not contiguous"):
+        wasm_link._merge_linked_callable_table(
+            [[1, 10, 0, 0], [3, 30, 0, 0], [8, 80, 0, 0]],
+            empty_prefix_layout,
+            empty_prefix_plan,
+        )
 
 
 def test_split_callable_merge_owns_only_app_region() -> None:
@@ -983,6 +1013,16 @@ def test_split_callable_merge_owns_only_app_region() -> None:
             [[1, 10, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]],
             layout,
             app_plan,
+        )
+    empty_prefix_layout = wasm_link.CallableTableLayout(0, 0, 8, 1)
+    empty_prefix_plan = wasm_link._CallableTableEntryPlan(
+        (), (80,), owns_runtime_region=False
+    )
+    with pytest.raises(ValueError, match="without compiler identity.*slot=1"):
+        wasm_link._merge_linked_callable_table(
+            [[1, 10, 0, 0], [8, 80, 0, 0]],
+            empty_prefix_layout,
+            empty_prefix_plan,
         )
 
 

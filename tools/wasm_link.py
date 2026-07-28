@@ -3544,9 +3544,11 @@ def _merge_linked_callable_table(
     the relocatable runtime.  That overlap is valid only when both inputs resolve
     to the same canonical post-link function identity.  A monolithic link may
     also contain contiguous runtime-owned growth between the fixed prefix and the
-    finalized app base.  App entries are already embedded in code as table
-    immediates and must retain their canonical identities.  Native/future linked
-    entries form a second contiguous suffix at the immutable pre-link app end.
+    finalized app base.  With no fixed prefix there is no ABI occupancy anchor,
+    so that region begins at its first observed runtime slot.  App entries are
+    already embedded in code as table immediates and must retain their canonical
+    identities.  Native/future linked entries form a second contiguous suffix at
+    the immutable pre-link app end.
     """
 
     if not isinstance(raw_entries, list):
@@ -3610,12 +3612,22 @@ def _merge_linked_callable_table(
             )
         suffix_growth_slots.append(slot)
     runtime_growth_slots.sort()
+    # An empty fixed prefix owns no starting slot. wasm-ld reserves slot zero
+    # for the null function pointer, while other valid producers may leave a
+    # larger leading hole. In that shape the first observed runtime row is the
+    # artifact-local occupancy base; a non-empty ABI prefix remains anchored at
+    # its declared end.
+    runtime_growth_base = (
+        fixed_end
+        if layout.fixed_prefix_len > 0 or not runtime_growth_slots
+        else runtime_growth_slots[0]
+    )
     for offset, slot in enumerate(runtime_growth_slots):
-        expected_slot = fixed_end + offset
+        expected_slot = runtime_growth_base + offset
         if slot != expected_slot:
             raise ValueError(
                 "linked WASM runtime callable-table growth is not contiguous from "
-                f"the fixed prefix: expected_slot={expected_slot}, actual_slot={slot}"
+                f"its ownership base: expected_slot={expected_slot}, actual_slot={slot}"
             )
     suffix_growth_slots.sort()
     for offset, slot in enumerate(suffix_growth_slots):
