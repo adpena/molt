@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -236,9 +237,10 @@ def test_exact_producer_artifact_selection_is_pair_identity_input(
     )
 
     assert combined.pair_digest != staticlib_only.pair_digest
-    assert combined.payload["pair"]["common_config"][
-        "producer_artifact_selection"
-    ] == RUNTIME_WASM_COMBINED_ARTIFACTS.source_identity
+    assert (
+        combined.payload["pair"]["common_config"]["producer_artifact_selection"]
+        == RUNTIME_WASM_COMBINED_ARTIFACTS.source_identity
+    )
 
 
 def test_deserializer_rejects_self_asserted_digest(identity_root: Path) -> None:
@@ -300,9 +302,10 @@ def test_identity_serialization_is_detached_and_rejects_nested_mutation(
     )
     detached = resolved.to_dict()
     detached["payload"]["pair"]["common_config"]["cargo_profile"] = "poison"
-    assert resolved.to_dict()["payload"]["pair"]["common_config"][
-        "cargo_profile"
-    ] == "release-output"
+    assert (
+        resolved.to_dict()["payload"]["pair"]["common_config"]["cargo_profile"]
+        == "release-output"
+    )
 
     with pytest.raises(TypeError):
         resolved.payload["pair"]["common_config"]["cargo_profile"] = "poison"
@@ -404,6 +407,228 @@ def test_tree_identity_rejects_logical_label_collision(tmp_path: Path) -> None:
             (("runtime/input", first), ("runtime/input", second)),
             require_all=True,
         )
+
+
+def test_tree_identity_is_deterministic_across_parallel_completion_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(12):
+        (source / f"{index:02}.rs").write_bytes(bytes([index]) * (index + 1))
+    original = identity._hash_tree_input_file
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+    serial = identity._tree_identity((("runtime/source", source),), require_all=True)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 4)
+
+    def forward(file: identity._TreeInputFile) -> str:
+        time.sleep((11 - int(file.path.stem)) * 0.0005)
+        return original(file)
+
+    monkeypatch.setattr(identity, "_hash_tree_input_file", forward)
+    first = identity._tree_identity((("runtime/source", source),), require_all=True)
+
+    def reverse(file: identity._TreeInputFile) -> str:
+        time.sleep(int(file.path.stem) * 0.0005)
+        return original(file)
+
+    monkeypatch.setattr(identity, "_hash_tree_input_file", reverse)
+    second = identity._tree_identity((("runtime/source", source),), require_all=True)
+
+    assert serial == first == second
+    assert first["file_count"] == 12
+
+
+def test_tree_identity_parallel_scheduler_bounds_in_flight_futures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(20):
+        (source / f"{index:02}.rs").write_text(
+            f"pub const VALUE_{index}: usize = {index};\n", encoding="utf-8"
+        )
+    pending_sizes: list[int] = []
+    original_wait = identity.wait
+
+    def observed_wait(futures: object, **kwargs: object) -> object:
+        pending_sizes.append(len(futures))  # type: ignore[arg-type]
+        return original_wait(futures, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 3)
+    monkeypatch.setattr(identity, "wait", observed_wait)
+
+    result = identity._tree_identity((("runtime/source", source),), require_all=True)
+
+    assert result["file_count"] == 20
+    assert pending_sizes
+    assert max(pending_sizes) == 6
+
+
+def test_tree_identity_workers_are_cpu_memory_file_and_policy_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, int]] = []
+
+    def resource_ceiling(**kwargs: int) -> int:
+        calls.append(kwargs)
+        return 7
+
+    monkeypatch.setattr(identity, "_memory_bounded_worker_count", resource_ceiling)
+
+    assert identity._tree_hash_worker_count(3) == 3
+    assert identity._tree_hash_worker_count(100) == 7
+    assert calls == [
+        {
+            "bytes_per_worker": identity._TREE_HASH_BYTES_PER_WORKER,
+            "headroom_bytes": identity._TREE_HASH_MEMORY_HEADROOM_BYTES,
+        },
+        {
+            "bytes_per_worker": identity._TREE_HASH_BYTES_PER_WORKER,
+            "headroom_bytes": identity._TREE_HASH_MEMORY_HEADROOM_BYTES,
+        },
+    ]
+    monkeypatch.setattr(
+        identity, "_memory_bounded_worker_count", lambda **_kwargs: 10_000
+    )
+    assert identity._tree_hash_worker_count(100) == identity._TREE_HASH_MAX_WORKERS
+
+
+def test_tree_identity_rejects_same_size_mutation_during_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"a" * (2 * 1024 * 1024))
+    before = source.stat()
+    original = identity._sha256_open_file
+
+    def mutate_after_read(handle: object) -> str:
+        digest = original(handle)
+        with source.open("r+b", buffering=0) as writer:
+            writer.write(b"b" * before.st_size)
+            os.fsync(writer.fileno())
+        os.utime(
+            source,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+        )
+        return digest
+
+    monkeypatch.setattr(identity, "_sha256_open_file", mutate_after_read)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+
+    with pytest.raises(ValueError, match="changed while hashing"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_rejects_mutation_after_enumeration_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"before")
+    original = identity._hash_tree_input_file
+
+    def mutate_before_open(file: identity._TreeInputFile) -> str:
+        before = file.path.stat()
+        file.path.write_bytes(b"after!")
+        os.utime(
+            file.path,
+            ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+        )
+        return original(file)
+
+    monkeypatch.setattr(identity, "_hash_tree_input_file", mutate_before_open)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+
+    with pytest.raises(ValueError, match="changed while hashing"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_rejects_mutation_after_open_before_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"before")
+    original = identity._sha256_open_file
+
+    def mutate_after_open(handle: object) -> str:
+        before = source.stat()
+        source.write_bytes(b"after!")
+        os.utime(
+            source,
+            ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+        )
+        return original(handle)
+
+    monkeypatch.setattr(identity, "_sha256_open_file", mutate_after_open)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+
+    with pytest.raises(ValueError, match="changed while hashing"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_fails_closed_on_hash_io_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    victim = source / "victim.rs"
+    victim.write_text("pub fn victim() {}\n", encoding="utf-8")
+    original = identity._hash_tree_input_file
+
+    def delete_before_open(file: identity._TreeInputFile) -> str:
+        file.path.unlink()
+        return original(file)
+
+    monkeypatch.setattr(identity, "_hash_tree_input_file", delete_before_open)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+
+    with pytest.raises(OSError, match="runtime input hashing failed.*victim.rs"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_fails_closed_on_read_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"content")
+
+    def fail_read(_handle: object) -> str:
+        raise OSError("synthetic read fault")
+
+    monkeypatch.setattr(identity, "_sha256_open_file", fail_read)
+    monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
+
+    with pytest.raises(OSError, match="runtime input hashing failed.*read fault"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_rejects_internal_file_alias(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    target = source / "target.rs"
+    target.write_text("pub fn target() {}\n", encoding="utf-8")
+    linked = source / "linked.rs"
+    try:
+        linked.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    with pytest.raises(ValueError, match="path alias"):
+        identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_tree_identity_rejects_root_alias(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "target.rs").write_text("pub fn target() {}\n", encoding="utf-8")
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(source, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(ValueError, match="root alias"):
+        identity._tree_identity((("runtime/source", linked),), require_all=True)
 
 
 def test_tree_identity_rejects_file_symlink_escape(tmp_path: Path) -> None:

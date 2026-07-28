@@ -6,20 +6,30 @@ import os
 import re
 import shlex
 import shutil
+import stat as stat_module
+import threading
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterator, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
 from molt import process_guard
 from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.file_hashing import _content_change_time_ns
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
+from molt.dx import _memory_bounded_worker_count
 
 
 _SCHEMA = "molt.runtime-build-identity.v2"
 _PAIR_SCHEMA = "molt.runtime-build-pair.v2"
 _TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v2"
+_TREE_HASH_BUFFER_BYTES = 1024 * 1024
+_TREE_HASH_BYTES_PER_WORKER = 2 * 1024 * 1024
+_TREE_HASH_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
+_TREE_HASH_MAX_WORKERS = 32
+_TREE_HASH_LOCAL = threading.local()
 
 
 def _freeze_json(value: object) -> object:
@@ -70,17 +80,292 @@ def _is_path_alias(path: Path) -> bool:
     return bool(is_junction is not None and is_junction())
 
 
+def _stat_is_path_alias(value: os.stat_result) -> bool:
+    reparse_point = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat_module.S_ISLNK(value.st_mode) or bool(
+        reparse_point and getattr(value, "st_file_attributes", 0) & reparse_point
+    )
+
+
+def _runtime_tree_candidates(
+    root: Path,
+    *,
+    logical_root: str,
+) -> Iterator[tuple[str, Path]]:
+    pending: list[tuple[Path, str]] = [(root, "")]
+    while pending:
+        directory, relative_prefix = pending.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as exc:
+            raise OSError(
+                f"runtime input enumeration failed for {logical_root!r}: "
+                f"{directory}: {exc}"
+            ) from exc
+        subdirectories: list[tuple[Path, str]] = []
+        for entry in entries:
+            candidate = Path(entry.path)
+            relative = (
+                f"{relative_prefix}/{entry.name}" if relative_prefix else entry.name
+            )
+            try:
+                candidate_stat = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise OSError(
+                    f"runtime input enumeration failed for {logical_root!r}: "
+                    f"{candidate}: {exc}"
+                ) from exc
+            if _stat_is_path_alias(candidate_stat):
+                raise ValueError(
+                    f"runtime input path alias escaped logical root "
+                    f"{logical_root!r}: {candidate}"
+                )
+            if stat_module.S_ISDIR(candidate_stat.st_mode):
+                subdirectories.append((candidate, relative))
+            elif stat_module.S_ISREG(candidate_stat.st_mode):
+                yield f"{logical_root}/{relative.replace(os.sep, '/')}", candidate
+        pending.extend(reversed(subdirectories))
+
+
+@dataclass(frozen=True)
+class _TreeInputCandidate:
+    label: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class _TreeInputFile(_TreeInputCandidate):
+    stat_signature: tuple[int, int, int, int, int, int]
+
+    @property
+    def size(self) -> int:
+        return self.stat_signature[1]
+
+
+def _tree_input_change_time_ns(path: Path, value: os.stat_result) -> int:
+    change_time_ns = _content_change_time_ns(path, value)
+    if change_time_ns is None:
+        raise OSError(f"runtime input ChangeTime is unavailable: {path}")
+    return change_time_ns
+
+
+def _tree_input_stat_signature(
+    path: Path,
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        _tree_input_change_time_ns(path, value),
+        value.st_dev,
+        value.st_ino,
+    )
+
+
+def _tree_input_handle_signature(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    # Windows reports creation time as path st_ctime but mirrors mtime through
+    # fstat().  File identity, mode, size, and mtime are comparable on all hosts;
+    # the path-only ctime remains part of the before/after mutation guard.
+    return (
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_dev,
+        value.st_ino,
+    )
+
+
+def _tree_hash_worker_count(file_count: int) -> int:
+    if file_count <= 0:
+        return 1
+    resource_ceiling = _memory_bounded_worker_count(
+        bytes_per_worker=_TREE_HASH_BYTES_PER_WORKER,
+        headroom_bytes=_TREE_HASH_MEMORY_HEADROOM_BYTES,
+    )
+    return max(1, min(file_count, _TREE_HASH_MAX_WORKERS, resource_ceiling))
+
+
+def _tree_hash_buffer() -> bytearray:
+    buffer = getattr(_TREE_HASH_LOCAL, "buffer", None)
+    if buffer is None:
+        buffer = bytearray(_TREE_HASH_BUFFER_BYTES)
+        _TREE_HASH_LOCAL.buffer = buffer
+    return buffer
+
+
+def _sha256_open_file(handle: object) -> str:
+    hasher = hashlib.sha256()
+    buffer = _tree_hash_buffer()
+    readinto = getattr(handle, "readinto")
+    while count := readinto(buffer):
+        hasher.update(memoryview(buffer)[:count])
+    return hasher.hexdigest()
+
+
+def _runtime_input_changed(file: _TreeInputFile) -> ValueError:
+    return ValueError(
+        f"runtime input changed while hashing {file.label!r}: {file.path}"
+    )
+
+
+def _snapshot_tree_input_file(candidate: _TreeInputCandidate) -> _TreeInputFile:
+    try:
+        if _is_path_alias(candidate.path):
+            raise ValueError(
+                f"runtime input path alias is forbidden for "
+                f"{candidate.label!r}: {candidate.path}"
+            )
+        current = candidate.path.stat()
+        if not stat_module.S_ISREG(current.st_mode):
+            raise ValueError(
+                f"runtime input is no longer a regular file for "
+                f"{candidate.label!r}: {candidate.path}"
+            )
+        return _TreeInputFile(
+            label=candidate.label,
+            path=candidate.path,
+            stat_signature=_tree_input_stat_signature(candidate.path, current),
+        )
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise OSError(
+            f"runtime input snapshot failed for {candidate.label!r}: "
+            f"{candidate.path}: {exc}"
+        ) from exc
+
+
+def _hash_tree_input_file(file: _TreeInputFile) -> str:
+    try:
+        if _is_path_alias(file.path):
+            raise ValueError(
+                f"runtime input path alias is forbidden for {file.label!r}: {file.path}"
+            )
+        expected_handle_signature = (
+            file.stat_signature[0],
+            file.stat_signature[1],
+            file.stat_signature[2],
+            file.stat_signature[4],
+            file.stat_signature[5],
+        )
+        with file.path.open("rb", buffering=0) as handle:
+            if (
+                _tree_input_handle_signature(os.fstat(handle.fileno()))
+                != expected_handle_signature
+            ):
+                raise _runtime_input_changed(file)
+            digest = _sha256_open_file(handle)
+            if (
+                _tree_input_handle_signature(os.fstat(handle.fileno()))
+                != expected_handle_signature
+            ):
+                raise _runtime_input_changed(file)
+        if _is_path_alias(file.path):
+            raise ValueError(
+                f"runtime input path alias is forbidden for {file.label!r}: {file.path}"
+            )
+        if (
+            _tree_input_stat_signature(file.path, file.path.stat())
+            != file.stat_signature
+        ):
+            raise _runtime_input_changed(file)
+        return digest
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise OSError(
+            f"runtime input hashing failed for {file.label!r}: {file.path}: {exc}"
+        ) from exc
+
+
+_ParallelInput = TypeVar("_ParallelInput")
+_ParallelOutput = TypeVar("_ParallelOutput")
+
+
+def _bounded_parallel_map(
+    inputs: Sequence[_ParallelInput],
+    operation: Callable[[_ParallelInput], _ParallelOutput],
+    *,
+    workers: int,
+) -> tuple[_ParallelOutput, ...]:
+    if not inputs:
+        return ()
+    if workers == 1:
+        return tuple(operation(item) for item in inputs)
+
+    results: list[_ParallelOutput | None] = [None] * len(inputs)
+    iterator = iter(enumerate(inputs))
+    max_pending = workers * 2
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="molt-runtime-identity",
+    ) as executor:
+        pending: dict[Future[_ParallelOutput], int] = {}
+
+        def submit_one() -> bool:
+            try:
+                index, item = next(iterator)
+            except StopIteration:
+                return False
+            pending[executor.submit(operation, item)] = index
+            return True
+
+        for _ in range(max_pending):
+            if not submit_one():
+                break
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index = pending.pop(future)
+                try:
+                    results[index] = future.result()
+                except BaseException:
+                    for remaining in pending:
+                        remaining.cancel()
+                    raise
+            for _ in completed:
+                submit_one()
+    return cast(tuple[_ParallelOutput, ...], tuple(results))
+
+
+def _snapshot_tree_input_files(
+    candidates: Sequence[_TreeInputCandidate],
+) -> tuple[_TreeInputFile, ...]:
+    return _bounded_parallel_map(
+        candidates,
+        _snapshot_tree_input_file,
+        workers=_tree_hash_worker_count(len(candidates)),
+    )
+
+
+def _hash_tree_input_files(files: Sequence[_TreeInputFile]) -> dict[str, str]:
+    digests = _bounded_parallel_map(
+        files,
+        _hash_tree_input_file,
+        workers=_tree_hash_worker_count(len(files)),
+    )
+    return {file.label: digest for file, digest in zip(files, digests, strict=True)}
+
+
 def _tree_identity(
     roots: Sequence[tuple[str, Path]],
     *,
     require_all: bool,
 ) -> dict[str, object]:
-    """Hash an uncached logical-label closure and reject label aliasing."""
+    """Hash an uncached logical-label closure with exact mutation checks."""
 
     root_labels: dict[str, Path] = {}
-    files: dict[str, Path] = {}
+    files: dict[str, _TreeInputCandidate] = {}
     missing: list[str] = []
     for logical_root, raw_path in roots:
+        if _is_path_alias(raw_path):
+            raise ValueError(
+                f"runtime input root alias is forbidden for {logical_root!r}: {raw_path}"
+            )
         path = raw_path.resolve(strict=False)
         prior_root = root_labels.get(logical_root)
         if prior_root is not None and prior_root != path:
@@ -90,57 +375,46 @@ def _tree_identity(
             )
         root_labels[logical_root] = path
         candidates: list[tuple[str, Path]] = []
-        if path.is_file():
-            candidates.append((logical_root, path))
-        elif path.is_dir():
-            for candidate in sorted(path.rglob("*"), key=os.fspath):
-                if _is_path_alias(candidate):
-                    resolved_alias = candidate.resolve(strict=False)
-                    try:
-                        resolved_alias.relative_to(path)
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"runtime input escaped logical root {logical_root!r}: "
-                            f"{candidate}"
-                        ) from exc
-                if not candidate.is_file():
-                    continue
-                resolved_candidate = candidate.resolve(strict=False)
-                try:
-                    resolved_candidate.relative_to(path)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"runtime input escaped logical root {logical_root!r}: "
-                        f"{candidate}"
-                    ) from exc
-                candidates.append(
-                    (
-                        f"{logical_root}/{candidate.relative_to(path).as_posix()}",
-                        resolved_candidate,
-                    )
-                )
-        else:
+        try:
+            root_stat = path.lstat()
+        except FileNotFoundError:
             missing.append(logical_root)
+            continue
+        if stat_module.S_ISREG(root_stat.st_mode):
+            candidates.append((logical_root, path))
+        elif stat_module.S_ISDIR(root_stat.st_mode):
+            candidates.extend(_runtime_tree_candidates(path, logical_root=logical_root))
+        else:
+            raise ValueError(
+                f"runtime input root is not a regular file or directory: "
+                f"{logical_root!r}: {path}"
+            )
         for label, candidate in candidates:
             prior = files.get(label)
-            resolved = candidate.resolve(strict=False)
-            if prior is not None and prior != resolved:
+            if prior is not None and prior.path != candidate:
                 raise ValueError(
-                    f"runtime input file label collision {label!r}: {prior} vs {resolved}"
+                    f"runtime input file label collision {label!r}: "
+                    f"{prior.path} vs {candidate}"
                 )
-            files[label] = resolved
+            files[label] = _TreeInputCandidate(
+                label=label,
+                path=candidate,
+            )
     if require_all and missing:
         raise ValueError("required runtime inputs are missing: " + ", ".join(missing))
+    ordered_files = _snapshot_tree_input_files(
+        tuple(files[label] for label in sorted(files))
+    )
+    digests = _hash_tree_input_files(ordered_files)
     hasher = hashlib.sha256()
     total_size = 0
-    for label, path in sorted(files.items()):
-        size = path.stat().st_size
-        total_size += size
-        hasher.update(label.encode())
+    for file in ordered_files:
+        total_size += file.size
+        hasher.update(file.label.encode())
         hasher.update(b"\0")
-        hasher.update(str(size).encode())
+        hasher.update(str(file.size).encode())
         hasher.update(b"\0")
-        hasher.update(_sha256_file(path).encode())
+        hasher.update(digests[file.label].encode())
         hasher.update(b"\0")
     for label in sorted(missing):
         hasher.update(b"missing\0")

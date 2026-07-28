@@ -19,6 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from molt.cli.file_hashing import _content_change_time_ns
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
@@ -1201,88 +1202,6 @@ _PLAIN_LLVM_VERSION_RE = re.compile(
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-@lru_cache(maxsize=1)
-def _windows_change_time_api() -> tuple[Any, Any, Any] | None:
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class FileBasicInfo(ctypes.Structure):
-            _fields_ = [
-                ("CreationTime", ctypes.c_longlong),
-                ("LastAccessTime", ctypes.c_longlong),
-                ("LastWriteTime", ctypes.c_longlong),
-                ("ChangeTime", ctypes.c_longlong),
-                ("FileAttributes", wintypes.DWORD),
-            ]
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateFileW.restype = wintypes.HANDLE
-        kernel32.CreateFileW.argtypes = [
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            wintypes.HANDLE,
-        ]
-        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
-        kernel32.GetFileInformationByHandleEx.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        return ctypes, kernel32, FileBasicInfo
-    except (AttributeError, OSError, ValueError):
-        return None
-
-
-def _windows_change_time_ns(path: Path) -> int | None:
-    api = _windows_change_time_api()
-    if api is None:
-        return None
-    ctypes, kernel32, file_basic_info = api
-    try:
-        handle = kernel32.CreateFileW(
-            str(path),
-            0x0080,
-            0x00000001 | 0x00000002 | 0x00000004,
-            None,
-            3,
-            0x02000000,
-            None,
-        )
-        invalid_handle = ctypes.c_void_p(-1).value
-        if handle in (None, invalid_handle):
-            return None
-        try:
-            info = file_basic_info()
-            if not kernel32.GetFileInformationByHandleEx(
-                handle, 0, ctypes.byref(info), ctypes.sizeof(info)
-            ):
-                return None
-            return int(info.ChangeTime) * 100
-        finally:
-            kernel32.CloseHandle(handle)
-    except (AttributeError, OSError, ValueError):
-        return None
-
-
-def _content_change_time_ns(path: Path, stat: os.stat_result) -> int | None:
-    if os.name == "nt":
-        # Windows st_ctime is creation time and is never a substitute for the
-        # NTFS ChangeTime query.  None deliberately forces content hashing.
-        return _windows_change_time_ns(path)
-    # POSIX ctime is inode-change time, so it is a valid metadata fast path.
-    return stat.st_ctime_ns
 
 
 def _content_paths(
