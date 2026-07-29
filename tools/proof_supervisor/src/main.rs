@@ -68,6 +68,22 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
             }
             Ok(0)
         }
+        [command, fixture, auxiliary, marker]
+            if command == "fixture-child" && fixture == "spawn-auxiliary" =>
+        {
+            Command::new(auxiliary)
+                .args(["fixture-child", "write-pid-and-sleep-leaf", marker])
+                .spawn()
+                .map_err(|error| error.to_string())?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !Path::new(marker).is_file() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !Path::new(marker).is_file() {
+                return Err("auxiliary fixture did not reach user code".to_owned());
+            }
+            Ok(0)
+        }
         [command, fixture] if command == "fixture-child" && fixture == "thread-storm" => {
             let threads: Vec<_> = (0..256).map(|_| std::thread::spawn(|| {})).collect();
             for thread in threads {

@@ -74,7 +74,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "9b84eb52a99ff27fd875aac9fc5a6cdee3c8ed17f8c21dc0ee5e269e7cd4e4b5",
+  "authority_sha256": "bc95a722c6e0d7c8aed38a00764ebafe4f2f2c6496ea73f637be9cbb12d882da",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3999,6 +3999,11 @@
       ],
       "executable": "rustc",
       "fingerprint_domain": "rustup",
+      "linker_process_helpers": {
+        "link.exe": [
+          "vctip.exe"
+        ]
+      },
       "name": "rustc",
       "setup_evidence": [
         "rust-toolchain.toml::channel = \"1.96.1\"",

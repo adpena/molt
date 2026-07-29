@@ -336,6 +336,51 @@ def check_output_guarded_test_process(
     return result.stdout
 
 
+def run_custody_subject_process(
+    args: Sequence[str],
+    *,
+    timeout: float = 120.0,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
+    """Run the exact child whose raw process behavior is the test subject.
+
+    Custody/bootstrap tests must sometimes observe an unwrapped interpreter,
+    Git process, or native supervisor. Centralizing that exceptional boundary
+    keeps ordinary test subprocesses guarded while enforcing typed argv and a
+    finite deadline on every custody-subject launch.
+    """
+
+    if isinstance(args, (str, bytes)):
+        raise TypeError("custody subject command must be typed argv")
+    command = [str(arg) for arg in args]
+    if not command:
+        raise ValueError("custody subject command must not be empty")
+    if timeout <= 0:
+        raise ValueError("custody subject timeout must be positive")
+    if "timeout" in kwargs:
+        raise ValueError("custody subject timeout is owned by the shared boundary")
+    return subprocess.run(command, timeout=timeout, **kwargs)
+
+
+def check_output_custody_subject_process(
+    args: Sequence[str],
+    *,
+    timeout: float = 120.0,
+    **kwargs: Any,
+) -> str | bytes:
+    if "stdout" in kwargs:
+        raise ValueError("stdout is owned by check_output_custody_subject_process")
+    result = run_custody_subject_process(
+        args,
+        timeout=timeout,
+        stdout=subprocess.PIPE,
+        check=True,
+        **kwargs,
+    )
+    assert result.stdout is not None
+    return result.stdout
+
+
 def start_owned_test_process(
     args: Sequence[str],
     *,

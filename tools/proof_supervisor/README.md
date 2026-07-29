@@ -15,7 +15,7 @@ molt-proof-supervisor verify --policy policy.json --receipt receipt.json
 ```
 
 The standalone crate is intentionally outside the main Rust workspace. The
-policy schema is `molt.proof-process-closure.v1`. It requires an absolute cwd,
+policy schema is `molt.proof-process-closure.v2`. It requires an absolute cwd,
 an absolute command image, an exact environment, a fixed SHA-256 image set,
 and optional non-overlapping derived executable roots. `leaf` rejects every
 descendant process. `declared-tree` admits only fixed images or identities first
@@ -33,7 +33,7 @@ summary and artifact manifest:
 
 ```json
 {
-  "schema": "molt.proof-process-closure.v1",
+  "schema": "molt.proof-process-closure.v2",
   "nonce": "128-or-more-bits-of-hex",
   "mode": "declared-tree",
   "cwd": "absolute captured cwd",
@@ -43,13 +43,20 @@ summary and artifact manifest:
   "fixed_images": [
     {"role": "cargo", "path": "absolute cargo image", "sha256": "64 hex"},
     {"role": "rustc", "path": "absolute rustc image", "sha256": "64 hex"},
-    {"role": "linker", "path": "absolute linker image", "sha256": "64 hex"}
+    {"role": "linker", "path": "absolute linker image", "sha256": "64 hex"},
+    {"role": "linker-auxiliary", "path": "absolute helper image", "sha256": "64 hex", "root_exit_disposition": "terminate"}
   ],
   "derived_roots": [
     {"role": "build-script", "path": "absolute captured target root"}
   ]
 }
 ```
+
+Fixed images default to `root_exit_disposition: require-exit`. Only an exact,
+hash-sealed auxiliary may declare `terminate`; the supervisor ends those
+processes after the root command exits and records the count in
+`accounting.root_exit_terminated_processes`. Any non-auxiliary descendant still
+live at root exit is a closure violation, not implicit cleanup.
 
 `run` exits 0 only for a receipt with `complete: true`, 78 for a sealed
 incomplete/rejected receipt, and 2 for malformed input. `verify` requires the
@@ -64,9 +71,10 @@ receipt. Integration must require successful verification plus
 
 ## Compact durable evidence
 
-Terminal receipts use schema `molt.proof-process-closure-receipt.v2` and are
+Terminal receipts use schema `molt.proof-process-closure-receipt.v3` and are
 hard-limited to 65,536 bytes including the final newline. They keep bounded
-diagnostic samples and counts, lifecycle, accounting (including `root_execs`),
+diagnostic samples and counts, lifecycle, accounting (including `root_execs` and
+`root_exit_terminated_processes`),
 and evidence digests inline. Detailed process events are strict `ProcessEvent`
 JSON objects, one per line, in a content-addressed adjacent artifact:
 

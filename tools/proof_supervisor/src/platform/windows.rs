@@ -1,6 +1,6 @@
 use crate::{
     Capability, ClosureMode, EventJournal, EventKind, FileIdentity, ImageCacheKey, ImageClass,
-    ImageHashCache, ProcessEvent, Receipt, SupervisorState, ValidatedPolicy,
+    ImageHashCache, ProcessEvent, Receipt, RootExitDisposition, SupervisorState, ValidatedPolicy,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -214,6 +214,7 @@ unsafe fn supervise(
     let mut active = BTreeSet::new();
     let mut stable_ids = BTreeMap::new();
     let mut pending_initial_breakpoints = BTreeSet::new();
+    let mut terminate_after_root = BTreeSet::new();
     let mut hash_cache = ImageHashCache::default();
     let mut sequence = 0_u64;
     let mut violated = false;
@@ -238,6 +239,9 @@ unsafe fn supervise(
                 receipt.accounting.observed_process_creates += 1;
                 let parent = parent_process_id(pid).filter(|candidate| active.contains(candidate));
                 let image = image_identity(policy, info.hFile, &mut hash_cache)?;
+                if policy.root_exit_disposition(&image.path) == RootExitDisposition::Terminate {
+                    terminate_after_root.insert(pid);
+                }
                 let mut reason = None;
                 if policy.policy.mode == ClosureMode::Leaf && pid != root_pid {
                     reason = Some(format!("leaf closure observed descendant process {pid}"));
@@ -281,6 +285,7 @@ unsafe fn supervise(
             EXIT_PROCESS_DEBUG_EVENT => {
                 let exit_code = unsafe { event.u.ExitProcess.dwExitCode } as i64;
                 active.remove(&pid);
+                terminate_after_root.remove(&pid);
                 pending_initial_breakpoints.remove(&pid);
                 receipt.accounting.observed_process_exits += 1;
                 if pid == root_pid {
@@ -297,6 +302,30 @@ unsafe fn supervise(
                     image: None,
                     exit_code: Some(exit_code),
                 })?;
+                if pid == root_pid && !active.is_empty() {
+                    let remaining = active.len() as u64;
+                    if active
+                        .iter()
+                        .all(|child| terminate_after_root.contains(child))
+                    {
+                        receipt.accounting.root_exit_terminated_processes += remaining;
+                        unsafe {
+                            TerminateJobObject(job, 0);
+                        }
+                    } else {
+                        receipt.record_violation(format!(
+                            "root exited before {} non-auxiliary descendant process(es)",
+                            active
+                                .iter()
+                                .filter(|child| !terminate_after_root.contains(child))
+                                .count()
+                        ));
+                        violated = true;
+                        unsafe {
+                            TerminateJobObject(job, 126);
+                        }
+                    }
+                }
             }
             LOAD_DLL_DEBUG_EVENT => {
                 let file = unsafe { event.u.LoadDll.hFile };

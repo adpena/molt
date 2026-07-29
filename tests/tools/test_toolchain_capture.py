@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import subprocess
 import tracemalloc
+from types import SimpleNamespace
 
 import pytest
 
@@ -379,7 +380,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
             "",
         )
 
-    monkeypatch.setattr(toolchain_capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=fake_run))
     environment = {
         "PATH": str(tmp_path),
         "CARGO_TARGET_TEST_TRIPLE_LINKER": str(linker),
@@ -449,3 +450,46 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         toolchain_capture.revalidate_rust_link_process_images(
             selected_identity, target="test-triple", command_argv=command_argv
         )
+
+
+def test_rust_link_capture_declares_exact_platform_linker_helper_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rustc = tmp_path / "rustc"
+    cargo = tmp_path / "cargo"
+    linker = tmp_path / "link.exe"
+    helper = tmp_path / "vctip.exe"
+    for path in (rustc, cargo, linker, helper):
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=fake_run))
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=rustc,
+        cargo=cargo,
+        cwd=tmp_path,
+        env={"PATH": str(tmp_path)},
+        target=None,
+        command_argv=("cargo", "build"),
+        linker_process_helpers={"link.exe": ["vctip.exe"]},
+    )
+
+    assert [row["role"] for row in images] == ["rust-linker", "rust-link-helper"]
+    assert [Path(str(row["path"])).name for row in images] == [
+        "link.exe",
+        "vctip.exe",
+    ]
+    assert telemetry["declared_helper_count"] == 1
+    assert telemetry["selected_helper_count"] == 1
+    revalidated, reused = toolchain_capture.revalidate_rust_link_process_images(
+        {"process_images": images, "link_selection": telemetry},
+        target=None,
+        command_argv=("cargo", "build"),
+    )
+    assert revalidated == images
+    assert reused == telemetry

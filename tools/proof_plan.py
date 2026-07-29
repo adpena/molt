@@ -426,6 +426,39 @@ class ProofPlan:
                 errors.append(
                     f"{policy.name}: content_path_command must be a non-empty string list"
                 )
+            linker_process_helpers = policy.data.get("linker_process_helpers")
+            if linker_process_helpers is not None:
+                if not isinstance(linker_process_helpers, dict):
+                    errors.append(
+                        f"{policy.name}: linker_process_helpers must be a table"
+                    )
+                else:
+                    for linker, helpers in linker_process_helpers.items():
+                        if (
+                            not isinstance(linker, str)
+                            or not linker
+                            or Path(linker).name != linker
+                        ):
+                            errors.append(
+                                f"{policy.name}: linker helper key must be a basename"
+                            )
+                            continue
+                        if (
+                            not isinstance(helpers, list)
+                            or not helpers
+                            or not all(
+                                isinstance(helper, str)
+                                and helper
+                                and Path(helper).name == helper
+                                for helper in helpers
+                            )
+                            or len({helper.casefold() for helper in helpers})
+                            != len(helpers)
+                        ):
+                            errors.append(
+                                f"{policy.name}: linker helpers for {linker!r} "
+                                "must be unique basenames"
+                            )
             fingerprint_domain = policy.data.get("fingerprint_domain")
             if fingerprint_domain is not None and (
                 not isinstance(fingerprint_domain, str) or not fingerprint_domain

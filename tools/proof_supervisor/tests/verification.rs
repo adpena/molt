@@ -1,6 +1,7 @@
 use molt_proof_supervisor::evidence::{durable_atomic_write, event_artifact_path};
 use molt_proof_supervisor::{
-    ClosureMode, DerivedRoot, FixedImage, POLICY_SCHEMA, Policy, Receipt, sha256_bytes, sha256_file,
+    ClosureMode, DerivedRoot, FixedImage, POLICY_SCHEMA, Policy, Receipt, RootExitDisposition,
+    sha256_bytes, sha256_file,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -204,6 +205,7 @@ fn run_fixture(mode: ClosureMode) -> TestRun {
             role: "fixture".to_owned(),
             path: binary.clone(),
             sha256: sha256_file(&binary).unwrap(),
+            root_exit_disposition: RootExitDisposition::RequireExit,
         }],
         derived_roots: vec![],
     };
