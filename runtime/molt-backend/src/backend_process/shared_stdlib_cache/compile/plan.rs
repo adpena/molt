@@ -2,11 +2,13 @@ use std::collections::BTreeSet;
 
 use super::super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_STDLIB_BATCH_SIZE};
 use super::super::super::native_batch::{
+    InheritedFunctionDeclarations, inherited_function_declarations,
     partition_functions_for_batches, resolved_batch_op_budget_limit, resolved_batch_size_limit,
 };
 
 pub(super) struct StdlibBatchPlan {
     pub(super) all_function_names: BTreeSet<String>,
+    pub(super) inherited_function_declarations: InheritedFunctionDeclarations,
     pub(super) module_context: molt_backend::NativeBackendModuleContext,
     pub(super) batches: Vec<Vec<molt_backend::FunctionIR>>,
 }
@@ -14,6 +16,7 @@ pub(super) struct StdlibBatchPlan {
 impl StdlibBatchPlan {
     pub(super) fn from_functions(stdlib_funcs: Vec<molt_backend::FunctionIR>) -> Self {
         let all_function_names = stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+        let inherited_function_declarations = inherited_function_declarations(&stdlib_funcs);
         let module_context = molt_backend::SimpleBackend::build_module_context(&stdlib_funcs);
         let batches = partition_functions_for_batches(
             stdlib_funcs,
@@ -22,6 +25,7 @@ impl StdlibBatchPlan {
         );
         Self {
             all_function_names,
+            inherited_function_declarations,
             module_context,
             batches,
         }

@@ -352,6 +352,34 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_runtime_protected_gateway_callables has duplicate names"
         )
 
+    requirement_carriers = data.get("simpleir_runtime_requirement_carrier_kinds", [])
+    if (
+        not isinstance(requirement_carriers, list)
+        or not requirement_carriers
+        or not all(isinstance(kind, str) and kind for kind in requirement_carriers)
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_carrier_kinds must be a non-empty list of wire kinds"
+        )
+    if len(set(requirement_carriers)) != len(requirement_carriers):
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_carrier_kinds has duplicate members"
+        )
+
+    runtime_symbol_carriers = data.get("simpleir_runtime_symbol_carrier_kinds", [])
+    if (
+        not isinstance(runtime_symbol_carriers, list)
+        or not runtime_symbol_carriers
+        or not all(isinstance(kind, str) and kind for kind in runtime_symbol_carriers)
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_symbol_carrier_kinds must be a non-empty list of wire kinds"
+        )
+    if len(set(runtime_symbol_carriers)) != len(runtime_symbol_carriers):
+        raise OpKindTableError(
+            "simpleir_runtime_symbol_carrier_kinds has duplicate members"
+        )
+
     function_reference_kinds = data.get("simpleir_function_reference_s_value_kinds", [])
     if not isinstance(function_reference_kinds, list) or not all(
         isinstance(kind, str) and kind for kind in function_reference_kinds
@@ -609,6 +637,23 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_terminators(data)
 
     _validate_frontend_tables(data, opcodes)
+
+    unknown_requirement_carriers = set(
+        requirement_carriers
+    ) - _simpleir_registered_runtime_kinds(data)
+    if unknown_requirement_carriers:
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_carrier_kinds references unknown frontend wire kinds: "
+            + ", ".join(sorted(unknown_requirement_carriers))
+        )
+    unknown_runtime_symbol_carriers = set(
+        runtime_symbol_carriers
+    ) - _simpleir_registered_runtime_kinds(data)
+    if unknown_runtime_symbol_carriers:
+        raise OpKindTableError(
+            "simpleir_runtime_symbol_carrier_kinds references unknown frontend wire kinds: "
+            + ", ".join(sorted(unknown_runtime_symbol_carriers))
+        )
 
     return data
 
@@ -2081,6 +2126,21 @@ def _frontend_raising_nothrow_on_primitives(data: dict) -> set[str]:
         if row.get("nothrow_on_primitives", False):
             out.add(row["kind"])
     return out
+
+
+def _simpleir_registered_runtime_kinds(data: dict) -> set[str]:
+    """Derive every wire spelling covered by runtime-semantic admission."""
+
+    registered: set[str] = set()
+    for row in data.get("kind", []):
+        registered.add(row["canonical"])
+        registered.update(row.get("aliases", []))
+    for table in ("simpleir_control_kind", "frontend_effect_kind"):
+        registered.update(row["kind"] for row in data.get(table, []))
+    for row in data.get("simpleir_runtime_requirement_roles", []):
+        registered.update(data.get(row["table"], []))
+    registered.update(data.get("simpleir_runtime_neutral_semantics_kinds", []))
+    return registered
 
 
 def _frontend_effect_class_map(data: dict) -> dict[str, str]:

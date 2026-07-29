@@ -1970,6 +1970,52 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
     assert all(op.get("passes_execution_context") is True for op in chunk_calls)
 
 
+def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> None:
+    gen = SimpleTIRGenerator(
+        module_name="importlib.machinery",
+        entry_module="app",
+        module_chunking=True,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse("first = 1\nsecond = 2\n"))
+    ir = gen.to_json()
+
+    module_init = next(
+        func
+        for func in ir["functions"]
+        if func["name"] == "molt_main"
+    )
+    init_kinds = [op["kind"] for op in module_init["ops"]]
+    assert module_init["execution_context"] == "local"
+    assert init_kinds.count("trace_enter_slot") == 1
+    enter_index = init_kinds.index("trace_enter_slot")
+    assert all(
+        kind not in {"line", "frame_locals_set", "trace_exit"}
+        for kind in init_kinds[:enter_index]
+    )
+
+    chunks = [
+        func
+        for func in ir["functions"]
+        if "__molt_module_chunk_" in func["name"]
+    ]
+    assert chunks
+    chunk_names = {chunk["name"] for chunk in chunks}
+    assert all(chunk["execution_context"] == "inherited" for chunk in chunks)
+    assert all(
+        op["kind"] not in {"trace_enter_slot", "trace_exit"}
+        for chunk in chunks
+        for op in chunk["ops"]
+    )
+    threaded_calls = [
+        op
+        for op in module_init["ops"]
+        if op.get("s_value") in chunk_names
+    ]
+    assert {op["s_value"] for op in threaded_calls} == chunk_names
+    assert all(op.get("passes_execution_context") is True for op in threaded_calls)
+
+
 def test_function_lifecycle_is_the_only_trace_exit_authority() -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(

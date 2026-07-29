@@ -59,6 +59,97 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
 }
 
 #[test]
+fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
+    let carrier_kinds = crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS;
+    let params = vec![
+        "callee".into(),
+        "object".into(),
+        "name".into(),
+        "default".into(),
+        "module".into(),
+    ];
+    let mut ops = Vec::new();
+    for (index, kind) in carrier_kinds.iter().enumerate() {
+        let args = match *kind {
+            "builtin_func" => vec!["name".into()],
+            "call_func" => vec!["callee".into(), "object".into()],
+            "get_attr_generic_obj" => vec!["object".into()],
+            "get_attr_name_default" => {
+                vec!["object".into(), "name".into(), "default".into()]
+            }
+            _ => vec!["module".into(), "name".into()],
+        };
+        ops.push(OpIR {
+            kind: (*kind).into(),
+            args: Some(args),
+            out: Some(format!("result_{index}")),
+            s_value: (*kind == "get_attr_generic_obj").then(|| "_getframe".into()),
+            value: (*kind == "builtin_func").then_some(1),
+            runtime_requirement_bits: 1 << 14,
+            ..OpIR::default()
+        });
+    }
+    ops.push(OpIR {
+        kind: "ret_void".into(),
+        ..OpIR::default()
+    });
+    let func = FunctionIR {
+        name: "runtime_requirement_carriers".into(),
+        params,
+        ops,
+        ..FunctionIR::default()
+    };
+
+    let round_tripped = lower_to_simple_ir(&lower_to_tir(&func));
+    for &kind in carrier_kinds {
+        let op = round_tripped
+            .iter()
+            .find(|op| op.kind == kind)
+            .unwrap_or_else(|| panic!("carrier {kind} must survive the TIR round-trip"));
+        assert_eq!(op.runtime_requirement_bits, 1 << 14, "{kind}");
+    }
+}
+
+#[test]
+fn every_runtime_symbol_carrier_survives_tir_roundtrip() {
+    let carrier_kinds = crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS;
+    let mut ops = carrier_kinds
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| OpIR {
+            kind: (*kind).into(),
+            args: Some(vec!["module".into(), "name".into()]),
+            out: Some(format!("result_{index}")),
+            runtime_symbol: Some("molt_getframe".into()),
+            ..OpIR::default()
+        })
+        .collect::<Vec<_>>();
+    ops.push(OpIR {
+        kind: "ret_void".into(),
+        ..OpIR::default()
+    });
+    let func = FunctionIR {
+        name: "runtime_symbol_carriers".into(),
+        params: vec!["module".into(), "name".into()],
+        ops,
+        ..FunctionIR::default()
+    };
+
+    let round_tripped = lower_to_simple_ir(&lower_to_tir(&func));
+    for &kind in carrier_kinds {
+        let op = round_tripped
+            .iter()
+            .find(|op| op.kind == kind)
+            .unwrap_or_else(|| panic!("symbol carrier {kind} must survive TIR"));
+        assert_eq!(
+            op.runtime_symbol.as_deref(),
+            Some("molt_getframe"),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
 fn lower_to_simple_emits_separate_drop_fact_markers() {
     let mut func = TirFunction::new("drop_fact_markers".into(), vec![], TirType::None);
     func.attrs.insert(
@@ -224,7 +315,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         .expect("result-carrying store_var must preserve the local lifetime boundary");
     assert_eq!(
         store.args.as_deref(),
-        Some(&[source_name.clone()][..]),
+        Some(std::slice::from_ref(&source_name)),
         "store_var boundary must store the original source bits"
     );
     let alias = ops

@@ -469,9 +469,12 @@ class FunctionLifecycleMixin(_MixinBase):
             if module_failure_cleanup and not inherited_execution_context
             else None
         )
-        handler_labels = [
-            (active_label, pre_frame_label is None and not inherited_execution_context)
-        ]
+        owns_module_frame = bool(
+            module_failure_cleanup
+            and self.module_frame_entered
+            and not inherited_execution_context
+        )
+        handler_labels = [(active_label, owns_module_frame)]
         if pre_frame_label is not None and pre_frame_label != active_label:
             handler_labels = [(active_label, True), (pre_frame_label, False)]
         prev_label = active_label

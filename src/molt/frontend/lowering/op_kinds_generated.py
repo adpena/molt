@@ -820,6 +820,26 @@ SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(
     }
 )
 
+SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: frozenset[str] = frozenset(
+    {
+        "builtin_func",
+        "call_func",
+        "get_attr_generic_obj",
+        "get_attr_name_default",
+        "module_get_attr",
+        "module_get_global",
+        "module_import_from",
+    }
+)
+
+SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: frozenset[str] = frozenset(
+    {
+        "module_get_attr",
+        "module_get_global",
+        "module_import_from",
+    }
+)
+
 # Explicit acquisition-provenance requirement bits shared with target admission.
 SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 14
 

@@ -5,7 +5,7 @@ use molt_backend::SimpleIR;
 
 use super::super::super::{
     NativeApplicationObjectOptions, NativeBatchJobSpec, NativeBatchModuleMetadata,
-    NativeBatchObjectJob, batch_external_function_names,
+    NativeBatchObjectJob, append_referenced_inherited_declarations, batch_external_function_names,
 };
 use super::plan::NativeApplicationBatchPlan;
 use crate::backend_process::io_limits::write_json_artifact;
@@ -33,12 +33,16 @@ pub(super) fn materialize_native_application_batch_jobs(
             &batch_funcs,
             batch_ops_budget,
         );
-        let batch_ir = SimpleIR {
+        let mut batch_ir = SimpleIR {
             functions: batch_funcs,
             profile: plan.profile.clone(),
         };
         let external_function_names =
             batch_external_function_names(&plan.all_function_names, &batch_ir.functions);
+        append_referenced_inherited_declarations(
+            &mut batch_ir.functions,
+            &plan.inherited_function_declarations,
+        );
         let job_path = tmp_dir.join(format!("batch_{batch_idx}.json"));
         let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
         write_json_artifact(

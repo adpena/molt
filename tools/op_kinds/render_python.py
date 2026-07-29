@@ -132,6 +132,27 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'        "{qualified}",\n')
     out.append("    }\n")
     out.append(")\n\n")
+
+    requirement_carriers = sorted(
+        set(data.get("simpleir_runtime_requirement_carrier_kinds", []))
+    )
+    out.append(
+        "SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: frozenset[str] = frozenset(\n"
+    )
+    out.append("    {\n")
+    for kind in requirement_carriers:
+        out.append(f'        "{kind}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
+    runtime_symbol_carriers = sorted(
+        set(data.get("simpleir_runtime_symbol_carrier_kinds", []))
+    )
+    out.append("SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: frozenset[str] = frozenset(\n")
+    out.append("    {\n")
+    for kind in runtime_symbol_carriers:
+        out.append(f'        "{kind}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
     role_constants = [
         row["constant"] for row in data["simpleir_runtime_requirement_roles"]
     ]

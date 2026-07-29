@@ -19,7 +19,6 @@ from molt.compiler_analysis.python_imports import (
     module_spec_parent,
 )
 from molt.frontend._types import (
-    _BOOTSTRAP_TRACE_EXEMPT_MODULES,
     _MOLT_GLOBALS_BUILTIN,
     _MOLT_MODULE_CHUNK_PARAM,
     _MOLT_MODULE_CHUNK_PREFIX,
@@ -255,8 +254,6 @@ class ModuleLifecycleMixin(_MixinBase):
             self.current_func_name != "molt_main"
             and not self.current_func_name.startswith("molt_init_")
         ) or self.module_frame_entered:
-            return
-        if self.module_name in _BOOTSTRAP_TRACE_EXEMPT_MODULES:
             return
         self.module_frame_entered = True
         code_id = self.module_frame_code_id
