@@ -27,6 +27,8 @@ diff/
 dist/
 build/
 bin/
+!runtime/molt-ir/src/bin/
+!runtime/molt-ir/src/bin/*.rs
 var/
 Volumes/
 *.egg-info/

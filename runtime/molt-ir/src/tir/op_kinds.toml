@@ -1915,6 +1915,7 @@ first_result_arg = 1
 
 [[simpleir_control_kind]]
 kind = "label"
+verifier_label_definition = true
 structural = true
 terminator = false
 suspend = false
@@ -1933,6 +1934,7 @@ wasm_state_resume_at = true
 
 [[simpleir_control_kind]]
 kind = "state_label"
+verifier_label_definition = true
 structural = true
 terminator = false
 suspend = false
@@ -1951,6 +1953,8 @@ wasm_state_resume_at = true
 
 [[simpleir_control_kind]]
 kind = "if"
+verifier_region = "if"
+verifier_region_role = "start"
 structural = true
 terminator = false
 suspend = false
@@ -1969,6 +1973,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "else"
+verifier_region = "if"
+verifier_region_role = "alternate"
 structural = true
 terminator = false
 suspend = false
@@ -1987,6 +1993,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "end_if"
+verifier_region = "if"
+verifier_region_role = "end"
 structural = true
 terminator = false
 suspend = false
@@ -2005,6 +2013,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_start"
+verifier_region = "loop"
+verifier_region_role = "start"
 structural = true
 terminator = false
 suspend = false
@@ -2023,6 +2033,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_end"
+verifier_region = "loop"
+verifier_region_role = "end"
 structural = true
 terminator = false
 suspend = false
@@ -2041,6 +2053,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break"
+verifier_loop_scoped = true
 structural = true
 terminator = true
 suspend = false
@@ -2059,6 +2072,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_continue"
+verifier_loop_scoped = true
 structural = true
 terminator = true
 suspend = false
@@ -2077,6 +2091,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "jump"
+verifier_label_reference = true
 structural = true
 terminator = true
 suspend = false
@@ -2131,6 +2146,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_true"
+verifier_loop_scoped = true
 structural = true
 terminator = false
 suspend = false
@@ -2149,6 +2165,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_false"
+verifier_loop_scoped = true
 structural = true
 terminator = false
 suspend = false
@@ -2457,6 +2474,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "try_start"
+verifier_region = "try"
+verifier_region_role = "start"
 structural = false
 terminator = false
 suspend = false
@@ -2475,6 +2494,8 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "try_end"
+verifier_region = "try"
+verifier_region_role = "end"
 structural = false
 terminator = false
 suspend = false
@@ -2529,6 +2550,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "check_exception"
+verifier_label_reference = true
 structural = false
 terminator = false
 suspend = false
@@ -2547,6 +2569,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "phi"
+verifier_phi = true
 structural = false
 terminator = false
 suspend = false
@@ -3953,6 +3976,16 @@ mapper_opcode = "DeleteVar"
 canonical = "call"
 aliases = ["call_func", "call_internal", "call_indirect", "call_bind", "call_function", "call_guarded", "invoke_ffi"]
 mapper_opcode = "Call"
+simpleir_call_target_roles = [
+    { spelling = "call", role = "external_or_runtime" },
+    { spelling = "call_func", role = "opaque" },
+    { spelling = "call_internal", role = "internal_required" },
+    { spelling = "call_function", role = "opaque" },
+    { spelling = "call_indirect", role = "opaque" },
+    { spelling = "call_bind", role = "opaque" },
+    { spelling = "call_guarded", role = "opaque" },
+    { spelling = "invoke_ffi", role = "opaque" },
+]
 
 [[kind]]
 canonical = "gpu_thread_id"
