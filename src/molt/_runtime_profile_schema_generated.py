@@ -14,6 +14,7 @@ PROCESS_SECTION_ORDER = (
     "profile",
     "aux",
     "gc",
+    "execution_safety",
     "hot_paths",
     "deopt_reasons",
 )
@@ -88,6 +89,16 @@ PROCESS_COUNTER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "gc_registry_lock_contention_count",
                 "gc_registry_lock_wait_ns",
                 "gc_snapshot_alloc_failure_count",
+            )
+        ),
+        "execution_safety": frozenset(
+            (
+                "drop_panic_count",
+                "drop_cleanup_panic_count",
+                "drop_detach_panic_count",
+                "drop_release_panic_count",
+                "shutdown_drop_cext_panic_count",
+                "shutdown_drop_depth_panic_count",
             )
         ),
         "hot_paths": frozenset(

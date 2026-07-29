@@ -76,11 +76,9 @@ if [ "$MODE" = "run" ] || [ "$MODE" = "cycle" ]; then
     exit 127
   fi
   NODE_RUNNER="$(molt_path_for_command "$SHELL_ROOT/wasm/run_wasm.js" "$NODE")"
-  NODE_APP="$(molt_path_for_command "$OUT_SHELL/app.wasm" "$NODE")"
-  export MOLT_WASM_DIRECT_LINK=1 MOLT_WASM_PREFER_LINKED=0
-  export MOLT_RUNTIME_WASM="$(molt_path_for_command "$OUT_SHELL/molt_runtime.wasm" "$NODE")"
+  NODE_MANIFEST="$(molt_path_for_command "$OUT_SHELL/manifest.json" "$NODE")"
   start=$(date +%s)
-  out=$(timeout "${WITNESS_TIMEOUT:-300}" "$NODE" "$NODE_RUNNER" "$NODE_APP" 2>&1)
+  out=$(timeout "${WITNESS_TIMEOUT:-300}" "$NODE" "$NODE_RUNNER" "$NODE_MANIFEST" 2>&1)
   rc=$?
   secs=$(( $(date +%s) - start ))
   echo "$out" >"$LOG.run"

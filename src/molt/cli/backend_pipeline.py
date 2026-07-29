@@ -7,6 +7,7 @@ from pathlib import Path
 from molt.cli import backend_compile as _backend_compile
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
+from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
@@ -143,6 +144,7 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     required_link_features = prepared_backend_ir.required_link_features
+    app_export_contract_path: Path | None = None
     if prepared_backend_ir.module_registry is not None and artifacts_root is not None:
         # Diagnostics projection of the per-build ModuleRegistry (import
         # bedrock, design doc 69 §3).  Same generator run, same digest as the
@@ -153,6 +155,27 @@ def _run_backend_pipeline(
             prepared_backend_ir.module_registry.registry_json_payload(),
             indent=2,
         )
+        if output_layout.is_wasm:
+            try:
+                app_export_contract = build_app_export_contract(
+                    entry_module=resolved_build_entry.entry_module,
+                    ir=ir,
+                    registry_digest=prepared_backend_ir.module_registry.digest,
+                )
+            except ValueError as exc:
+                return _fail(
+                    f"Failed to derive app callable export contract: {exc}",
+                    json_output,
+                    command="build",
+                )
+            app_export_contract_path = (
+                Path(artifacts_root) / "app_export_contract.json"
+            )
+            _atomic_write_json(
+                app_export_contract_path,
+                app_export_contract,
+                indent=2,
+            )
     is_wasm_target = (
         output_layout.is_wasm
         or target in {"wasm", "wasm-freestanding"}
@@ -378,6 +401,7 @@ def _run_backend_pipeline(
         prepared_backend_setup=prepared_backend_setup,
         prepared_backend_runtime_context=prepared_backend_runtime_context,
         prepared_backend_compile=prepared_backend_compile,
+        app_export_contract_path=app_export_contract_path,
         native_artifact_plan=native_artifact_plan,
         artifacts_root=artifacts_root,
         resolved_modules=resolved_modules,

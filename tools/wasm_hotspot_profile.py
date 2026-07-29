@@ -56,6 +56,7 @@ from tools import harness_memory_guard  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     read_wasm_function_bodies,
     read_wasm_section_spans,
+    wasm_runtime_manifest_path,
 )
 
 # Programs used for baseline profiling (subset of bench/wasm_bench.py list).
@@ -295,6 +296,8 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
                 "wasm",
                 "--emit",
                 "wasm",
+                "--linked",
+                "--require-linked",
                 "--out-dir",
                 str(out_dir),
             ],
@@ -309,13 +312,13 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
     except subprocess.TimeoutExpired:
         return (
             False,
-            out_dir / "output.wasm",
+            out_dir / "output_linked.wasm",
             "compile timeout (180s)",
             time.monotonic() - t0,
         )
 
     elapsed = r.elapsed_s if r.elapsed_s is not None else time.monotonic() - t0
-    wasm = out_dir / "output.wasm"
+    wasm = out_dir / "output_linked.wasm"
     if r.returncode != 0 or not wasm.exists():
         return False, wasm, (r.stderr or r.stdout)[:500], elapsed
     return True, wasm, "", elapsed
@@ -344,13 +347,7 @@ def _try_profile_wasm_node(
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["MOLT_WASM_PATH"] = str(wasm_path)
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
     env["NODE_NO_WARNINGS"] = "1"
-    # Set runtime WASM path
-    runtime_wasm = MOLT_ROOT / "wasm" / "molt_runtime.wasm"
-    if runtime_wasm.exists():
-        env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHASHSEED", None)
 
@@ -361,6 +358,7 @@ def _try_profile_wasm_node(
         f"--cpu-prof-dir={profile_dir}",
         f"--cpu-prof-interval={sample_interval_us}",
         str(RUN_WASM_JS),
+        str(wasm_runtime_manifest_path(wasm_path)),
     ]
 
     r = None

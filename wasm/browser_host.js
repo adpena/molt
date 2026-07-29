@@ -90,6 +90,29 @@ const reservedRuntimeCallables = [
   { index: 22, runtimeExport: 'molt_cpython_abi_cext_call_trampoline', arity: 3, trampolineAbi: 'call_frame' },
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
+
+const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) => {
+  const exportNames = runtimeImportAbi?.export_names || {};
+  const enterName = exportNames.runtime_execution_enter;
+  const leaveName = exportNames.runtime_execution_leave;
+  if (typeof enterName !== 'string' || typeof leaveName !== 'string') {
+    throw new Error('runtime manifest missing canonical execution-boundary exports');
+  }
+  const enter = runtimeInstance?.exports?.[enterName];
+  const leave = runtimeInstance?.exports?.[leaveName];
+  if (typeof enter !== 'function' || typeof leave !== 'function') {
+    throw new Error('runtime missing canonical execution-boundary exports');
+  }
+  const token = enter();
+  if (token === 0n || token === 0) {
+    throw new Error('runtime returned an empty execution-boundary token');
+  }
+  try {
+    return operation();
+  } finally {
+    leave(token);
+  }
+};
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {
   if (!browserVfsModulePromise) {
@@ -149,6 +172,19 @@ const {
 } = globalThis.MoltWasmLoaderBridge;
 
 export { parseWasmImports };
+
+export const makeDeferredLinkedSelfImportBridge = (
+  instanceProvider,
+  exportName,
+  label,
+) => (...args) => {
+  const instance = instanceProvider();
+  const selfExport = instance?.exports?.[exportName];
+  if (typeof selfExport !== 'function') {
+    throw new Error(`${exportName} used before ${label} instantiation`);
+  }
+  return selfExport(...args);
+};
 
 const mergeLimits = (left, right, label) => {
   if (!left) return right;
@@ -294,7 +330,7 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
   try {
     let ptr;
     try {
-      ptr = runtime.exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+      ptr = runtime.exports.molt_string_as_ptr(stringBits, Number(temp.payloadPtr));
     } catch {
       return null;
     }
@@ -559,7 +595,7 @@ const parseMoltJsonishRepr = (repr) => {
   }
 };
 
-const tryDecodeListIntBits = (runtime, bits) => {
+export const tryDecodeListIntBits = (runtime, memory, bits) => {
   if (
     !runtime ||
     !runtime.exports ||
@@ -568,11 +604,10 @@ const tryDecodeListIntBits = (runtime, bits) => {
   ) {
     return null;
   }
-  let lenBits;
-  try {
-    lenBits = runtime.exports.molt_len(bits);
-  } catch {
-    return null;
+  const lenBits = runtime.exports.molt_len(bits);
+  const lenPending = pendingRuntimeExceptionMessage(runtime, memory);
+  if (lenPending) {
+    throw new Error(lenPending);
   }
   if (!isIntBits(lenBits)) {
     return null;
@@ -583,16 +618,21 @@ const tryDecodeListIntBits = (runtime, bits) => {
   }
   const out = [];
   for (let i = 0; i < len; i += 1) {
-    let itemBits;
+    const itemBits = runtime.exports.molt_index(bits, boxInt(i));
     try {
-      itemBits = runtime.exports.molt_index(bits, boxInt(i));
-    } catch {
-      return null;
+      const indexPending = pendingRuntimeExceptionMessage(runtime, memory);
+      if (indexPending) {
+        throw new Error(indexPending);
+      }
+      if (!isIntBits(itemBits)) {
+        return null;
+      }
+      out.push(unboxInt(itemBits));
+    } finally {
+      if (!isIntBits(itemBits)) {
+        decRefMaybeWithRuntime(runtime, itemBits);
+      }
     }
-    if (!isIntBits(itemBits)) {
-      return null;
-    }
-    out.push(unboxInt(itemBits));
   }
   return out;
 };
@@ -637,9 +677,41 @@ const tryDecodeResultJson = (runtime, memory, bits) => {
     typeTag === TYPE_TAG_LIST ||
     typeTag === TYPE_TAG_TUPLE
   ) {
-    return tryDecodeListIntBits(runtime, bits);
+    return tryDecodeListIntBits(runtime, memory, bits);
   }
   return null;
+};
+
+export const decodeOwnedExportResult = (
+  runtime,
+  memory,
+  resultBits,
+  exportName = '<export>',
+) => {
+  try {
+    if (
+      typeof process !== 'undefined' &&
+      process?.env?.MOLT_TRACE_EXPORT_RETURN_BITS === '1'
+    ) {
+      console.error(`[molt export return] ${exportName} bits=${String(resultBits)}`);
+    }
+    const resultTypeTag = runtimeTypeTagOfBits(runtime, resultBits);
+    const resultBytes = resultTypeTag === TYPE_TAG_BYTES
+      ? readRuntimeBytesBits(runtime, memory, resultBits)
+      : null;
+    const resultJson = tryDecodeResultJson(runtime, memory, resultBits);
+    const resultRepr = reprObjectBitsWithRuntime(runtime, memory, resultBits);
+    const fallbackJson = resultJson === null ? parseMoltJsonishRepr(resultRepr) : null;
+    return {
+      resultBits:
+        typeof resultBits === 'bigint' ? resultBits.toString() : String(resultBits),
+      resultRepr,
+      resultJson: resultJson ?? fallbackJson,
+      resultBytes,
+    };
+  } finally {
+    decRefMaybeWithRuntime(runtime, resultBits);
+  }
 };
 
 const makeBrowserHostArgObject = (runtime, memory, spec) => {
@@ -3335,66 +3407,128 @@ const tryFetchJson = async (url) => {
   }
 };
 
-const resolveDefaultWasmUrl = (moduleUrl = import.meta.url) =>
-  new URL('../dist/output.wasm', moduleUrl).href;
-
-const resolveDefaultLinkedUrl = (moduleUrl = import.meta.url) =>
-  new URL('../dist/output_linked.wasm', moduleUrl).href;
-
-const resolveSiblingLinkedUrl = (wasmUrl, moduleUrl = import.meta.url) => {
-  if (!wasmUrl) return null;
+export const verifyManifestModuleBytes = async (
+  bytes,
+  descriptor,
+  label,
+  requestedUrl,
+  cryptoAuthority = globalThis.crypto,
+  manifestUrl = null,
+) => {
+  if (
+    !descriptor ||
+    typeof descriptor !== 'object' ||
+    typeof descriptor.path !== 'string' ||
+    descriptor.path.length === 0 ||
+    !Number.isSafeInteger(descriptor.size) ||
+    descriptor.size < 0 ||
+    typeof descriptor.sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(descriptor.sha256)
+  ) {
+    throw new Error(`${label} manifest module descriptor is invalid`);
+  }
+  let requestedHref;
+  let manifestHref;
   try {
-    const resolved = new URL(wasmUrl, moduleUrl);
-    if (resolved.pathname.endsWith('_linked.wasm')) {
-      return resolved.href;
-    }
-    if (!resolved.pathname.endsWith('.wasm')) {
-      return null;
-    }
-    resolved.pathname = resolved.pathname.replace(/\.wasm$/, '_linked.wasm');
-    return resolved.href;
+    requestedHref = new URL(requestedUrl, import.meta.url).href;
+    manifestHref = manifestUrl
+      ? new URL(descriptor.path, manifestUrl).href
+      : new URL(descriptor.path, requestedHref).href;
   } catch {
-    return null;
+    throw new Error(`${label} requested module URL is invalid`);
+  }
+  if (requestedHref !== manifestHref) {
+    throw new Error(
+      `${label} path mismatch: manifest=${manifestHref} requested=${requestedHref}`,
+    );
+  }
+  if (!(bytes instanceof ArrayBuffer)) {
+    throw new Error(`${label} fetch did not return an ArrayBuffer`);
+  }
+  if (bytes.byteLength !== descriptor.size) {
+    throw new Error(
+      `${label} size mismatch: manifest=${descriptor.size} fetched=${bytes.byteLength}`,
+    );
+  }
+  const subtle = cryptoAuthority?.subtle;
+  if (!subtle || typeof subtle.digest !== 'function') {
+    throw new Error(`${label} integrity verification requires WebCrypto SHA-256`);
+  }
+  let digest;
+  try {
+    digest = await subtle.digest('SHA-256', bytes);
+  } catch (error) {
+    throw new Error(`${label} SHA-256 verification failed`, { cause: error });
+  }
+  const actual = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  if (actual !== descriptor.sha256) {
+    throw new Error(
+      `${label} SHA-256 mismatch: manifest=${descriptor.sha256} fetched=${actual}`,
+    );
   }
 };
 
-const resolveSiblingManifestUrl = (wasmUrl, moduleUrl = import.meta.url) => {
-  if (!wasmUrl) return null;
-  try {
-    return new URL('manifest.json', new URL(wasmUrl, moduleUrl)).href;
-  } catch {
-    return null;
-  }
-};
+const resolveRuntimeManifestUrl = (options = {}, moduleUrl = import.meta.url) =>
+  new URL(options.manifestUrl || '../dist/manifest.json', moduleUrl).href;
 
-const loadSplitRuntimeManifest = async (options, wasmUrl) => {
-  if (options.manifest) {
-    return options.manifest;
-  }
-  const manifestUrl =
-    options.manifestUrl || resolveSiblingManifestUrl(wasmUrl, import.meta.url);
-  if (!manifestUrl) {
-    throw new Error('split-runtime browser host requires a manifest URL');
-  }
-  const manifest = await tryFetchJson(manifestUrl);
+const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {
+  const manifestUrl = resolveRuntimeManifestUrl(options, moduleUrl);
+  const manifest = options.manifest || await tryFetchJson(manifestUrl);
   if (!manifest) {
-    throw new Error(`split-runtime browser host failed to load manifest at ${manifestUrl}`);
+    throw new Error(`browser host failed to load runtime manifest at ${manifestUrl}`);
   }
-  return manifest;
+  return { manifest, manifestUrl };
 };
 
-export const resolveMoltWasmUrls = (options = {}, moduleUrl = import.meta.url) => {
-  const wasmUrl = options.wasmUrl || resolveDefaultWasmUrl(moduleUrl);
-  const linkedUrl =
-    options.linkedUrl ||
-    resolveSiblingLinkedUrl(wasmUrl, moduleUrl) ||
-    resolveDefaultLinkedUrl(moduleUrl);
-  return { wasmUrl, linkedUrl };
+const resolveManifestModuleUrl = (manifestUrl, descriptor, label) => {
+  if (!descriptor || typeof descriptor.path !== 'string' || !descriptor.path) {
+    throw new Error(`browser host manifest missing modules.${label}.path`);
+  }
+  try {
+    return new URL(descriptor.path, manifestUrl).href;
+  } catch {
+    throw new Error(`browser host manifest has invalid modules.${label}.path`);
+  }
+};
+
+export const resolveMoltWasmUrls = (manifest, manifestUrl) => {
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('browser host requires a runtime manifest');
+  }
+  const mode = manifest.mode;
+  if (mode === 'linked') {
+    return {
+      wasmUrl: null,
+      runtimeUrl: null,
+      linkedUrl: resolveManifestModuleUrl(
+        manifestUrl,
+        manifest?.modules?.linked,
+        'linked',
+      ),
+    };
+  }
+  if (mode === 'split-runtime') {
+    return {
+      wasmUrl: resolveManifestModuleUrl(manifestUrl, manifest?.modules?.app, 'app'),
+      runtimeUrl: resolveManifestModuleUrl(
+        manifestUrl,
+        manifest?.modules?.runtime,
+        'runtime',
+      ),
+      linkedUrl: null,
+    };
+  }
+  throw new Error(`browser host manifest has unsupported mode: ${String(mode)}`);
 };
 
 export const loadMoltWasm = async (options = {}) => {
-  const { wasmUrl, linkedUrl } = resolveMoltWasmUrls(options);
-  const runtimeUrl = options.runtimeUrl || './molt_runtime.wasm';
+  const { manifest: runtimeManifest, manifestUrl } = await loadRuntimeManifest(options);
+  const { wasmUrl, runtimeUrl, linkedUrl } = resolveMoltWasmUrls(
+    runtimeManifest,
+    manifestUrl,
+  );
   const preferLinked = options.preferLinked !== false;
   const logFn = options.log || null;
   const browserVfs = await prepareBrowserVfs(options);
@@ -3473,49 +3607,30 @@ export const loadMoltWasm = async (options = {}) => {
     if (!runtime || !memory) {
       throw new Error('runtime not initialized');
     }
-    ensureHostExportsInitialized(appInstance);
-    const fn = appInstance.exports[exportName];
-    if (typeof fn !== 'function') {
-      throw new Error(`app export missing: ${exportName}`);
-    }
-    const argBits = Array.isArray(args)
-      ? args.map((arg) => makeBrowserHostArgObject(runtime, memory, arg))
-      : [];
-    let resultBits = 0n;
-    try {
-      resultBits = fn(...argBits);
-    } finally {
-      for (const bits of argBits) {
-        decRefMaybeWithRuntime(runtime, bits);
+    return withRuntimeExecution(runtime, runtimeImportAbi, () => {
+      ensureHostExportsInitialized(appInstance);
+      const fn = appInstance.exports[exportName];
+      if (typeof fn !== 'function') {
+        throw new Error(`app export missing: ${exportName}`);
       }
-    }
-    const pending = pendingRuntimeExceptionMessage(runtime, memory);
-    if (pending) {
-      throw new Error(pending);
-    }
-    if (
-      typeof process !== 'undefined' &&
-      process?.env?.MOLT_TRACE_EXPORT_RETURN_BITS === '1'
-    ) {
-      console.error(
-        `[molt export return] ${exportName} bits=${String(resultBits)}`
-      );
-    }
-    const resultTypeTag = runtimeTypeTagOfBits(runtime, resultBits);
-    const resultBytes = resultTypeTag === TYPE_TAG_BYTES
-      ? readRuntimeBytesBits(runtime, memory, resultBits)
-      : null;
-    const resultJson = tryDecodeResultJson(runtime, memory, resultBits);
-    const resultRepr = reprObjectBitsWithRuntime(runtime, memory, resultBits);
-    const fallbackJson = resultJson === null ? parseMoltJsonishRepr(resultRepr) : null;
-    decRefMaybeWithRuntime(runtime, resultBits);
-    return {
-      resultBits:
-        typeof resultBits === 'bigint' ? resultBits.toString() : String(resultBits),
-      resultRepr,
-      resultJson: resultJson ?? fallbackJson,
-      resultBytes,
-    };
+      const argBits = Array.isArray(args)
+        ? args.map((arg) => makeBrowserHostArgObject(runtime, memory, arg))
+        : [];
+      let resultBits = 0n;
+      try {
+        resultBits = fn(...argBits);
+      } finally {
+        for (const bits of argBits) {
+          decRefMaybeWithRuntime(runtime, bits);
+        }
+      }
+      const pending = pendingRuntimeExceptionMessage(runtime, memory);
+      if (pending) {
+        decRefMaybeWithRuntime(runtime, resultBits);
+        throw new Error(pending);
+      }
+      return decodeOwnedExportResult(runtime, memory, resultBits, exportName);
+    });
   };
   const overrides = {
     molt_db_query_host: dbHost.dbQueryHost,
@@ -3557,20 +3672,66 @@ export const loadMoltWasm = async (options = {}) => {
     [WEBGPU_DISPATCH_HOST_IMPORT]: gpuHost.gpuWebGpuDispatchHost,
   };
 
+  const runtimeImportAbi = options.runtimeImportAbi || runtimeManifest?.abi?.runtime_imports || null;
+  if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
+    throw new Error('browser host manifest missing abi.runtime_imports.names');
+  }
+
+  const manifestMode = runtimeManifest?.mode;
+  if (manifestMode !== 'linked' && manifestMode !== 'split-runtime') {
+    throw new Error(`browser host manifest has unsupported mode: ${String(manifestMode)}`);
+  }
+
   let linkedBytes = null;
-  if (preferLinked) {
+  if (manifestMode === 'linked') {
+    if (!preferLinked) {
+      throw new Error('linked browser manifest cannot enter split-runtime mode');
+    }
     linkedBytes = await tryFetch(linkedUrl);
-    if (linkedBytes) {
-      const imports = parseWasmImports(linkedBytes);
-      const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
-      if (hasRuntime) {
-        linkedBytes = null;
-      }
+    if (!linkedBytes) {
+      throw new Error(`linked browser manifest module is unavailable at ${linkedUrl}`);
+    }
+    await verifyManifestModuleBytes(
+      linkedBytes,
+      runtimeManifest?.modules?.linked,
+      'linked wasm',
+      linkedUrl,
+      globalThis.crypto,
+      manifestUrl,
+    );
+    const imports = parseWasmImports(linkedBytes);
+    const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
+    if (hasRuntime) {
+      throw new Error('linked browser module still imports molt_runtime');
     }
   }
 
   if (linkedBytes) {
     const linkedImports = parseWasmImports(linkedBytes);
+    const linkedModule = await WebAssembly.compile(linkedBytes);
+    const linkedFunctionExports = new Set(
+      WebAssembly.Module.exports(linkedModule)
+        .filter((entry) => entry.kind === 'function')
+        .map((entry) => entry.name),
+    );
+    const actualLinkedSelfImports = linkedImports.funcImports
+      .filter(
+        (entry) => entry.module === 'env' && linkedFunctionExports.has(entry.name),
+      )
+      .map((entry) => entry.name)
+      .sort();
+    const declaredLinkedSelfImports = runtimeManifest?.abi?.linked_self_imports;
+    if (
+      !Array.isArray(declaredLinkedSelfImports) ||
+      declaredLinkedSelfImports.some((name) => typeof name !== 'string') ||
+      new Set(declaredLinkedSelfImports).size !== declaredLinkedSelfImports.length ||
+      JSON.stringify([...declaredLinkedSelfImports].sort()) !==
+        JSON.stringify(actualLinkedSelfImports)
+    ) {
+      throw new Error(
+        `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
+      );
+    }
     const linkedCallableTable = requireWasmCallableTable(linkedBytes, 'linked wasm');
     const linkedCallIndirectNames = linkedImports.funcImports
       .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
@@ -3590,10 +3751,18 @@ export const loadMoltWasm = async (options = {}) => {
       };
     }
     const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
+    let linkedInstance = null;
+    for (const exportName of actualLinkedSelfImports) {
+      env[exportName] = makeDeferredLinkedSelfImportBridge(
+        () => linkedInstance,
+        exportName,
+        'linked',
+      );
+    }
     const importObject = { env, wasi_snapshot_preview1: buildWasiStub(state, logFn, options) };
     installWasmTagImports(importObject, linkedImports);
-    const result = await WebAssembly.instantiate(linkedBytes, importObject);
-    const instance = result.instance;
+    linkedInstance = await WebAssembly.instantiate(linkedModule, importObject);
+    const instance = linkedInstance;
     for (const name of linkedCallIndirectNames) {
       let fn = instance.exports[name];
       if (typeof fn !== 'function') {
@@ -3624,28 +3793,25 @@ export const loadMoltWasm = async (options = {}) => {
       __debugState: state,
       invokeExport: makeExportInvoker(instance),
       run: () => {
-        if (typeof instance.exports.molt_main !== 'function') {
-          throw new Error('molt_main export missing');
-        }
-        instance.exports.molt_main();
-        state.stdio?.flushAll();
-        const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-        if (pendingException) {
-          throw new Error(pendingException);
-        }
+        withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
+          if (typeof instance.exports.molt_main !== 'function') {
+            throw new Error('molt_main export missing');
+          }
+          instance.exports.molt_main();
+          state.stdio?.flushAll();
+          const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+          if (pendingException) {
+            throw new Error(pendingException);
+          }
+        });
       },
     };
   }
 
-  const splitManifest = await loadSplitRuntimeManifest(options, wasmUrl);
-  const runtimeImportAbi = options.runtimeImportAbi || splitManifest?.abi?.runtime_imports || null;
-  if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
-    throw new Error('split-runtime manifest missing abi.runtime_imports.names');
-  }
   const activeReservedRuntimeCallables =
-    reservedRuntimeCallablesFromManifest(splitManifest) || reservedRuntimeCallables;
+    reservedRuntimeCallablesFromManifest(runtimeManifest) || reservedRuntimeCallables;
   const runtimeImportFallbacks =
-    splitManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
+    runtimeManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
   const wasmBytes = await tryFetch(wasmUrl);
   if (!wasmBytes) {
     throw new Error(`Failed to load wasm at ${wasmUrl}`);
@@ -3654,26 +3820,42 @@ export const loadMoltWasm = async (options = {}) => {
   if (!runtimeBytes) {
     throw new Error(`Failed to load runtime wasm at ${runtimeUrl}`);
   }
+  await verifyManifestModuleBytes(
+    wasmBytes,
+    runtimeManifest?.modules?.app,
+    'app wasm',
+    wasmUrl,
+    globalThis.crypto,
+    manifestUrl,
+  );
+  await verifyManifestModuleBytes(
+    runtimeBytes,
+    runtimeManifest?.modules?.runtime,
+    'runtime wasm',
+    runtimeUrl,
+    globalThis.crypto,
+    manifestUrl,
+  );
   const outputImports = parseWasmImports(wasmBytes);
   const runtimeImports = parseWasmImports(runtimeBytes);
   const appCallableTable = requireWasmCallableTable(wasmBytes, 'app wasm');
   const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
   verifyCallableTableManifestSummary(
     appCallableTable,
-    splitManifest?.abi?.callable_table?.app,
+    runtimeManifest?.abi?.callable_table?.app,
     'app wasm',
   );
   verifyCallableTableManifestSummary(
     runtimeCallableTable,
-    splitManifest?.abi?.callable_table?.runtime,
+    runtimeManifest?.abi?.callable_table?.runtime,
     'runtime wasm',
   );
   assertBrowserTargetFeatureContract(
-    splitManifest,
+    runtimeManifest,
     parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
   );
   const detectedWasmTableBase = resolveWasmTableBase({
-    manifest: splitManifest,
+    manifest: runtimeManifest,
     extracted: extractWasmTableBase(wasmBytes),
   });
   state.wasmTableBase = detectedWasmTableBase;
@@ -3762,12 +3944,11 @@ export const loadMoltWasm = async (options = {}) => {
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
-  env.molt_isolate_import = (...args) => {
-    if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
-      throw new Error('molt_isolate_import used before output instantiation');
-    }
-    return callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
-  };
+  env.molt_isolate_import = makeDeferredLinkedSelfImportBridge(
+    () => outputInstance,
+    'molt_isolate_import',
+    'output',
+  );
   const outputImportObject = {
     molt_runtime: buildRuntimeImports(outputImports, {
       exports: new Proxy(
@@ -3822,16 +4003,18 @@ export const loadMoltWasm = async (options = {}) => {
     __debugState: state,
     invokeExport: makeExportInvoker(outputModule.instance),
     run: () => {
-      ensureSplitRunBootstrap(outputModule.instance);
-      if (typeof outputModule.instance.exports.molt_main !== 'function') {
-        throw new Error('molt_main export missing');
-      }
-      outputModule.instance.exports.molt_main();
-      state.stdio?.flushAll();
-      const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-      if (pendingException) {
-        throw new Error(pendingException);
-      }
+      withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
+        ensureSplitRunBootstrap(outputModule.instance);
+        if (typeof outputModule.instance.exports.molt_main !== 'function') {
+          throw new Error('molt_main export missing');
+        }
+        outputModule.instance.exports.molt_main();
+        state.stdio?.flushAll();
+        const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+        if (pendingException) {
+          throw new Error(pendingException);
+        }
+      });
     },
   };
 };

@@ -12,10 +12,21 @@ from molt._wasm_abi_generated import (
 )
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
+from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
+
+
+def _linked_manifest(wasm_path: Path) -> Path:
+    return write_wasm_execution_manifest(wasm_path.parent, linked=wasm_path)
+
+
+def _split_manifest(app_path: Path, runtime_path: Path) -> Path:
+    return write_wasm_execution_manifest(
+        app_path.parent, app=app_path, runtime=runtime_path
+    )
 
 
 def _wasm_from_wat(
@@ -77,6 +88,22 @@ def _wasm_from_wat(
     assert result.returncode == 0, result.stderr
     published.replace(wasm_path)
     return wasm_path
+
+
+def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
+    source = wat.rstrip()
+    if not source.endswith(")"):
+        raise ValueError("synthetic executable WAT must end with its module delimiter")
+    execution_boundary = """
+      (func (export "molt_runtime_execution_enter") (result i64)
+        i64.const 1)
+      (func (export "molt_runtime_execution_leave") (param i64))
+    """
+    return _wasm_from_wat(
+        tmp_path,
+        name,
+        source[:-1] + execution_boundary + ")",
+    )
 
 
 def _extract_table_base(wasm_path: Path) -> int | None:
@@ -207,7 +234,7 @@ def test_extract_wasm_table_base_uses_app_base_without_fixed_runtime_prefix(
 def test_linked_runner_uses_env_table_base_without_calling_setter(
     tmp_path: Path,
 ) -> None:
-    wasm_path = _wasm_from_wat(
+    wasm_path = _execution_wasm_from_wat(
         tmp_path,
         "linked_trapping_table_base_setter",
         """
@@ -224,7 +251,7 @@ def test_linked_runner_uses_env_table_base_without_calling_setter(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(wasm_path)],
+        ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -235,7 +262,7 @@ def test_linked_runner_uses_env_table_base_without_calling_setter(
 def test_linked_runner_calls_host_init_before_isolate_bootstrap(
     tmp_path: Path,
 ) -> None:
-    wasm_path = _wasm_from_wat(
+    wasm_path = _execution_wasm_from_wat(
         tmp_path,
         "linked_host_init_before_bootstrap",
         """
@@ -258,7 +285,7 @@ def test_linked_runner_calls_host_init_before_isolate_bootstrap(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(wasm_path)],
+        ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -269,7 +296,7 @@ def test_linked_runner_calls_host_init_before_isolate_bootstrap(
 def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
     tmp_path: Path,
 ) -> None:
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime",
         """
@@ -373,12 +400,10 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -391,7 +416,7 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
 def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
     tmp_path: Path,
 ) -> None:
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_dispatch",
         """
@@ -514,12 +539,10 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -532,7 +555,7 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
 def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
     tmp_path: Path,
 ) -> None:
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_dispatch_shared_memory",
         """
@@ -642,12 +665,10 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -660,7 +681,7 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
 def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
     tmp_path: Path,
 ) -> None:
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_export_signature_fallback",
         """
@@ -731,12 +752,10 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -749,7 +768,7 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
 def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     tmp_path: Path,
 ) -> None:
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_indirect_i64",
         """
@@ -807,12 +826,10 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -833,7 +850,7 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
         + reserved_callable_count
         + reserved_callable_index
     )
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_reserved_runtime_trampoline",
         f"""
@@ -892,12 +909,10 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,
@@ -916,7 +931,7 @@ def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
         + WASM_RESERVED_RUNTIME_CALLABLE_BASE
         + reserved_callable_count
     )
-    runtime_path = _wasm_from_wat(
+    runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_reserved_trampoline_owns_reserved_slot",
         f"""
@@ -979,12 +994,10 @@ def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
     )
 
     result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(app_path)],
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
         cwd=ROOT,
         env={
             **os.environ,
-            "MOLT_RUNTIME_WASM": str(runtime_path),
-            "MOLT_WASM_DIRECT_LINK": "1",
             "NODE_NO_WARNINGS": "1",
         },
         timeout=30,

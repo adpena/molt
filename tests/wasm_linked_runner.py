@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
 
 _MIN_NODE_MAJOR = 18
@@ -331,11 +332,13 @@ def run_wasm_linked(
         "MOLT_WASM_LINKED_PATH",
         "MOLT_WASM_TABLE_BASE",
         "MOLT_RUNTIME_WASM",
+        "MOLT_WASM_MANIFEST_PATH",
     ):
         env.pop(key, None)
     if env_overrides:
         env.update(env_overrides)
-    host_args = [host_bin, str(wasm_path)]
+    manifest = wasm_runtime_manifest_path(wasm_path)
+    host_args = [host_bin, str(manifest)]
     try:
         return _run_wasm_test_process(
             host_args,

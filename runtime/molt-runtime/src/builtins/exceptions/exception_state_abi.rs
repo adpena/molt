@@ -295,7 +295,7 @@ pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_clear() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_raw_gil_entry_nopanic!(_py, {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();
         let cleared_bits = if debug_clear && exception_pending(_py) {
@@ -368,12 +368,12 @@ pub extern "C" fn molt_exception_clear() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 /// Explicit eval-breaker observer used only by generated call-return and loop-

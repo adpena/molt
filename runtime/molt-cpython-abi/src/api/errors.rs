@@ -762,6 +762,14 @@ pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Clear() {
+    // Raw ABI cleanup is valid before initialization and after shutdown, but
+    // those phases have no live runtime whose managed pointers may be
+    // decref'd. Shutdown proves the retained-state count is zero before it
+    // frees RuntimeState; preserve that proof by never opening thread-state
+    // TLS on the runtime-absent path.
+    if !crate::api::object::runtime_is_initialized() {
+        return;
+    }
     replace_current_error(None);
 }
 

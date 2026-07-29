@@ -264,15 +264,13 @@ fn main() -> Result<()> {
         vfs_tmp_quota.unwrap_or(64).to_string(),
     ));
 
-    let wasm_path = resolve_wasm_path(arg)?;
-    let linked_path = resolve_linked_path(&wasm_path);
-    let mut use_linked = force_linked() || (prefer_linked() && linked_path.is_some());
-    let mut main_path = if use_linked {
-        linked_path.clone().unwrap_or_else(|| wasm_path.clone())
-    } else {
-        wasm_path.clone()
-    };
-    let mut wasm_table_base = detect_wasm_table_base(&main_path)?;
+    let ResolvedExecutionModules {
+        manifest_path,
+        main_path,
+        runtime_path,
+        linked: use_linked,
+    } = resolve_execution_modules(arg)?;
+    let wasm_table_base = detect_wasm_table_base(&main_path)?;
     if let Some(base) = wasm_table_base
         && env::var_os("MOLT_WASM_TABLE_BASE").is_none()
     {
@@ -280,42 +278,29 @@ fn main() -> Result<()> {
     }
 
     let engine = build_engine()?;
-    let mut output_module =
+    let output_module =
         load_or_compile_module(&engine, &main_path, "main", "MOLT_WASM_PRECOMPILED_PATH")?;
-    let mut needs_runtime = has_runtime_imports(&output_module);
-    if needs_runtime {
-        if use_linked {
-            bail!("linked wasm still imports molt_runtime; link step incomplete");
-        }
-        let Some(linked_path) = linked_path.clone() else {
-            bail!(
-                "linked wasm required for Molt runtime outputs; build with --linked or set MOLT_WASM_LINK=1."
-            );
-        };
-        output_module =
-            load_or_compile_module(&engine, &linked_path, "main", "MOLT_WASM_PRECOMPILED_PATH")?;
-        needs_runtime = has_runtime_imports(&output_module);
-        if needs_runtime {
-            bail!("linked wasm still imports molt_runtime; link step incomplete");
-        }
-        main_path = linked_path;
-        wasm_table_base = detect_wasm_table_base(&main_path)?;
-        if let Some(base) = wasm_table_base
-            && env::var_os("MOLT_WASM_TABLE_BASE").is_none()
-        {
-            upsert_extra_env(&mut vfs_envs, "MOLT_WASM_TABLE_BASE", base.to_string());
-        }
-        use_linked = true;
+    let needs_runtime = has_runtime_imports(&output_module);
+    if use_linked && needs_runtime {
+        bail!("linked wasm still imports molt_runtime; link step incomplete");
     }
-    debug_log(|| format!("main wasm: {main_path:?} (linked={use_linked})"));
+    if !use_linked && !needs_runtime {
+        bail!("split-runtime app does not import molt_runtime");
+    }
+    debug_log(|| {
+        format!(
+            "runtime manifest: {:?}; main wasm: {main_path:?} (linked={use_linked})",
+            manifest_path
+        )
+    });
 
     let runtime_module = if needs_runtime {
-        let runtime_path = env::var("MOLT_RUNTIME_WASM")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("wasm/molt_runtime.wasm"));
+        let runtime_path = runtime_path
+            .as_ref()
+            .context("split-runtime manifest is missing its runtime module")?;
         Some(load_or_compile_module(
             &engine,
-            &runtime_path,
+            runtime_path,
             "runtime",
             "MOLT_WASM_PRECOMPILED_RUNTIME_PATH",
         )?)

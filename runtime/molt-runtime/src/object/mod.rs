@@ -1798,6 +1798,9 @@ pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
     };
     unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.prepare_runtime_immortal_for_shutdown(bits);
+        }
         (*header_ptr).make_mortal_for_shutdown();
         (*header_ptr).fetch_and_flags(!(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED));
     }

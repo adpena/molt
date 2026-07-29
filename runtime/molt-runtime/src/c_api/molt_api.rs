@@ -4,21 +4,6 @@ use super::*;
 
 thread_local! {
     static PUBLIC_GIL_ACQUIRE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    static PUBLIC_GIL_OUTER_CUSTODY: std::cell::Cell<PublicGilCustody> =
-        const { std::cell::Cell::new(PublicGilCustody::NONE) };
-}
-
-#[derive(Clone, Copy)]
-struct PublicGilCustody {
-    acquired_runtime_guard: bool,
-    established_runtime_attachment: bool,
-}
-
-impl PublicGilCustody {
-    const NONE: Self = Self {
-        acquired_runtime_guard: false,
-        established_runtime_attachment: false,
-    };
 }
 
 static C_HEAP_OBJECTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
@@ -63,20 +48,7 @@ pub extern "C" fn molt_gil_acquire() -> i32 {
         None => return -1,
     };
     if outermost {
-        let held_before = gil_held();
-        #[cfg(not(target_arch = "wasm32"))]
-        let attached_before = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
         molt_runtime_ensure_gil();
-        PUBLIC_GIL_OUTER_CUSTODY.with(|custody| {
-            custody.set(PublicGilCustody {
-                acquired_runtime_guard: !held_before && gil_held(),
-                #[cfg(not(target_arch = "wasm32"))]
-                established_runtime_attachment: !attached_before
-                    && molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
-                #[cfg(target_arch = "wasm32")]
-                established_runtime_attachment: false,
-            });
-        });
     }
     0
 }
@@ -98,20 +70,11 @@ pub extern "C" fn molt_gil_release() -> i32 {
     if !outermost {
         return 0;
     }
-    let custody = PUBLIC_GIL_OUTER_CUSTODY.with(|slot| slot.replace(PublicGilCustody::NONE));
-    if custody.acquired_runtime_guard || custody.established_runtime_attachment {
-        crate::with_gil_entry_nopanic!(_py, {
-            crate::state::clear_worker_thread_state(_py);
-            #[cfg(not(target_arch = "wasm32"))]
-            if custody.established_runtime_attachment {
-                molt_cpython_abi::api::object::detach_runtime_execution_thread();
-            }
-        });
+    if crate::concurrency::release_persistent_runtime_execution() {
+        0
+    } else {
+        -1
     }
-    if custody.acquired_runtime_guard {
-        release_runtime_gil();
-    }
-    0
 }
 
 #[unsafe(no_mangle)]

@@ -232,52 +232,8 @@ mod wasm_abi_exports;
 /// dependent crates that need to call init/shutdown without going through
 /// C ABI extern blocks.
 pub mod lifecycle {
-    use crate::concurrency::{GilGuard, gil_held};
+    use crate::concurrency::RuntimeExecutionGuard;
     use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown, runtime_is_ready};
-
-    struct RuntimeExecutionAttachment<'gil> {
-        gil: &'gil GilGuard,
-        clear_worker_state: bool,
-        #[cfg(not(target_arch = "wasm32"))]
-        established: bool,
-    }
-
-    impl<'gil> RuntimeExecutionAttachment<'gil> {
-        fn enter(gil: &'gil GilGuard, acquired_runtime_guard: bool) -> Self {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let attached_before =
-                    molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-                molt_cpython_abi::api::object::attach_runtime_execution_thread();
-                let established = !attached_before
-                    && molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-                Self {
-                    gil,
-                    clear_worker_state: acquired_runtime_guard || established,
-                    established,
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                Self {
-                    gil,
-                    clear_worker_state: acquired_runtime_guard,
-                }
-            }
-        }
-    }
-
-    impl Drop for RuntimeExecutionAttachment<'_> {
-        fn drop(&mut self) {
-            if self.clear_worker_state {
-                crate::state::clear_worker_thread_state(&self.gil.token());
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if self.established {
-                molt_cpython_abi::api::object::detach_runtime_execution_thread();
-            }
-        }
-    }
 
     /// Initialize the runtime.  Returns 1 on success, 0 if already shut down.
     /// Idempotent: repeated calls after the first return 1 immediately.
@@ -319,16 +275,7 @@ pub mod lifecycle {
     /// establishes outermost execution custody, it also drains ref-owning
     /// worker TLS before releasing that custody, matching the public GIL API.
     pub fn with_ready_execution<R>(operation: impl FnOnce() -> R) -> Option<R> {
-        if !runtime_is_ready() {
-            return None;
-        }
-        crate::state::touch_tls_guard();
-        let held_before = gil_held();
-        let _gil = GilGuard::new();
-        if !runtime_is_ready() {
-            return None;
-        }
-        let _attachment = RuntimeExecutionAttachment::enter(&_gil, !held_before);
+        let _execution = RuntimeExecutionGuard::try_ready()?;
         Some(operation())
     }
 
@@ -340,52 +287,87 @@ pub mod lifecycle {
 
         #[test]
         fn ready_execution_lease_blocks_shutdown_and_refuses_late_calls() {
-            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
-                let release = Arc::new(Barrier::new(2));
-                let (entered_tx, entered_rx) = mpsc::channel();
-                let worker_release = Arc::clone(&release);
-                let worker = std::thread::spawn(move || {
-                    with_ready_execution(|| {
-                        entered_tx.send(()).unwrap();
-                        worker_release.wait();
-                        37_u64
-                    })
+            let (racing_entry, racing_entered, racing_release) =
+                crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                    let release = Arc::new(Barrier::new(2));
+                    let (entered_tx, entered_rx) = mpsc::channel();
+                    let worker_release = Arc::clone(&release);
+                    let worker = std::thread::spawn(move || {
+                        with_ready_execution(|| {
+                            assert!(
+                                molt_cpython_abi::api::object::runtime_execution_thread_is_attached(
+                                ),
+                                "ready execution must attach its worker thread"
+                            );
+                            entered_tx.send(()).unwrap();
+                            worker_release.wait();
+                            37_u64
+                        })
+                    });
+                    entered_rx.recv().unwrap();
+
+                    let (attempted_tx, attempted_rx) = mpsc::channel();
+                    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+                    let shutdown = std::thread::spawn(move || {
+                        attempted_tx.send(()).unwrap();
+                        shutdown_tx.send(molt_runtime_shutdown()).unwrap();
+                    });
+                    attempted_rx.recv().unwrap();
+                    assert!(
+                        shutdown_rx
+                            .recv_timeout(Duration::from_millis(100))
+                            .is_err(),
+                        "shutdown must wait for the live execution lease"
+                    );
+
+                    release.wait();
+                    assert_eq!(worker.join().unwrap(), Some(37));
+                    assert_eq!(shutdown_rx.recv().unwrap(), 1);
+                    shutdown.join().unwrap();
+
+                    let mut late_call_ran = false;
+                    assert_eq!(
+                        with_ready_execution(|| {
+                            late_call_ran = true;
+                        }),
+                        None
+                    );
+                    assert!(!late_call_ran, "post-shutdown operation must not run");
+
+                    let (racing_tx, racing_rx) = mpsc::channel();
+                    let racing_release = Arc::new(Barrier::new(2));
+                    let worker_release = Arc::clone(&racing_release);
+                    let racing_entry = std::thread::spawn(move || {
+                        let result = crate::with_gil_entry_nopanic!(_py, {
+                            assert!(
+                                molt_cpython_abi::api::object::runtime_execution_thread_is_attached(
+                                ),
+                                "resumed entry must attach its worker thread"
+                            );
+                            racing_tx.send(()).unwrap();
+                            worker_release.wait();
+                            41_u64
+                        });
+                        let attached_after =
+                            molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+                        (result, attached_after)
+                    });
+                    assert!(
+                        racing_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+                        "racing entry must wait outside the GIL through shutdown/reset"
+                    );
+                    (racing_entry, racing_rx, racing_release)
                 });
-                entered_rx.recv().unwrap();
-                assert_eq!(
-                    molt_cpython_abi::api::object::runtime_execution_attachment_count(),
-                    1,
-                    "ready execution must publish one shutdown-visible attachment"
-                );
 
-                let (attempted_tx, attempted_rx) = mpsc::channel();
-                let (shutdown_tx, shutdown_rx) = mpsc::channel();
-                let shutdown = std::thread::spawn(move || {
-                    attempted_tx.send(()).unwrap();
-                    shutdown_tx.send(molt_runtime_shutdown()).unwrap();
-                });
-                attempted_rx.recv().unwrap();
-                assert!(
-                    shutdown_rx
-                        .recv_timeout(Duration::from_millis(100))
-                        .is_err(),
-                    "shutdown must wait for the live execution lease"
-                );
-
-                release.wait();
-                assert_eq!(worker.join().unwrap(), Some(37));
-                assert_eq!(shutdown_rx.recv().unwrap(), 1);
-                shutdown.join().unwrap();
-
-                let mut late_call_ran = false;
-                assert_eq!(
-                    with_ready_execution(|| {
-                        late_call_ran = true;
-                    }),
-                    None
-                );
-                assert!(!late_call_ran, "post-shutdown operation must not run");
-            });
+            racing_entered
+                .recv_timeout(Duration::from_secs(2))
+                .expect("racing entry must resume after restart owner withdrawal");
+            racing_release.wait();
+            assert_eq!(
+                racing_entry.join().unwrap(),
+                (41, false),
+                "resumed entry must detach its worker thread exactly once"
+            );
         }
     }
 }
@@ -397,7 +379,7 @@ pub mod lifecycle {
 /// directly through `molt_runtime::…`.  This module exposes intrinsics that are
 /// otherwise `pub(crate)` or require GIL-internal helpers.
 pub mod ffi_bridge {
-    use crate::concurrency::GilGuard;
+    use crate::concurrency::RuntimeExecutionGuard;
     use crate::object::type_ids::TYPE_ID_STRING;
     use crate::object::{object_type_id, string_bytes, string_len};
 
@@ -408,7 +390,7 @@ pub mod ffi_bridge {
     ///
     /// Returns `1` if the capability is granted, `0` otherwise.
     pub fn has_capability(cap_name_bits: u64) -> u64 {
-        let _guard = GilGuard::new();
+        let _guard = RuntimeExecutionGuard::enter();
         let py = _guard.token();
         let py = &py;
 

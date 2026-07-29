@@ -85,6 +85,12 @@ pub(crate) struct RuntimeProfileSnapshot {
     pub(crate) gc_registry_lock_contention_count: u64,
     pub(crate) gc_registry_lock_wait_ns: u64,
     pub(crate) gc_snapshot_alloc_failure_count: u64,
+    pub(crate) drop_panic_count: u64,
+    pub(crate) drop_cleanup_panic_count: u64,
+    pub(crate) drop_detach_panic_count: u64,
+    pub(crate) drop_release_panic_count: u64,
+    pub(crate) shutdown_drop_cext_panic_count: u64,
+    pub(crate) shutdown_drop_depth_panic_count: u64,
     pub(crate) call_bind_ic_hit: u64,
     pub(crate) call_bind_ic_miss: u64,
     pub(crate) attr_site_name_hit: u64,
@@ -371,6 +377,37 @@ impl RuntimeProfileSnapshot {
         {
             let mut values = serde_json::Map::new();
             values.insert(
+                "drop_panic_count".to_owned(),
+                serde_json::Value::from(self.drop_panic_count),
+            );
+            values.insert(
+                "drop_cleanup_panic_count".to_owned(),
+                serde_json::Value::from(self.drop_cleanup_panic_count),
+            );
+            values.insert(
+                "drop_detach_panic_count".to_owned(),
+                serde_json::Value::from(self.drop_detach_panic_count),
+            );
+            values.insert(
+                "drop_release_panic_count".to_owned(),
+                serde_json::Value::from(self.drop_release_panic_count),
+            );
+            values.insert(
+                "shutdown_drop_cext_panic_count".to_owned(),
+                serde_json::Value::from(self.shutdown_drop_cext_panic_count),
+            );
+            values.insert(
+                "shutdown_drop_depth_panic_count".to_owned(),
+                serde_json::Value::from(self.shutdown_drop_depth_panic_count),
+            );
+            root.insert(
+                "execution_safety".to_owned(),
+                serde_json::Value::Object(values),
+            );
+        }
+        {
+            let mut values = serde_json::Map::new();
+            values.insert(
                 "call_bind_ic_hit".to_owned(),
                 serde_json::Value::from(self.call_bind_ic_hit),
             );
@@ -572,6 +609,22 @@ pub(crate) fn runtime_profile_metric_semantic(
         ("gc", "gc_registry_lock_contention_count") => Some(RuntimeProfileMetricSemantic::Counter),
         ("gc", "gc_registry_lock_wait_ns") => Some(RuntimeProfileMetricSemantic::Counter),
         ("gc", "gc_snapshot_alloc_failure_count") => Some(RuntimeProfileMetricSemantic::Counter),
+        ("execution_safety", "drop_panic_count") => Some(RuntimeProfileMetricSemantic::Counter),
+        ("execution_safety", "drop_cleanup_panic_count") => {
+            Some(RuntimeProfileMetricSemantic::Counter)
+        }
+        ("execution_safety", "drop_detach_panic_count") => {
+            Some(RuntimeProfileMetricSemantic::Counter)
+        }
+        ("execution_safety", "drop_release_panic_count") => {
+            Some(RuntimeProfileMetricSemantic::Counter)
+        }
+        ("execution_safety", "shutdown_drop_cext_panic_count") => {
+            Some(RuntimeProfileMetricSemantic::Counter)
+        }
+        ("execution_safety", "shutdown_drop_depth_panic_count") => {
+            Some(RuntimeProfileMetricSemantic::Counter)
+        }
         ("hot_paths", "call_bind_ic_hit") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "call_bind_ic_miss") => Some(RuntimeProfileMetricSemantic::Counter),
         ("hot_paths", "attr_site_name_hit") => Some(RuntimeProfileMetricSemantic::Counter),

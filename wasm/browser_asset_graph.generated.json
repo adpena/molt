@@ -106,7 +106,7 @@
         {
           "column": 31,
           "kind": "dynamic-import",
-          "line": 96,
+          "line": 119,
           "request": "./molt_vfs_browser.js",
           "target": "molt_vfs_browser.js"
         }
@@ -119,7 +119,7 @@
         "molt_vfs_browser.js"
       ],
       "role": "browser",
-      "sha256": "b7043a39993cdb9e214fe22e61203bba0376c01c621347481ab6b4cd3385097b",
+      "sha256": "081247eab5c9ab5f2cc424f5b3a622fd3b5b75d75d49ea0570da0655619e484d",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -182,6 +182,7 @@
       "authority": "node-runner",
       "external_references": [
         "child_process",
+        "crypto",
         "dgram",
         "dns",
         "fs",
@@ -197,30 +198,37 @@
         {
           "column": 5,
           "kind": "require",
-          "line": 33,
+          "line": 34,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 11,
+          "line": 12,
           "request": "./target_feature_manifest.json",
           "target": "target_feature_manifest.json"
         },
         {
           "column": 26,
           "kind": "require",
-          "line": 8,
+          "line": 9,
           "request": "./wasm_abi_generated.json",
           "target": "wasm_abi_generated.json"
         },
         {
           "column": 33,
           "kind": "require",
-          "line": 7,
+          "line": 8,
           "request": "child_process",
           "target": "child_process"
+        },
+        {
+          "column": 16,
+          "kind": "require",
+          "line": 7,
+          "request": "crypto",
+          "target": "crypto"
         },
         {
           "column": 15,
@@ -253,7 +261,7 @@
         {
           "column": 15,
           "kind": "require",
-          "line": 48,
+          "line": 49,
           "request": "node:wasi",
           "target": "node:wasi"
         },
@@ -274,21 +282,21 @@
         {
           "column": 37,
           "kind": "require",
-          "line": 42,
+          "line": 43,
           "request": "undici",
           "target": "undici"
         },
         {
           "column": 17,
           "kind": "require",
-          "line": 51,
+          "line": 52,
           "request": "wasi",
           "target": "wasi"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 68,
+          "line": 69,
           "request": "worker_threads",
           "target": "worker_threads"
         }
@@ -299,7 +307,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "dce8fd8869d4d0c49ed3fee0193818b799666a81f0f948a92a0c6942a0848f2c",
+      "sha256": "6d51b325e0ba998afedbb206f47522214a9937379c48512625656a8613fc8062",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {
@@ -326,7 +334,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "cd8d994a17b103c52b89d70a2387f9d7a9d1ce86c4e44e061a8105c754fa178b",
+      "sha256": "d16fd9debeb2b54c0537f5d821d796a49141bd6ab920134d34f7924eb49642ad",
       "source_type": "data"
     }
   },

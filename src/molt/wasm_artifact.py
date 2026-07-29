@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import mmap
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ from molt._wasm_abi_generated import (
 
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 WASM_FINAL_ARTIFACT_FORBIDDEN_CUSTOM_SECTIONS = frozenset({"linking"})
+WASM_RUNTIME_MANIFEST_NAME = "manifest.json"
 
 WASM_SECTION_NAMES: dict[int, str] = {
     0: "custom",
@@ -51,6 +53,69 @@ WASM_EXTERN_KIND_MEMORY = 2
 WASM_EXTERN_KIND_GLOBAL = 3
 WASM_EXTERN_KIND_TAG = 4
 WASM_VALUE_TYPE_I32 = 0x7F
+
+
+def wasm_runtime_manifest_path(artifact: Path) -> Path:
+    """Return the sole execution manifest adjacent to a produced WASM artifact."""
+    manifest = artifact.parent / WASM_RUNTIME_MANIFEST_NAME
+    if not manifest.is_file():
+        raise FileNotFoundError(
+            f"WASM execution manifest missing for {artifact}: {manifest}"
+        )
+    return manifest
+
+
+def wasm_runtime_manifest_entry_path(manifest: Path) -> Path:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    mode = payload.get("mode")
+    label = {"linked": "linked", "split-runtime": "app"}.get(mode)
+    if label is None:
+        raise ValueError(f"WASM execution manifest has unsupported mode {mode!r}: {manifest}")
+    modules = payload.get("modules")
+    descriptor = modules.get(label) if isinstance(modules, dict) else None
+    module_path = descriptor.get("path") if isinstance(descriptor, dict) else None
+    if not isinstance(module_path, str) or not module_path:
+        raise ValueError(f"WASM execution manifest missing modules.{label}.path: {manifest}")
+    return manifest.parent / module_path
+
+
+def copy_wasm_runtime_manifest_for_artifact(
+    source_artifact: Path, destination_artifact: Path
+) -> Path:
+    """Copy an execution manifest while rebasing every module path.
+
+    Artifact profilers use this when measuring a fresh pathname. The copied
+    manifest remains the sole module authority and keeps every unchanged sibling
+    module bound to its original bytes while pointing the selected descriptor at
+    the copied artifact.
+    """
+    source_manifest = wasm_runtime_manifest_path(source_artifact)
+    payload = json.loads(source_manifest.read_text(encoding="utf-8"))
+    modules = payload.get("modules")
+    if not isinstance(modules, dict):
+        raise ValueError(f"WASM execution manifest has no modules object: {source_manifest}")
+    source_resolved = source_artifact.resolve()
+    destination_root = destination_artifact.parent.resolve()
+    matched = False
+    for label, descriptor in modules.items():
+        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("path"), str):
+            continue
+        resolved = (source_manifest.parent / descriptor["path"]).resolve()
+        if resolved == source_resolved:
+            resolved = destination_artifact.resolve()
+            matched = True
+        descriptor["path"] = os.path.relpath(resolved, destination_root).replace(
+            os.sep, "/"
+        )
+    if not matched:
+        raise ValueError(
+            f"WASM execution manifest does not reference {source_artifact}: {source_manifest}"
+        )
+    destination_manifest = destination_artifact.parent / WASM_RUNTIME_MANIFEST_NAME
+    destination_manifest.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return destination_manifest
 
 
 def wasm_section_name(section_id: int) -> str:

@@ -31,8 +31,10 @@ use crate::builtins::numbers::{
     bigint_ptr_from_bits, bigint_ref, bigint_to_bytes, int_bits_from_bigint, int_bits_from_i64,
     int_bits_from_i128, to_bigint, to_i64,
 };
+#[cfg(test)]
+use crate::concurrency::GilGuard;
 use crate::concurrency::gil::with_gil;
-use crate::concurrency::{GilGuard, GilReleaseGuard, gil_owned_by_current_thread};
+use crate::concurrency::{GilReleaseGuard, RuntimeExecutionGuard, gil_owned_by_current_thread};
 use crate::object::builders::{
     alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_filled,
     alloc_list_with_capacity, alloc_module_obj, alloc_string, alloc_tuple_uninitialized,
@@ -104,16 +106,20 @@ fn gil_ensure_unit() -> c_int {
     } else {
         PY_GIL_STATE_UNLOCKED
     };
-    let encoded_lane = GilGuard::new().into_encoded_lane();
     ABI_GIL_ENSURE_STATE.with(|slot| {
         let mut state = slot.get();
         if state.depth == 0 {
             state.first_state = gil_state;
-            state.encoded_lane = encoded_lane;
+            // The outermost Ensure is an embedding lifetime boundary, not an
+            // ordinary call boundary. Its matching final Release must clear
+            // runtime worker TLS and any runtime-created CPython thread state;
+            // nested Ensure/Release pairs preserve the outer custody exactly.
+            state.encoded_lane =
+                RuntimeExecutionGuard::enter_with_boundary_created_cleanup().into_encoded_lane();
         } else {
-            assert_eq!(
-                state.encoded_lane, encoded_lane,
-                "PyGILState_Ensure changed custody lane while nested"
+            assert!(
+                gil_owned_by_current_thread(),
+                "nested PyGILState_Ensure lost outer execution custody"
             );
         }
         state.depth = state
@@ -141,7 +147,7 @@ fn gil_leave_unit(release_state: c_int) {
             release_state, expected,
             "PyGILState_Release state does not match its Ensure"
         );
-        let encoded_lane = state.encoded_lane;
+        let encoded_lane = (state.depth == 1).then_some(state.encoded_lane);
         state.depth -= 1;
         if state.depth == 0 {
             state.first_state = 0;
@@ -150,9 +156,11 @@ fn gil_leave_unit(release_state: c_int) {
         slot.set(state);
         encoded_lane
     });
-    // SAFETY: the scalar TLS state consumes exactly one unmatched lane unit
-    // created by `gil_ensure_unit` on this thread.
-    drop(unsafe { GilGuard::from_encoded_lane(encoded_lane) });
+    if let Some(encoded_lane) = encoded_lane {
+        // SAFETY: the scalar TLS state consumes the one unmatched outer
+        // execution guard created by `gil_ensure_unit` on this thread.
+        drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(encoded_lane) });
+    }
 }
 
 fn gil_save_thread() {
@@ -205,6 +213,14 @@ unsafe extern "C" fn hook_runtime_is_initialized() -> c_int {
     c_int::from(crate::state::runtime_state::runtime_is_initialized())
 }
 
+unsafe extern "C" fn hook_thread_state_drop_enter() -> u64 {
+    crate::concurrency::execution::enter_retained_thread_state_drop()
+}
+
+unsafe extern "C" fn hook_thread_state_drop_leave(token: u64) {
+    unsafe { crate::concurrency::execution::leave_retained_thread_state_drop(token) };
+}
+
 unsafe extern "C" fn hook_attached_runtime_context() -> u32 {
     use molt_cpython_abi::hooks::AttachedRuntimeContextKind;
 
@@ -213,7 +229,11 @@ unsafe extern "C" fn hook_attached_runtime_context() -> u32 {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        AttachedRuntimeContextKind::WasmSingleThread as u32
+        if crate::concurrency::execution::current_thread_has_runtime_execution_custody() {
+            AttachedRuntimeContextKind::WasmSingleThread as u32
+        } else {
+            AttachedRuntimeContextKind::Detached as u32
+        }
     }
     #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
     {
@@ -3312,15 +3332,47 @@ unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<*mut PyObject> {
     Some(tuple_obj)
 }
 
+const CEXT_INLINE_INGRESS_CAPACITY: usize = 8;
+
+/// Contiguous borrowed-view custody for one extension call.
+///
+/// The common NOARGS/O/short-FASTCALL paths stay entirely inline.  Larger
+/// calls promote once to a contiguous heap vector because CPython FASTCALL
+/// requires one pointer span; ownership and call-argument storage therefore
+/// share the same allocation instead of maintaining parallel vectors.
 struct CExtIngress {
-    owned_views: Vec<*mut PyObject>,
+    inline: [*mut PyObject; CEXT_INLINE_INGRESS_CAPACITY],
+    inline_len: usize,
+    promoted: Vec<*mut PyObject>,
 }
 
 impl CExtIngress {
-    fn with_capacity(capacity: usize) -> Option<Self> {
-        let mut owned_views = Vec::new();
-        owned_views.try_reserve_exact(capacity).ok()?;
-        Some(Self { owned_views })
+    fn new() -> Self {
+        Self {
+            inline: [ptr::null_mut(); CEXT_INLINE_INGRESS_CAPACITY],
+            inline_len: 0,
+            promoted: Vec::new(),
+        }
+    }
+
+    fn push_owned_view_checked(&mut self, view: *mut PyObject) -> Option<()> {
+        debug_assert!(!view.is_null());
+        if self.promoted.is_empty() && self.inline_len < self.inline.len() {
+            self.inline[self.inline_len] = view;
+            self.inline_len += 1;
+            return Some(());
+        }
+        if self.promoted.is_empty() {
+            self.promoted
+                .try_reserve_exact(self.inline_len.saturating_add(1))
+                .ok()?;
+            self.promoted
+                .extend_from_slice(&self.inline[..self.inline_len]);
+        } else {
+            self.promoted.try_reserve(1).ok()?;
+        }
+        self.promoted.push(view);
+        Some(())
     }
 
     unsafe fn push_borrowed_bits(&mut self, bits: u64) -> Option<*mut PyObject> {
@@ -3328,20 +3380,37 @@ impl CExtIngress {
         if view.is_null() {
             return None;
         }
-        self.owned_views.push(view);
+        if self.push_owned_view_checked(view).is_none() {
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+            return None;
+        }
         Some(view)
     }
 
-    fn push_owned_view(&mut self, view: *mut PyObject) {
-        debug_assert!(!view.is_null());
-        self.owned_views.push(view);
+    fn push_owned_view(&mut self, view: *mut PyObject) -> Option<()> {
+        self.push_owned_view_checked(view)
+    }
+
+    fn argument_span(&mut self) -> (*mut *mut PyObject, usize) {
+        let (base, len) = if self.promoted.is_empty() {
+            (self.inline.as_mut_ptr(), self.inline_len)
+        } else {
+            (self.promoted.as_mut_ptr(), self.promoted.len())
+        };
+        debug_assert_ne!(len, 0, "C extension ingress lost self view");
+        (unsafe { base.add(1) }, len - 1)
     }
 }
 
 impl Drop for CExtIngress {
     fn drop(&mut self) {
         let pending = take_native_pending_snapshot();
-        for view in self.owned_views.drain(..) {
+        let owned = if self.promoted.is_empty() {
+            &self.inline[..self.inline_len]
+        } else {
+            self.promoted.as_slice()
+        };
+        for &view in owned {
             unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
         }
         restore_native_pending_snapshot(pending);
@@ -3357,8 +3426,8 @@ fn cext_ingress_failure(message: &str) -> i64 {
     }
 }
 
-/// Trampoline invoked by Molt's call dispatch for every registered C
-/// extension function.  Signature matches Molt's
+/// Checked external-ingress trampoline for callers that do not already hold
+/// Molt runtime execution custody. Signature matches Molt's
 /// `extern "C" fn(closure_bits, args_ptr, args_len) -> i64`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
@@ -3366,7 +3435,27 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
     args_ptr: u64,
     args_len: u64,
 ) -> i64 {
-    let _gil_call = GilGuard::new_extension_call();
+    if crate::concurrency::execution::current_thread_has_c_extension_execution_context() {
+        return molt_cpython_abi_cext_call_trampoline_inner(closure_bits, args_ptr, args_len);
+    }
+    let _gil_call = RuntimeExecutionGuard::enter();
+    molt_cpython_abi_cext_call_trampoline_inner(closure_bits, args_ptr, args_len)
+}
+
+/// Internal trampoline used by generated Molt call dispatch after the outer
+/// execution boundary has established lifecycle, thread, and GIL custody.
+///
+/// Keeping this as a distinct symbol makes external ingress fail-safe without
+/// charging every extension call for a redundant execution-boundary guard.
+pub(crate) extern "C" fn molt_cpython_abi_cext_call_trampoline_admitted(
+    closure_bits: u64,
+    args_ptr: u64,
+    args_len: u64,
+) -> i64 {
+    assert!(
+        crate::concurrency::execution::current_thread_has_c_extension_execution_context(),
+        "admitted C extension trampoline requires active execution and thread-state custody"
+    );
     molt_cpython_abi_cext_call_trampoline_inner(closure_bits, args_ptr, args_len)
 }
 
@@ -3434,15 +3523,7 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
         });
     };
 
-    let Some(mut ingress) = CExtIngress::with_capacity(args.len().saturating_add(2)) else {
-        return with_gil(|_py| {
-            crate::raise_exception::<i64>(
-                &_py,
-                "MemoryError",
-                "failed to reserve C extension ingress views",
-            )
-        });
-    };
+    let mut ingress = CExtIngress::new();
     let Some(self_obj) = (unsafe { ingress.push_borrowed_bits(entry.self_bits) }) else {
         return cext_ingress_failure("failed to materialize C extension self view");
     };
@@ -3492,7 +3573,16 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 };
-                ingress.push_owned_view(tuple_obj);
+                if ingress.push_owned_view(tuple_obj).is_none() {
+                    molt_cpython_abi::api::refcount::Py_DECREF(tuple_obj);
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to retain C extension args tuple",
+                        )
+                    });
+                }
                 let f: PyCFunction = std::mem::transmute(entry.meth_target);
                 f(self_obj, tuple_obj)
             }
@@ -3510,68 +3600,52 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 };
-                ingress.push_owned_view(tuple_obj);
+                if ingress.push_owned_view(tuple_obj).is_none() {
+                    molt_cpython_abi::api::refcount::Py_DECREF(tuple_obj);
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to retain C extension args tuple",
+                        )
+                    });
+                }
                 let f: PyCFunctionWithKeywords = std::mem::transmute(entry.meth_target);
                 f(self_obj, tuple_obj, ptr::null_mut())
             }
             CExtDispatchKind::FastCall => {
-                let mut fast_args = Vec::new();
-                if fast_args.try_reserve_exact(args.len()).is_err() {
-                    return with_gil(|_py| {
-                        crate::raise_exception::<i64>(
-                            &_py,
-                            "MemoryError",
-                            "failed to reserve C extension FASTCALL arguments",
-                        )
-                    });
-                }
                 for &arg_bits in args {
-                    let Some(arg) = ingress.push_borrowed_bits(arg_bits) else {
+                    let Some(_arg) = ingress.push_borrowed_bits(arg_bits) else {
                         return cext_ingress_failure(
                             "failed to materialize C extension argument view",
                         );
                     };
-                    fast_args.push(arg);
                 }
-                let fast_ptr = if fast_args.is_empty() {
+                let (fast_args, fast_len) = ingress.argument_span();
+                let fast_ptr = if fast_len == 0 {
                     ptr::null_mut()
                 } else {
-                    fast_args.as_mut_ptr()
+                    fast_args
                 };
                 let f: PyCFunctionFast = std::mem::transmute(entry.meth_target);
-                f(self_obj, fast_ptr, fast_args.len() as Py_ssize_t)
+                f(self_obj, fast_ptr, fast_len as Py_ssize_t)
             }
             CExtDispatchKind::FastCallKeywords => {
-                let mut fast_args = Vec::new();
-                if fast_args.try_reserve_exact(args.len()).is_err() {
-                    return with_gil(|_py| {
-                        crate::raise_exception::<i64>(
-                            &_py,
-                            "MemoryError",
-                            "failed to reserve C extension FASTCALL arguments",
-                        )
-                    });
-                }
                 for &arg_bits in args {
-                    let Some(arg) = ingress.push_borrowed_bits(arg_bits) else {
+                    let Some(_arg) = ingress.push_borrowed_bits(arg_bits) else {
                         return cext_ingress_failure(
                             "failed to materialize C extension argument view",
                         );
                     };
-                    fast_args.push(arg);
                 }
-                let fast_ptr = if fast_args.is_empty() {
+                let (fast_args, fast_len) = ingress.argument_span();
+                let fast_ptr = if fast_len == 0 {
                     ptr::null_mut()
                 } else {
-                    fast_args.as_mut_ptr()
+                    fast_args
                 };
                 let f: PyCFunctionFastWithKeywords = std::mem::transmute(entry.meth_target);
-                f(
-                    self_obj,
-                    fast_ptr,
-                    fast_args.len() as Py_ssize_t,
-                    ptr::null_mut(),
-                )
+                f(self_obj, fast_ptr, fast_len as Py_ssize_t, ptr::null_mut())
             }
         }
     };
@@ -3639,7 +3713,8 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
 }
 
 #[cfg(test)]
-extern "C" fn molt_cpython_abi_cext_call_trampoline_baseline(
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_cext_call_trampoline_baseline(
     closure_bits: u64,
     args_ptr: u64,
     args_len: u64,
@@ -3684,9 +3759,9 @@ unsafe extern "C" fn hook_register_c_function(
             id
         };
         let closure_bits = MoltObject::from_int(id as i64).bits();
-        let raw_trampoline = molt_cpython_abi_cext_call_trampoline as *const ();
+        let raw_trampoline = molt_cpython_abi_cext_call_trampoline_admitted as *const ();
         let fn_ptr_value = crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cpython_abi_cext_call_trampoline",
+            "crate::molt_cpython_abi_cext_call_trampoline_admitted",
             raw_trampoline,
         );
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
@@ -3959,6 +4034,8 @@ pub fn register_cpython_hooks() {
             gil_restore: hook_gil_restore,
             gil_check: hook_gil_check,
             runtime_is_initialized: hook_runtime_is_initialized,
+            thread_state_drop_enter: hook_thread_state_drop_enter,
+            thread_state_drop_leave: hook_thread_state_drop_leave,
             attached_runtime_context: hook_attached_runtime_context,
             pending_call_error: hook_pending_call_error,
             alloc_str: hook_alloc_str,
@@ -4067,9 +4144,9 @@ pub fn register_cpython_hooks() {
 mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
-        PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_RuntimeError,
-        PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError, PyExc_ValueError,
-        PyListObject, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
+        PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_MemoryError,
+        PyExc_RuntimeError, PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError,
+        PyExc_ValueError, PyListObject, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
     };
     use std::cell::UnsafeCell;
     use std::ffi::c_void;
@@ -4081,6 +4158,19 @@ mod tests {
 
     static CANONICAL_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
     static PENDING_CALL_TEST_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS: AtomicU64 = AtomicU64::new(0);
+    static SHUTDOWN_DRAIN_CEXT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn shutdown_drain_cext_reentry() {
+        assert!(
+            crate::concurrency::execution::current_thread_has_c_extension_execution_context(),
+            "shutdown finalizer callback lost destruction execution custody"
+        );
+        let closure_bits = SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.load(AtomicOrdering::Acquire);
+        let result = molt_cpython_abi_cext_call_trampoline_admitted(closure_bits, 0, 0);
+        assert!(MoltObject::from_bits(result as u64).is_none());
+        SHUTDOWN_DRAIN_CEXT_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
+    }
 
     unsafe extern "C" fn pending_call_test_noop(_arg: *mut c_void) -> c_int {
         PENDING_CALL_TEST_CALLBACKS.fetch_add(1, AtomicOrdering::Relaxed);
@@ -4995,7 +5085,7 @@ mod tests {
             std::thread::yield_now();
         }
         while finished.load(AtomicOrdering::Acquire) != WORKERS {
-            let _extension_call = GilGuard::new_extension_call();
+            let _extension_call = RuntimeExecutionGuard::enter();
             let saved = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
             std::thread::yield_now();
             unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(saved) };
@@ -5022,18 +5112,85 @@ mod tests {
     #[test]
     fn gil_ensure_scalar_custody_is_nested_and_exact() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
-        assert!(!gil_owned_by_current_thread());
+        let baseline = molt_cpython_abi::api::object::runtime_execution_attachment_count();
+        let retained_baseline =
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count();
 
-        let outer = gil_ensure_unit();
-        assert_eq!(outer, PY_GIL_STATE_UNLOCKED);
-        let inner = gil_ensure_unit();
-        assert_eq!(inner, PY_GIL_STATE_LOCKED);
-        assert!(gil_owned_by_current_thread());
+        std::thread::spawn(move || {
+            assert!(!gil_owned_by_current_thread());
+            let outer = gil_ensure_unit();
+            assert_eq!(outer, PY_GIL_STATE_UNLOCKED);
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                baseline + 1,
+                "outer Ensure must establish exactly one runtime attachment"
+            );
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                retained_baseline + 1,
+                "first-ever Ensure must create exactly one retained state"
+            );
+            let inner = gil_ensure_unit();
+            assert_eq!(inner, PY_GIL_STATE_LOCKED);
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_SetString(
+                    (&raw mut PyExc_MemoryError).cast::<PyObject>(),
+                    c"outer PyGILState custody".as_ptr(),
+                );
+            }
+            gil_leave_unit(inner);
+            assert!(gil_owned_by_current_thread());
+            assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+            gil_leave_unit(outer);
+            assert!(!gil_owned_by_current_thread());
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                baseline,
+                "outer Release must detach exactly once"
+            );
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                retained_baseline,
+                "final Release must destroy state created by first-ever Ensure"
+            );
+        })
+        .join()
+        .unwrap();
 
-        gil_leave_unit(inner);
-        assert!(gil_owned_by_current_thread());
-        gil_leave_unit(outer);
-        assert!(!gil_owned_by_current_thread());
+        std::thread::spawn(move || {
+            let ordinary = RuntimeExecutionGuard::enter();
+            let preexisting = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_SetString(
+                    (&raw mut PyExc_MemoryError).cast::<PyObject>(),
+                    c"pre-existing runtime state".as_ptr(),
+                );
+            }
+            drop(ordinary);
+
+            let ensured = gil_ensure_unit();
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::PyThreadState_Get() },
+                preexisting,
+                "Ensure must reuse an ordinary pre-existing thread state"
+            );
+            gil_leave_unit(ensured);
+
+            let observer = RuntimeExecutionGuard::enter();
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::object::PyThreadState_Get() },
+                preexisting
+            );
+            assert!(
+                !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+                "final Release must preserve state it did not create"
+            );
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            drop(observer);
+            drop(RuntimeExecutionGuard::enter_with_worker_cleanup());
+        })
+        .join()
+        .unwrap();
 
         assert!(
             crate::test_support::catch_expected_unwind(|| gil_leave_unit(PY_GIL_STATE_LOCKED))
@@ -5329,13 +5486,255 @@ mod tests {
         &raw mut molt_cpython_abi::abi_types::Py_None
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
+    type CExtBenchmarkCall = extern "C" fn(u64, u64, u64) -> i64;
+
+    #[cfg(windows)]
+    fn configure_cext_benchmark_process() -> serde_json::Value {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetPriorityClass, GetProcessAffinityMask, SetPriorityClass,
+            SetProcessAffinityMask,
+        };
+
+        let logical_cpu = std::env::var("MOLT_CEXT_BENCH_TARGET_CPU")
+            .expect("benchmark orchestrator must select a child logical CPU")
+            .parse::<u32>()
+            .expect("MOLT_CEXT_BENCH_TARGET_CPU must be a u32");
+        let expected_mask = std::env::var("MOLT_CEXT_BENCH_TARGET_MASK")
+            .expect("benchmark orchestrator must select a child affinity mask")
+            .parse::<usize>()
+            .expect("MOLT_CEXT_BENCH_TARGET_MASK must be a usize");
+        let expected_priority = std::env::var("MOLT_CEXT_BENCH_EXPECTED_PRIORITY")
+            .expect("benchmark orchestrator must select a child priority")
+            .parse::<u32>()
+            .expect("MOLT_CEXT_BENCH_EXPECTED_PRIORITY must be a u32");
+        let process = unsafe { GetCurrentProcess() };
+        assert_ne!(
+            unsafe { SetProcessAffinityMask(process, expected_mask) },
+            0,
+            "timed child could not acquire its isolated logical CPU"
+        );
+        assert_ne!(
+            unsafe { SetPriorityClass(process, expected_priority) },
+            0,
+            "timed child could not acquire its requested priority class"
+        );
+        let mut actual_mask = 0_usize;
+        let mut system_mask = 0_usize;
+        assert_ne!(
+            unsafe { GetProcessAffinityMask(process, &mut actual_mask, &mut system_mask) },
+            0,
+            "timed child could not query its process affinity"
+        );
+        let actual_priority = unsafe { GetPriorityClass(process) };
+        assert_eq!(actual_mask, expected_mask, "timed child affinity drifted");
+        assert_eq!(
+            actual_priority, expected_priority,
+            "timed child priority class drifted"
+        );
+        assert_eq!(
+            actual_mask.count_ones(),
+            1,
+            "timed child must own exactly one logical CPU"
+        );
+        assert_eq!(
+            actual_mask.trailing_zeros(),
+            logical_cpu,
+            "timed child acquired the wrong logical CPU"
+        );
+        serde_json::json!({
+            "pid": std::process::id(),
+            "platform": "windows",
+            "logical_cpu": logical_cpu,
+            "affinity_mask": actual_mask,
+            "system_affinity_mask": system_mask,
+            "priority_class": actual_priority,
+            "verified_before_warmup": true,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn configure_cext_benchmark_process() -> serde_json::Value {
+        let logical_cpu = std::env::var("MOLT_CEXT_BENCH_TARGET_CPU")
+            .expect("benchmark orchestrator must select a child logical CPU")
+            .parse::<usize>()
+            .expect("MOLT_CEXT_BENCH_TARGET_CPU must be a usize");
+        let expected_nice = std::env::var("MOLT_CEXT_BENCH_EXPECTED_PRIORITY")
+            .expect("benchmark orchestrator must name the inherited child nice value")
+            .parse::<i32>()
+            .expect("MOLT_CEXT_BENCH_EXPECTED_PRIORITY must be an i32");
+        let mut requested = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+        unsafe {
+            libc::CPU_ZERO(&mut requested);
+            libc::CPU_SET(logical_cpu, &mut requested);
+        }
+        assert_eq!(
+            unsafe {
+                libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &requested)
+            },
+            0,
+            "timed child could not acquire its isolated logical CPU"
+        );
+        let mut actual = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+        assert_eq!(
+            unsafe {
+                libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut actual)
+            },
+            0,
+            "timed child could not query its process affinity"
+        );
+        let actual_cpus: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+            .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &actual) })
+            .collect();
+        assert_eq!(
+            actual_cpus,
+            vec![logical_cpu],
+            "timed child affinity drifted"
+        );
+        let actual_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+        assert_eq!(
+            actual_nice, expected_nice,
+            "timed child inherited an unexpected priority"
+        );
+        serde_json::json!({
+            "pid": std::process::id(),
+            "platform": "linux",
+            "logical_cpu": logical_cpu,
+            "affinity_cpus": actual_cpus,
+            "nice": actual_nice,
+            "verified_before_warmup": true,
+        })
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[inline(never)]
+    fn measure_cext_call(call: CExtBenchmarkCall, closure_bits: u64, iterations: usize) -> f64 {
+        let call = std::hint::black_box(call);
+        let start = Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(call(closure_bits, 0, 0));
+        }
+        start.elapsed().as_nanos() as f64 / iterations as f64
+    }
+
     #[test]
-    #[ignore = "release microbenchmark"]
-    fn single_thread_extension_call_preemption_bench() {
+    fn checked_extension_trampoline_owns_cold_external_ingress() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
-        let runtime_guard = GilGuard::new();
-        crate::concurrency::gil::hold_runtime_gil(runtime_guard);
+        let lease_baseline = crate::state::runtime_state::active_runtime_execution_lease_count();
+        let id = {
+            let mut registry = cext_callable_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let id = registry.len();
+            registry.push(CExtCallable {
+                meth_target: gil_bench_noargs as *const (),
+                flags: METH_NOARGS,
+                self_bits: MoltObject::none().bits(),
+                dispatch_kind: CExtDispatchKind::NoArgs,
+            });
+            id
+        };
+        let closure_bits = MoltObject::from_int(id as i64).bits();
+
+        let result = std::thread::spawn(move || {
+            assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
+            assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+            let result = molt_cpython_abi_cext_call_trampoline(closure_bits, 0, 0);
+            assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
+            assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+            result
+        })
+        .join()
+        .unwrap();
+
+        assert!(MoltObject::from_bits(result as u64).is_none());
+        assert_eq!(
+            crate::state::runtime_state::active_runtime_execution_lease_count(),
+            lease_baseline,
+            "checked external ingress leaked lifecycle admission"
+        );
+    }
+
+    #[test]
+    #[ignore = "mutates terminal runtime lifecycle; run as one timeout-bounded exact test"]
+    fn shutdown_owned_drain_reenters_c_extension_with_pending_dict_and_context_edges() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            register_cpython_hooks();
+            let id = {
+                let mut registry = cext_callable_registry()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let id = registry.len();
+                registry.push(CExtCallable {
+                    meth_target: gil_bench_noargs as *const (),
+                    flags: METH_NOARGS,
+                    self_bits: MoltObject::none().bits(),
+                    dispatch_kind: CExtDispatchKind::NoArgs,
+                });
+                id
+            };
+            SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.store(
+                MoltObject::from_int(id as i64).bits(),
+                AtomicOrdering::Release,
+            );
+            SHUTDOWN_DRAIN_CEXT_CALLBACKS.store(0, AtomicOrdering::Release);
+
+            {
+                let _execution = RuntimeExecutionGuard::enter();
+                let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
+                assert!(
+                    !dict.is_null(),
+                    "shutdown proof requires a retained state dict"
+                );
+                let var = unsafe {
+                    molt_cpython_abi::api::contextvars::PyContextVar_New(
+                        c"shutdown-drain".as_ptr(),
+                        ptr::null_mut(),
+                    )
+                };
+                assert!(!var.is_null());
+                let token = unsafe {
+                    molt_cpython_abi::api::contextvars::PyContextVar_Set(
+                        var,
+                        (&raw mut molt_cpython_abi::abi_types::Py_None).cast::<PyObject>(),
+                    )
+                };
+                assert!(!token.is_null(), "shutdown proof requires a context edge");
+                unsafe {
+                    molt_cpython_abi::api::errors::PyErr_SetString(
+                        (&raw mut PyExc_MemoryError).cast::<PyObject>(),
+                        c"shutdown-owned pending error".as_ptr(),
+                    );
+                }
+            }
+            assert!(
+                molt_cpython_abi::api::object::current_thread_has_retained_runtime_state(),
+                "managed edge proof did not retain the shutdown owner's state"
+            );
+            molt_cpython_abi::api::object::set_thread_state_drain_reentry_test_hook(Some(
+                shutdown_drain_cext_reentry,
+            ));
+            assert_eq!(crate::state::runtime_state::molt_runtime_shutdown(), 1);
+            assert_eq!(
+                SHUTDOWN_DRAIN_CEXT_CALLBACKS.load(AtomicOrdering::Acquire),
+                1,
+                "shutdown-owned managed-edge drain must reenter exactly once"
+            );
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0
+            );
+        });
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    #[ignore = "fresh-process release benchmark sample; orchestrated by tools/benchmark_cext_trampoline.py"]
+    fn single_thread_extension_call_preemption_bench() {
+        let process_execution_contract = configure_cext_benchmark_process();
+        let _test_guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
 
         let id = {
             let mut registry = cext_callable_registry()
@@ -5351,43 +5750,135 @@ mod tests {
             id
         };
         let closure_bits = MoltObject::from_int(id as i64).bits();
-        const ITERATIONS: usize = 1_000_000;
-        const ROUNDS: usize = 9;
-        let baseline_call: extern "C" fn(u64, u64, u64) -> i64 =
+        let baseline_call: CExtBenchmarkCall =
             std::hint::black_box(molt_cpython_abi_cext_call_trampoline_baseline);
-        let guarded_call: extern "C" fn(u64, u64, u64) -> i64 =
+        let checked_call: CExtBenchmarkCall =
             std::hint::black_box(molt_cpython_abi_cext_call_trampoline);
-        let mut baseline = Vec::with_capacity(ROUNDS);
-        let mut guarded = Vec::with_capacity(ROUNDS);
-        for round in 0..ROUNDS {
-            let measure = |call: extern "C" fn(u64, u64, u64) -> i64| {
-                let start = Instant::now();
-                for _ in 0..ITERATIONS {
-                    std::hint::black_box(call(closure_bits, 0, 0));
-                }
-                start.elapsed().as_nanos() as f64 / ITERATIONS as f64
-            };
-            if round % 2 == 0 {
-                baseline.push(measure(baseline_call));
-                guarded.push(measure(guarded_call));
-            } else {
-                guarded.push(measure(guarded_call));
-                baseline.push(measure(baseline_call));
-            }
-        }
-        baseline.sort_by(f64::total_cmp);
-        guarded.sort_by(f64::total_cmp);
-        let baseline_ns = baseline[ROUNDS / 2];
-        let guarded_ns = guarded[ROUNDS / 2];
-        let delta_pct = ((guarded_ns / baseline_ns) - 1.0) * 100.0;
-        eprintln!(
-            "single-thread extension call baseline={baseline_ns:.3} ns guarded={guarded_ns:.3} ns delta={delta_pct:+.3}%"
+        let admitted_call: CExtBenchmarkCall =
+            std::hint::black_box(molt_cpython_abi_cext_call_trampoline_admitted);
+        let iterations = std::env::var("MOLT_CEXT_BENCH_ITERATIONS")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|&value| value >= 100_000)
+            .unwrap_or(1_000_000);
+        let order =
+            std::env::var("MOLT_CEXT_BENCH_ORDER").unwrap_or_else(|_| "baseline-first".to_string());
+        let candidate_name =
+            std::env::var("MOLT_CEXT_BENCH_CANDIDATE").unwrap_or_else(|_| "admitted".to_string());
+        assert!(
+            matches!(order.as_str(), "baseline-first" | "candidate-first"),
+            "MOLT_CEXT_BENCH_ORDER must be baseline-first or candidate-first"
         );
         assert!(
-            delta_pct < 1.0,
-            "single-thread extension-call regression must stay below 1%"
+            matches!(candidate_name.as_str(), "admitted" | "checked-nested"),
+            "MOLT_CEXT_BENCH_CANDIDATE must be admitted or checked-nested"
         );
-        crate::concurrency::gil::release_runtime_gil();
+        let warmup_iterations = (iterations / 20).max(10_000);
+        let _ = measure_cext_call(baseline_call, closure_bits, warmup_iterations);
+        let _ = measure_cext_call(checked_call, closure_bits, warmup_iterations);
+        let cold_checked_ns = measure_cext_call(checked_call, closure_bits, iterations);
+        crate::concurrency::ensure_persistent_runtime_execution();
+        let candidate_call = if candidate_name == "admitted" {
+            admitted_call
+        } else {
+            checked_call
+        };
+        let _ = measure_cext_call(candidate_call, closure_bits, warmup_iterations);
+        const PAIR_ROUNDS: usize = 120;
+        let round_iterations = iterations / PAIR_ROUNDS;
+        let measured_iterations = round_iterations * PAIR_ROUNDS;
+        let mut baseline_rounds = Vec::with_capacity(PAIR_ROUNDS);
+        let mut candidate_rounds = Vec::with_capacity(PAIR_ROUNDS);
+        for round in 0..PAIR_ROUNDS {
+            let baseline_pattern = matches!(round % 4, 0 | 3);
+            let baseline_first = (order == "baseline-first") == baseline_pattern;
+            if baseline_first {
+                baseline_rounds.push(measure_cext_call(
+                    baseline_call,
+                    closure_bits,
+                    round_iterations,
+                ));
+                candidate_rounds.push(measure_cext_call(
+                    candidate_call,
+                    closure_bits,
+                    round_iterations,
+                ));
+            } else {
+                candidate_rounds.push(measure_cext_call(
+                    candidate_call,
+                    closure_bits,
+                    round_iterations,
+                ));
+                baseline_rounds.push(measure_cext_call(
+                    baseline_call,
+                    closure_bits,
+                    round_iterations,
+                ));
+            }
+        }
+        let baseline_ns = baseline_rounds.iter().sum::<f64>() / PAIR_ROUNDS as f64;
+        let candidate_ns = candidate_rounds.iter().sum::<f64>() / PAIR_ROUNDS as f64;
+
+        #[cfg(feature = "l7-attestation-probe")]
+        let (
+            baseline_allocations,
+            baseline_allocated_bytes,
+            candidate_allocations,
+            candidate_allocated_bytes,
+        ) = {
+            let allocation_iterations = 10_000;
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..allocation_iterations {
+                std::hint::black_box(baseline_call(closure_bits, 0, 0));
+            }
+            crate::attestation_probe::set_tracking(false);
+            let baseline = crate::attestation_probe::snapshot();
+
+            crate::attestation_probe::reset();
+            crate::attestation_probe::set_tracking(true);
+            for _ in 0..allocation_iterations {
+                std::hint::black_box(candidate_call(closure_bits, 0, 0));
+            }
+            crate::attestation_probe::set_tracking(false);
+            let candidate = crate::attestation_probe::snapshot();
+            (
+                baseline.allocations,
+                baseline.allocated_bytes,
+                candidate.allocations,
+                candidate.allocated_bytes,
+            )
+        };
+        #[cfg(not(feature = "l7-attestation-probe"))]
+        let (
+            baseline_allocations,
+            baseline_allocated_bytes,
+            candidate_allocations,
+            candidate_allocated_bytes,
+        ) = (0_u64, 0_u64, 0_u64, 0_u64);
+
+        assert!(crate::concurrency::release_persistent_runtime_execution());
+        let sample = serde_json::json!({
+            "candidate": candidate_name,
+            "order": order,
+            "pair_order_pattern": "ABBA+BAAB",
+            "iterations": measured_iterations,
+            "pair_rounds": PAIR_ROUNDS,
+            "round_iterations": round_iterations,
+            "baseline_rounds_ns_per_call": baseline_rounds,
+            "candidate_rounds_ns_per_call": candidate_rounds,
+            "baseline_ns_per_call": baseline_ns,
+            "candidate_ns_per_call": candidate_ns,
+            "cold_checked_ns_per_call": cold_checked_ns,
+            "allocation_iterations": 10_000,
+            "baseline_allocations": baseline_allocations,
+            "baseline_allocated_bytes": baseline_allocated_bytes,
+            "candidate_allocations": candidate_allocations,
+            "candidate_allocated_bytes": candidate_allocated_bytes,
+            "allocation_probe_enabled": cfg!(feature = "l7-attestation-probe"),
+            "process_execution_contract": process_execution_contract,
+        });
+        println!("MOLT_CEXT_BENCH_SAMPLE {sample}");
     }
 
     fn pending_exception_message_for_assertion() -> String {
@@ -6101,10 +6592,20 @@ mod tests {
                 b"masked_fastcall".len(),
             )
         };
+        let method_ptr = MoltObject::from_bits(method_bits)
+            .as_ptr()
+            .expect("registered C extension callable must be a heap function");
+        assert_eq!(
+            unsafe { crate::object::layout::function_call_target_ptr(method_ptr) },
+            molt_cpython_abi_cext_call_trampoline_admitted as *const (),
+            "registered extension callables must use the admitted internal trampoline"
+        );
 
-        let out_bits = with_gil(|_py| unsafe {
-            crate::call::function::call_function_obj_bound_vec(&_py, method_bits, &[])
-        });
+        let execution = RuntimeExecutionGuard::enter();
+        let out_bits = unsafe {
+            crate::call::function::call_function_obj_bound_vec(&execution.token(), method_bits, &[])
+        };
+        drop(execution);
 
         assert_eq!(out_bits, 0);
         assert_eq!(pending_exception_type_for_assertion(), "TypeError");
@@ -6135,9 +6636,11 @@ mod tests {
             )
         };
 
-        let out_bits = with_gil(|_py| unsafe {
-            crate::call::function::call_function_obj_bound_vec(&_py, method_bits, &[])
-        });
+        let execution = RuntimeExecutionGuard::enter();
+        let out_bits = unsafe {
+            crate::call::function::call_function_obj_bound_vec(&execution.token(), method_bits, &[])
+        };
+        drop(execution);
 
         assert_eq!(out_bits, 0);
         assert_eq!(pending_exception_type_for_assertion(), "SystemError");

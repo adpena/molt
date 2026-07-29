@@ -32,6 +32,7 @@ def test_manifest_drives_metric_membership_and_semantics() -> None:
         "profile",
         "aux",
         "gc",
+        "execution_safety",
         "hot_paths",
         "deopt_reasons",
     ]
@@ -43,6 +44,8 @@ def test_manifest_drives_metric_membership_and_semantics() -> None:
     assert by_metric["alloc_count"] == "counter"
     assert by_metric["live_objects"] == "gauge"
     assert by_metric["gc_tracked_high_water"] == "gauge"
+    assert by_metric["drop_panic_count"] == "counter"
+    assert by_metric["shutdown_drop_depth_panic_count"] == "counter"
 
 
 def test_schema_rejects_duplicate_metric_authority(tmp_path: Path) -> None:

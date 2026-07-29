@@ -30,6 +30,7 @@ from molt.cli import (
     runtime_wasm_pair_build,
 )
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.models import (
     _ExternalNativeAbiSymbol,
     _ExternalNativeCapiSymbol,
@@ -773,6 +774,28 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
 import molt.cli.non_native_output as nno  # noqa: E402
 
 
+def _empty_app_export_contract(tmp_path: Path) -> Path:
+    path = tmp_path / "app_export_contract.json"
+    path.write_text(
+        json.dumps(
+            build_app_export_contract(
+                entry_module="app_out",
+                ir={
+                    "functions": [
+                        {
+                            "name": "app_out__module_init",
+                            "app_callable_bindings": [],
+                        }
+                    ]
+                },
+                registry_digest="c" * 64,
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _record_ensure(name: str, ret: bool, log: list[str]):
     def _ensure(required_exports=None) -> bool:  # noqa: ANN001
         log.append(name)
@@ -834,6 +857,7 @@ def _run_app_ensure_routing(
         molt_root=tmp_path,
         split_runtime=True,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
     # Every configured scenario short-circuits before a successful build.
     assert err is not None
@@ -878,3 +902,37 @@ def test_app_path_freestanding_also_requires_atomic_pair(
         both_ret=False,
     )
     assert log == ["both"]
+
+
+def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        nno, "_collect_wasm_module_import_names", lambda *a, **k: {"molt_PyA"}
+    )
+    output_wasm = tmp_path / "app_out.wasm"
+    output_wasm.write_bytes(b"\0asm")
+    calls: list[set[str] | frozenset[str] | None] = []
+
+    def ensure_pair(required_exports=None) -> bool:  # noqa: ANN001
+        calls.append(required_exports)
+        return False
+
+    _result, err = nno._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        linked=False,
+        require_linked=False,
+        linked_output_path=None,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_state=_RuntimeArtifactState(),
+        ensure_runtime_wasm_both=ensure_pair,
+        runtime_cargo_profile="release",
+        molt_root=tmp_path,
+        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
+    )
+
+    assert calls == [{"molt_PyA"}]
+    assert err == 2

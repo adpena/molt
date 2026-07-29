@@ -161,13 +161,9 @@ def _build_split(
 
 
 def _run_split_direct(output_dir: Path) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
     return _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm")],
-        env=env,
+        ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json")],
+        env=os.environ.copy(),
         cwd=ROOT,
         timeout=300,
     )
@@ -360,13 +356,9 @@ def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
         f"stderr:\n{build.stderr[-2000:]}"
     )
 
-    env = os.environ.copy()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(out_dir / "molt_runtime.wasm")
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "app.wasm")],
-        env=env,
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        env=os.environ.copy(),
         cwd=ROOT,
         timeout=30,
     )

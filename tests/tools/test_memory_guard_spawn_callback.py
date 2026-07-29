@@ -10,7 +10,7 @@ import pytest
 from tools import memory_guard
 
 
-def _run(command: list[str], *, on_spawn=None, sampling_scope: str = "global"):
+def _run(command: list[str], *, on_spawn=None):
     return memory_guard.run_guarded(
         command,
         max_rss_kb=512 * 1024,
@@ -19,7 +19,6 @@ def _run(command: list[str], *, on_spawn=None, sampling_scope: str = "global"):
         capture_output=True,
         cleanup_orphans=False,
         on_spawn=on_spawn,
-        sampling_scope=sampling_scope,
     )
 
 
@@ -88,7 +87,7 @@ def test_run_guarded_does_not_return_with_live_job_descendants(tmp_path) -> None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")
-def test_owned_tree_sampling_uses_the_custody_job_not_global_process_table() -> None:
+def test_windows_job_sampling_automatically_avoids_global_process_table() -> None:
     global_samples = 0
 
     def forbidden_global_sampler():
@@ -107,8 +106,7 @@ def test_owned_tree_sampling_uses_the_custody_job_not_global_process_table() -> 
         poll_interval=0.003,
         sampler=forbidden_global_sampler,
         capture_output=True,
-        cleanup_orphans=False,
-        sampling_scope="owned_tree",
+        cleanup_orphans=True,
     )
 
     assert result.returncode == 0
@@ -117,8 +115,59 @@ def test_owned_tree_sampling_uses_the_custody_job_not_global_process_table() -> 
     assert result.peak_total.rss_kb > 4_000
     assert result.peak_job_commit_bytes is not None
     assert result.peak_job_commit_bytes > 0
+    assert result.sampling_telemetry is not None
+    assert result.sampling_telemetry.source == "windows_job_members"
+    assert result.sampling_telemetry.process_rows > 0
+    assert result.sampling_telemetry.max_process_rows < 16
+    assert result.sampling_telemetry.observer_wall_time_s > 0.0
+    assert 0.0 <= result.sampling_telemetry.observer_cpu_duty_cycle <= 1.0
 
 
-def test_sampling_scope_fails_closed_on_unknown_policy() -> None:
-    with pytest.raises(ValueError, match="sampling_scope"):
-        _run([sys.executable, "-c", "pass"], sampling_scope="mystery")
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")
+def test_windows_job_sampling_preserves_process_and_tree_rss_semantics() -> None:
+    grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
+    child = (
+        "import subprocess,sys,time;"
+        "x=bytearray(20_000_000);"
+        "p=subprocess.Popen([sys.executable,'-c',sys.argv[1]]);"
+        "time.sleep(0.3);p.wait()"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", child, grandchild],
+        max_rss_kb=256 * 1024,
+        max_total_rss_kb=512 * 1024,
+        poll_interval=0.01,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert result.peak is not None
+    assert result.peak_total is not None
+    assert result.peak.scope == "process"
+    assert result.peak_total.scope == "process_tree"
+    assert result.peak_total.rss_kb > result.peak.rss_kb
+    assert result.sampling_telemetry is not None
+    assert result.sampling_telemetry.max_process_rows >= 2
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")
+def test_windows_job_sampling_tolerates_proven_member_exit_churn() -> None:
+    churn = (
+        "import subprocess,sys;"
+        "[subprocess.run([sys.executable,'-c','pass'],check=True) for _ in range(40)]"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", churn],
+        max_rss_kb=256 * 1024,
+        max_total_rss_kb=512 * 1024,
+        poll_interval=0.002,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert result.violation is None
+    assert result.sampling_telemetry is not None
+    assert result.sampling_telemetry.source == "windows_job_members"
+    assert result.sampling_telemetry.enforcement_complete

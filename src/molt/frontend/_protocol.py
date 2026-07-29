@@ -23,6 +23,7 @@ from typing import (
     Callable,
     Iterable,
     Literal,
+    Mapping,
     Protocol,
     Sequence,
     TYPE_CHECKING,
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
     in_annotation: Any
@@ -243,6 +245,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _annotation_source(self, node: ast.expr) -> str: ...
 
     def _annotation_to_hint(self, node: ast.expr | None) -> str | None: ...
+
+    @staticmethod
+    def _app_binding_symbols(binding: Mapping[str, Any] | None) -> list[str]: ...
+
+    def _app_callable_from_value(
+        self, value: MoltValue
+    ) -> tuple[FunctionKind, str] | None: ...
 
     def _apply_default_specs(
         self,
@@ -1742,6 +1751,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _is_cse_eligible_op(self, op_kind: str) -> bool: ...
 
+    def _is_entry_app_binding_scope(self) -> bool: ...
+
     def _is_flat_list_int_container(self, value: MoltValue) -> bool: ...
 
     @staticmethod
@@ -2165,12 +2176,26 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _range_start_expr(self, node: ast.expr) -> ast.expr | None: ...
 
+    def _record_app_module_store(self, name: str, value: MoltValue) -> None: ...
+
     def _record_container_elem_hint(
         self, target: MoltValue, elem_hint: str | None
     ) -> None: ...
 
+    def _record_deleted_app_binding(self, name: str) -> None: ...
+
     def _record_func_default_specs(
         self, func_symbol: str, args: ast.arguments
+    ) -> None: ...
+
+    def _record_imported_app_callable(
+        self,
+        name: str,
+        *,
+        module_name: str,
+        attr_name: str,
+        value: MoltValue,
+        relative: bool,
     ) -> None: ...
 
     def _record_imported_module_attr_mutation(self, target: ast.Attribute) -> None: ...
@@ -2203,6 +2228,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _record_module_provenance_flow_state(self) -> None: ...
 
+    def _record_source_app_callable(
+        self, name: str, *, kind: FunctionKind, symbol: str, decorated: bool
+    ) -> None: ...
+
     def _reduction_acc_numeric_hint(
         self, name: str, value: MoltValue
     ) -> str | None: ...
@@ -2215,6 +2244,18 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _remember_bytearray_len_hint(
         self, value: MoltValue, length: int | None
+    ) -> None: ...
+
+    def _replace_app_callable_binding(
+        self,
+        name: str,
+        *,
+        kind: FunctionKind | str,
+        origin: str,
+        disposition: str,
+        reason: str | None,
+        symbol: str | None,
+        imported_from: str | None = None,
     ) -> None: ...
 
     @staticmethod

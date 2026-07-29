@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from functools import lru_cache
+from types import SimpleNamespace
 
 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
@@ -275,6 +277,210 @@ def _validated_windows_process_binding(
     return max(0, bound_ppid), started_at_ns
 
 
+@lru_cache(maxsize=1)
+def _windows_snapshot_api() -> SimpleNamespace:
+    """Bind immutable Win32 snapshot types/functions once per guard process."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class ProcessBasicInformation(ctypes.Structure):
+        _fields_ = [
+            ("Reserved1", ctypes.c_void_p),
+            ("PebBaseAddress", ctypes.c_void_p),
+            ("Reserved2", ctypes.c_void_p * 2),
+            ("UniqueProcessId", ctypes.c_size_t),
+            ("InheritedFromUniqueProcessId", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    counters_type = _windows_process_memory_counters_type(ctypes, wintypes)
+    create_snapshot = kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    create_snapshot.restype = wintypes.HANDLE
+    process_first = kernel32.Process32FirstW
+    process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    process_first.restype = wintypes.BOOL
+    process_next = kernel32.Process32NextW
+    process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    process_next.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    get_process_times = kernel32.GetProcessTimes
+    get_process_times.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    get_process_times.restype = wintypes.BOOL
+    query_image = kernel32.QueryFullProcessImageNameW
+    query_image.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    query_image.restype = wintypes.BOOL
+    read_memory = kernel32.ReadProcessMemory
+    read_memory.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCVOID,
+        wintypes.LPVOID,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    read_memory.restype = wintypes.BOOL
+    query_basic = ntdll.NtQueryInformationProcess
+    query_basic.argtypes = [
+        wintypes.HANDLE,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    query_basic.restype = wintypes.LONG
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+    command_line_offset = 0x70 if pointer_size == 8 else 0x40
+    return SimpleNamespace(
+        ctypes=ctypes,
+        wintypes=wintypes,
+        ProcessEntry32W=ProcessEntry32W,
+        ProcessBasicInformation=ProcessBasicInformation,
+        counters_type=counters_type,
+        create_snapshot=create_snapshot,
+        process_first=process_first,
+        process_next=process_next,
+        close_handle=close_handle,
+        open_process=open_process,
+        get_process_memory_info=_windows_get_process_memory_info(
+            psapi, ctypes, wintypes, counters_type
+        ),
+        get_process_times=get_process_times,
+        query_image=query_image,
+        read_memory=read_memory,
+        query_basic=query_basic,
+        pointer_size=pointer_size,
+        peb_process_parameters_offset=0x20 if pointer_size == 8 else 0x10,
+        command_line_offset=command_line_offset,
+        command_line_buffer_offset=command_line_offset
+        + (8 if pointer_size == 8 else 4),
+        invalid_handle_value=wintypes.HANDLE(-1).value,
+    )
+
+
+def _snapshot_read_memory(api, handle, address, size, enforce_deadline):
+    enforce_deadline("reading process memory")
+    if address <= 0 or size <= 0:
+        return None
+    buffer = (api.ctypes.c_ubyte * size)()
+    bytes_read = api.ctypes.c_size_t(0)
+    if not api.read_memory(
+        handle,
+        api.ctypes.c_void_p(address),
+        buffer,
+        size,
+        api.ctypes.byref(bytes_read),
+    ):
+        return None
+    enforce_deadline("reading process memory")
+    return None if bytes_read.value <= 0 else bytes(buffer[: bytes_read.value])
+
+
+def _snapshot_read_integer(api, handle, address, size, enforce_deadline):
+    raw = _snapshot_read_memory(api, handle, address, size, enforce_deadline)
+    if raw is None or len(raw) != size:
+        return None
+    return int.from_bytes(raw, "little", signed=False)
+
+
+def _snapshot_basic_info(api, handle):
+    returned = api.wintypes.ULONG(0)
+    info = api.ProcessBasicInformation()
+    status = api.query_basic(
+        handle,
+        0,
+        api.ctypes.byref(info),
+        api.ctypes.sizeof(info),
+        api.ctypes.byref(returned),
+    )
+    return None if status != 0 else info
+
+
+def _snapshot_command_line(api, handle, enforce_deadline):
+    enforce_deadline("reading process command line")
+    info = _snapshot_basic_info(api, handle)
+    if info is None or not info.PebBaseAddress:
+        return None
+    process_parameters = _snapshot_read_integer(
+        api,
+        handle,
+        int(info.PebBaseAddress) + api.peb_process_parameters_offset,
+        api.pointer_size,
+        enforce_deadline,
+    )
+    if not process_parameters:
+        return None
+    byte_len = _snapshot_read_integer(
+        api,
+        handle,
+        process_parameters + api.command_line_offset,
+        2,
+        enforce_deadline,
+    )
+    buffer_address = _snapshot_read_integer(
+        api,
+        handle,
+        process_parameters + api.command_line_buffer_offset,
+        api.pointer_size,
+        enforce_deadline,
+    )
+    if not byte_len or not buffer_address:
+        return None
+    raw = _snapshot_read_memory(
+        api,
+        handle,
+        buffer_address,
+        min(byte_len, 32768),
+        enforce_deadline,
+    )
+    if raw is None:
+        return None
+    enforce_deadline("reading process command line")
+    return raw.decode("utf-16-le", errors="replace").strip("\x00")
+
+
+def _snapshot_image_name(api, handle, enforce_deadline):
+    enforce_deadline("reading process image name")
+    size = api.wintypes.DWORD(32768)
+    buffer = api.ctypes.create_unicode_buffer(size.value)
+    if api.query_image(handle, 0, buffer, api.ctypes.byref(size)):
+        enforce_deadline("reading process image name")
+        return buffer.value
+    return None
+
+
 def _windows_process_snapshot_rows() -> list[
     tuple[int, int, int, str, int | None, int | None]
 ]:
@@ -290,192 +496,30 @@ def _windows_process_snapshot_rows() -> list[
             f"Windows process snapshot exceeded {timeout_sec:.3f}s while {stage}"
         )
 
-    import ctypes
-    from ctypes import wintypes
-
-    class PROCESSENTRY32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ProcessID", wintypes.DWORD),
-            ("th32DefaultHeapID", ctypes.c_size_t),
-            ("th32ModuleID", wintypes.DWORD),
-            ("cntThreads", wintypes.DWORD),
-            ("th32ParentProcessID", wintypes.DWORD),
-            ("pcPriClassBase", wintypes.LONG),
-            ("dwFlags", wintypes.DWORD),
-            ("szExeFile", wintypes.WCHAR * 260),
-        ]
-
-    class PROCESS_BASIC_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("Reserved1", ctypes.c_void_p),
-            ("PebBaseAddress", ctypes.c_void_p),
-            ("Reserved2", ctypes.c_void_p * 2),
-            ("UniqueProcessId", ctypes.c_size_t),
-            ("InheritedFromUniqueProcessId", ctypes.c_size_t),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
-    psapi = ctypes.WinDLL("psapi", use_last_error=True)
-    process_memory_counters_type = _windows_process_memory_counters_type(
-        ctypes,
-        wintypes,
-    )
-    create_snapshot = kernel32.CreateToolhelp32Snapshot
-    create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-    create_snapshot.restype = wintypes.HANDLE
-    process_first = kernel32.Process32FirstW
-    process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-    process_first.restype = wintypes.BOOL
-    process_next = kernel32.Process32NextW
-    process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-    process_next.restype = wintypes.BOOL
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [wintypes.HANDLE]
-    close_handle.restype = wintypes.BOOL
-    open_process = kernel32.OpenProcess
-    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    open_process.restype = wintypes.HANDLE
-    get_process_memory_info = _windows_get_process_memory_info(
-        psapi,
-        ctypes,
-        wintypes,
-        process_memory_counters_type,
-    )
-    get_process_times = kernel32.GetProcessTimes
-    get_process_times.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-    ]
-    get_process_times.restype = wintypes.BOOL
-    query_full_process_image_name = kernel32.QueryFullProcessImageNameW
-    query_full_process_image_name.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    query_full_process_image_name.restype = wintypes.BOOL
-    read_process_memory = kernel32.ReadProcessMemory
-    read_process_memory.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPCVOID,
-        wintypes.LPVOID,
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    read_process_memory.restype = wintypes.BOOL
-    nt_query_information_process = ntdll.NtQueryInformationProcess
-    nt_query_information_process.argtypes = [
-        wintypes.HANDLE,
-        wintypes.ULONG,
-        ctypes.c_void_p,
-        wintypes.ULONG,
-        ctypes.POINTER(wintypes.ULONG),
-    ]
-    nt_query_information_process.restype = wintypes.LONG
-
+    api = _windows_snapshot_api()
+    ctypes = api.ctypes
+    wintypes = api.wintypes
+    process_memory_counters_type = api.counters_type
+    create_snapshot = api.create_snapshot
+    process_first = api.process_first
+    process_next = api.process_next
+    close_handle = api.close_handle
+    open_process = api.open_process
+    get_process_memory_info = api.get_process_memory_info
+    get_process_times = api.get_process_times
     TH32CS_SNAPPROCESS = 0x00000002
     PROCESS_QUERY_INFORMATION = 0x0400
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     PROCESS_VM_READ = 0x0010
-    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
-    ProcessBasicInformation = 0
-    pointer_size = ctypes.sizeof(ctypes.c_void_p)
-    peb_process_parameters_offset = 0x20 if pointer_size == 8 else 0x10
-    command_line_offset = 0x70 if pointer_size == 8 else 0x40
-    command_line_buffer_offset = command_line_offset + (8 if pointer_size == 8 else 4)
-
-    def read_memory(handle: wintypes.HANDLE, address: int, size: int) -> bytes | None:
-        enforce_deadline("reading process memory")
-        if address <= 0 or size <= 0:
-            return None
-        buffer = (ctypes.c_ubyte * size)()
-        bytes_read = ctypes.c_size_t(0)
-        if not read_process_memory(
-            handle,
-            ctypes.c_void_p(address),
-            buffer,
-            size,
-            ctypes.byref(bytes_read),
-        ):
-            return None
-        enforce_deadline("reading process memory")
-        if bytes_read.value <= 0:
-            return None
-        return bytes(buffer[: bytes_read.value])
-
-    def read_u16(handle: wintypes.HANDLE, address: int) -> int | None:
-        raw = read_memory(handle, address, 2)
-        if raw is None or len(raw) != 2:
-            return None
-        return int.from_bytes(raw, "little", signed=False)
-
-    def read_ptr(handle: wintypes.HANDLE, address: int) -> int | None:
-        raw = read_memory(handle, address, pointer_size)
-        if raw is None or len(raw) != pointer_size:
-            return None
-        return int.from_bytes(raw, "little", signed=False)
-
-    def read_process_command_line(handle: wintypes.HANDLE) -> str | None:
-        enforce_deadline("reading process command line")
-        info = read_process_basic_info(handle)
-        if info is None or not info.PebBaseAddress:
-            return None
-        process_parameters = read_ptr(
-            handle,
-            int(info.PebBaseAddress) + peb_process_parameters_offset,
-        )
-        if not process_parameters:
-            return None
-        byte_len = read_u16(handle, process_parameters + command_line_offset)
-        buffer_addr = read_ptr(handle, process_parameters + command_line_buffer_offset)
-        if not byte_len or not buffer_addr:
-            return None
-        raw = read_memory(handle, buffer_addr, min(byte_len, 32768))
-        if raw is None:
-            return None
-        enforce_deadline("reading process command line")
-        return raw.decode("utf-16-le", errors="replace").strip("\x00")
-
-    def read_process_basic_info(
-        handle: wintypes.HANDLE,
-    ) -> PROCESS_BASIC_INFORMATION | None:
-        returned = wintypes.ULONG(0)
-        info = PROCESS_BASIC_INFORMATION()
-        status = nt_query_information_process(
-            handle,
-            ProcessBasicInformation,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-            ctypes.byref(returned),
-        )
-        if status != 0:
-            return None
-        return info
-
-    def read_process_image_name(handle: wintypes.HANDLE) -> str | None:
-        enforce_deadline("reading process image name")
-        size = wintypes.DWORD(32768)
-        buffer = ctypes.create_unicode_buffer(size.value)
-        if query_full_process_image_name(handle, 0, buffer, ctypes.byref(size)):
-            enforce_deadline("reading process image name")
-            return buffer.value
-        return None
 
     enforce_deadline("creating process snapshot")
     snapshot = create_snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == INVALID_HANDLE_VALUE:
+    if snapshot == api.invalid_handle_value:
         return []
     rows: list[tuple[int, int, int, str, int | None, int | None]] = []
     try:
-        entry = PROCESSENTRY32W()
-        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        entry = api.ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(api.ProcessEntry32W)
         ok = process_first(snapshot, ctypes.byref(entry))
         now = time.time()
         while ok:
@@ -504,7 +548,7 @@ def _windows_process_snapshot_rows() -> list[
                 if handle:
                     try:
                         enforce_deadline("reading process metadata")
-                        basic_info = read_process_basic_info(handle)
+                        basic_info = _snapshot_basic_info(api, handle)
                         bound_pid = (
                             None
                             if basic_info is None
@@ -512,10 +556,18 @@ def _windows_process_snapshot_rows() -> list[
                         )
                         if basic_info is not None and bound_pid == pid:
                             bound_ppid = int(basic_info.InheritedFromUniqueProcessId)
-                        image_name = read_process_image_name(handle)
+                        image_name = _snapshot_image_name(
+                            api,
+                            handle,
+                            enforce_deadline,
+                        )
                         if _windows_process_needs_full_command_line(exe_name):
                             command = (
-                                read_process_command_line(handle)
+                                _snapshot_command_line(
+                                    api,
+                                    handle,
+                                    enforce_deadline,
+                                )
                                 or image_name
                                 or command
                             )

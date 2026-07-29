@@ -28,7 +28,7 @@ use crate::object::utf8_cache::{
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
     CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT,
-    EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilGuard,
+    EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GilGuard,
     GilReleaseGuard, MoltObject, NEXT_CANCEL_TOKEN_ID, PARSE_ARENA, RECURSION_DEPTH,
     RECURSION_LIMIT, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE,
     TYPE_ID_MODULE, alloc_string, builtin_classes_break_cycles, builtin_classes_shutdown,
@@ -115,10 +115,20 @@ impl Drop for ThreadLocalGuard {
 }
 
 pub(crate) fn touch_tls_guard() {
-    let _ = GIL_DEPTH.try_with(|_| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::prepare_runtime_thread_state_lifetime();
+    crate::state::runtime_state::touch_runtime_execution_lease_tls_lifetime();
+    crate::concurrency::gil::touch_gil_tls_lifetime();
+    crate::object::heap_lifecycle::touch_terminal_sink_tls_lifetime();
     let _ = PARSE_ARENA.try_with(|_| {});
     let _ = crate::REPR_SET.try_with(|_| {});
     let _ = TLS_GUARD.try_with(|_| {});
+    // This sentinel is deliberately initialized last. Rust destroys TLS in
+    // reverse initialization order, so it drains the CPython thread-state
+    // record while the GIL, heap-lifecycle sink pools, and runtime guard TLS
+    // above are all still reachable.
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::arm_runtime_thread_state_lifetime();
 }
 
 pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -966,17 +976,19 @@ mod tests {
         let worker = std::thread::spawn(move || {
             id_tx.send(std::thread::current().id()).unwrap();
             go_rx.recv().unwrap();
-            super::run_runtime_worker(|| {
-                crate::with_gil_entry_nopanic!(_py, {
-                    let _ = crate::runtime_state(_py);
-                    if should_panic {
-                        let _: u64 = crate::builtins::exceptions::raise_exception(
-                            _py,
-                            "RuntimeError",
-                            "intentional worker unwind",
-                        );
-                        panic!("intentional worker unwind");
-                    }
+            crate::test_support::with_expected_panic(|| {
+                super::run_runtime_worker(|| {
+                    crate::with_gil_entry_nopanic!(_py, {
+                        let _ = crate::runtime_state(_py);
+                        if should_panic {
+                            let _: u64 = crate::builtins::exceptions::raise_exception(
+                                _py,
+                                "RuntimeError",
+                                "intentional worker unwind",
+                            );
+                            panic!("intentional worker unwind");
+                        }
+                    });
                 });
             });
         });

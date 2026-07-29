@@ -143,6 +143,8 @@ def test_run_wasm_linked_uses_molt_wasm_host(
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
     host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
@@ -157,7 +159,7 @@ def test_run_wasm_linked_uses_molt_wasm_host(
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
     cmd = cast(list[str], recorded["args"])
-    assert cmd == [str(host_bin), str(wasm_path)]
+    assert cmd == [str(host_bin), str(manifest)]
     env = cast(dict[str, str], recorded["env"])
     assert "NODE_NO_WARNINGS" not in env
     assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in env
@@ -169,6 +171,7 @@ def test_run_wasm_linked_preserves_inherited_child_rlimit_by_default(
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
     host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
@@ -193,6 +196,7 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
     host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
@@ -208,7 +212,6 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
         tmp_path,
         wasm_path,
         env_overrides={
-            "MOLT_RUNTIME_WASM": "",
             "MOLT_WASM_HOST_DEBUG": "1",
             "MOLT_WASM_TEST_CHILD_RLIMIT_GB": "0",
         },
@@ -216,7 +219,6 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
     assert result.returncode == 0
 
     envs = cast(list[dict[str, str]], recorded["envs"])
-    assert envs[0].get("MOLT_RUNTIME_WASM") == ""
     assert envs[0].get("MOLT_WASM_HOST_DEBUG") == "1"
     assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
@@ -227,6 +229,7 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
     host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
@@ -235,6 +238,7 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
     monkeypatch.setenv("MOLT_WASM_LINKED_PATH", "/tmp/stale-linked.wasm")
     monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "123")
     monkeypatch.setenv("MOLT_RUNTIME_WASM", "/tmp/stale-runtime.wasm")
+    monkeypatch.setenv("MOLT_WASM_MANIFEST_PATH", "/tmp/stale-manifest.json")
     recorded: dict[str, Any] = {}
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -250,6 +254,7 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
     assert "MOLT_WASM_LINKED_PATH" not in env
     assert "MOLT_WASM_TABLE_BASE" not in env
     assert "MOLT_RUNTIME_WASM" not in env
+    assert "MOLT_WASM_MANIFEST_PATH" not in env
 
 
 def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
@@ -380,11 +385,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     wasm_runner.require_wasm_toolchain()
     src = root / "examples" / "hello.py"
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
-    result = wasm_runner.run_wasm_linked(
-        root,
-        output_wasm,
-        env_overrides={"MOLT_RUNTIME_WASM": ""},
-    )
+    result = wasm_runner.run_wasm_linked(root, output_wasm)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("42")
 
@@ -396,11 +397,7 @@ def test_run_wasm_linked_bench_sum_has_no_table_signature_trap(
     wasm_runner.require_wasm_toolchain()
     src = root / "tests" / "benchmarks" / "bench_sum.py"
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
-    result = wasm_runner.run_wasm_linked(
-        root,
-        output_wasm,
-        env_overrides={"MOLT_RUNTIME_WASM": ""},
-    )
+    result = wasm_runner.run_wasm_linked(root, output_wasm)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("49999995000000")
     assert "null function or function signature mismatch" not in result.stderr
@@ -444,7 +441,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     assert build.returncode == 0, build.stderr
 
     result = wasm_runner._run_wasm_test_process(
-        [node_bin, "wasm/run_wasm.js", str(tmp_path / "app.wasm")],
+        [node_bin, "wasm/run_wasm.js", str(tmp_path / "manifest.json")],
         cwd=root,
         env=os.environ.copy(),
         capture_output=True,

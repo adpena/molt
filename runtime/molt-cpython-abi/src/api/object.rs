@@ -3616,6 +3616,62 @@ struct ThreadStateRecord {
     state_dict: *mut PyObject,
     current_error: Option<OwnedCError>,
     context: HashMap<usize, usize>,
+    tearing_down: bool,
+}
+
+struct ThreadStateDropCustody(u64);
+
+struct ThreadStateDrainPhase;
+
+impl ThreadStateDropCustody {
+    fn enter() -> Self {
+        let token = unsafe { (hooks_or_stubs().thread_state_drop_enter)() };
+        #[cfg(test)]
+        if token == 0 {
+            return Self(0);
+        }
+        assert_ne!(
+            token, 0,
+            "managed PyThreadState destruction requires live runtime/GIL custody"
+        );
+        Self(token)
+    }
+}
+
+impl Drop for ThreadStateDropCustody {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            unsafe { (hooks_or_stubs().thread_state_drop_leave)(self.0) };
+        }
+    }
+}
+
+impl ThreadStateDrainPhase {
+    fn enter() -> Self {
+        MOLT_THREAD_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let record = slot
+                .as_deref_mut()
+                .expect("draining a missing PyThreadState");
+            assert!(!record.attached, "draining an attached PyThreadState");
+            assert!(!record.tearing_down, "reentrant PyThreadState drain");
+            record.tearing_down = true;
+            record.attached = true;
+        });
+        Self
+    }
+}
+
+impl Drop for ThreadStateDrainPhase {
+    fn drop(&mut self) {
+        let _ = MOLT_THREAD_STATE.try_with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if let Some(record) = slot.as_deref_mut() {
+                record.attached = false;
+                record.tearing_down = false;
+            }
+        });
+    }
 }
 
 impl ThreadStateRecord {
@@ -3642,6 +3698,7 @@ impl ThreadStateRecord {
             state_dict: ptr::null_mut(),
             current_error: None,
             context: HashMap::new(),
+            tearing_down: false,
         });
         record.state.exc_info = &raw mut record.state.exc_state;
         let ptr = (&raw mut record.state) as usize;
@@ -3656,6 +3713,7 @@ impl ThreadStateRecord {
             previous.is_none(),
             "PyThreadState pointer already registered"
         );
+        RETAINED_THREAD_STATE_COUNT.fetch_add(1, Ordering::AcqRel);
         record
     }
 }
@@ -3663,6 +3721,11 @@ impl ThreadStateRecord {
 impl Drop for ThreadStateRecord {
     fn drop(&mut self) {
         assert!(!self.attached, "dropping an attached PyThreadState");
+        assert!(!self.tearing_down, "dropping a draining PyThreadState");
+        assert!(
+            self.state_dict.is_null() && self.current_error.is_none() && self.context.is_empty(),
+            "dropping PyThreadState before managed-edge drain completed"
+        );
         let ptr = (&raw mut self.state) as usize;
         let removed = THREAD_STATE_REGISTRY.lock().unwrap().remove(&ptr);
         assert_eq!(
@@ -3673,28 +3736,77 @@ impl Drop for ThreadStateRecord {
             })
         );
 
-        // Native thread exit is a real PyThreadState destruction boundary.
-        // Rust invokes TLS destructors on Unix while Windows historically hid
-        // this leak, so the record itself must release every owned edge rather
-        // than require an out-of-band shutdown hook that a foreign thread can
-        // never call. Remove registry publication first, then drain ownership:
-        // no destructor may observe a half-dead thread state as live.
-        let state_dict = std::mem::replace(&mut self.state_dict, ptr::null_mut());
-        let current_error = self.current_error.take();
-        let context = std::mem::take(&mut self.context);
-        unsafe { crate::api::refcount::Py_XDECREF(state_dict) };
-        drop(current_error);
-        for value in context.into_values() {
-            unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
-        }
+        let previous = RETAINED_THREAD_STATE_COUNT.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(previous, 0, "retained PyThreadState count underflow");
     }
 }
 
 thread_local! {
     static MOLT_THREAD_STATE: RefCell<Option<Box<ThreadStateRecord>>> = const { RefCell::new(None) };
-    static GILSTATE_ATTACHMENT: Cell<(usize, bool, bool)> = const { Cell::new((0, false, false)) };
+    static GILSTATE_ATTACHMENT: Cell<(usize, bool)> = const { Cell::new((0, false)) };
     static RUNTIME_EXECUTION_ATTACHMENT: Cell<bool> = const { Cell::new(false) };
-    static RUNTIME_EXECUTION_CREATED_STATE: Cell<bool> = const { Cell::new(false) };
+    static RUNTIME_THREAD_STATE_LIFETIME: RuntimeThreadStateLifetime = const { RuntimeThreadStateLifetime };
+    static RUNTIME_THREAD_STATE_PREPARATION: Cell<RuntimeThreadStatePreparation> = const { Cell::new(RuntimeThreadStatePreparation::Unprepared) };
+    #[cfg(feature = "runtime-test-support")]
+    static THREAD_STATE_FINALIZER_TEST_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeThreadStatePreparation {
+    Unprepared,
+    SlotPrepared,
+    LifetimeArmed,
+}
+
+#[derive(Clone, Copy)]
+enum ThreadStatePanicBoundary {
+    Propagate,
+    AbortProcess,
+}
+
+#[derive(Clone, Copy)]
+enum ThreadStateDropCustodyMode {
+    Acquire,
+    ShutdownOwner,
+}
+
+struct RuntimeThreadStateLifetime;
+
+impl Drop for RuntimeThreadStateLifetime {
+    fn drop(&mut self) {
+        if existing_current_thread_state().is_some() {
+            clear_current_thread_state_for_runtime_thread_exit();
+        }
+    }
+}
+
+/// Register the empty CPython TLS slot before Molt initializes any runtime TLS.
+/// [`arm_runtime_thread_state_lifetime`] must be called after the runtime TLS
+/// anchors are initialized, making its sentinel the first destructor to run.
+/// Record creation is deliberately deferred until after lifecycle admission.
+pub fn prepare_runtime_thread_state_lifetime() {
+    MOLT_THREAD_STATE.with(|_| {});
+    RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
+        if state.get() == RuntimeThreadStatePreparation::Unprepared {
+            state.set(RuntimeThreadStatePreparation::SlotPrepared);
+        }
+    });
+}
+
+pub fn arm_runtime_thread_state_lifetime() {
+    RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
+        assert_ne!(
+            state.get(),
+            RuntimeThreadStatePreparation::Unprepared,
+            "thread-state lifetime armed before its TLS slot was prepared"
+        );
+        state.set(RuntimeThreadStatePreparation::LifetimeArmed);
+    });
+    // Reentrant runtime work from a decref/finalizer may cross an ordinary
+    // execution boundary while this very sentinel is draining the published
+    // record. The lifetime is already armed in that case; trying to access its
+    // TLS key with `with` would panic during destruction.
+    let _ = RUNTIME_THREAD_STATE_LIFETIME.try_with(|_| {});
 }
 
 pub(crate) fn thread_state_dict_or_insert_with(
@@ -3702,7 +3814,9 @@ pub(crate) fn thread_state_dict_or_insert_with(
 ) -> *mut PyObject {
     let existing = MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        let record = slot
+            .as_deref_mut()
+            .expect("thread-state dictionary used before runtime TLS lifetime preparation");
         (!record.state_dict.is_null()).then_some(record.state_dict)
     });
     if let Some(existing) = existing {
@@ -3715,7 +3829,9 @@ pub(crate) fn thread_state_dict_or_insert_with(
     let created = create();
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        let record = slot
+            .as_deref_mut()
+            .expect("thread-state dictionary publish crossed lifetime preparation");
         debug_assert!(record.state_dict.is_null());
         record.state_dict = created;
         record.state_dict
@@ -3725,7 +3841,9 @@ pub(crate) fn thread_state_dict_or_insert_with(
 pub(crate) fn replace_thread_state_error(state: Option<OwnedCError>) -> Option<OwnedCError> {
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        let record = slot
+            .as_deref_mut()
+            .expect("C error state used before runtime TLS lifetime preparation");
         std::mem::replace(&mut record.current_error, state)
     })
 }
@@ -3749,7 +3867,9 @@ pub(crate) fn thread_state_error_type() -> Option<*mut PyObject> {
 pub(crate) fn with_thread_state_context<R>(f: impl FnOnce(&mut HashMap<usize, usize>) -> R) -> R {
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        let record = slot
+            .as_deref_mut()
+            .expect("thread-state context used before runtime TLS lifetime preparation");
         f(&mut record.context)
     })
 }
@@ -3764,32 +3884,154 @@ pub(crate) fn with_existing_thread_state_context<R>(
     })
 }
 
-fn destroy_current_thread_state() {
-    let owned = MOLT_THREAD_STATE.with(|slot| {
-        let mut record = slot
+fn destroy_current_thread_state(
+    panic_boundary: ThreadStatePanicBoundary,
+    custody_mode: ThreadStateDropCustodyMode,
+) {
+    let drain = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drain_current_thread_state_managed_edges(custody_mode)
+    }));
+    if let Err(payload) = drain {
+        match panic_boundary {
+            ThreadStatePanicBoundary::Propagate => std::panic::resume_unwind(payload),
+            ThreadStatePanicBoundary::AbortProcess => {
+                // TLS destructors cannot unwind. A refcount/finalizer panic is
+                // an unknown memory-safety condition, so preserve fail-closed
+                // semantics instead of continuing with a partially drained
+                // ownership graph.
+                std::process::abort();
+            }
+        }
+    }
+    let record = MOLT_THREAD_STATE.with(|slot| {
+        let record = slot
             .borrow_mut()
             .take()
             .expect("destroying a missing PyThreadState");
         assert!(!record.attached, "destroying an attached PyThreadState");
-        let state_dict = std::mem::replace(&mut record.state_dict, ptr::null_mut());
-        let current_error = record.current_error.take();
-        let context = std::mem::take(&mut record.context);
-        drop(record);
-        (state_dict, current_error, context)
+        record
     });
-    unsafe {
-        crate::api::refcount::Py_XDECREF(owned.0);
+    drop(record);
+}
+
+fn current_thread_state_has_managed_edges() -> bool {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow().as_deref().is_some_and(|record| {
+            !record.state_dict.is_null()
+                || record.current_error.is_some()
+                || !record.context.is_empty()
+        })
+    })
+}
+
+fn drain_current_thread_state_managed_edges(custody_mode: ThreadStateDropCustodyMode) {
+    if !current_thread_state_has_managed_edges() {
+        return;
     }
-    drop(owned.1);
-    for value in owned.2.into_values() {
-        unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
+    let _custody = match custody_mode {
+        ThreadStateDropCustodyMode::Acquire => Some(ThreadStateDropCustody::enter()),
+        ThreadStateDropCustodyMode::ShutdownOwner => {
+            assert_ne!(
+                unsafe { (hooks_or_stubs().gil_check)() },
+                0,
+                "shutdown-owned PyThreadState drain requires GIL custody"
+            );
+            None
+        }
+    };
+    let _phase = ThreadStateDrainPhase::enter();
+    #[cfg(feature = "runtime-test-support")]
+    THREAD_STATE_FINALIZER_TEST_PANIC.with(|panic_next| {
+        if panic_next.replace(false) {
+            panic!("injected thread-state finalizer panic");
+        }
+    });
+    loop {
+        let owned = MOLT_THREAD_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let record = slot
+                .as_deref_mut()
+                .expect("PyThreadState disappeared during managed-edge drain");
+            (
+                std::mem::replace(&mut record.state_dict, ptr::null_mut()),
+                record.current_error.take(),
+                std::mem::take(&mut record.context),
+            )
+        });
+        #[cfg(feature = "runtime-test-support")]
+        {
+            let hook = THREAD_STATE_DRAIN_REENTRY_TEST_HOOK.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let empty = owned.0.is_null() && owned.1.is_none() && owned.2.is_empty();
+        unsafe { crate::api::refcount::Py_XDECREF(owned.0) };
+        drop(owned.1);
+        for value in owned.2.into_values() {
+            unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
+        }
+        if thread_state_error_type().is_some() {
+            // A foreign finalizer must not leak an exception out of TLS
+            // teardown. The unraisable transaction consumes and reports it;
+            // any state created by reporting is picked up by the next pass.
+            unsafe { crate::api::errors::PyErr_WriteUnraisable(ptr::null_mut()) };
+        }
+        if empty && !current_thread_state_has_managed_edges() {
+            break;
+        }
     }
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot
+            .as_deref_mut()
+            .expect("PyThreadState disappeared after managed-edge drain");
+        assert!(
+            record.state_dict.is_null()
+                && record.current_error.is_none()
+                && record.context.is_empty()
+        );
+    });
+}
+
+fn create_prepared_current_thread_state() -> bool {
+    RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
+        assert_eq!(
+            state.get(),
+            RuntimeThreadStatePreparation::LifetimeArmed,
+            "PyThreadState creation requires an armed runtime TLS lifetime"
+        );
+    });
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            false
+        } else {
+            *slot = Some(ThreadStateRecord::new());
+            true
+        }
+    })
+}
+
+#[cfg(feature = "runtime-test-support")]
+pub fn inject_thread_state_finalizer_panic_for_test() {
+    THREAD_STATE_FINALIZER_TEST_PANIC.with(|panic_next| panic_next.set(true));
+}
+
+#[cfg(feature = "runtime-test-support")]
+static THREAD_STATE_DRAIN_REENTRY_TEST_HOOK: Mutex<Option<extern "C" fn()>> = Mutex::new(None);
+
+#[cfg(feature = "runtime-test-support")]
+pub fn set_thread_state_drain_reentry_test_hook(hook: Option<extern "C" fn()>) {
+    *THREAD_STATE_DRAIN_REENTRY_TEST_HOOK.lock().unwrap() = hook;
 }
 
 fn ensure_current_thread_state() -> *mut PyThreadState {
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        let record = slot
+            .as_deref_mut()
+            .expect("PyThreadState used before runtime TLS lifetime preparation");
         &raw mut record.state
     })
 }
@@ -3813,12 +4055,9 @@ fn current_thread_state_attached() -> bool {
 fn set_current_thread_state_attached(attached: bool) {
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let record = if attached {
-            slot.get_or_insert_with(ThreadStateRecord::new)
-        } else {
-            slot.as_deref_mut()
-                .expect("detaching a thread without PyThreadState")
-        };
+        let record = slot
+            .as_deref_mut()
+            .expect("changing attachment before runtime TLS lifetime preparation");
         record.attached = attached;
     });
 }
@@ -3827,7 +4066,7 @@ fn set_current_thread_state_attached(attached: bool) {
 /// boundary. Runtime initialization alone is deliberately insufficient: the
 /// native main/embedding boundary must hold execution custody and call this
 /// after acquiring it.
-pub fn attach_runtime_execution_thread() {
+pub fn attach_runtime_execution_thread() -> bool {
     assert_runtime_initialized("runtime execution attachment");
     assert_ne!(
         unsafe { (hooks_or_stubs().gil_check)() },
@@ -3836,15 +4075,15 @@ pub fn attach_runtime_execution_thread() {
     );
     RUNTIME_EXECUTION_ATTACHMENT.with(|owned| {
         if owned.get() || current_thread_state_attached() {
-            return;
+            return false;
         }
-        let created_state = existing_current_thread_state().is_none();
+        let created = create_prepared_current_thread_state();
         let _ = ensure_current_thread_state();
         set_current_thread_state_attached(true);
         owned.set(true);
-        RUNTIME_EXECUTION_CREATED_STATE.with(|created| created.set(created_state));
         RUNTIME_EXECUTION_ATTACHMENT_COUNT.fetch_add(1, Ordering::AcqRel);
-    });
+        created
+    })
 }
 
 /// Clear only attachment established by [`attach_runtime_execution_thread`].
@@ -3863,13 +4102,37 @@ pub fn detach_runtime_execution_thread() {
         });
         set_current_thread_state_attached(false);
         RUNTIME_EXECUTION_ATTACHMENT_COUNT.fetch_sub(1, Ordering::AcqRel);
-        if RUNTIME_EXECUTION_CREATED_STATE.with(|created| created.replace(false)) {
-            destroy_current_thread_state();
-        }
     });
 }
 
+/// Destroy a detached CPython thread state created by runtime execution.
+///
+/// Ordinary C-API calls detach execution custody without invoking this: the
+/// pending-error indicator and context must survive until the next call on the
+/// same native thread. True embedding/worker boundaries invoke this after
+/// their final detach so owned state is still released deterministically.
+pub fn clear_runtime_execution_thread_state() {
+    assert!(
+        !runtime_execution_thread_is_attached(),
+        "runtime execution thread-state cleanup requires a detached boundary"
+    );
+    GILSTATE_ATTACHMENT.with(|state| {
+        assert_eq!(
+            state.get().0,
+            0,
+            "runtime execution thread-state cleanup crossed live PyGILState custody"
+        );
+    });
+    if existing_current_thread_state().is_some() {
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+        );
+    }
+}
+
 static RUNTIME_EXECUTION_ATTACHMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_THREAD_STATE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn runtime_execution_attachment_count() -> usize {
     RUNTIME_EXECUTION_ATTACHMENT_COUNT.load(Ordering::Acquire)
@@ -3877,6 +4140,73 @@ pub fn runtime_execution_attachment_count() -> usize {
 
 pub fn runtime_execution_thread_is_attached() -> bool {
     RUNTIME_EXECUTION_ATTACHMENT.with(|owned| owned.get())
+}
+
+/// Number of native threads retaining a CPython thread-state record for this
+/// runtime, whether attached or detached.
+///
+/// A detached record may still own managed exception, context, and dictionary
+/// edges. Runtime shutdown therefore treats this count as a lifetime authority,
+/// not merely as diagnostics: no `RuntimeState` may be freed while a foreign
+/// retained owner remains.
+pub fn runtime_retained_thread_state_count() -> usize {
+    RETAINED_THREAD_STATE_COUNT.load(Ordering::Acquire)
+}
+
+pub fn current_thread_has_retained_runtime_state() -> bool {
+    existing_current_thread_state().is_some()
+}
+
+/// Drain the shutdown owner's detached CPython state while the runtime is
+/// still live and the caller holds execution custody.
+///
+/// Unlike ordinary execution cleanup, shutdown owns the complete runtime
+/// lifetime boundary and must destroy every current-thread record regardless
+/// of which embedding path originally created it.
+pub fn clear_current_thread_state_for_runtime_shutdown() {
+    assert!(
+        !current_thread_state_attached(),
+        "runtime shutdown thread-state cleanup requires a detached state"
+    );
+    assert!(
+        !runtime_execution_thread_is_attached(),
+        "runtime shutdown thread-state cleanup crossed execution attachment"
+    );
+    GILSTATE_ATTACHMENT.with(|state| {
+        assert_eq!(
+            state.get().0,
+            0,
+            "runtime shutdown thread-state cleanup crossed PyGILState custody"
+        );
+    });
+    if existing_current_thread_state().is_some() {
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::AbortProcess,
+            ThreadStateDropCustodyMode::ShutdownOwner,
+        );
+    }
+}
+
+fn clear_current_thread_state_for_runtime_thread_exit() {
+    assert!(
+        !current_thread_state_attached(),
+        "runtime thread exit crossed an attached PyThreadState"
+    );
+    assert!(
+        !runtime_execution_thread_is_attached(),
+        "runtime thread exit crossed execution attachment custody"
+    );
+    GILSTATE_ATTACHMENT.with(|state| {
+        assert_eq!(
+            state.get().0,
+            0,
+            "runtime thread exit crossed PyGILState custody"
+        );
+    });
+    destroy_current_thread_state(
+        ThreadStatePanicBoundary::AbortProcess,
+        ThreadStateDropCustodyMode::Acquire,
+    );
 }
 
 fn registered_thread_state(tstate: *mut PyThreadState, operation: &str) -> ThreadStateRegistration {
@@ -3908,12 +4238,18 @@ fn assert_current_thread_state(tstate: *mut PyThreadState, operation: &str) {
 
 fn begin_gilstate_attachment() {
     GILSTATE_ATTACHMENT.with(|state| {
-        let (depth, initially_attached, created_state) = state.get();
+        let (depth, initially_attached) = state.get();
         if depth == 0 {
             let was_attached = current_thread_state_attached();
-            let created_state = existing_current_thread_state().is_none();
+            assert!(
+                existing_current_thread_state().is_some(),
+                "PyGILState_Ensure requires prepared/armed thread-state lifetime"
+            );
             set_current_thread_state_attached(true);
-            state.set((1, was_attached, created_state));
+            // The outer RuntimeExecutionGuard is cleanup-owned and retires the
+            // prepared record after the final Release. PyGILState itself never
+            // fabricates a second lazy-creation authority.
+            state.set((1, was_attached));
         } else {
             assert!(
                 current_thread_state_attached(),
@@ -3922,7 +4258,6 @@ fn begin_gilstate_attachment() {
             state.set((
                 depth.checked_add(1).expect("PyGILState nesting overflow"),
                 initially_attached,
-                created_state,
             ));
         }
     });
@@ -3930,23 +4265,20 @@ fn begin_gilstate_attachment() {
 
 fn end_gilstate_attachment() {
     GILSTATE_ATTACHMENT.with(|state| {
-        let (depth, initially_attached, created_state) = state.get();
+        let (depth, initially_attached) = state.get();
         assert_ne!(depth, 0, "PyGILState_Release without matching attachment");
         if depth == 1 {
-            state.set((0, false, false));
+            state.set((0, false));
             if !initially_attached {
                 set_current_thread_state_attached(false);
             }
-            if created_state {
-                destroy_current_thread_state();
-            }
         } else {
-            state.set((depth - 1, initially_attached, created_state));
+            state.set((depth - 1, initially_attached));
         }
     });
 }
 
-fn runtime_is_initialized() -> bool {
+pub(crate) fn runtime_is_initialized() -> bool {
     unsafe { (hooks_or_stubs().runtime_is_initialized)() != 0 }
 }
 
@@ -4265,8 +4597,15 @@ mod thread_state_tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
+    fn prepare_test_thread_state() {
+        prepare_runtime_thread_state_lifetime();
+        arm_runtime_thread_state_lifetime();
+        create_prepared_current_thread_state();
+    }
+
     #[test]
     fn thread_state_identity_is_stable_and_self_linked() {
+        prepare_test_thread_state();
         let first = ensure_current_thread_state();
         let second = ensure_current_thread_state();
         assert_eq!(first, second);
@@ -4280,20 +4619,30 @@ mod thread_state_tests {
         set_current_thread_state_attached(false);
         assert!(!current_thread_state_attached());
         assert_eq!(existing_current_thread_state(), Some(first));
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+        );
     }
 
     #[test]
     fn thread_state_identity_and_custody_are_thread_local() {
+        prepare_test_thread_state();
         let local = ensure_current_thread_state();
         let local_id = registered_thread_state(local, "test local thread state").id;
         let release = Arc::new(Barrier::new(2));
         let worker_release = Arc::clone(&release);
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
+            prepare_test_thread_state();
             let worker_state = ensure_current_thread_state();
             let worker_id = registered_thread_state(worker_state, "test worker thread state").id;
             tx.send((worker_state as usize, worker_id)).unwrap();
             worker_release.wait();
+            destroy_current_thread_state(
+                ThreadStatePanicBoundary::Propagate,
+                ThreadStateDropCustodyMode::Acquire,
+            );
         });
 
         let (worker_state, worker_id) = rx.recv().unwrap();
@@ -4320,10 +4669,15 @@ mod thread_state_tests {
         );
         release.wait();
         worker.join().unwrap();
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+        );
     }
 
     #[test]
     fn explicit_thread_state_destruction_releases_every_owned_python_edge() {
+        prepare_test_thread_state();
         let mut dict = Box::new(PyObject {
             ob_refcnt: 2,
             ob_type: ptr::null_mut(),
@@ -4353,7 +4707,10 @@ mod thread_state_tests {
             assert!(context.insert(0xC0FFEE, context_ptr as usize).is_none());
         });
 
-        destroy_current_thread_state();
+        destroy_current_thread_state(
+            ThreadStatePanicBoundary::Propagate,
+            ThreadStateDropCustodyMode::Acquire,
+        );
         assert!(existing_current_thread_state().is_none());
         assert_eq!(dict.ob_refcnt, 1, "state dict owner must be released once");
         assert_eq!(

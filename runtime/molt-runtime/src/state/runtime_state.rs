@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering,
+};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
@@ -29,7 +31,7 @@ use crate::builtins::sys_ext::SysRuntimeState;
 use crate::builtins::types::TypesRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
-use crate::concurrency::gil::{gil_held, hold_runtime_gil};
+use crate::concurrency::gil::gil_held;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::object::builders::CanonicalObjectCache;
@@ -837,6 +839,240 @@ pub(crate) fn runtime_is_ready() -> bool {
     runtime_ready_ptr().is_some()
 }
 
+const RUNTIME_EXECUTION_ADMISSION_CLOSED: usize = 1usize << (usize::BITS - 1);
+const RUNTIME_EXECUTION_COUNT_MASK: usize = !RUNTIME_EXECUTION_ADMISSION_CLOSED;
+
+/// Acquire lifecycle custody before an execution boundary can proceed toward
+/// GIL/thread-state attachment.
+///
+/// The count is independent of both the GIL and CPython attachment state. That
+/// makes the admission -> attachment interval safe for a future free-threaded
+/// runtime: shutdown closes the high bit atomically and cannot free RuntimeState
+/// while any caller that observed Ready still owns a count unit.
+pub(crate) fn try_acquire_runtime_execution_lease(requires_runtime: bool) -> Option<bool> {
+    #[cfg(test)]
+    RUNTIME_EXECUTION_LEASE_ACQUIRE_ATTEMPTS.fetch_add(1, AtomicOrdering::Relaxed);
+    if runtime_ready_ptr().is_none() {
+        let owner = thread::current().id();
+        return match *runtime_lifecycle().phase.lock().unwrap() {
+            RuntimeLifecyclePhase::Initializing { owner: active }
+            | RuntimeLifecyclePhase::Finalizing { owner: active, .. }
+                if active == owner =>
+            {
+                Some(false)
+            }
+            RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown
+                if !requires_runtime =>
+            {
+                Some(false)
+            }
+            _ => None,
+        };
+    }
+
+    loop {
+        let observed = RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire);
+        if observed & RUNTIME_EXECUTION_ADMISSION_CLOSED != 0 {
+            return None;
+        }
+        let count = observed & RUNTIME_EXECUTION_COUNT_MASK;
+        assert_ne!(
+            count, RUNTIME_EXECUTION_COUNT_MASK,
+            "runtime execution lease count overflow"
+        );
+        if RUNTIME_EXECUTION_ADMISSION
+            .compare_exchange_weak(
+                observed,
+                observed + 1,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_add(1)
+                    .expect("current-thread runtime execution lease depth overflow"),
+            );
+        });
+        #[cfg(test)]
+        if let Some((entered, release)) = RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE
+            .lock()
+            .unwrap()
+            .clone()
+        {
+            entered.wait();
+            release.wait();
+        }
+        if runtime_ready_ptr().is_some() {
+            return Some(true);
+        }
+        release_runtime_execution_lease();
+        return None;
+    }
+}
+
+pub(crate) fn release_runtime_execution_lease() {
+    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+        let current = depth.get();
+        assert_ne!(
+            current, 0,
+            "current-thread runtime execution lease underflow"
+        );
+        depth.set(current - 1);
+    });
+    let previous = RUNTIME_EXECUTION_ADMISSION.fetch_sub(1, AtomicOrdering::AcqRel);
+    assert_ne!(
+        previous & RUNTIME_EXECUTION_COUNT_MASK,
+        0,
+        "runtime execution lease count underflow"
+    );
+}
+
+pub(crate) fn current_thread_holds_runtime_execution_lease() -> bool {
+    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() != 0)
+}
+
+pub(crate) fn touch_runtime_execution_lease_tls_lifetime() {
+    let _ = RUNTIME_EXECUTION_LEASE_DEPTH.try_with(|_| {});
+}
+
+fn close_runtime_execution_admission() -> usize {
+    RUNTIME_EXECUTION_ADMISSION.fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel)
+        & RUNTIME_EXECUTION_COUNT_MASK
+}
+
+fn reopen_runtime_execution_admission() {
+    let previous =
+        RUNTIME_EXECUTION_ADMISSION.fetch_and(RUNTIME_EXECUTION_COUNT_MASK, AtomicOrdering::AcqRel);
+    assert_ne!(
+        previous & RUNTIME_EXECUTION_ADMISSION_CLOSED,
+        0,
+        "runtime execution admission reopened while already open"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn active_runtime_execution_lease_count() -> usize {
+    RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire) & RUNTIME_EXECUTION_COUNT_MASK
+}
+
+thread_local! {
+    static RUNTIME_EXECUTION_LEASE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+static RUNTIME_EXECUTION_LEASE_ACQUIRE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+static RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE: Mutex<
+    Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn runtime_execution_lease_acquire_attempts() -> usize {
+    RUNTIME_EXECUTION_LEASE_ACQUIRE_ATTEMPTS.load(AtomicOrdering::Relaxed)
+}
+
+/// Wait for a lifecycle transition owner before taking the GIL. Ready,
+/// Uninitialized, and terminal Shutdown are all stable entry observations;
+/// individual operations decide whether they require a live RuntimeState.
+pub(crate) fn wait_for_runtime_execution_admission() {
+    if runtime_ready_ptr().is_some() {
+        return;
+    }
+    let owner = thread::current().id();
+    loop {
+        #[cfg(test)]
+        wait_for_runtime_test_restart(owner);
+        if runtime_ready_ptr().is_some() {
+            return;
+        }
+        let lifecycle = runtime_lifecycle();
+        let mut phase = lifecycle.phase.lock().unwrap();
+        let transitioning = matches!(
+            *phase,
+            RuntimeLifecyclePhase::Initializing { owner: active }
+                | RuntimeLifecyclePhase::Finalizing { owner: active, .. }
+                if active != owner
+        );
+        if !transitioning {
+            return;
+        }
+        assert!(
+            !gil_held(),
+            "runtime lifecycle admission wait attempted while holding the GIL"
+        );
+        phase = lifecycle.changed.wait(phase).unwrap();
+        drop(phase);
+    }
+}
+
+pub(crate) fn runtime_execution_is_admitted_for_current_thread(requires_runtime: bool) -> bool {
+    let owner = thread::current().id();
+    match *runtime_lifecycle().phase.lock().unwrap() {
+        RuntimeLifecyclePhase::Ready { .. } => runtime_ready_ptr().is_some(),
+        RuntimeLifecyclePhase::Initializing { owner: active }
+        | RuntimeLifecyclePhase::Finalizing { owner: active, .. } => active == owner,
+        RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => !requires_runtime,
+    }
+}
+
+#[cfg(test)]
+struct RuntimeTestRestart {
+    owner: Mutex<Option<thread::ThreadId>>,
+    changed: Condvar,
+}
+
+#[cfg(test)]
+static RUNTIME_TEST_RESTART: OnceLock<RuntimeTestRestart> = OnceLock::new();
+
+#[cfg(test)]
+fn runtime_test_restart() -> &'static RuntimeTestRestart {
+    RUNTIME_TEST_RESTART.get_or_init(|| RuntimeTestRestart {
+        owner: Mutex::new(None),
+        changed: Condvar::new(),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn begin_runtime_test_restart(owner: thread::ThreadId) {
+    let restart = runtime_test_restart();
+    let mut active = restart.owner.lock().unwrap();
+    assert!(
+        active.is_none(),
+        "runtime test restart owner already published"
+    );
+    *active = Some(owner);
+    restart.changed.notify_all();
+}
+
+#[cfg(test)]
+pub(crate) fn end_runtime_test_restart(owner: thread::ThreadId) {
+    let restart = runtime_test_restart();
+    let mut active = restart.owner.lock().unwrap();
+    assert_eq!(*active, Some(owner), "runtime test restart owner changed");
+    *active = None;
+    restart.changed.notify_all();
+}
+
+#[cfg(test)]
+fn wait_for_runtime_test_restart(owner: thread::ThreadId) {
+    let restart = runtime_test_restart();
+    let mut active = restart.owner.lock().unwrap();
+    while active.is_some_and(|active_owner| active_owner != owner) {
+        assert!(
+            !gil_held(),
+            "runtime lifecycle restart wait attempted while holding the GIL"
+        );
+        active = restart.changed.wait(active).unwrap();
+    }
+}
+
 #[inline(always)]
 fn runtime_ready_ptr() -> Option<*mut RuntimeState> {
     let ptr = RUNTIME_READY_PTR.load(AtomicOrdering::Acquire);
@@ -885,13 +1121,13 @@ pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
 // ---------------------------------------------------------------------------
 
 extern "C" fn __core_gil_acquire() -> u64 {
-    GilGuard::new().into_encoded_lane()
+    crate::concurrency::RuntimeExecutionGuard::enter().into_encoded_lane()
 }
 
 extern "C" fn __core_gil_release(token: u64) {
     // SAFETY: the core guard is !Send/!Sync and calls release exactly once on
     // the same thread with the unmatched token returned by acquire.
-    drop(unsafe { GilGuard::from_encoded_lane(token) });
+    drop(unsafe { crate::concurrency::RuntimeExecutionGuard::from_encoded_lane(token) });
 }
 
 extern "C" fn __core_gil_is_held() -> bool {
@@ -943,6 +1179,9 @@ fn trace_runtime_init(stage: &str) {
 /// state. Explicit embedding teardown remains `molt_runtime_shutdown()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
+    // Process-exit attachment is governed by the same prepare -> runtime TLS
+    // anchors -> arm sequence as ordinary execution and embedding teardown.
+    touch_tls_guard();
     let code = match code_bits {
         0 => 0,
         1 => 1,
@@ -1098,6 +1337,8 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     }
     let owner = thread::current().id();
     loop {
+        #[cfg(test)]
+        wait_for_runtime_test_restart(owner);
         let gil = GilGuard::new();
         let lifecycle = runtime_lifecycle();
         let mut phase = lifecycle.phase.lock().unwrap();
@@ -1173,6 +1414,11 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         assert_eq!(*phase, RuntimeLifecyclePhase::Initializing { owner });
         *phase = RuntimeLifecyclePhase::Ready { ptr: ptr as usize };
         RUNTIME_READY_PTR.store(ptr, AtomicOrdering::Release);
+        let previous = RUNTIME_EXECUTION_ADMISSION.swap(0, AtomicOrdering::AcqRel);
+        assert_eq!(
+            previous, RUNTIME_EXECUTION_ADMISSION_CLOSED,
+            "runtime publication found live or already-open execution admission"
+        );
         clear_thread_runtime_state();
         lifecycle.changed.notify_all();
         trace_runtime_init("ok");
@@ -1182,12 +1428,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_ensure_gil() {
-    touch_tls_guard();
-    if !gil_held() {
-        hold_runtime_gil(GilGuard::new());
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    molt_cpython_abi::api::object::attach_runtime_execution_thread();
+    crate::concurrency::ensure_persistent_runtime_execution();
 }
 
 #[unsafe(no_mangle)]
@@ -1216,6 +1457,14 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         | RuntimeLifecyclePhase::Shutdown => return 0,
     };
     debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
+    let active_executions = close_runtime_execution_admission();
+    if active_executions != 0 {
+        eprintln!(
+            "molt runtime shutdown refused: {active_executions} active execution lease(s) remain live"
+        );
+        reopen_runtime_execution_admission();
+        return 0;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
@@ -1223,8 +1472,26 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
             eprintln!(
                 "molt runtime shutdown refused: {attachments} runtime execution attachment(s) remain live"
             );
+            reopen_runtime_execution_admission();
             return 0;
         }
+        let retained = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+        let current =
+            usize::from(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        assert!(
+            retained >= current,
+            "current retained PyThreadState is absent from the global count"
+        );
+        let foreign = retained - current;
+        if foreign != 0 {
+            eprintln!(
+                "molt runtime shutdown refused: {foreign} foreign retained PyThreadState owner(s) remain live"
+            );
+            reopen_runtime_execution_admission();
+            return 0;
+        }
+        let _drain_custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
+        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
     }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     *phase = RuntimeLifecyclePhase::Finalizing {
@@ -1235,13 +1502,29 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     drop(phase);
 
     #[cfg(not(target_arch = "wasm32"))]
-    molt_cpython_abi::api::object::attach_runtime_execution_thread();
+    {
+        // The pre-finalization drain deliberately destroyed the embedding
+        // thread's retained record. Re-open an empty, lifetime-armed record for
+        // the teardown owner before attaching; lazy creation is forbidden so
+        // every record remains ordered behind the TLS cleanup sentinel.
+        touch_tls_guard();
+        molt_cpython_abi::api::object::attach_runtime_execution_thread();
+    }
 
     let state = unsafe { &*ptr };
     let py = gil.token();
     runtime_teardown(&py, state);
     #[cfg(not(target_arch = "wasm32"))]
-    molt_cpython_abi::api::object::detach_runtime_execution_thread();
+    {
+        molt_cpython_abi::api::object::detach_runtime_execution_thread();
+        let _drain_custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
+        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown();
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            0,
+            "retained PyThreadState survived runtime teardown"
+        );
+    }
     // Clear the teardown owner's private cache before freeing the state. The
     // public ready projection was already unpublished at the Finalizing edge.
     clear_thread_runtime_state();
@@ -1264,6 +1547,8 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
 /// Read-optimized projection of the canonical lifecycle phase. It is non-null
 /// exactly while the lifecycle is `Ready`.
 static RUNTIME_READY_PTR: AtomicPtr<RuntimeState> = AtomicPtr::new(std::ptr::null_mut());
+static RUNTIME_EXECUTION_ADMISSION: AtomicUsize =
+    AtomicUsize::new(RUNTIME_EXECUTION_ADMISSION_CLOSED);
 static RUNTIME_LIFECYCLE: OnceLock<RuntimeLifecycle> = OnceLock::new();
 static PROCESS_EXIT_FINALIZED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -1342,6 +1627,13 @@ pub(crate) fn clear_thread_runtime_state() {
 #[cfg(test)]
 pub(crate) fn molt_runtime_reset_for_testing() {
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    assert_eq!(
+        RUNTIME_EXECUTION_ADMISSION
+            .swap(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel,)
+            & RUNTIME_EXECUTION_COUNT_MASK,
+        0,
+        "runtime test reset crossed active execution leases"
+    );
     let lifecycle = runtime_lifecycle();
     let mut phase = lifecycle.phase.lock().unwrap();
     *phase = RuntimeLifecyclePhase::Uninitialized;
@@ -1490,6 +1782,37 @@ mod tests {
     }
 
     #[test]
+    fn lease_ready_recheck_rollback_balances_local_and_global_custody() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let ready = runtime_ready_ptr().expect("test runtime Ready");
+        let baseline = active_runtime_execution_lease_count();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        *RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE.lock().unwrap() =
+            Some((Arc::clone(&entered), Arc::clone(&release)));
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let acquired = try_acquire_runtime_execution_lease(true);
+            result_tx
+                .send((acquired, current_thread_holds_runtime_execution_lease()))
+                .unwrap();
+        });
+
+        entered.wait();
+        RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+        release.wait();
+        assert_eq!(result_rx.recv().unwrap(), (None, false));
+        worker.join().unwrap();
+        RUNTIME_READY_PTR.store(ready, AtomicOrdering::Release);
+        *RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE.lock().unwrap() = None;
+        assert_eq!(
+            active_runtime_execution_lease_count(),
+            baseline,
+            "failed Ready recheck must roll back the exact admitted count"
+        );
+    }
+
+    #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
     fn finalizing_unpublishes_before_atexit_reentry_and_racing_entrants() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -1586,24 +1909,57 @@ mod tests {
 
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
-    fn shutdown_refuses_while_a_foreign_runtime_attachment_is_live() {
+    fn shutdown_refuses_attached_and_detached_foreign_thread_state_owners() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         if runtime_ready_ptr().is_some() {
             assert_eq!(molt_runtime_shutdown(), 1);
         }
         molt_runtime_reset_for_testing();
         assert_eq!(molt_runtime_init(), 1);
+        let retained_owner_baseline =
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+        assert_eq!(
+            retained_owner_baseline, 0,
+            "runtime initialization prepares TLS lifetime but creates no state before admission"
+        );
+
+        let (leased_tx, leased_rx) = std::sync::mpsc::channel();
+        let (unlease_tx, unlease_rx) = std::sync::mpsc::channel();
+        let lease_holder = std::thread::spawn(move || {
+            assert_eq!(try_acquire_runtime_execution_lease(true), Some(true));
+            leased_tx.send(()).unwrap();
+            unlease_rx.recv().unwrap();
+            release_runtime_execution_lease();
+        });
+        leased_rx.recv().unwrap();
+        assert_eq!(active_runtime_execution_lease_count(), 1);
+        assert_eq!(
+            molt_runtime_shutdown(),
+            0,
+            "admission-to-attachment lifecycle lease must independently refuse shutdown"
+        );
+        assert!(runtime_ready_ptr().is_some());
+        unlease_tx.send(()).unwrap();
+        lease_holder.join().unwrap();
 
         let (attached_tx, attached_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (detached_tx, detached_rx) = std::sync::mpsc::channel();
+        let (cleanup_tx, cleanup_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
+            touch_tls_guard();
             let gil = GilGuard::new();
             molt_cpython_abi::api::object::attach_runtime_execution_thread();
             drop(gil);
             attached_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let _gil = GilGuard::new();
+            let gil = GilGuard::new();
             molt_cpython_abi::api::object::detach_runtime_execution_thread();
+            drop(gil);
+            detached_tx.send(()).unwrap();
+            cleanup_rx.recv().unwrap();
+            let _gil = GilGuard::new();
+            molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
         });
         attached_rx.recv().unwrap();
         assert_eq!(
@@ -1621,12 +1977,79 @@ mod tests {
         );
 
         release_tx.send(()).unwrap();
-        worker.join().unwrap();
+        detached_rx.recv().unwrap();
         assert_eq!(
             molt_cpython_abi::api::object::runtime_execution_attachment_count(),
             0
         );
-        assert_eq!(molt_runtime_shutdown(), 1);
+        assert_eq!(
+            molt_runtime_shutdown(),
+            0,
+            "a detached foreign PyThreadState may still own managed edges"
+        );
+        assert!(
+            runtime_ready_ptr().is_some(),
+            "refusing retained-state shutdown must reopen execution admission"
+        );
+
+        cleanup_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            retained_owner_baseline
+        );
+
+        let exit_barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&exit_barrier);
+        let (retained_tx, retained_rx) = std::sync::mpsc::channel();
+        let tls_worker = std::thread::spawn(move || {
+            let guard = crate::concurrency::RuntimeExecutionGuard::enter();
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_SetString(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError)
+                        .cast::<molt_cpython_abi::abi_types::PyObject>(),
+                    c"concurrent TLS destruction".as_ptr(),
+                );
+            }
+            drop(guard);
+            retained_tx.send(()).unwrap();
+            worker_barrier.wait();
+            // ThreadStateRecord::drop must acquire the non-attaching
+            // lifecycle/GIL destruction lane while shutdown races here.
+        });
+        retained_rx.recv().unwrap();
+        exit_barrier.wait();
+        let first_shutdown = molt_runtime_shutdown();
+        tls_worker.join().unwrap();
+        if first_shutdown == 0 {
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                retained_owner_baseline,
+                "concurrent TLS destruction must retire only its foreign owner"
+            );
+            assert!(runtime_ready_ptr().is_some());
+            assert_eq!(molt_runtime_shutdown(), 1);
+        } else {
+            assert_eq!(first_shutdown, 1);
+        }
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            0,
+            "teardown owner state must be destroyed before RuntimeState is freed"
+        );
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            0,
+            "post-shutdown raw exception cleanup must not reopen stale TLS"
+        );
+
+        // RuntimeTestTransaction restores process-global exception/pending-call
+        // snapshots in Drop. Re-open a fresh test runtime only after every
+        // terminal-shutdown assertion above so that restoration does not
+        // attempt an ordinary execution entry against permanent Shutdown.
+        molt_runtime_reset_for_testing();
+        assert_eq!(molt_runtime_init(), 1);
     }
 
     #[cfg(feature = "l7-attestation-probe")]

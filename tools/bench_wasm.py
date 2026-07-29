@@ -37,12 +37,13 @@ from molt.cli.runtime_features import (  # noqa: E402
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
 )
-from molt.cli.llvm_wasi_tools import llvm_linker_candidates  # noqa: E402
 from molt.cli.wasm_link_args import wasm_link_args_response_file  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
     is_valid_wasm_binary,
+    wasm_runtime_manifest_entry_path,
+    wasm_runtime_manifest_path,
 )
 
 SUPER_SAMPLES = 10
@@ -81,10 +82,6 @@ def _wasm_runtime_root() -> Path:
 _RUNTIME_ROOT = _wasm_runtime_root()
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
-_WASM_LD_CANDIDATES = llvm_linker_candidates("wasm-ld")
-WASM_LD = str(_WASM_LD_CANDIDATES[0]) if _WASM_LD_CANDIDATES else None
-_LINK_WARNED = False
-_LINK_DISABLED = False
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
 _NODE_BIN_CACHE: str | None = None
 _MIN_NODE_MAJOR = 18
@@ -451,7 +448,6 @@ def _base_env() -> dict[str, str]:
     external_root = _external_root()
     if external_root is not None:
         env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
-    env.setdefault("MOLT_RUNTIME_WASM", str(RUNTIME_WASM))
     return env
 
 
@@ -708,10 +704,6 @@ def build_runtime_wasm(
     return True
 
 
-def _want_linked() -> bool:
-    return os.environ.get("MOLT_WASM_LINK") == "1"
-
-
 def _runtime_rebuild_policy() -> str:
     raw = os.environ.get("MOLT_WASM_RUNTIME_REBUILD", "auto").strip().lower()
     if raw in {"always", "1", "true", "yes"}:
@@ -721,98 +713,16 @@ def _runtime_rebuild_policy() -> str:
     return "auto"
 
 
-def _link_wasm(
-    env: dict[str, str],
-    input_path: Path,
-    *,
-    require_linked: bool,
-    log: TextIO | None,
-    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> Path | None:
-    if not _want_linked():
-        return None
-    if WASM_LD is None:
-        global _LINK_WARNED
-        msg = "Skipping wasm link: wasm-ld not found (install LLVM to enable)."
-        if require_linked:
-            print(f"{msg} Linked output is required.", file=sys.stderr)
-        elif not _LINK_WARNED:
-            print(msg, file=sys.stderr)
-            _LINK_WARNED = True
-        return None
-    global _LINK_DISABLED
-    if _LINK_DISABLED:
-        if require_linked:
-            print(
-                "WASM link disabled after prior failure; linked output is required.",
-                file=sys.stderr,
-            )
-        return None
+def _linked_wasm_output(input_path: Path) -> Path | None:
+    """Consume the compiler-owned link output; never relink inside the benchmark."""
     linked_wasm = input_path.with_name("output_linked.wasm")
-    if linked_wasm.exists():
-        linked_wasm.unlink()
-    runtime_path = RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
-    runtime_reloc = runtime_path == RUNTIME_WASM_RELOC
-    if not _is_valid_wasm(runtime_path):
-        print(
-            f"Runtime wasm artifact is invalid; rebuilding: {runtime_path}",
-            file=sys.stderr,
-        )
-        if not build_runtime_wasm(
-            reloc=runtime_reloc,
-            output=runtime_path,
-            tty=False,
-            log=log,
-            limits=limits,
-        ):
-            if require_linked:
-                print("Linked output is required; aborting.", file=sys.stderr)
-            return None
-    res = _run_cmd(
-        [
-            *_python_cmd(),
-            "tools/wasm_link.py",
-            "--runtime",
-            str(runtime_path),
-            "--input",
-            str(input_path),
-            "--output",
-            str(linked_wasm),
-        ],
-        env=env,
-        capture=True,
-        tty=False,
-        log=log,
-        limits=limits,
-    )
-    if res.returncode != 0:
-        err = res.stderr.strip() or res.stdout.strip()
-        if err:
-            print(f"WASM link failed: {err}", file=sys.stderr)
-            if (
-                "not a relocatable wasm file" in err
-                or "out of order section" in err
-                or "invalid function symbol index" in err
-                or "Stack dump" in err
-            ):
-                print(
-                    "Disabling wasm linking for remaining benches (non-relocatable input).",
-                    file=sys.stderr,
-                )
-                _LINK_DISABLED = True
-        if require_linked:
-            print("Linked output is required; aborting.", file=sys.stderr)
-        return None
-    if not linked_wasm.exists():
-        print("WASM link produced no output artifact.", file=sys.stderr)
-        return None
     if not _is_valid_wasm(linked_wasm):
-        print("WASM link produced an invalid output artifact.", file=sys.stderr)
-        try:
-            linked_wasm.unlink(missing_ok=True)
-        except OSError:
-            pass
-        _LINK_DISABLED = True
+        return None
+    try:
+        manifest = wasm_runtime_manifest_path(linked_wasm)
+        if wasm_runtime_manifest_entry_path(manifest).resolve() != linked_wasm.resolve():
+            return None
+    except (FileNotFoundError, ValueError):
         return None
     return linked_wasm
 
@@ -840,6 +750,8 @@ def _build_wasm_output(
         "--cache" if use_molt_build_cache else "--no-cache",
         "--target",
         "wasm",
+        "--linked",
+        "--require-linked",
         "--out-dir",
         str(output_path.parent),
         *extra_args,
@@ -944,19 +856,14 @@ def _build_wasm_output(
             print(f"WASM build failed for {script}.", file=sys.stderr)
             _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
         return None
-    if not output_path.exists():
-        print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
-        _LAST_BUILD_FAILURE_DETAIL = "wasm_output_missing"
-        return None
-    if not _is_valid_wasm(output_path):
+    if _linked_wasm_output(output_path) is None:
         print(
-            f"WASM build produced invalid output.wasm for {script}; retrying once.",
+            f"WASM build produced no valid manifest-bound linked output for {script}; "
+            "retrying once.",
             file=sys.stderr,
         )
-        try:
-            output_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        output_path.with_name("output_linked.wasm").unlink(missing_ok=True)
+        output_path.with_name("manifest.json").unlink(missing_ok=True)
         start = time.perf_counter()
         build_res = _run_cmd(
             build_cmd,
@@ -995,12 +902,13 @@ def _build_wasm_output(
                 print(f"WASM build retry failed for {script}.", file=sys.stderr)
                 _LAST_BUILD_FAILURE_DETAIL = "wasm_build_retry_failed"
             return None
-        if not output_path.exists() or not _is_valid_wasm(output_path):
+        if _linked_wasm_output(output_path) is None:
             print(
-                f"WASM build produced invalid output.wasm for {script} after retry.",
+                f"WASM build produced no valid manifest-bound linked output for {script} "
+                "after retry.",
                 file=sys.stderr,
             )
-            _LAST_BUILD_FAILURE_DETAIL = "wasm_output_invalid_after_retry"
+            _LAST_BUILD_FAILURE_DETAIL = "wasm_linked_manifest_invalid_after_retry"
             return None
     return build_s
 
@@ -1008,7 +916,6 @@ def _build_wasm_output(
 def prepare_wasm_binary(
     script: str,
     *,
-    require_linked: bool,
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
@@ -1027,20 +934,14 @@ def prepare_wasm_binary(
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     _prune_backend_daemons(base_env)
-    base_env["MOLT_WASM_PATH"] = str(output_path)
     resolved_limits = limits or harness_memory_guard.limits_from_env(
         "MOLT_BENCH", base_env
     )
     python_cmd = _python_cmd()
 
     env = base_env.copy()
-    want_linked = _want_linked() or require_linked
-    if want_linked:
-        env["MOLT_WASM_LINK"] = "1"
-    else:
-        env.pop("MOLT_WASM_LINK", None)
 
-    if want_linked and "MOLT_WASM_TABLE_BASE" not in env:
+    if "MOLT_WASM_TABLE_BASE" not in env:
         table_probe = (
             RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
         )
@@ -1082,60 +983,17 @@ def prepare_wasm_binary(
             temp_dir.cleanup()
         return None
 
-    linked = (
-        _link_wasm(
-            env,
-            output_path,
-            require_linked=require_linked,
-            log=log,
-            limits=resolved_limits,
-        )
-        if want_linked
-        else None
-    )
-    linked_used = linked is not None
-    if require_linked and not linked_used:
+    linked = _linked_wasm_output(output_path)
+    if linked is None:
         print(
-            f"WASM link required but unavailable for {script}.",
+            f"Compiler produced no manifest-bound linked WASM for {script}.",
             file=sys.stderr,
         )
         if not keep_temp:
             temp_dir.cleanup()
         _LAST_BUILD_FAILURE_DETAIL = "linked_wasm_required_unavailable"
         raise RuntimeError("linked wasm required")
-    if want_linked and not linked_used:
-        print(
-            f"WASM link unavailable; falling back to non-linked build for {script}.",
-            file=sys.stderr,
-        )
-        env = base_env.copy()
-        env.pop("MOLT_WASM_LINK", None)
-        env["MOLT_WASM_PREFER_LINKED"] = "0"
-        build_s = _build_wasm_output(
-            python_cmd,
-            env,
-            output_path,
-            script,
-            tty=tty,
-            log=log,
-            limits=resolved_limits,
-            use_molt_build_cache=use_molt_build_cache,
-        )
-        if build_s is None:
-            if _LAST_BUILD_FAILURE_DETAIL is None:
-                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed_after_link_fallback"
-            if not keep_temp:
-                temp_dir.cleanup()
-            return None
-        stale_linked = output_path.with_name("output_linked.wasm")
-        if stale_linked.exists():
-            stale_linked.unlink()
-
-    if linked_used:
-        assert linked is not None
-        wasm_path = linked
-    else:
-        wasm_path = output_path
+    wasm_path = linked
     wasm_size = wasm_path.stat().st_size / 1024
     import_metrics = _read_wasm_import_metrics(wasm_path)
     run_env = env.copy()
@@ -1144,20 +1002,24 @@ def prepare_wasm_binary(
     run_env.pop("PYTHONPATH", None)
     run_env.pop("PYTHONHASHSEED", None)
     run_env.pop("PYTHONUNBUFFERED", None)
+    for name in (
+        "MOLT_WASM_PATH",
+        "MOLT_WASM_LINKED_PATH",
+        "MOLT_RUNTIME_WASM",
+        "MOLT_WASM_DIRECT_LINK",
+        "MOLT_WASM_PREFER_LINKED",
+        "MOLT_WASM_LINKED",
+    ):
+        run_env.pop(name, None)
     # Avoid noisy Node warnings in parity and benchmark lanes.
     run_env.setdefault("NODE_NO_WARNINGS", "1")
-    if linked_used:
-        run_env["MOLT_WASM_PATH"] = str(linked)
-        run_env["MOLT_WASM_LINKED"] = "1"
-        run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
-    else:
-        run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_WASM_MANIFEST_PATH"] = str(wasm_runtime_manifest_path(wasm_path))
     return WasmBinary(
         run_env=run_env,
         temp_dir=temp_dir,
         build_s=build_s,
         size_kb=wasm_size,
-        linked_used=linked_used,
+        linked_used=True,
         import_count_total=(
             import_metrics["total"] if import_metrics is not None else None
         ),
@@ -1307,15 +1169,12 @@ def _run_hostfed_call_bundle(
 ) -> dict[str, object]:
     calls = _load_hostfed_call_bundle(calls_path)
     env = _base_env()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    env["MOLT_WASM_PATH"] = str(app_wasm)
+    env["MOLT_WASM_MANIFEST_PATH"] = str(wasm_runtime_manifest_path(app_wasm))
     env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     env.setdefault("NODE_NO_WARNINGS", "1")
     start = time.perf_counter()
     res = _run_cmd(
-        [*runner_cmd, str(app_wasm)],
+        runner_cmd,
         env=env,
         capture=True,
         tty=False,
@@ -1585,7 +1444,6 @@ def bench_results(
     warmup: int,
     super_run: bool,
     *,
-    require_linked: bool,
     runner_cmd: list[str],
     runner_name: str,
     control_runner_cmd: list[str] | None,
@@ -1619,7 +1477,6 @@ def bench_results(
             try:
                 wasm_binary = prepare_wasm_binary(
                     script,
-                    require_linked=require_linked,
                     tty=tty,
                     log=log,
                     keep_temp=keep_temp,
@@ -1782,21 +1639,6 @@ def main() -> None:
     )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
-        "--linked",
-        action="store_true",
-        help="Attempt single-module wasm linking with wasm-ld when available.",
-    )
-    parser.add_argument(
-        "--require-linked",
-        action="store_true",
-        help="Require linked wasm artifacts; abort if linking is unavailable.",
-    )
-    parser.add_argument(
-        "--allow-unlinked",
-        action="store_true",
-        help=("Allow unlinked wasm artifacts when linking is unavailable."),
-    )
-    parser.add_argument(
         "--ws",
         action="store_true",
         help="Include websocket wait benchmark (also honors MOLT_WASM_BENCH_WS=1).",
@@ -1838,13 +1680,6 @@ def main() -> None:
         parser.error("--node-max-old-space-mb must be > 0")
     if args.control_runner == args.runner:
         parser.error("--control-runner must differ from --runner (or be 'none')")
-    if args.require_linked and args.allow_unlinked:
-        parser.error("--allow-unlinked cannot be combined with --require-linked")
-    if args.require_linked:
-        args.linked = True
-
-    if args.linked or args.require_linked:
-        os.environ["MOLT_WASM_LINK"] = "1"
     if args.super and args.smoke:
         parser.error("--super cannot be combined with --smoke")
     if args.super and args.samples is not None:
@@ -1922,58 +1757,51 @@ def main() -> None:
     elif log_file is not None:
         _log_write(log_file, f"# reusing cached runtime wasm {RUNTIME_WASM}\n")
 
-    if _want_linked():
-        reloc_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM_RELOC)
-        reloc_runtime_stale = (
-            runtime_policy == "auto"
-            and not reloc_runtime_invalid
-            and _runtime_artifact_stale(RUNTIME_WASM_RELOC)
-        )
-        need_reloc_runtime = (
-            runtime_policy == "always" or reloc_runtime_invalid or reloc_runtime_stale
-        )
-        if need_reloc_runtime:
-            if runtime_policy == "never":
-                if args.require_linked:
-                    print(
-                        "Relocatable runtime rebuild disabled and artifact missing/invalid; "
-                        "linked output is required.",
-                        file=sys.stderr,
-                    )
-                    if log_file is not None:
-                        log_file.close()
-                    sys.exit(1)
-            if reloc_runtime_stale:
-                msg = (
-                    "Runtime sources changed; rebuilding reloc runtime wasm: "
-                    f"{RUNTIME_WASM_RELOC}"
-                )
-                print(msg, file=sys.stderr)
-                if log_file is not None:
-                    _log_write(log_file, f"# {msg}\n")
-            if not build_runtime_wasm(
-                reloc=True,
-                output=RUNTIME_WASM_RELOC,
-                tty=use_tty,
-                log=log_file,
-                limits=limits,
-            ):
-                if args.require_linked:
-                    print(
-                        "Relocatable runtime build failed; linked output is required.",
-                        file=sys.stderr,
-                    )
-                    if log_file is not None:
-                        log_file.close()
-                    sys.exit(1)
-                print(
-                    "Relocatable runtime build failed; falling back to non-linked wasm runs.",
-                    file=sys.stderr,
-                )
-        elif log_file is not None:
-            _log_write(
-                log_file, f"# reusing cached reloc runtime wasm {RUNTIME_WASM_RELOC}\n"
+    reloc_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM_RELOC)
+    reloc_runtime_stale = (
+        runtime_policy == "auto"
+        and not reloc_runtime_invalid
+        and _runtime_artifact_stale(RUNTIME_WASM_RELOC)
+    )
+    need_reloc_runtime = (
+        runtime_policy == "always" or reloc_runtime_invalid or reloc_runtime_stale
+    )
+    if need_reloc_runtime:
+        if runtime_policy == "never":
+            print(
+                "Relocatable runtime rebuild disabled and artifact missing/invalid; "
+                "manifest-bound linked output is required.",
+                file=sys.stderr,
             )
+            if log_file is not None:
+                log_file.close()
+            sys.exit(1)
+        if reloc_runtime_stale:
+            msg = (
+                "Runtime sources changed; rebuilding reloc runtime wasm: "
+                f"{RUNTIME_WASM_RELOC}"
+            )
+            print(msg, file=sys.stderr)
+            if log_file is not None:
+                _log_write(log_file, f"# {msg}\n")
+        if not build_runtime_wasm(
+            reloc=True,
+            output=RUNTIME_WASM_RELOC,
+            tty=use_tty,
+            log=log_file,
+            limits=limits,
+        ):
+            print(
+                "Relocatable runtime build failed; linked output is required.",
+                file=sys.stderr,
+            )
+            if log_file is not None:
+                log_file.close()
+            sys.exit(1)
+    elif log_file is not None:
+        _log_write(
+            log_file, f"# reusing cached reloc runtime wasm {RUNTIME_WASM_RELOC}\n"
+        )
 
     benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
     if args.bench:
@@ -2029,7 +1857,6 @@ def main() -> None:
             samples,
             warmup,
             args.super,
-            require_linked=args.require_linked,
             runner_cmd=runner_cmd,
             runner_name=args.runner,
             control_runner_cmd=control_runner_cmd,
