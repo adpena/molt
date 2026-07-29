@@ -9,7 +9,6 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
 use crate::wasm_binary::{emit_call, emit_return_call};
-use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_direct_call_op(
@@ -129,8 +128,6 @@ fn emit_internal_call(
     let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
-    let multi_return_candidates = call_ctx.multi_return_candidates;
-    let multi_return = call_ctx.multi_return;
     let reloc_enabled = call_ctx.reloc_enabled;
     let arena_local = call_ctx.arena_local;
     let tail_call_count = call_ctx.tail_call_count;
@@ -152,13 +149,7 @@ fn emit_internal_call(
         );
     }
     let func_idx = call_site_abi.function_index(target_name, "call_internal");
-    let is_tail_call = is_tail_call_candidate(
-        call_ctx,
-        target_name,
-        args_names,
-        out_name,
-        multi_return_candidates,
-    );
+    let is_tail_call = is_tail_call_candidate(call_ctx, target_name, args_names, out_name);
 
     if is_tail_call && let Some(arena_idx) = arena_local {
         func.instruction(&Instruction::LocalGet(arena_idx));
@@ -178,19 +169,7 @@ fn emit_internal_call(
     }
 
     emit_call(func, reloc_enabled, func_idx);
-    if multi_return.is_promoted_call_tuple(out_name) {
-        let ret_count = multi_return_candidates[target_name];
-        for k in (0..ret_count).rev() {
-            let local_idx = multi_return
-                .promoted_call_value_local(out_name, k as i64)
-                .expect("multi-return call result local missing");
-            func.instruction(&Instruction::LocalSet(local_idx));
-        }
-        func.instruction(&Instruction::I64Const(0));
-        func.instruction(&Instruction::LocalSet(out));
-    } else {
-        store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
-    }
+    store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
 }
@@ -200,15 +179,18 @@ fn is_tail_call_candidate(
     target_name: &str,
     args_names: &[String],
     out_name: &str,
-    multi_return_candidates: &BTreeMap<String, usize>,
 ) -> bool {
     call_ctx.tail_call_enabled
         && call_ctx.tail_call_eligible
         && call_ctx.try_stack_is_empty
         && call_ctx.rel_idx + 1 < call_ctx.ops.len()
-        && call_ctx.ops[call_ctx.rel_idx + 1].kind == "ret"
-        && call_ctx.ops[call_ctx.rel_idx + 1].var.as_deref() == Some(out_name)
-        && !multi_return_candidates.contains_key(target_name)
+        && molt_ir::tir::op_kinds_generated::simpleir_return_shape(
+            call_ctx.ops[call_ctx.rel_idx + 1].kind.as_str(),
+        ) == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value
+        && call_ctx.ops[call_ctx.rel_idx + 1]
+            .args
+            .as_ref()
+            .is_some_and(|args| args == &[out_name])
         && !target_name.contains("__molt_chunk_")
         && args_names.len() == call_ctx.func_ir.params.len()
 }

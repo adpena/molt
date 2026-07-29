@@ -146,9 +146,8 @@ pub struct LuauBackend {
     /// Variables that have been pre-declared at function scope and should use
     /// assignment (`var = val`) instead of `local var = val` in emit_op.
     hoisted_vars: BTreeSet<String>,
-    /// Variables produced by `tuple_new` / `tuple_from_list` ops.  When one of
-    /// these is returned we emit `return table.unpack(v)` so the caller
-    /// receives multiple values instead of a single table.
+    /// Variables whose runtime carrier is a Python sequence table. This is a
+    /// storage-representation fact only; it never changes function return arity.
     tuple_vars: BTreeSet<String>,
     /// Backend-neutral scalar representation facts for the function currently
     /// being emitted.

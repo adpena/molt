@@ -8,7 +8,8 @@ AsyncGenVisitorMixin.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Callable
 
 from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
@@ -27,6 +28,20 @@ if TYPE_CHECKING:
     _MixinBase = _GeneratorProtocol
 else:
     _MixinBase = object
+
+
+def _with_module_provenance_loop_flow(
+    visitor: Callable[[Any, Any], None],
+) -> Callable[[Any, Any], None]:
+    @wraps(visitor)
+    def wrapped(self: Any, node: Any) -> None:
+        flow = self._begin_module_provenance_flow(record_exception_prefixes=True)
+        try:
+            return visitor(self, node)
+        finally:
+            self._finish_module_provenance_flow(flow)
+
+    return wrapped
 
 
 class ControlFlowStatementVisitorMixin(_MixinBase):
@@ -83,14 +98,23 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         # discards don't leak into the post-merge state — only names
         # discarded in EVERY path can stay discarded after the merge.
         unbound_snapshot = set(self.unbound_check_names)
+        provenance_snapshot = dict(self.imported_module_provenance)
+        provenance_flow = self._begin_module_provenance_flow(
+            record_exception_prefixes=False
+        )
+        then_provenance = provenance_snapshot
+        else_provenance = provenance_snapshot
         try:
             self._visit_block(node.body)
             then_unbound = set(self.unbound_check_names)
+            then_provenance = dict(self.imported_module_provenance)
             if node.orelse:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 self.unbound_check_names = set(unbound_snapshot)
+                self.imported_module_provenance = dict(provenance_snapshot)
                 self._visit_block(node.orelse)
                 else_unbound = set(self.unbound_check_names)
+                else_provenance = dict(self.imported_module_provenance)
                 # Names discarded in BOTH branches stay discarded;
                 # names discarded in only one go back to checked.
                 self.unbound_check_names = then_unbound | else_unbound
@@ -101,6 +125,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 self.unbound_check_names = unbound_snapshot
         finally:
             self.control_flow_depth -= 1
+        self._finish_module_provenance_flow(
+            provenance_flow,
+            normal_paths=(then_provenance, else_provenance),
+        )
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         # Evict module_global_mutations names from the locals/globals cache so
         # subsequent bare-name loads go through MODULE_GET_GLOBAL instead of
@@ -283,6 +311,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.try_suppress_depth = prior_suppress
         return None
 
+    @_with_module_provenance_loop_flow
     def visit_For(self, node: ast.For) -> None:
         if self._emit_split_dict_increment_for_loop(node):
             return None
@@ -666,6 +695,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             self._emit_loop_orelse(break_name, node.orelse)
         return None
 
+    @_with_module_provenance_loop_flow
     def visit_While(self, node: ast.While) -> None:
         break_name = None
         if node.orelse:
@@ -884,6 +914,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 detail="try/else requires an except handler",
             )
             return None
+        provenance_flow = self._begin_module_provenance_flow(
+            record_exception_prefixes=True
+        )
         assigned: set[str] = set()
         if not self.is_async() and self.current_func_name != "molt_main":
             assigned = self._collect_assigned_names([node])
@@ -934,6 +967,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 prior_terminated,
             )
             self._evict_module_control_flow_bindings(assigned)
+            self._finish_module_provenance_flow(provenance_flow)
             return None
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
@@ -1280,6 +1314,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
         self._evict_module_control_flow_bindings(assigned)
+        self._finish_module_provenance_flow(provenance_flow)
         return None
 
     def visit_TryStar(self, node: ast.TryStar) -> None:
@@ -1301,6 +1336,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 detail="try*/else requires an except* handler",
             )
             return None
+        provenance_flow = self._begin_module_provenance_flow(
+            record_exception_prefixes=True
+        )
         if not self.is_async():
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
@@ -1859,6 +1897,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.unbound_check_names = unbound_snapshot_try_star
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
+        self._finish_module_provenance_flow(provenance_flow)
         return None
 
     def visit_Raise(self, node: ast.Raise) -> None:

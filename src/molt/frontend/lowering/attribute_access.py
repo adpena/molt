@@ -840,15 +840,12 @@ class AttributeAccessMixin(_MixinBase):
         # ``Any`` value hint, yet lexical import resolution still proves the
         # exact sys/inspect binding. Target admission rejects this op itself, so
         # no use-sensitive callable/heap taint lane is necessary downstream.
-        module_name = (
-            self._imported_module_binding_target(obj_name)
-            if obj_name is not None
-            else None
+        runtime_symbol, runtime_requirement_bits = (
+            self._runtime_qualified_callable_provenance_for_binding(
+            obj_name, node.attr
+            )
         )
-        runtime_symbol = self._runtime_qualified_callable_symbol(
-            module_name, node.attr
-        )
-        if runtime_symbol is not None:
+        if runtime_symbol is not None or runtime_requirement_bits:
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
             result = MoltValue(self.next_var(), type_hint="Any")
@@ -857,7 +854,18 @@ class AttributeAccessMixin(_MixinBase):
                     kind="MODULE_GET_ATTR",
                     args=[obj, attr_name],
                     result=result,
-                    metadata={"runtime_symbol": runtime_symbol},
+                    metadata={
+                        **(
+                            {"runtime_symbol": runtime_symbol}
+                            if runtime_symbol is not None
+                            else {}
+                        ),
+                        **(
+                            {"runtime_requirement_bits": runtime_requirement_bits}
+                            if runtime_requirement_bits
+                            else {}
+                        ),
+                    },
                 )
             )
             return result

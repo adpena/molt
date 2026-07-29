@@ -373,6 +373,23 @@ simpleir_execution_frame_semantics_kinds = [
 # Python-visible frame introspection. A target claiming this capability must
 # provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
 simpleir_frame_introspection_semantics_kinds = ["getframe"]
+simpleir_runtime_requirement_roles = [
+    { table = "simpleir_identity_semantics_kinds", constant = "IDENTITY" },
+    { table = "simpleir_tuple_semantics_kinds", constant = "TUPLE" },
+    { table = "simpleir_exception_semantics_kinds", constant = "EXCEPTION" },
+    { table = "simpleir_deterministic_lifetime_semantics_kinds", constant = "DETERMINISTIC_LIFETIME" },
+    { table = "simpleir_format_protocol_semantics_kinds", constant = "FORMAT_PROTOCOL" },
+    { table = "simpleir_iterable_protocol_semantics_kinds", constant = "ITERABLE_PROTOCOL" },
+    { table = "simpleir_object_model_semantics_kinds", constant = "OBJECT_MODEL" },
+    { table = "simpleir_truthiness_semantics_kinds", constant = "TRUTHINESS" },
+    { table = "simpleir_comparison_semantics_kinds", constant = "COMPARISON" },
+    { table = "simpleir_fallible_protocol_semantics_kinds", constant = "FALLIBLE_PROTOCOL" },
+    { table = "simpleir_async_runtime_semantics_kinds", constant = "ASYNC_RUNTIME" },
+    { table = "simpleir_unstructured_control_semantics_kinds", constant = "UNSTRUCTURED_CONTROL" },
+    { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY" },
+    { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME" },
+    { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION" },
+]
 # Canonical runtime-call spellings that expose the same Python-visible frame
 # and tracing surface when carried by call/builtin metadata rather than a
 # dedicated SimpleIR opcode.
@@ -2144,7 +2161,7 @@ wasm_state_resume_at = false
 kind = "ret"
 structural = true
 terminator = true
-return_terminator = true
+return_shape = "value"
 suspend = false
 repoll = false
 block_leader = false
@@ -2163,7 +2180,7 @@ wasm_state_resume_at = false
 kind = "ret_void"
 structural = true
 terminator = true
-return_terminator = true
+return_shape = "void"
 suspend = false
 repoll = false
 block_leader = false
@@ -2174,25 +2191,6 @@ ssa_only = false
 wasm_split_barrier = true
 wasm_dispatch_block_leader = false
 wasm_dispatch_block_terminator = true
-wasm_stateful_dispatch = false
-wasm_state_resume_after = false
-wasm_state_resume_at = false
-
-[[simpleir_control_kind]]
-kind = "return"
-structural = true
-terminator = true
-return_terminator = true
-suspend = false
-repoll = false
-block_leader = false
-block_ender = false
-conditional_branch = false
-pre_ssa_rewritten = false
-ssa_only = false
-wasm_split_barrier = true
-wasm_dispatch_block_leader = false
-wasm_dispatch_block_terminator = false
 wasm_stateful_dispatch = false
 wasm_state_resume_after = false
 wasm_state_resume_at = false

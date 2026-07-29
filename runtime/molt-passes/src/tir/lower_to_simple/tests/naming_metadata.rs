@@ -1028,7 +1028,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("v96".into()),
+                args: Some(vec!["v96".into()]),
                 ..OpIR::default()
             },
             OpIR {

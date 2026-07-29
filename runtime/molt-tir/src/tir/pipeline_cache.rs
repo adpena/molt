@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
-use super::cache::{CompilationCache, CompilationCacheKey, backend_cache_dir};
+use super::cache::{
+    CompilationCache, CompilationCacheKey, CompilationCacheWriteError, backend_cache_dir,
+};
 use super::function::{TirFunction, TirModule};
 use super::target_info::TargetInfo;
 
@@ -545,7 +547,22 @@ where
                             output.tir_func.name
                         )
                     });
-                tir_cache.put(&output.content_hash, &bytes);
+                if let Err(error) = tir_cache.put(&output.content_hash, &bytes) {
+                    match error {
+                        CompilationCacheWriteError::Integrity(error) => {
+                            panic!(
+                                "persistent TIR cache rejected artifact for '{}': {error}",
+                                func_ir.name
+                            )
+                        }
+                        CompilationCacheWriteError::Unavailable(error) => {
+                            eprintln!(
+                                "MOLT_CACHE: TIR cache unavailable for '{}': {error}",
+                                func_ir.name
+                            );
+                        }
+                    }
+                }
                 cached_tir_custody.insert(func_ir.name.clone(), output.tir_func);
             }
         }
@@ -558,7 +575,9 @@ where
         }
     }
 
-    tir_cache.save_index();
+    if let Err(error) = tir_cache.save_index() {
+        eprintln!("MOLT_CACHE: persistent TIR cache index unavailable: {error}");
+    }
     TirPipelineRun {
         cached_tir: cached_tir_custody,
         uncached_count,

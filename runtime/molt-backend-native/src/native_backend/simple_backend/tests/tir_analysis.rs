@@ -150,7 +150,7 @@ fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
             params: vec!["value".to_string(), "intrinsic".to_string()],
             ops: vec![OpIR {
                 kind: "ret".to_string(),
-                var: Some("value".to_string()),
+                args: Some(vec!["value".to_string()]),
                 ..OpIR::default()
             }],
             param_types: None,
@@ -163,7 +163,7 @@ fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
             params: vec!["state".to_string()],
             ops: vec![OpIR {
                 kind: "ret".to_string(),
-                var: Some("state".to_string()),
+                args: Some(vec!["state".to_string()]),
                 ..OpIR::default()
             }],
             param_types: None,
@@ -199,7 +199,7 @@ fn tir_roundtrip_preserves_store_var_return_alias_summary() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("tmp".to_string()),
+                args: Some(vec!["tmp".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -231,7 +231,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             params: vec!["value".to_string()],
             ops: vec![OpIR {
                 kind: "ret".to_string(),
-                var: Some("value".to_string()),
+                args: Some(vec!["value".to_string()]),
                 ..OpIR::default()
             }],
             param_types: None,

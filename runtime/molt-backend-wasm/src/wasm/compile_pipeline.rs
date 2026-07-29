@@ -3,7 +3,6 @@ use super::control_flow::has_non_linear_control_flow;
 use crate::SimpleIR;
 use crate::wasm::WasmCompileOutput;
 use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
-use crate::wasm_plan::detect_multi_return_candidates;
 
 impl WasmBackend {
     pub fn compile(self, ir: SimpleIR) -> Vec<u8> {
@@ -77,28 +76,7 @@ impl WasmBackend {
             }
         }
 
-        // Multi-value return candidate detection (section 3.1).
-        // This analysis identifies internal functions whose call sites always
-        // destructure the result via 2-3 consecutive tuple_index ops AND whose
-        // body always returns via tuple_new of the matching arity.
-        let multi_return_candidates = detect_multi_return_candidates(&ir);
-
-        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
-            && !multi_return_candidates.is_empty()
-        {
-            eprintln!(
-                "[molt-wasm-multi-return] {} candidate(s) detected:",
-                multi_return_candidates.len()
-            );
-            let mut sorted: Vec<(&String, &usize)> = multi_return_candidates.iter().collect();
-            sorted.sort_by_key(|(name, _)| *name);
-            for (name, arity) in &sorted {
-                eprintln!("  - {name} (returns {arity} values)");
-            }
-        }
-
-        let trampoline_analysis =
-            super::trampoline_analysis::analyze_wasm_trampolines(&ir, multi_return_candidates);
+        let trampoline_analysis = super::trampoline_analysis::analyze_wasm_trampolines(&ir);
         let lir_lowering_plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
             &ir,
             &trampoline_analysis.escaped_callable_targets,

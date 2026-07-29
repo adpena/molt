@@ -76,7 +76,7 @@ fn return_alias_summary_ignores_exception_ret_void_tail() {
         ops: vec![
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("value".to_string()),
+                args: Some(vec!["value".to_string()]),
                 ..Default::default()
             },
             OpIR {
@@ -106,7 +106,7 @@ fn return_alias_summary_rejects_mixed_alias_and_fresh_return() {
         ops: vec![
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("value".to_string()),
+                args: Some(vec!["value".to_string()]),
                 ..Default::default()
             },
             OpIR {
@@ -117,7 +117,7 @@ fn return_alias_summary_rejects_mixed_alias_and_fresh_return() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("fresh".to_string()),
+                args: Some(vec!["fresh".to_string()]),
                 ..Default::default()
             },
         ],
@@ -145,7 +145,6 @@ fn return_alias_summary_uses_args_based_copy_var_value_source() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("alias".to_string()),
                 args: Some(vec!["alias".to_string()]),
                 ..Default::default()
             },
@@ -180,7 +179,6 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
                 make_arith("add", &["_v8", "_v11"], "_v12"),
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("_v12".to_string()),
                     args: Some(vec!["_v12".to_string()]),
                     ..Default::default()
                 },
@@ -221,7 +219,6 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("_alias".to_string()),
                     args: Some(vec!["_alias".to_string()]),
                     ..Default::default()
                 },
@@ -262,7 +259,6 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("_alias".to_string()),
                     args: Some(vec!["_alias".to_string()]),
                     ..Default::default()
                 },

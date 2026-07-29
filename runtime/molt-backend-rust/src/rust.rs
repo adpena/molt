@@ -508,18 +508,9 @@ impl RustBackend {
                 )
             })
             .is_none_or(|op| {
-                !matches!(
+                !molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
                     op.kind.as_str(),
-                    "ret"
-                        | "return"
-                        | "return_value"
-                        | "return_none"
-                        | "ret_none"
-                        | "ret_void"
-                        | "jump"
-                        | "raise"
-                        | "reraise"
-                )
+                ) && !matches!(op.kind.as_str(), "jump" | "raise" | "reraise")
             });
 
         self.indent -= 1;

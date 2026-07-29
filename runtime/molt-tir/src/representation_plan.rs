@@ -6,7 +6,9 @@ use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use crate::tir::op_kinds_generated::simpleir_integer_semantics_table;
+use crate::tir::op_kinds_generated::{
+    SimpleIrReturnShape, simpleir_integer_semantics_table, simpleir_return_shape,
+};
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
@@ -1406,12 +1408,7 @@ impl ScalarRepresentationPlan {
                         unsafe_set.insert(val_name.clone());
                     }
                 }
-                "ret" => {
-                    if let Some(var) = &op.var
-                        && self.name_is_slot_scalar(var)
-                    {
-                        unsafe_set.insert(var.clone());
-                    }
+                _ if simpleir_return_shape(op.kind.as_str()) == SimpleIrReturnShape::Value => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                 }
                 "inc_ref" | "dec_ref" | "borrow" | "release" => {

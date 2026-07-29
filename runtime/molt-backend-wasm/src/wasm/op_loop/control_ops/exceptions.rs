@@ -98,7 +98,6 @@ mod tests {
     use super::*;
     use crate::representation_plan::ScalarRepresentationPlan;
     use crate::wasm::WasmFrameLocals;
-    use crate::wasm::multi_return_layout::WasmMultiReturnLayout;
     use crate::wasm_import_tracking::TrackedImportIds;
     use crate::wasm_values::ConstantCache;
     use std::collections::{BTreeMap, BTreeSet};
@@ -118,7 +117,6 @@ mod tests {
         let locals = WasmFrameLocals::default();
         let const_cache = ConstantCache::default();
         let scalar_plan = ScalarRepresentationPlan::default();
-        let multi_return = WasmMultiReturnLayout::default();
         let exception_regions = BTreeSet::new();
         let mut control_stack = vec![ControlKind::Block];
         let mut try_stack = Vec::new();
@@ -137,7 +135,6 @@ mod tests {
             locals: &locals,
             const_cache: &const_cache,
             scalar_plan: &scalar_plan,
-            multi_return: &multi_return,
             exception_handler_region_indices: &exception_regions,
             control_stack: &mut control_stack,
             try_stack: &mut try_stack,

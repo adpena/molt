@@ -1,4 +1,3 @@
-use super::super::super::multi_return_layout::WasmMultiReturnLayout;
 use super::super::call_emit::OpLoopRuntimeCallContext;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
@@ -24,7 +23,6 @@ pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
-    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
     pub(super) op_idx: usize,
 }
@@ -47,7 +45,6 @@ pub(super) fn emit_aggregate_runtime_op(
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
-    multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,
     arena_local: Option<u32>,
     ops: &[OpIR],
@@ -58,7 +55,6 @@ pub(super) fn emit_aggregate_runtime_op(
         import_ids,
         locals,
         scalar_plan,
-        multi_return,
         reloc_enabled,
         op_idx,
     };

@@ -26,7 +26,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("ret".to_string()),
+                    args: Some(vec!["ret".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -149,7 +149,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("result".to_string()),
+                args: Some(vec!["result".to_string()]),
                 ..OpIR::default()
             },
         ],

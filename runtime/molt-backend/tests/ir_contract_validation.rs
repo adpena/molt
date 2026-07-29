@@ -64,7 +64,7 @@ fn validate_simple_ir_accepts_block_argument_local_slot_transport() {
     load.out = Some("joined".to_string());
 
     let mut ret = op("ret");
-    ret.var = Some("joined".to_string());
+    ret.args = Some(vec!["joined".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![test_func(
@@ -124,7 +124,7 @@ fn validate_simple_ir_accepts_every_generated_multi_result_transport_shape() {
     next.out = Some("done".to_string());
 
     let mut ret = op("ret");
-    ret.var = Some("product".to_string());
+    ret.args = Some(vec!["product".to_string()]);
 
     let mut function = test_func(
         "molt_test_validate_multi_result_fields",

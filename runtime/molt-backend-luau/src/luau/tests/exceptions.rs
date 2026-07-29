@@ -285,7 +285,7 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
                 },
                 OpIR {
                     kind: "ret".into(),
-                    var: Some("handled".into()),
+                    args: Some(vec!["handled".into()]),
                     ..OpIR::default()
                 },
                 OpIR {

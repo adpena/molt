@@ -120,6 +120,14 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     for kind in sorted(effects):
         out.append(f'    "{kind}": "{effects[kind]}",\n')
     out.append("}\n\n")
+    role_constants = [
+        row["constant"] for row in data["simpleir_runtime_requirement_roles"]
+    ]
+    frame_bit = role_constants.index("FRAME_INTROSPECTION")
+    out.append("# Explicit acquisition-provenance requirement bits shared with target admission.\n")
+    out.append(
+        f"SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << {frame_bit}\n\n"
+    )
 
     out.append("SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {\n")
     for row in sorted(

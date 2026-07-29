@@ -133,14 +133,12 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
     call_guarded.out = Some("out".to_string());
 
     let mut ret = op("ret");
-    ret.var = Some("out".to_string());
     ret.args = Some(vec!["out".to_string()]);
 
     let mut callee_none = op("const_none");
     callee_none.out = Some("retv".to_string());
 
     let mut callee_ret = op("ret");
-    callee_ret.var = Some("retv".to_string());
     callee_ret.args = Some(vec!["retv".to_string()]);
 
     SimpleIR {

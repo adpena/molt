@@ -1,5 +1,4 @@
 use super::super::control_flow::{ControlKind, dispatch_control_panic};
-use super::super::multi_return_layout::WasmMultiReturnLayout;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -20,7 +19,6 @@ pub(super) struct ControlOpContext<'a> {
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
-    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) control_stack: &'a mut Vec<ControlKind>,
     pub(super) try_stack: &'a mut Vec<usize>,

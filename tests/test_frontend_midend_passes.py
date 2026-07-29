@@ -10,6 +10,9 @@ import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend.cfg_analysis import build_cfg
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
+)
 from molt.type_facts import collect_type_facts_from_paths
 
 
@@ -2021,8 +2024,50 @@ set_trace = system.settrace
             "molt_getframe",
         ),
         (
-            "branch-local-module-alias",
-            "def f(flag):\n    if flag:\n        import sys as s\n    return s._getframe\n",
+            "ordinary-module-alias",
+            "import sys\ndef f():\n    s = sys\n    return s._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "nested-ordinary-module-alias",
+            "import sys\ndef f():\n    s = sys\n    t = s\n    return t._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "captured-ordinary-module-alias",
+            "import sys\ndef outer():\n    s = sys\n    def inner():\n        return s._getframe\n    return inner\n",
+            "__inner",
+            "molt_getframe",
+        ),
+        (
+            "global-ordinary-module-alias",
+            "import sys\ns = sys\ndef f():\n    return s._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "nonlocal-ordinary-module-alias",
+            "import sys\ndef outer():\n    s = None\n    def inner():\n        nonlocal s\n        s = sys\n        return s._getframe\n    return inner\n",
+            "__inner",
+            "molt_getframe",
+        ),
+        (
+            "chained-ordinary-module-alias",
+            "import sys\ndef f():\n    left = right = sys\n    return left._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "nested-function-in-loop-does-not-corrupt-parent-flow",
+            "import sys\ndef f(items):\n    s = sys\n    for item in items:\n        def inner():\n            return item\n    alias = s\n    return alias._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "nested-lambda-in-try-does-not-corrupt-parent-flow",
+            "import sys\ndef f():\n    s = sys\n    try:\n        callback = lambda: s\n    except Exception:\n        callback = lambda: None\n    alias = s\n    return alias._getframe\n",
             "__f",
             "molt_getframe",
         ),
@@ -2132,19 +2177,140 @@ def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acq
         )
 
 
-def test_runtime_callable_import_provenance_respects_lexical_shadowing() -> None:
+@pytest.mark.parametrize(
+    "signature",
+    ["system", "system, /", "*, system", "*system", "**system"],
+)
+def test_runtime_callable_import_provenance_respects_lexical_shadowing(
+    signature: str,
+) -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
             "import sys as system\n"
-            "def f(system):\n"
+            f"def f({signature}):\n"
             "    return system._getframe\n"
         )
     )
     function = next(
         function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
     )
-    assert all("runtime_symbol" not in op for op in function["ops"])
+    assert all(
+        "runtime_symbol" not in op
+        and not (
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        )
+        for op in function["ops"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "source", "function_suffix", "expected_symbol"),
+    [
+        (
+            "if-may-module",
+            "import sys\ndef f(flag, other):\n    if flag:\n        s = sys\n    else:\n        s = other\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "branch-local-import-with-implicit-nonmodule-path",
+            "def f(flag):\n    if flag:\n        import sys as s\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "loop-carried-may-module",
+            "import sys\ndef f(items, other):\n    s = other\n    for item in items:\n        s = sys\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "tuple-module-alias",
+            "import sys\ndef f():\n    s, value = sys, 1\n    return s._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "walrus-module-alias",
+            "import sys\ndef f():\n    return (s := sys)._getframe\n",
+            "__f",
+            "molt_getframe",
+        ),
+        (
+            "global-may-module",
+            "import sys\ns = None\ndef install():\n    global s\n    s = sys\ndef use():\n    return s._getframe\n",
+            "__use",
+            None,
+        ),
+        (
+            "try-except-finally-may-module",
+            "import sys\ndef f(flag, other):\n    s = other\n    try:\n        if flag:\n            s = sys\n    except Exception:\n        s = other\n    finally:\n        flag = False\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "try-exception-prefix-may-module",
+            "import sys\ndef f(other, risky):\n    s = other\n    try:\n        risky()\n        s = sys\n    except RuntimeError:\n        pass\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "guarded-match-with-no-match-path",
+            "import sys\ndef f(value, guard, other):\n    s = other\n    match value:\n        case 1 if guard:\n            s = sys\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+    ],
+)
+def test_runtime_callable_module_alias_provenance_joins_conservatively(
+    case: str, source: str, function_suffix: str, expected_symbol: str | None
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith(function_suffix)
+    )
+    if expected_symbol is None:
+        assert any(
+            op.get("runtime_requirement_bits")
+            == SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+            for op in function["ops"]
+        ), case
+    else:
+        assert any(
+            op.get("runtime_symbol") == expected_symbol for op in function["ops"]
+        ), case
+
+
+def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenance() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "import sys\n"
+            "def f(flag, left, right):\n"
+            "    s = sys\n"
+            "    if flag:\n"
+            "        s = left\n"
+            "    else:\n"
+            "        s = right\n"
+            "    return s._getframe\n"
+        )
+    )
+    function = next(
+        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+    )
+    assert all(
+        "runtime_symbol" not in op
+        and not (
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        )
+        for op in function["ops"]
+    )
 
 
 @pytest.mark.parametrize(

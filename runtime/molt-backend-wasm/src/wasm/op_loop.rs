@@ -7,7 +7,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 mod builder_ops;
 mod call_emit;
@@ -30,7 +30,6 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) frame: &'a WasmFunctionFrame,
-    pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,

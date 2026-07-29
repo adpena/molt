@@ -29,7 +29,7 @@ fn wasm_load_var_op(out: &str, var: &str) -> OpIR {
 
 fn wasm_ret_op(name: &str) -> OpIR {
     let mut ret = wasm_test_op("ret", None, vec![name]);
-    ret.var = Some(name.to_string());
+    ret.args = Some(vec![name.to_string()]);
     ret
 }
 

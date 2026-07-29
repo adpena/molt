@@ -6,10 +6,8 @@ mod seeds;
 use super::{WasmFrameControlMode, WasmFunctionFrame, WasmFunctionFramePlan};
 use crate::FunctionIR;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::context::CompileFuncContext;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
-use crate::wasm::multi_return_layout::WasmMultiReturnLayout;
 use debug::emit_seed_debug;
 use local_alloc::{FrameLocalAllocationPolicy, ensure_frame_local};
 use requirements::FrameRuntimeRequirements;
@@ -17,10 +15,7 @@ use seeds::FrameConstSeedPlan;
 use wasm_encoder::{Function, ValType};
 
 impl WasmFunctionFramePlan {
-    pub(in crate::wasm) fn for_function(
-        func_ir: &FunctionIR,
-        ctx: &CompileFuncContext<'_>,
-    ) -> Self {
+    pub(in crate::wasm) fn for_function(func_ir: &FunctionIR) -> Self {
         let mut locals = WasmFrameLocals::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -175,14 +170,6 @@ impl WasmFunctionFramePlan {
             seeded_runtime_const_ops.len(),
         );
 
-        let multi_return = WasmMultiReturnLayout::build(
-            func_ir,
-            ctx.multi_return_candidates,
-            &mut locals,
-            &mut local_types,
-            &mut local_count,
-        );
-
         let control_mode = if stateful {
             WasmFrameControlMode::Stateful
         } else if jumpful {
@@ -207,7 +194,6 @@ impl WasmFunctionFramePlan {
                 const_seed_locals,
                 seeded_runtime_const_ops,
                 seeded_runtime_const_op_indices,
-                multi_return,
             },
         }
     }

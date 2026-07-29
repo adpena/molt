@@ -156,7 +156,7 @@ fn ir_with_code_new() -> SimpleIR {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("code".to_string()),
+                    args: Some(vec!["code".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -186,7 +186,7 @@ fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("out".to_string()),
+                    args: Some(vec!["out".to_string()]),
                     ..OpIR::default()
                 },
             ],

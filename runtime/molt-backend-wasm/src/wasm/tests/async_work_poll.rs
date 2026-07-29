@@ -8,7 +8,7 @@ fn poll_ir() -> SimpleIR {
     };
     let fallthrough = wasm_test_op("const_none", Some("ok"), vec![]);
     let mut ret = wasm_test_op("ret", None, vec!["ok"]);
-    ret.var = Some("ok".into());
+    ret.args = Some(vec!["ok".into()]);
     let exit = OpIR {
         kind: "label".into(),
         value: Some(41),
@@ -33,9 +33,7 @@ fn poll_ir() -> SimpleIR {
 
 fn compile_final_poll(native_eh_enabled: bool) -> Vec<u8> {
     let ir = poll_ir();
-    let multi_return_candidates = detect_multi_return_candidates(&ir);
-    let trampoline_analysis =
-        super::super::trampoline_analysis::analyze_wasm_trampolines(&ir, multi_return_candidates);
+    let trampoline_analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled,
         reloc_enabled: false,

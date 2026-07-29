@@ -20,6 +20,9 @@ serde_json = { workspace = true }
 rmp-serde = "1"
 sha2 = "0.11"
 
+[target.'cfg(any(unix, windows))'.dependencies]
+memmap2 = "0.9"
+
 [features]
 default = []
 native-backend = ["molt-ir/native-backend"]

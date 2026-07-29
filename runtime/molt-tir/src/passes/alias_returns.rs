@@ -1,3 +1,4 @@
+use crate::tir::op_kinds_generated::{SimpleIrReturnShape, simpleir_return_shape};
 use crate::{FunctionIR, OpIR};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -98,9 +99,11 @@ fn compute_function_return_alias_summary(
     let mut summary: Option<ReturnAliasSummary> = None;
     let mut saw_ret = false;
     for (ret_idx, op) in func.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "ret" => {
-                let ret_name = op.var.as_ref()?;
+        match simpleir_return_shape(op.kind.as_str()) {
+            SimpleIrReturnShape::Value => {
+                let [ret_name] = op.args.as_deref()? else {
+                    return None;
+                };
                 if const_none_names.contains(ret_name.as_str()) {
                     let mut scan_idx = ret_idx;
                     let mut synthetic_raise_tail = false;
@@ -140,8 +143,7 @@ fn compute_function_return_alias_summary(
                     Some(_) => return None,
                 }
             }
-            "ret_void" => {}
-            _ => {}
+            SimpleIrReturnShape::Void | SimpleIrReturnShape::NotReturn => {}
         }
     }
 

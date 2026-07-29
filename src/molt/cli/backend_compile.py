@@ -80,19 +80,16 @@ from molt.wasm_artifact import (
 _BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
 
 
-def _apply_backend_compiler_fingerprint(
+def _backend_environment_with_compiler_fingerprint(
+    base_env: Mapping[str, str],
     fingerprint: str | None,
-    *,
-    backend_env: dict[str, str] | None = None,
-) -> None:
+) -> dict[str, str]:
+    backend_env = dict(base_env)
     if fingerprint:
-        os.environ[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
-        if backend_env is not None:
-            backend_env[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
-        return
-    os.environ.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
-    if backend_env is not None:
+        backend_env[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
+    else:
         backend_env.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
+    return backend_env
 
 
 def _record_pipeline_stage_ms(
@@ -204,10 +201,6 @@ def _prepare_backend_setup(
         return None, _fail(backend_ensure_result.message, json_output, command="build")
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
-    _apply_backend_compiler_fingerprint(
-        backend_ensure_result.cache_compiler_fingerprint
-    )
-
     cache_setup_start = time.perf_counter()
     cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=cache,
@@ -230,11 +223,11 @@ def _prepare_backend_setup(
         stdlib_profile=stdlib_profile,
         native_artifact_plan=native_artifact_plan,
         runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+        backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
         capabilities_list=capabilities_list,
         capability_profiles=capability_profiles,
         manifest_env_vars=manifest_env_vars,
         capability_config_digest=capability_config_digest,
-        backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
         stage_timings_ms=stage_timings_ms,
     )
     _record_pipeline_stage_ms(
@@ -268,6 +261,7 @@ def _prepare_backend_setup(
         stdlib_object_path=cache_setup.stdlib_object_path,
         cache_candidates=list(cache_setup.cache_candidates),
         runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+        backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
     ), None
 
 
@@ -349,6 +343,7 @@ def _prepare_backend_runtime_context(
         cache_path=prepared_backend_setup.cache_path,
         function_cache_path=prepared_backend_setup.function_cache_path,
         stdlib_object_path=prepared_backend_setup.stdlib_object_path,
+        backend_compiler_fingerprint=prepared_backend_setup.backend_compiler_fingerprint,
     ), None
 
 
@@ -376,10 +371,13 @@ def _prepare_backend_dispatch(
     ir: Mapping[str, Any],
     warnings: list[str],
     backend_bin: Path | None = None,
+    backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
-    backend_env = os.environ.copy() if is_wasm else None
-    if backend_env is not None:
+    backend_env = _backend_environment_with_compiler_fingerprint(
+        os.environ, backend_compiler_fingerprint
+    )
+    if is_wasm:
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
         backend_env.pop("MOLT_WASM_TABLE_BASE", None)
         backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
@@ -393,12 +391,12 @@ def _prepare_backend_dispatch(
         is_rust_transpile=is_rust_transpile,
     )
     if deterministic or profile == "release":
-        os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
+        backend_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
     # Auto-set Cranelift optimization level based on profile for size-critical
     # builds.  speed_and_size balances code quality with binary density.
     if profile in ("release-size", "wasm-release"):
-        os.environ.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
-    reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
+        backend_env.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
+    reloc_requested = is_wasm and (linked or backend_env.get("MOLT_WASM_LINK") == "1")
     runtime_wasm = runtime_state.runtime_wasm_selected
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
     if is_wasm and backend_env is not None:
@@ -551,9 +549,8 @@ def _prepare_backend_dispatch(
             return None, _fail(
                 backend_ensure_result.message, json_output, command="build"
             )
-        _apply_backend_compiler_fingerprint(
-            backend_ensure_result.cache_compiler_fingerprint,
-            backend_env=backend_env,
+        backend_env = _backend_environment_with_compiler_fingerprint(
+            backend_env, backend_ensure_result.cache_compiler_fingerprint
         )
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
@@ -570,6 +567,7 @@ def _prepare_backend_dispatch(
         daemon_config_digest = _backend_daemon_config_digest(
             molt_root,
             backend_cargo_profile,
+            env=backend_env,
             backend_bin=backend_bin,
             target_triple=target_triple,
             backend_features=backend_features,
@@ -593,6 +591,7 @@ def _prepare_backend_dispatch(
                 startup_timeout=startup_timeout,
                 json_output=json_output,
                 warnings=warnings,
+                backend_env=backend_env,
             )
     return _PreparedBackendDispatch(
         backend_env=backend_env,
@@ -821,6 +820,7 @@ def _execute_backend_compile(
                         startup_timeout=restart_timeout,
                         json_output=json_output,
                         warnings=warnings,
+                        backend_env=backend_env,
                     )
                 if daemon_ready:
                     daemon_compile = _compile_with_backend_daemon(
@@ -1118,6 +1118,7 @@ def _prepare_backend_compile(
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
     backend_bin: Path | None = None,
+    backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
@@ -1193,6 +1194,7 @@ def _prepare_backend_compile(
                     ir=ir,
                     warnings=warnings,
                     backend_bin=backend_bin,
+                    backend_compiler_fingerprint=backend_compiler_fingerprint,
                 )
             )
             if prepared_backend_dispatch_error is not None:

@@ -293,6 +293,9 @@ fn family_map() -> &'static HashMap<&'static str, NativeOpFamily> {
 pub(in crate::native_backend::function_compiler) fn native_op_family(
     kind: &str,
 ) -> Option<NativeOpFamily> {
+    if crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind) {
+        return Some(NativeOpFamily::RetJump);
+    }
     family_map().get(kind).copied()
 }
 
@@ -349,6 +352,13 @@ mod tests {
                 Some(NativeOpFamily::ConstLiterals),
                 "const literal kind `{kind}` must route to the ConstLiterals handler",
             );
+        }
+    }
+
+    #[test]
+    fn generated_return_kinds_route_to_ret_jump() {
+        for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RETURN_KINDS {
+            assert_eq!(native_op_family(kind), Some(NativeOpFamily::RetJump));
         }
     }
 

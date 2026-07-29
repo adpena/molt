@@ -245,7 +245,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
     ops.push(op("loop_end"));
 
     let mut ret_acc = op("ret");
-    ret_acc.var = Some("acc".to_string());
+    ret_acc.args = Some(vec!["acc".to_string()]);
     ops.push(ret_acc);
 
     let ir = SimpleIR {
@@ -410,7 +410,6 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
     ops.push(if_op);
 
     let mut ret_true = op("ret");
-    ret_true.var = Some("true_val".to_string());
     ret_true.args = Some(vec!["true_val".to_string()]);
     ops.push(ret_true);
 
@@ -430,7 +429,6 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
     ops.push(op("loop_end"));
 
     let mut ret_false = op("ret");
-    ret_false.var = Some("false_val".to_string());
     ret_false.args = Some(vec!["false_val".to_string()]);
     ops.push(ret_false);
 
@@ -588,7 +586,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
     ops.push(op("loop_end"));
 
     let mut ret_acc = op("ret");
-    ret_acc.var = Some("acc".to_string());
+    ret_acc.args = Some(vec!["acc".to_string()]);
     ops.push(ret_acc);
 
     let func_ir = FunctionIR {

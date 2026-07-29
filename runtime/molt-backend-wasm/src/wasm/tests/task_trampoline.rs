@@ -21,7 +21,7 @@ fn task_marker_ir(marker: &str, target: &str) -> SimpleIR {
     );
     set_closure_size.s_value = Some("__molt_closure_size__".to_string());
     let mut return_function = wasm_test_op("ret", None, vec!["function_object"]);
-    return_function.var = Some("function_object".to_string());
+    return_function.args = Some(vec!["function_object".to_string()]);
 
     SimpleIR {
         functions: vec![

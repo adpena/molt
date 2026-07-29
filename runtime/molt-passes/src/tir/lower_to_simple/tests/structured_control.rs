@@ -833,7 +833,6 @@ fn eliminate_dead_loop_end_after_return() {
     let mut ops = vec![
         OpIR {
             kind: "ret".into(),
-            var: Some("_ret0".into()),
             args: Some(vec!["_ret0".into()]),
             ..OpIR::default()
         },
@@ -863,7 +862,6 @@ fn eliminate_dead_jump_after_return() {
     let mut ops = vec![
         OpIR {
             kind: "ret".into(),
-            var: Some("_ret0".into()),
             args: Some(vec!["_ret0".into()]),
             ..OpIR::default()
         },
@@ -975,7 +973,6 @@ fn eliminate_dead_labels_keeps_if_marker_after_dead_label_before_structured_if()
         OpIR {
             kind: "ret".into(),
             args: Some(vec!["_ret0".into()]),
-            var: Some("_ret0".into()),
             ..OpIR::default()
         },
         OpIR {

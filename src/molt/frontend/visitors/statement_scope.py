@@ -647,12 +647,13 @@ class StatementScopeVisitorMixin(_MixinBase):
             else:
                 self._store_local_value(bind_name, bound_val)
             self._emit_module_attr_set(bind_name, bound_val)
-            self.imported_modules[bind_name] = module_name
-            if self.current_func_name != "molt_main":
-                self.local_imported_modules.add(bind_name)
+            self._set_imported_module_binding(bind_name, module_name)
             self.module_intrinsic_globals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.global_imported_modules[bind_name] = module_name
+                self.global_imported_module_provenance[bind_name] = frozenset(
+                    (module_name,)
+                )
         return None
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -849,14 +850,15 @@ class StatementScopeVisitorMixin(_MixinBase):
             )
             if _mod_resolvable:
                 if imported_child_is_module:
-                    self.imported_modules[bind_name] = imported_child_module
+                    self._set_imported_module_binding(bind_name, imported_child_module)
                     self.imported_names.pop(bind_name, None)
                     self.imported_attr_names.pop(bind_name, None)
                     self.local_imported_names.discard(bind_name)
-                    if self.current_func_name != "molt_main":
-                        self.local_imported_modules.add(bind_name)
                     if self.current_func_name == "molt_main":
                         self.global_imported_modules[bind_name] = imported_child_module
+                        self.global_imported_module_provenance[bind_name] = frozenset(
+                            (imported_child_module,)
+                        )
                         self.global_imported_names.pop(bind_name, None)
                         self.global_imported_attr_names.pop(bind_name, None)
                         self.module_intrinsic_globals.pop(bind_name, None)
@@ -866,14 +868,14 @@ class StatementScopeVisitorMixin(_MixinBase):
                     # resolve to the canonical function name, not the alias.
                     # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
                     self.imported_attr_names[bind_name] = attr_name
-                    self.imported_modules.pop(bind_name, None)
-                    self.local_imported_modules.discard(bind_name)
+                    self._clear_imported_module_binding(bind_name)
                     if self.current_func_name != "molt_main":
                         self.local_imported_names.add(bind_name)
                     if self.current_func_name == "molt_main":
                         self.global_imported_names[bind_name] = module_name
                         self.global_imported_attr_names[bind_name] = attr_name
                         self.global_imported_modules.pop(bind_name, None)
+                        self.global_imported_module_provenance.pop(bind_name, None)
                         self.module_intrinsic_globals.pop(bind_name, None)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":

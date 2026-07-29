@@ -37,7 +37,6 @@ pub fn simpleir_kind_is_structural(kind: &str) -> bool {
             | "loop_break_if_exception"
             | "ret"
             | "ret_void"
-            | "return"
             | "nop"
             | "state_switch"
     )
@@ -50,16 +49,8 @@ pub fn simpleir_kind_is_structural(kind: &str) -> bool {
 pub fn simpleir_kind_is_terminator(kind: &str) -> bool {
     matches!(
         kind,
-        "loop_break" | "loop_continue" | "jump" | "goto" | "ret" | "ret_void" | "return"
+        "loop_break" | "loop_continue" | "jump" | "goto" | "ret" | "ret_void"
     )
-}
-
-/// Whether a SimpleIR kind is a normal function-return terminator.
-/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
-/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
-#[inline]
-pub fn simpleir_kind_is_return_terminator(kind: &str) -> bool {
-    matches!(kind, "ret" | "ret_void" | "return")
 }
 
 /// Whether a SimpleIR kind is a generator/coroutine suspend point.
@@ -172,7 +163,6 @@ pub fn simpleir_kind_is_wasm_split_barrier(kind: &str) -> bool {
             | "loop_break_if_exception"
             | "ret"
             | "ret_void"
-            | "return"
             | "state_switch"
             | "state_yield"
             | "state_transition"
@@ -270,6 +260,35 @@ pub fn simpleir_kind_is_wasm_state_resume_at(kind: &str) -> bool {
     matches!(kind, "label" | "state_label")
 }
 
+/// Whether a SimpleIR kind is a normal function-return terminator.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_return_terminator(kind: &str) -> bool {
+    matches!(kind, "ret" | "ret_void")
+}
+
+/// Canonical operand shape of a SimpleIR function return.
+/// Generated from each control row's `return_shape`; targets must not infer
+/// return multiplicity from storage representation or backend convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrReturnShape {
+    NotReturn,
+    Void,
+    Value,
+}
+
+pub const SIMPLEIR_RETURN_KINDS: &[&str] = &["ret", "ret_void"];
+
+#[inline]
+pub fn simpleir_return_shape(kind: &str) -> SimpleIrReturnShape {
+    match kind {
+        "ret_void" => SimpleIrReturnShape::Void,
+        "ret" => SimpleIrReturnShape::Value,
+        _ => SimpleIrReturnShape::NotReturn,
+    }
+}
+
 /// Whether a kind is consumed structurally by CFG/SSA/pre-SSA rather than kind_to_opcode.
 /// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
@@ -294,7 +313,6 @@ pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
             | "loop_break_if_exception"
             | "ret"
             | "ret_void"
-            | "return"
             | "nop"
             | "state_switch"
             | "loop_index_start"
@@ -310,6 +328,7 @@ pub enum SimpleIrVarFieldRole {
     Definition,
     Result,
     MetadataWhenArgs,
+    Forbidden,
 }
 
 #[inline]
@@ -318,6 +337,7 @@ pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {
         "delete_var" | "store_fast" | "store_var" => SimpleIrVarFieldRole::Definition,
         "checked_add" | "checked_mul" | "iter_next_unboxed" => SimpleIrVarFieldRole::Result,
         "copy_var" | "load_var" => SimpleIrVarFieldRole::MetadataWhenArgs,
+        "ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden,
         _ => SimpleIrVarFieldRole::Read,
     }
 }
@@ -485,6 +505,16 @@ impl SimpleIrRuntimeRequirements {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+    pub const fn from_bits(bits: u16) -> Option<Self> {
+        if bits & !32767 == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
 }
 
 /// Return `None` only for an unclassified spelling. Registered kinds
@@ -636,7 +666,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "range_new"
         | "ret"
         | "ret_void"
-        | "return"
         | "rshift"
         | "shl"
         | "shr"

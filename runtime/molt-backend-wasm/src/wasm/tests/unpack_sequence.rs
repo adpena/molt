@@ -14,7 +14,6 @@ fn unpack_ir(function_name: &str, expected: usize) -> SimpleIR {
     let mut ret = wasm_test_op("ret", None, vec![]);
     if expected != 0 {
         ret.args = Some(vec!["out0".to_string()]);
-        ret.var = Some("out0".to_string());
     }
     SimpleIR {
         functions: vec![wasm_test_function(

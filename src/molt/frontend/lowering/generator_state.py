@@ -58,6 +58,8 @@ FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS = (
     "imported_names",
     "imported_attr_names",
     "imported_modules",
+    "imported_module_provenance",
+    "_module_provenance_flow_stack",
     "local_imported_names",
     "local_imported_modules",
     "imported_module_attr_mutations",
@@ -202,6 +204,8 @@ class GeneratorStateMixin(_MixinBase):
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.imported_module_provenance = dict(self.global_imported_module_provenance)
+        self._module_provenance_flow_stack = []
         self.local_imported_names = set()
         self.local_imported_modules = set()
         if reset_module_attr_mutations:
@@ -401,6 +405,7 @@ class GeneratorStateMixin(_MixinBase):
         # targets to the original function name rather than the alias.
         self.global_imported_attr_names: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        self.global_imported_module_provenance: dict[str, frozenset[str]] = {}
         self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
         self.local_intrinsic_wrappers: set[str] = set()

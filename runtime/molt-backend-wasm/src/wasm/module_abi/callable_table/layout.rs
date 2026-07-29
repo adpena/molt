@@ -231,7 +231,6 @@ impl WasmBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         function_has_ret: &BTreeMap<String, bool>,
-        multi_return_candidates: &BTreeMap<String, usize>,
         user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
         sentinel_func_idx: u32,
@@ -477,7 +476,6 @@ impl WasmBackend {
                             closure_size: 0,
                             target_has_ret: true,
                         },
-                        multi_return_count: None,
                     },
                 );
             } else {
@@ -588,7 +586,6 @@ impl WasmBackend {
                         closure_size: 0,
                         target_has_ret: true,
                     },
-                    multi_return_count: None,
                 },
             );
         }
@@ -640,14 +637,6 @@ impl WasmBackend {
             } else {
                 0
             };
-            let multi_return_count = if matches!(kind.behavior(), TrampolineBehavior::UnpackArgs) {
-                multi_return_candidates
-                    .get(&func_ir.name)
-                    .copied()
-                    .filter(|&count| count > 1)
-            } else {
-                None
-            };
             push_trampoline_entry(
                 &mut slots,
                 idx,
@@ -672,7 +661,6 @@ impl WasmBackend {
                         closure_size,
                         target_has_ret: *function_has_ret.get(target_name).unwrap_or(&true),
                     },
-                    multi_return_count,
                 },
             );
         }

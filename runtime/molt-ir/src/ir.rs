@@ -374,6 +374,10 @@ pub struct OpIR {
     /// statically known module attribute/import. Target admission propagates
     /// this fact through SSA aliases before any backend emits source.
     pub runtime_symbol: Option<String>,
+    /// Generated target-admission requirement bits for conservative acquisition
+    /// provenance that is not an executable runtime/link symbol.
+    #[serde(default)]
+    pub runtime_requirement_bits: u16,
     /// Direct-call marker paired with `ExecutionContextPolicy::Inherited` on
     /// the callee; the backend must thread its active context at this call site.
     #[serde(default)]
@@ -711,6 +715,10 @@ impl OpIR {
             native_callable_abi: optional_string(obj, "native_callable_abi", ctx)?,
             builtin_name: optional_string(obj, "builtin_name", ctx)?,
             runtime_symbol: optional_string(obj, "runtime_symbol", ctx)?,
+            runtime_requirement_bits: optional_i64(obj, "runtime_requirement_bits", ctx)?
+                .unwrap_or(0)
+                .try_into()
+                .map_err(|_| format!("{ctx}.runtime_requirement_bits must fit u16"))?,
             passes_execution_context: optional_bool(obj, "passes_execution_context", ctx)?
                 .unwrap_or(false),
             type_hint: optional_string(obj, "type_hint", ctx)?,
@@ -1165,7 +1173,7 @@ mod json_parse_tests {
         parse(
             "local",
             &format!(
-                r#"{enter},{{"kind":"if","args":["condition"]}},{exit},{{"kind":"ret_void"}},{{"kind":"else"}},{exit},{{"kind":"ret","var":"condition"}},{{"kind":"end_if"}}"#
+                r#"{enter},{{"kind":"if","args":["condition"]}},{exit},{{"kind":"ret_void"}},{{"kind":"else"}},{exit},{{"kind":"ret","args":["condition"]}},{{"kind":"end_if"}}"#
             ),
         )
         .expect("each normal return in a multi-return Local function owns one exit");
@@ -1219,6 +1227,47 @@ mod json_parse_tests {
 
         assert!(err.contains("invalid SimpleIR contract"));
         assert!(err.contains("unsupported container_type `list_int`"));
+    }
+
+    #[test]
+    fn simple_ir_runtime_requirement_bits_are_typed_and_op_scoped() {
+        let accepted = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":1,"out":"value"}]}]}"#,
+        )
+        .expect("known requirement bits belong on module acquisition ops");
+        assert_eq!(accepted.functions[0].ops[0].runtime_requirement_bits, 1);
+
+        let wrong_op = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","runtime_requirement_bits":1,"out":"value"}]}]}"#,
+        )
+        .expect_err("requirement bits must not leak onto unrelated op families");
+        assert!(wrong_op.contains("cannot carry runtime_requirement_bits"));
+
+        let unknown_bit = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":32768,"out":"value"}]}]}"#,
+        )
+        .expect_err("unknown generated requirement bits must fail closed");
+        assert!(unknown_bit.contains("unknown runtime_requirement_bits"));
+    }
+
+    #[test]
+    fn simple_ir_return_family_accepts_only_canonical_args_carriers() {
+        SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret","args":["value"]}]}]}"#,
+        )
+        .expect("ret args carrier must validate");
+        for invalid in [
+            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret","var":"value"}]}]}"#,
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"ret"}]}]}"#,
+            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret_void","args":["value"]}]}]}"#,
+        ] {
+            let error = SimpleIR::from_json_str(invalid)
+                .expect_err("noncanonical return carrier must fail at the schema boundary");
+            assert!(
+                error.contains("return") || error.contains("ret_void"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1567,7 +1616,7 @@ mod json_parse_tests {
     fn ndjson_reader_parses_stream() {
         let input = r#"{"kind":"ir_stream_start","profile":null}
 {"kind":"function","name":"molt_main","params":[],"ops":[{"kind":"ret_void"}]}
-{"kind":"function","name":"helper","params":["a"],"ops":[{"kind":"return","args":["a"]}]}
+{"kind":"function","name":"helper","params":["a"],"ops":[{"kind":"ret","args":["a"]}]}
 {"kind":"ir_stream_end"}
 "#;
         let reader = std::io::BufReader::new(input.as_bytes());

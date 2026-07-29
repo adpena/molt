@@ -12,7 +12,9 @@ fn linearize_simple_function_compiles() {
 fn linearize_emits_return() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);
-    let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
+    let has_ret = ops.iter().any(|op| {
+        crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str())
+    });
     assert!(has_ret, "expected a return op, got: {:?}", ops);
 }
 
@@ -464,7 +466,7 @@ fn lower_module_del_global_if_present_roundtrips() {
 
 #[test]
 fn empty_tir_return_preserves_original_ret_signature() {
-    let mut func = TirFunction::new("ret_none".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new("void_return".into(), vec![], TirType::DynBox);
     func.attrs
         .insert("_original_has_ret".into(), AttrValue::Bool(true));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -489,11 +491,6 @@ fn empty_tir_return_preserves_original_ret_signature() {
         .as_deref()
         .expect("const_none must define an output var");
     assert_eq!(
-        ret_op.var.as_deref(),
-        Some(none_name),
-        "ret must use the synthesized None value"
-    );
-    assert_eq!(
         ret_op
             .args
             .as_ref()
@@ -505,7 +502,7 @@ fn empty_tir_return_preserves_original_ret_signature() {
 }
 
 #[test]
-fn ret_op_has_var_set() {
+fn ret_op_has_args_set() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);
     let ret_op = ops
@@ -513,16 +510,16 @@ fn ret_op_has_var_set() {
         .find(|o| o.kind == "ret")
         .expect("expected a ret op");
     assert!(
-        ret_op.var.is_some(),
-        "ret op must have `var` set for the native backend; got: {:?}",
+        ret_op.args.as_ref().is_some_and(|args| !args.is_empty()),
+        "ret op must have canonical value args; got: {:?}",
         ret_op
     );
 }
 
-/// Integration test: full TIR round-trip preserves `ret` var field.
+/// Integration test: full TIR round-trip preserves canonical return args.
 /// This simulates the frontend's `def add(a,b): return a+b` IR.
 #[test]
-fn tir_round_trip_preserves_ret_var() {
+fn tir_round_trip_preserves_ret_args() {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::type_refine;
@@ -539,7 +536,7 @@ fn tir_round_trip_preserves_ret_var() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("v0".into()),
+                args: Some(vec!["v0".into()]),
                 ..OpIR::default()
             },
         ],
@@ -558,8 +555,8 @@ fn tir_round_trip_preserves_ret_var() {
         .find(|o| o.kind == "ret")
         .expect("TIR round-trip must preserve the ret op");
     assert!(
-        ret_op.var.is_some(),
-        "TIR round-trip must set `var` on ret op for native backend; got: {:?}",
+        ret_op.args.as_ref().is_some_and(|args| args == &["v0"]),
+        "TIR round-trip must preserve canonical ret args; got: {:?}",
         ret_op,
     );
 }
@@ -598,7 +595,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("sum0".into()),
+                args: Some(vec!["sum0".into()]),
                 ..OpIR::default()
             },
             OpIR {
@@ -608,7 +605,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("a".into()),
+                args: Some(vec!["a".into()]),
                 ..OpIR::default()
             },
         ],
@@ -682,7 +679,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("product0".into()),
+                args: Some(vec!["product0".into()]),
                 ..OpIR::default()
             },
             OpIR {
@@ -692,7 +689,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("a".into()),
+                args: Some(vec!["a".into()]),
                 ..OpIR::default()
             },
         ],

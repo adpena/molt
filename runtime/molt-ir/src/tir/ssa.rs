@@ -2011,7 +2011,7 @@ mod tests {
             op_val_out("const", 0, "v96"),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("v96".to_string()),
+                args: Some(vec!["v96".to_string()]),
                 ..OpIR::default()
             },
             op_val("label", 1),

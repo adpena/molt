@@ -43,7 +43,12 @@ pub(in crate::wasm::state_dispatch) fn exception_handler_region_indices_from_lab
                     }
                     nested_pushes -= 1;
                 }
-                "ret" | "ret_void" => break,
+                kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
+                    kind,
+                ) =>
+                {
+                    break;
+                }
                 _ => {}
             }
         }

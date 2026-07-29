@@ -7,13 +7,9 @@ pub(super) struct WasmTrampolineAnalysis {
     pub(super) task_closure_sizes: BTreeMap<String, i64>,
     pub(super) default_trampoline_spec: BTreeMap<String, (usize, bool)>,
     pub(super) function_has_ret: BTreeMap<String, bool>,
-    pub(super) multi_return_candidates: BTreeMap<String, usize>,
 }
 
-pub(super) fn analyze_wasm_trampolines(
-    ir: &SimpleIR,
-    multi_return_candidates: BTreeMap<String, usize>,
-) -> WasmTrampolineAnalysis {
+pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis {
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
     let mut escaped_callable_targets: BTreeSet<String> = BTreeSet::new();
@@ -143,27 +139,11 @@ pub(super) fn analyze_wasm_trampolines(
         );
     }
 
-    // Trampolines now handle multi-value return callees by reconstructing
-    // a tuple from the N return values (see compile_trampoline), so we no
-    // longer need to exclude trampolined functions from the optimization.
-    //
-    // However, escaped callable targets (functions turned into function
-    // objects via func_new) MUST be excluded.  The runtime's
-    // molt_call_indirectN thunks use call_indirect with type
-    // (N x i64) -> i64.  A multi-return function whose type is
-    // (N x i64) -> (M x i64) would cause a call_indirect type mismatch
-    // trap when the user function table slot is resolved.
-    let multi_return_candidates: BTreeMap<String, usize> = multi_return_candidates
-        .into_iter()
-        .filter(|(name, _)| !escaped_callable_targets.contains(name))
-        .collect();
-
     WasmTrampolineAnalysis {
         escaped_callable_targets,
         task_kinds,
         task_closure_sizes,
         default_trampoline_spec,
         function_has_ret,
-        multi_return_candidates,
     }
 }

@@ -37,6 +37,9 @@ pub fn validate_runtime_target_contract(
 /// admission deliberately performs no use-sensitive heap/CFG taint analysis.
 pub fn simpleir_op_runtime_requirements(op: &OpIR) -> Option<SimpleIrRuntimeRequirements> {
     let mut requirements = simpleir_runtime_requirements_table(op.kind.as_str())?;
+    requirements = requirements.union(SimpleIrRuntimeRequirements::from_bits(
+        op.runtime_requirement_bits,
+    )?);
     if let Some(symbol) = op.runtime_symbol.as_deref() {
         requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
     }

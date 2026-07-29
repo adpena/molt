@@ -55,7 +55,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
       "params": [],
       "ops": [
         {"kind": "call_internal", "s_value": "helper", "out": "x"},
-        {"kind": "ret", "var": "x"}
+        {"kind": "ret", "args": ["x"]}
       ],
       "param_types": null,
       "source_file": null,
@@ -66,7 +66,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
       "params": [],
       "ops": [
         {"kind": "const", "value": 2, "out": "y"},
-        {"kind": "ret", "var": "y"}
+        {"kind": "ret", "args": ["y"]}
       ],
       "param_types": null,
       "source_file": null,

@@ -2,41 +2,19 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_return_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "ret" | "return" | "return_value" => {
-                if let Some(ref args) = op.args {
-                    if args.len() == 1 {
-                        let val = sanitize_ident(&args[0]);
-                        if self.tuple_vars.contains(&args[0]) {
-                            self.emit_line(&format!(
-                                "return table.unpack({val}, 1, molt_sequence_len({val}))"
-                            ));
-                        } else {
-                            self.emit_line(&format!("return {val}"));
-                        }
-                    } else if args.len() > 1 {
-                        let vals: Vec<String> = args.iter().map(|a| sanitize_ident(a)).collect();
-                        self.emit_line(&format!("return {}", vals.join(", ")));
-                    } else {
-                        self.emit_line("return");
-                    }
-                } else if let Some(ref var) = op.var {
-                    let val = sanitize_ident(var);
-                    if self.tuple_vars.contains(var) {
-                        self.emit_line(&format!(
-                            "return table.unpack({val}, 1, molt_sequence_len({val}))"
-                        ));
-                    } else {
-                        self.emit_line(&format!("return {val}"));
-                    }
-                } else {
-                    self.emit_line("return");
-                }
+        match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
+            molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => {
+                let value = op
+                    .args
+                    .as_deref()
+                    .and_then(|args| args.first())
+                    .expect("validated value return owns exactly one operand");
+                self.emit_line(&format!("return {}", sanitize_ident(value)));
             }
-            "ret_void" => {
+            molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
                 self.emit_line("return");
             }
-            _ => return false,
+            molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::NotReturn => return false,
         }
         true
     }

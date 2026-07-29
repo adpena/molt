@@ -38,8 +38,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let locals = frame.locals();
         let const_cache = frame.const_cache();
         let scalar_plan = frame.scalar_plan();
-        let multi_return_candidates = self.multi_return_candidates;
-        let multi_return = frame.multi_return();
         let func_index = self.func_index;
         let reloc_enabled = self.reloc_enabled;
         let native_eh_enabled = self.native_eh_enabled;
@@ -104,7 +102,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 import_ids,
                 locals,
                 scalar_plan,
-                multi_return,
                 reloc_enabled,
                 arena_local,
                 ops,
@@ -150,8 +147,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 runtime_lookup_only_vars,
                 locals,
                 const_cache,
-                multi_return_candidates,
-                multi_return,
                 reloc_enabled,
                 func_index,
                 func_import_count: backend.func_import_count,
@@ -219,7 +214,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     locals,
                     const_cache,
                     scalar_plan,
-                    multi_return,
                     exception_handler_region_indices,
                     control_stack,
                     try_stack,

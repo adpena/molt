@@ -39,7 +39,7 @@ fn cleanup_roots_collapse_join_alias_duplicates() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("out".to_string()),
+                args: Some(vec!["out".to_string()]),
                 ..OpIR::default()
             },
         ],

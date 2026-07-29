@@ -51,7 +51,7 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("x".to_string()),
+                args: Some(vec!["x".to_string()]),
                 ..OpIR::default()
             },
         ],

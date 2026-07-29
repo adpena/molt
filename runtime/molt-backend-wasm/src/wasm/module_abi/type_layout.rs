@@ -19,7 +19,6 @@ impl WasmModuleTypeLayout {
         mut next_type_idx: u32,
         max_func_arity: usize,
         max_call_arity: usize,
-        multi_return_candidates: &BTreeMap<String, usize>,
     ) -> Self {
         let mut user_type_map = BTreeMap::new();
         for func_ir in &ir.functions {
@@ -37,39 +36,6 @@ impl WasmModuleTypeLayout {
             }
         }
 
-        let mut multi_return_type_map = BTreeMap::new();
-        {
-            let func_param_counts: BTreeMap<&str, usize> = ir
-                .functions
-                .iter()
-                .map(|f| (f.name.as_str(), f.params.len()))
-                .collect();
-            let mut needed = Vec::new();
-            for (name, ret_count) in multi_return_candidates {
-                if let Some(&param_count) = func_param_counts.get(name.as_str()) {
-                    let key = (param_count, *ret_count);
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        multi_return_type_map.entry(key)
-                    {
-                        entry.insert(next_type_idx);
-                        needed.push(key);
-                        next_type_idx += 1;
-                    }
-                }
-            }
-            needed.sort();
-            let base = next_type_idx - needed.len() as u32;
-            for (idx, key) in needed.iter().enumerate() {
-                multi_return_type_map.insert(*key, base + idx as u32);
-            }
-            for (param_count, ret_count) in &needed {
-                backend.types.function(
-                    std::iter::repeat_n(ValType::I64, *param_count),
-                    std::iter::repeat_n(ValType::I64, *ret_count),
-                );
-            }
-        }
-
         let max_needed_arity = max_func_arity
             .max(max_call_arity.saturating_add(3))
             .max(CALL_INDIRECT_MAX_ARITY + 1);
@@ -84,12 +50,7 @@ impl WasmModuleTypeLayout {
             }
         }
 
-        let function_type_map = Self::assign_function_type_indices(
-            ir,
-            &user_type_map,
-            &multi_return_type_map,
-            multi_return_candidates,
-        );
+        let function_type_map = Self::assign_function_type_indices(ir, &user_type_map);
 
         Self {
             user_type_map,
@@ -111,17 +72,10 @@ impl WasmModuleTypeLayout {
     fn assign_function_type_indices(
         ir: &SimpleIR,
         user_type_map: &BTreeMap<usize, u32>,
-        multi_return_type_map: &BTreeMap<(usize, usize), u32>,
-        multi_return_candidates: &BTreeMap<String, usize>,
     ) -> BTreeMap<String, u32> {
         let mut function_type_map = BTreeMap::new();
         for func_ir in &ir.functions {
-            let type_idx = Self::function_type_idx(
-                func_ir,
-                user_type_map,
-                multi_return_type_map,
-                multi_return_candidates,
-            );
+            let type_idx = Self::function_type_idx(func_ir, user_type_map);
             if function_type_map
                 .insert(func_ir.name.clone(), type_idx)
                 .is_some()
@@ -132,39 +86,12 @@ impl WasmModuleTypeLayout {
                 );
             }
         }
-        for name in multi_return_candidates.keys() {
-            if !function_type_map.contains_key(name) {
-                panic!("multi-return candidate {name} has no wasm function type assignment");
-            }
-        }
         function_type_map
     }
 
-    fn function_type_idx(
-        func_ir: &FunctionIR,
-        user_type_map: &BTreeMap<usize, u32>,
-        multi_return_type_map: &BTreeMap<(usize, usize), u32>,
-        multi_return_candidates: &BTreeMap<String, usize>,
-    ) -> u32 {
+    fn function_type_idx(func_ir: &FunctionIR, user_type_map: &BTreeMap<usize, u32>) -> u32 {
         if func_ir.name.ends_with("_poll") {
-            if let Some(ret_count) = multi_return_candidates.get(&func_ir.name) {
-                panic!(
-                    "poll function {} cannot use multi-return wasm type with {} results",
-                    func_ir.name, ret_count
-                );
-            }
             return 2;
-        }
-        if let Some(&ret_count) = multi_return_candidates.get(&func_ir.name) {
-            let key = (func_ir.params.len(), ret_count);
-            return *multi_return_type_map.get(&key).unwrap_or_else(|| {
-                panic!(
-                    "missing multi-return wasm signature for {}: {} params -> {} results",
-                    func_ir.name,
-                    func_ir.params.len(),
-                    ret_count
-                )
-            });
         }
         *user_type_map.get(&func_ir.params.len()).unwrap_or_else(|| {
             panic!(

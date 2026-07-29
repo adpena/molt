@@ -35,7 +35,6 @@ impl WasmBackend {
             task_closure_sizes,
             default_trampoline_spec,
             function_has_ret,
-            multi_return_candidates,
         } = analysis;
 
         emit_static_type_section(&mut self.types);
@@ -74,7 +73,6 @@ impl WasmBackend {
             next_type_idx,
             max_func_arity,
             max_call_arity,
-            &multi_return_candidates,
         );
         let sentinel_func_idx =
             type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
@@ -89,7 +87,6 @@ impl WasmBackend {
             &task_kinds,
             &task_closure_sizes,
             &function_has_ret,
-            &multi_return_candidates,
             type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
@@ -109,7 +106,6 @@ impl WasmBackend {
             import_ids: &import_ids,
             native_callable_imports: &native_callable_imports,
             reloc_enabled,
-            multi_return_candidates: &multi_return_candidates,
             class_def_spill_offset: host_surface.class_def_spill_offset,
             const_str_scratch_segment: host_surface.const_str_scratch_segment,
             lir_lowering_plans: &lir_lowering_plans,

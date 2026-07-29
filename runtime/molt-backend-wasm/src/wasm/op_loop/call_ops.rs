@@ -1,6 +1,5 @@
 use super::super::module_abi::WasmCallableCallSiteAbi;
 use super::super::module_abi::WasmNativeCallableImports;
-use super::super::multi_return_layout::WasmMultiReturnLayout;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
@@ -32,8 +31,6 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) runtime_lookup_only_vars: &'a BTreeSet<String>,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
-    pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
-    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
     pub(super) func_index: u32,
     pub(super) func_import_count: u32,

@@ -53,7 +53,6 @@ pub(super) struct WasmCallableTrampolineEntry {
     target_func_index: u32,
     target: WasmCallableTableTarget,
     spec: TrampolineSpec,
-    multi_return_count: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -397,7 +396,6 @@ impl WasmBackend {
                 entry.target_func_index,
                 entry.target,
                 entry.spec,
-                entry.multi_return_count,
             );
         }
     }
