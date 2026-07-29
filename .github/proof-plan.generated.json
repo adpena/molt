@@ -30,9 +30,13 @@
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
+    "tools/proof_queue_pkg/command_envelope.py",
     "tools/proof_queue_pkg/evidence.py",
     "tools/proof_queue_pkg/custody.py",
     "tools/proof_queue_pkg/diagnostics.py",
+    "tools/proof_queue_pkg/policy.py",
+    "tools/proof_queue_pkg/runner.py",
+    "tools/proof_queue_pkg/scheduling.py",
     "tools/proof_queue_pkg/state.py",
     "tools/check_subprocess_guard_coverage.py",
     "tools/command_execution.py",
@@ -64,7 +68,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "c7b730f6ac857fdbcd241870199c7d4c10c3c5a222ce32c018c8f3afa84ed159",
+  "authority_sha256": "c3fdc8f53b8ff7ce401ac4c9e6bd424e01cc04c5f0f5bb515b81762a5421fd41",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",

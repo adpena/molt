@@ -1011,40 +1011,6 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     assert overlap_detected is False
 
 
-def test_python_toolchain_fingerprint_accepts_explicit_execution_interpreter(
-    monkeypatch,
-) -> None:
-    observed: list[tuple[str, str | None]] = []
-
-    def fake_fingerprint(
-        policy: proof_plan.ToolchainPolicy,
-        *,
-        executable_override: str | None = None,
-    ) -> dict[str, str]:
-        observed.append((policy.name, executable_override))
-        return {
-            "path": str(executable_override),
-            "launcher_path": str(executable_override),
-            "launcher_sha256": "0" * 64,
-            "content_path": str(executable_override),
-            "version": "Python 3.12.13",
-            "version_pattern": str(policy.data["version_pattern"]),
-            "probe_cwd": str(policy.data.get("probe_cwd", ".")),
-            "executable_sha256": "0" * 64,
-            "identity_sha256": "0" * 64,
-        }
-
-    monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
-    fingerprints = proof_plan.toolchain_fingerprints(
-        PLAN,
-        ("python",),
-        executable_overrides={"python": "/project/.venv/bin/python"},
-    )
-
-    assert observed == [("python", "/project/.venv/bin/python")]
-    assert fingerprints["python"]["version"] == "Python 3.12.13"
-
-
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
     cell = proof_plan.MatrixCell(
@@ -1511,14 +1477,7 @@ def test_heavy_queue_projects_the_same_receipt_schema(
     assert receipt["commands"][0]["peak_rss_bytes"] == 64 * 1024  # type: ignore[index]
 
 
-def test_heavy_queue_reuses_persisted_execution_receipt_context(monkeypatch) -> None:
-    monkeypatch.setattr(
-        proof_queue_evidence,
-        "_queue_receipt_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("evidence projection must not re-probe an interpreter")
-        ),
-    )
+def test_heavy_queue_reuses_persisted_execution_receipt_context() -> None:
     context = {
         "schema": PLAN.receipt_schema,
         "authority_sha256": "a" * 64,

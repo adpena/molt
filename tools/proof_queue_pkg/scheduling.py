@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from tools import lane_maturity
-from tools.proof_queue_pkg import evidence, interpreter, state
+from tools.proof_queue_pkg import command_envelope, evidence, state
 
 
 def _lane_maturity_admission(
@@ -300,7 +300,7 @@ def _insert_run(
         """
         INSERT INTO proof_runs (
             run_id, logical_id, reason, status, command_json,
-            python_interpreter_json, receipt_context_json, cwd,
+            command_envelope_json, receipt_context_json, cwd,
             resource_family, contention_key, resource_mutex_key, scopes_json,
             env_json, git_json, log_path, summary_json
         ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -310,7 +310,7 @@ def _insert_run(
             logical_id,
             reason,
             json.dumps(command),
-            json.dumps(interpreter.authority_for_command(command), sort_keys=True),
+            json.dumps(command_envelope.admission_envelope(command), sort_keys=True),
             json.dumps(
                 state._unattested_receipt_context(
                     status="not-executed",
@@ -373,7 +373,7 @@ def _admit_run(
             """
             INSERT INTO proof_runs (
                 run_id, logical_id, reason, status, command_json,
-                python_interpreter_json, receipt_context_json, cwd,
+                command_envelope_json, receipt_context_json, cwd,
                 resource_family, contention_key, resource_mutex_key,
                 scopes_json, env_json, git_json, log_path, summary_json
             ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -383,7 +383,7 @@ def _admit_run(
                 logical_id,
                 reason,
                 json.dumps(command),
-                json.dumps(interpreter.authority_for_command(command), sort_keys=True),
+                json.dumps(command_envelope.admission_envelope(command), sort_keys=True),
                 json.dumps(
                     state._unattested_receipt_context(
                         status="not-executed",
