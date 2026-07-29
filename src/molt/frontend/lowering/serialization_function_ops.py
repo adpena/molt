@@ -307,7 +307,10 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 if isinstance(runtime_symbol, str) and runtime_symbol:
                     entry["runtime_symbol"] = runtime_symbol
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
-                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_IMPORT_FROM":
@@ -320,6 +323,12 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 runtime_symbol = op.metadata.get("runtime_symbol")
                 if isinstance(runtime_symbol, str) and runtime_symbol:
                     entry["runtime_symbol"] = runtime_symbol
+                runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
+                    entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_GET_GLOBAL":
             entry = {
@@ -331,6 +340,12 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 runtime_symbol = op.metadata.get("runtime_symbol")
                 if isinstance(runtime_symbol, str) and runtime_symbol:
                     entry["runtime_symbol"] = runtime_symbol
+                runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
+                    entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_DEL_GLOBAL":
             ctx.json_ops.append(

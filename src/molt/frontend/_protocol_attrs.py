@@ -57,6 +57,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
+    _module_provenance_flow_stack: list[tuple[list[dict[str, frozenset[str]]], bool]]
     _op_by_result: dict[str, MoltOp]
     _sema: SemaResult | None
     _source_is_stdlib_module: Any
@@ -130,8 +131,8 @@ class _GeneratorProtocolAttrs(Protocol):
     global_elem_hints: dict[str, str]
     global_imported_attr_names: dict[str, str]
     global_imported_module_attr_mutations: set[tuple[str, str]]
-    global_imported_modules: dict[str, str]
     global_imported_module_provenance: dict[str, frozenset[str]]
+    global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     globals_builtin_emitted: Any
@@ -139,8 +140,4 @@ class _GeneratorProtocolAttrs(Protocol):
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
-    imported_modules: dict[str, str]
     imported_module_provenance: dict[str, frozenset[str]]
-    _module_provenance_flow_stack: list[
-        tuple[list[dict[str, frozenset[str]]], bool]
-    ]

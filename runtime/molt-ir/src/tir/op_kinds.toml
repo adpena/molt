@@ -413,6 +413,15 @@ simpleir_runtime_qualified_callable = [
 simpleir_runtime_protected_attribute_gateways = [
     "__dict__", "__getattr__", "__getattribute__",
 ]
+# First-class callable identities that can perform the same protected
+# acquisition after aliasing, storage, argument passing, or return. Direct
+# syntax may still prove a specific access safe before materializing a value;
+# once the callable itself is acquired, target admission must fail closed.
+simpleir_runtime_protected_gateway_callables = [
+    "builtins.getattr", "builtins.vars",
+    "inspect.getattr_static",
+    "operator.attrgetter", "operator.methodcaller",
+]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the
 # kind appears in the metadata set. `var` defaults to a source read; the sets

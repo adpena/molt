@@ -94,8 +94,8 @@ class ModuleGlobalsMixin(_MixinBase):
         attr_name = self.imported_attr_names.get(
             name, self.global_imported_attr_names.get(name, name)
         )
-        runtime_symbol = (
-            self._runtime_qualified_callable_symbol(module_name, attr_name)
+        metadata = (
+            self._runtime_qualified_callable_metadata(module_name, attr_name)
             if not self._local_name_shadows_import_binding(name)
             else None
         )
@@ -104,9 +104,7 @@ class ModuleGlobalsMixin(_MixinBase):
                 kind="MODULE_GET_GLOBAL",
                 args=[module_val, name_val],
                 result=res,
-                metadata=(
-                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
-                ),
+                metadata=metadata,
             )
         )
         return res
