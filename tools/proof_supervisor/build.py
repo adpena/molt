@@ -6,10 +6,18 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def main() -> int:
@@ -25,7 +33,7 @@ def main() -> int:
         profile = "release"
     if args.target:
         command.extend(("--target", args.target))
-    subprocess.run(command, cwd=ROOT, check=True)
+    _COMMANDS.run(command, cwd=ROOT, check=True, text=True)
 
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
     if not target_root.is_absolute():

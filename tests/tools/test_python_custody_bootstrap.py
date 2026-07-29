@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 import sys
 import zipfile
 
 from tools.proof_queue_pkg import python_custody_bootstrap
+from tests.process_guard_common import run_custody_subject_process
 
 
 def _run_application(target: Path) -> dict[str, object]:
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         [
             sys.executable,
             str(Path(python_custody_bootstrap.__file__).resolve()),

@@ -212,7 +212,32 @@ def test_guarded_entrypoint_scan_prefilters_non_candidates(
 
     monkeypatch.setattr(guarded_entrypoints.ast, "parse", fail_parse)
 
-    assert not guarded_entrypoints._imports_harness_memory_guard(path)
+    assert not guarded_entrypoints._imports_guarded_process_authority(path)
+
+
+def test_guarded_entrypoint_scan_recognizes_shared_test_process_authority(
+    tmp_path: Path,
+) -> None:
+    guarded_entrypoints._guarded_entrypoint_tokens.cache_clear()
+    harness = tmp_path / "tests" / "harness" / "runner.py"
+    benchmark = tmp_path / "tests" / "benchmarks" / "bench.py"
+    for path, source in (
+        (harness, "from tests import process_guard_common\n"),
+        (
+            benchmark,
+            "from tests.process_guard_common import run_guarded_test_process\n",
+        ),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    try:
+        tokens = guarded_entrypoints.guarded_entrypoint_tokens(tmp_path)
+    finally:
+        guarded_entrypoints._guarded_entrypoint_tokens.cache_clear()
+
+    assert "/tests/harness/runner.py" in tokens
+    assert "/tests/benchmarks/bench.py" in tokens
 
 
 def test_guarded_entrypoint_scan_skips_vendor_and_result_roots(

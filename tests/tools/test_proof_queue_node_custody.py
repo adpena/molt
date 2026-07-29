@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_custody_subject_process
+
 from tools.proof_queue_pkg import execution_custody
 
 
@@ -48,7 +50,7 @@ def _run_node(
         environment[execution_custody.CHILD_TOKEN_ENV] = token_override
     environment["NODE_OPTIONS"] = f"--no-global-search-paths --require={hook}"
     with server:
-        completed = subprocess.run(
+        completed = run_custody_subject_process(
             [node, "-e", script],
             env=environment,
             check=False,

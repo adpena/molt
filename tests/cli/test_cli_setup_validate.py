@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
-NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
@@ -497,6 +496,7 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     assert run_calls[0]["env"] == {
         "PATH": "/usr/bin",
         "RUSTC_WRAPPER": "/usr/bin/sccache",
+        "CARGO_INCREMENTAL": "0",
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
     assert run_calls[1]["env"] == {
@@ -637,16 +637,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     )
     monkeypatch.setattr(
         cli.shutil,
-        "which",
-        lambda name: (
-            f"/usr/bin/{name}"
-            if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
-            else None
-        ),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        NATIVE_LINK_DEPS.shutil,
         "which",
         lambda name: (
             f"/usr/bin/{name}"
@@ -1216,6 +1206,7 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
         "uv": "uv",
         "cargo": "cargo",
         "rustup": "rustup",
+        "rustc": "rustc",
         "cargo-upgrade": "cargo-upgrade",
         "clang": "C:/Program Files/LLVM/bin/clang.exe",
         "cmake": "cmake",
@@ -1239,7 +1230,10 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
         raising=True,
     )
 
-    def fake_run(cmd, **_kwargs):
+    guarded_probe_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd, **kwargs):
+        guarded_probe_calls.append((cmd, kwargs))
         if cmd == ["C:/Program Files/LLVM/bin/clang.exe", "--version"]:
             return subprocess.CompletedProcess(
                 cmd,
@@ -1247,9 +1241,13 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
                 "clang version 22.1.7\nTarget: x86_64-pc-windows-msvc\n",
                 "",
             )
+        if cmd == ["rustc", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, "rustc 1.96.1\n", "")
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
-    monkeypatch.setattr(SETUP_READINESS.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(
+        SETUP_READINESS, "_run_completed_command", fake_run, raising=True
+    )
 
     report = SETUP_READINESS._build_toolchain_report(ROOT)
     llvm = next(
@@ -1259,6 +1257,13 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
     assert llvm["ok"] is False
     assert "clang is present" in llvm["detail"]
     assert "llvm-config" in llvm["detail"]
+    guarded_commands = {tuple(command) for command, _kwargs in guarded_probe_calls}
+    assert ("C:/Program Files/LLVM/bin/clang.exe", "--version") in guarded_commands
+    assert ("rustc", "--version") in guarded_commands
+    assert all(
+        kwargs["memory_guard_prefix"] == "MOLT_BUILD"
+        for _command, kwargs in guarded_probe_calls
+    )
 
 
 def test_windows_msvc_env_reports_inactive_dev_shell(
@@ -1297,8 +1302,8 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
         raising=True,
     )
     monkeypatch.setattr(
-        SETUP_READINESS.subprocess,
-        "run",
+        SETUP_READINESS,
+        "_run_completed_command",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0],
             0,
@@ -1314,6 +1319,50 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
     assert msvc["ok"] is False
     assert "cl.exe is not active" in msvc["detail"]
     assert any("VsDevCmd.bat" in advice for advice in msvc["advice"])
+
+
+def test_windows_vsdevcmd_probe_uses_build_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vswhere = tmp_path / "vswhere.exe"
+    vswhere.write_text("", encoding="utf-8")
+    installation = tmp_path / "Visual Studio"
+    vsdevcmd = installation / "Common7" / "Tools" / "VsDevCmd.bat"
+    vsdevcmd.parent.mkdir(parents=True)
+    vsdevcmd.write_text("", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, f"{installation}\n", "")
+
+    monkeypatch.setattr(
+        SETUP_READINESS, "_windows_vswhere_path", lambda: vswhere, raising=True
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "_run_completed_command", fake_run, raising=True
+    )
+
+    assert SETUP_READINESS._windows_vsdevcmd_path() == vsdevcmd
+    assert captured["command"] == [
+        str(vswhere),
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+    ]
+    assert captured["kwargs"] == {
+        "env": None,
+        "cwd": None,
+        "capture_output": True,
+        "memory_guard_prefix": "MOLT_BUILD",
+        "timeout": 10,
+    }
 
 
 def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
@@ -1468,5 +1517,5 @@ def test_cli_debug_eval_command_uses_guarded_timeout(
 def test_install_wrappers_delegate_into_setup() -> None:
     shell_text = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
     powershell_text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
-    assert "molt setup" in shell_text
-    assert "molt setup" in powershell_text.lower()
+    assert '"$molt_bin" setup --strict' in shell_text
+    assert "& $moltcommand setup --strict" in powershell_text.lower()

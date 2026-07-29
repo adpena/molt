@@ -185,7 +185,7 @@ def run_completed_command(
         result.stderr = None
     if stdout == subprocess.DEVNULL:
         result.stdout = None
-    if result.timed_out:
+    if bool(getattr(result, "timed_out", False)):
         if timeout is None:
             raise RuntimeError(
                 "guarded subprocess reported a timeout without a requested "

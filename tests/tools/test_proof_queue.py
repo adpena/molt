@@ -1,5 +1,9 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import (
+    check_output_custody_subject_process,
+    run_custody_subject_process,
+    run_guarded_test_process,
+)
 
 import argparse
 import base64
@@ -65,7 +69,7 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
     build = Path(command_envelope.__file__).resolve().parents[1] / "proof_supervisor" / "build.py"
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         [sys.executable, str(build), "--release"],
         check=True,
         text=True,
@@ -97,7 +101,7 @@ def _synthetic_v3_custody(
     binary = Path(str(binary_artifact["path"])).resolve(strict=True)
     command = [str(binary), "capability", "leaf"]
     policy = {
-        "schema": "molt.proof-process-closure.v1",
+        "schema": "molt.proof-process-closure.v2",
         "nonce": nonce,
         "mode": "leaf" if descendants == "forbidden" else "declared-tree",
         "cwd": str(directory.resolve()),
@@ -116,7 +120,7 @@ def _synthetic_v3_custody(
     policy_path = directory / "synthetic-supervisor-policy.json"
     receipt_path = directory / "synthetic-supervisor-receipt.json"
     command_envelope._atomic_json(policy_path, policy)
-    subprocess.run(
+    run_custody_subject_process(
         [
             str(binary),
             "run",
@@ -1366,7 +1370,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         "Scripts/python.exe" if os.name == "nt" else "bin/python"
     )
     purelib = Path(
-        subprocess.check_output(
+        check_output_custody_subject_process(
             [
                 str(executable),
                 "-c",
@@ -1399,7 +1403,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     }
     identities = []
     for workers in (1, 4):
-        clean = subprocess.run(
+        clean = run_custody_subject_process(
             [
                 str(executable),
                 str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1436,7 +1440,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     pyvenv_config = environment / "pyvenv.cfg"
     original_config = pyvenv_config.read_bytes()
     pyvenv_config.write_bytes(original_config + b"\n# custody mutation\n")
-    changed_runtime = subprocess.run(
+    changed_runtime = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1465,7 +1469,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         "custody_demo-1.0.dist-info/RECORD,,\n",
         encoding="utf-8",
     )
-    escaped = subprocess.run(
+    escaped = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1489,7 +1493,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         encoding="utf-8",
     )
     module.write_bytes(b"tampered\n")
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1507,7 +1511,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
 
     module.write_bytes(b"original\n")
     (dist_info / "RECORD").unlink()
-    missing_inventory = subprocess.run(
+    missing_inventory = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1533,7 +1537,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
         "Scripts/python.exe" if os.name == "nt" else "bin/python"
     )
     purelib = Path(
-        subprocess.check_output(
+        check_output_custody_subject_process(
             [
                 str(executable),
                 "-c",
@@ -1569,7 +1573,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     probe_env = {
         name: value for name, value in os.environ.items() if name != "PYTHONPATH"
     }
-    owned = subprocess.run(
+    owned = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1602,7 +1606,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     outside = tmp_path.parent / f"{tmp_path.name}-outside-symlink.py"
     outside.write_bytes(target.read_bytes())
     os.symlink(outside, linked)
-    escaped = subprocess.run(
+    escaped = run_custody_subject_process(
         [
             str(executable),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1642,14 +1646,14 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
     )
     (project / "custody_ambiguous.py").write_text("VALUE = 1\n", encoding="utf-8")
     (source / "custody_ambiguous.py").write_text("VALUE = 2\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=project, check=True)
-    subprocess.run(
+    run_custody_subject_process(["git", "add", "."], cwd=project, check=True)
+    run_custody_subject_process(
         ["git", "commit", "-q", "-m", "ambiguous source metadata"],
         cwd=project,
         check=True,
     )
     environment = {**os.environ, "PYTHONPATH": str(source)}
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         [
             str(custody_python),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1667,7 +1671,7 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
 
     shutil.rmtree(metadata_root)
     purelib = Path(
-        subprocess.check_output(
+        check_output_custody_subject_process(
             [
                 str(custody_python),
                 "-c",
@@ -1701,7 +1705,7 @@ def test_python_probe_rejects_ambiguous_source_distribution_ownership(
         "custody_ambiguous-1.0.dist-info/RECORD,,\n",
         encoding="utf-8",
     )
-    direct = subprocess.run(
+    direct = run_custody_subject_process(
         [
             str(custody_python),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1742,7 +1746,7 @@ def test_python_probe_rejects_source_metadata_symlink_escape(
     except OSError as exc:
         pytest.skip(f"symlink creation unavailable: {exc}")
     environment = {**os.environ, "PYTHONPATH": str(source)}
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         [
             str(custody_python),
             str(command_envelope._PYTHON_IDENTITY_PROBE),
@@ -1761,15 +1765,15 @@ def test_python_probe_rejects_source_metadata_symlink_escape(
 
 def _initialize_clean_git_repo(path: Path) -> str:
     path.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(
+    run_custody_subject_process(["git", "init", "-q"], cwd=path, check=True)
+    run_custody_subject_process(
         ["git", "config", "user.email", "proof@example.invalid"], cwd=path, check=True
     )
-    subprocess.run(["git", "config", "user.name", "Proof Queue"], cwd=path, check=True)
+    run_custody_subject_process(["git", "config", "user.name", "Proof Queue"], cwd=path, check=True)
     (path / "tracked.txt").write_text("initial\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True)
-    return subprocess.check_output(
+    run_custody_subject_process(["git", "add", "tracked.txt"], cwd=path, check=True)
+    run_custody_subject_process(["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True)
+    return check_output_custody_subject_process(
         ["git", "rev-parse", "HEAD"], cwd=path, text=True
     ).strip()
 
@@ -1802,6 +1806,7 @@ def _execute_request(
                 "cwd": str(repo),
                 "resource_family": resource_family,
                 "result_path": str(result),
+                "timeout_seconds": 120.0,
             }
         ),
         encoding="utf-8",
@@ -1835,6 +1840,7 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
         env_override_names=[],
         log_path=log,
         summary_path=log.with_suffix(".memory_guard.json"),
+        timeout_seconds=30.0,
     )
     request = json.loads(request_path.read_text(encoding="utf-8"))
     assert persisted == envelope
@@ -1851,6 +1857,7 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
         env_override_names=[],
         log_path=log,
         summary_path=log.with_suffix(".memory_guard.json"),
+        timeout_seconds=30.0,
     )
     assert second_nonce != first_nonce
 
@@ -2150,8 +2157,8 @@ def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) 
         "+mutated\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "mutation.patch"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add mutation"], cwd=repo, check=True)
+    run_custody_subject_process(["git", "add", "mutation.patch"], cwd=repo, check=True)
+    run_custody_subject_process(["git", "commit", "-q", "-m", "add mutation"], cwd=repo, check=True)
     rc, record = _execute_request(
         repo,
         tmp_path / "mutated-execution.json",
@@ -2220,8 +2227,8 @@ def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -
     package = repo / "package"
     package.mkdir()
     (package / "input.txt").write_text("owned\n", encoding="utf-8")
-    subprocess.run(["git", "add", "package/input.txt"], cwd=repo, check=True)
-    subprocess.run(
+    run_custody_subject_process(["git", "add", "package/input.txt"], cwd=repo, check=True)
+    run_custody_subject_process(
         ["git", "commit", "-q", "-m", "add tracked package"], cwd=repo, check=True
     )
     command = [
@@ -2345,7 +2352,7 @@ def test_python_bootstrap_command_and_stdin_argv_semantics(
     if target is not None:
         command.append(target)
     command.append("payload")
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         command,
         input=(
             "import json,sys; print(json.dumps(sys.argv))"
@@ -2387,7 +2394,7 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
         if key != "PYTHONPATH" and not key.startswith("MOLT_PROOF_CHILD_CUSTODY")
     }
 
-    module = subprocess.run(
+    module = run_custody_subject_process(
         [
             sys.executable,
             "-S",
@@ -2411,7 +2418,7 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     assert module_payload["package"] == "sample_package"
     assert module_payload["spec"] == "sample_package.__main__"
 
-    script_result = subprocess.run(
+    script_result = run_custody_subject_process(
         [
             sys.executable,
             "-I",
@@ -2447,7 +2454,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
         [sys.executable, "-m", "pytest", "-q", str(test_file)],
     )
     assert rewritten.count("no:cacheprovider") == 1
-    completed = subprocess.run(
+    completed = run_custody_subject_process(
         rewritten,
         cwd=tmp_path,
         env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
@@ -2517,7 +2524,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     assert supervisor["schema"] == "molt.proof-process-supervision.v1"
     assert supervisor["supervisor_returncode"] == 0
     assert supervisor["receipt"]["schema"] == (
-        "molt.proof-process-closure-receipt.v2"
+        "molt.proof-process-closure-receipt.v3"
     )
     assert supervisor["receipt"]["state"] == "COMPLETE"
     assert supervisor["receipt"]["complete"] is True
@@ -2546,10 +2553,10 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     (repo / "rust-toolchain.toml").write_text(
         '[toolchain]\nchannel = "1.96.1"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_custody_subject_process(
         ["cargo", "generate-lockfile", "--offline"], cwd=repo, check=True
     )
-    subprocess.run(
+    run_custody_subject_process(
         [
             "git",
             "add",
@@ -2561,7 +2568,7 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
         cwd=repo,
         check=True,
     )
-    subprocess.run(
+    run_custody_subject_process(
         ["git", "commit", "-q", "-m", "minimal cargo link"], cwd=repo, check=True
     )
     persistent_target = tmp_path / "persistent-cargo-target"
@@ -2652,7 +2659,7 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
     hook = Path(execution_custody.__file__).with_name("node_child_custody.cjs")
     env["NODE_OPTIONS"] = f"--no-global-search-paths --require={hook}"
     with server:
-        completed = subprocess.run([node, "-e", script], env=env, check=False)
+        completed = run_custody_subject_process([node, "-e", script], env=env, check=False)
     assert completed.returncode == 0
     receipt = server.receipt()
     assert any(
@@ -2686,6 +2693,7 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
                 "cwd": str(repo),
                 "resource_family": "python-tests",
                 "result_path": str(result),
+                "timeout_seconds": 30.0,
             }
         ),
         encoding="utf-8",
@@ -2812,6 +2820,7 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
                 "cwd": str(repo),
                 "resource_family": "python-tests",
                 "result_path": str(result),
+                "timeout_seconds": 30.0,
             }
         ),
         encoding="utf-8",

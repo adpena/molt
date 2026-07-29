@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import os
 import runpy
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+
+from tests.process_guard_common import run_custody_subject_process
 
 from tools.proof_queue_pkg import execution_custody
 
@@ -42,7 +43,7 @@ def test_python_payload_cannot_replace_private_audit_enforcement(
     environment.update(server.environment())
 
     with server:
-        completed = subprocess.run(
+        completed = run_custody_subject_process(
             [sys.executable, bootstrap, "command", "0", payload],
             env=environment,
             check=False,

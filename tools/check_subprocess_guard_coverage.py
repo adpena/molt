@@ -347,12 +347,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git/rustup/rustc/cargo metadata probes for Rust toolchain contract checks",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/setup_readiness.py",
-        "_build_toolchain_report",
-        "run",
-        "bounded rustc version metadata probe for setup-readiness diagnostics",
-    ),
-    AllowedRawSubprocessUse(
         "tools/dirty_tree_landing_audit.py",
         "_run_git",
         "run",
@@ -472,6 +466,56 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "start_owned_test_process",
         "Popen",
         "single platform process-group boundary for caller-owned interactive test children",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/process_guard_common.py",
+        "run_custody_subject_process",
+        "run",
+        "single typed and deadline-bounded boundary for processes whose raw custody behavior is the test subject",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/command_execution.py",
+        "CommandExecutor.wait_owned",
+        "process.terminate",
+        "canonical finite wait cleans only the exact typed-argv process owned by its caller",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/command_execution.py",
+        "CommandExecutor.wait_owned",
+        "process.kill",
+        "canonical finite wait escalates only its exact unreaped owned process",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue_pkg/python_identity_probe.py",
+        "run_git_probe",
+        "run",
+        "isolated interpreter identity probe owns one bounded read-only Git metadata boundary",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/rust_ir_verifier.py",
+        "RustIrVerifier.close",
+        "process.terminate",
+        "verifier transport closes only the exact long-lived child it created",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/rust_ir_verifier.py",
+        "RustIrVerifier.close",
+        "process.kill",
+        "verifier transport escalates only its exact unreaped child after bounded terminate custody",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/verify_ir_suite.py",
+        "_run_worker_pool_owned.stop_worker",
+        "process.terminate",
+        "IR supervisor terminates only an exact compiler worker it launched and indexed",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/verify_ir_suite.py",
+        "_run_worker_pool_owned.stop_worker",
+        "process.kill",
+        "IR supervisor escalates only its exact unreaped compiler worker after bounded join custody",
     ),
     AllowedRawSubprocessUse(
         "tests/tools/test_build_graph_audit.py",
@@ -729,18 +773,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "Popen",
         "backend daemon start uses HarnessExecutionContext, process-group kwargs, "
         "and repo-sentinel startup custody",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli/setup_readiness.py",
-        "_clang_llvm_version_detail",
-        "run",
-        "bounded clang version probe for explicit toolchain validation",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli/setup_readiness.py",
-        "_windows_vsdevcmd_path",
-        "run",
-        "bounded vswhere metadata probe for explicit Windows toolchain validation",
     ),
     AllowedRawSubprocessUse(
         "src/molt_accel/client.py",
