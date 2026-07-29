@@ -154,6 +154,19 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append("    }\n")
     out.append(")\n\n")
 
+    protected_acquisition_attrs = sorted(
+        set(protected_attrs)
+        | set(data.get("simpleir_runtime_protected_attribute_gateways", []))
+    )
+    out.append(
+        "SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS: frozenset[str] = frozenset(\n"
+    )
+    out.append("    {\n")
+    for attr in protected_acquisition_attrs:
+        out.append(f'        "{attr}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
+
     for effect, const_name in (
         ("pure", "FRONTEND_EFFECT_PURE_KINDS"),
         ("reads_heap", "FRONTEND_EFFECT_READS_HEAP_KINDS"),

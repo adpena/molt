@@ -580,13 +580,16 @@ class SerializationBasicOpsMixin(_MixinBase):
                 }
             )
         elif op.kind == "CALL_FUNC":
-            ctx.json_ops.append(
-                {
-                    "kind": "call_func",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "call_func",
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            if op.metadata is not None:
+                runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
+                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                    entry["runtime_requirement_bits"] = runtime_requirement_bits
+            ctx.json_ops.append(entry)
         elif op.kind == "INVOKE_FFI":
             lane = ""
             native_callable_export = ""

@@ -1026,6 +1026,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         obj_name: str | None = None,
     ) -> MoltValue: ...
 
+    def _emit_getattr_name_default(
+        self,
+        obj: MoltValue,
+        name: MoltValue,
+        default: MoltValue,
+        result: MoltValue,
+        *,
+        literal_name: str | None,
+        exact_class: str | None = None,
+    ) -> None: ...
+
     def _emit_guarded_property_get(
         self,
         obj: MoltValue,
@@ -1246,6 +1257,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_module_attr_set_on(
         self, module_val: MoltValue, name: str, value: MoltValue
     ) -> None: ...
+
+    def _runtime_protected_attribute_requirement_bits(
+        self,
+        obj: MoltValue,
+        attr: str | None,
+        *,
+        exact_class: str | None,
+    ) -> int: ...
 
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None: ...
 

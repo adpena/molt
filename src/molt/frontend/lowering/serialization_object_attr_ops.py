@@ -454,13 +454,16 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                 }
             )
         elif op.kind == "GETATTR_NAME_DEFAULT":
-            ctx.json_ops.append(
-                {
-                    "kind": "get_attr_name_default",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "get_attr_name_default",
+                "args": [arg.name for arg in op.args],
+                "out": op.result.name,
+            }
+            if op.metadata is not None:
+                runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
+                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                    entry["runtime_requirement_bits"] = runtime_requirement_bits
+            ctx.json_ops.append(entry)
         elif op.kind == "HASATTR_NAME":
             ctx.json_ops.append(
                 {
