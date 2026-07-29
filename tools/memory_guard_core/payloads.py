@@ -94,6 +94,10 @@ def _windows_job_accounting_payload(accounting: Any) -> dict[str, object]:
         "active_processes": accounting.active_processes,
         "total_terminated_processes": accounting.total_terminated_processes,
         "peak_job_commit_bytes": accounting.peak_job_commit_bytes,
+        "total_user_time_100ns": accounting.total_user_time_100ns,
+        "total_kernel_time_100ns": accounting.total_kernel_time_100ns,
+        "total_cpu_seconds": accounting.total_cpu_seconds,
+        "total_page_fault_count": accounting.total_page_fault_count,
     }
 
 

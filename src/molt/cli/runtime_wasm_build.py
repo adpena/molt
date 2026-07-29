@@ -20,9 +20,6 @@ from molt.cli.atomic_io import (
     _atomic_copy_file,
 )
 from molt.cli.build_locks import _build_lock
-from molt.cli.cargo_execution import (
-    _maybe_enable_sccache,
-)
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -108,7 +105,12 @@ class _RuntimeWasmMemberBuild:
         return _build_state_root(self.root)
 
     def finalize_publication(self) -> bool:
-        preserve_debug = any(
+        # Relocatable objects retain every custom section until the final link.
+        # Removing ``name``/debug sections shifts section ordinals while the
+        # linking symbol table and reloc.* sections still reference the original
+        # indices, producing an object that validates as core WASM but crashes
+        # LLVM when consumed. Only final shared artifacts may strip them.
+        preserve_debug = self.reloc or any(
             marker in self.spec.cargo_profile.lower() for marker in ("dev", "debug")
         )
         started = time.perf_counter()
@@ -584,10 +586,6 @@ def _build_runtime_wasm_member(ctx: _RuntimeWasmMemberBuild) -> bool:
         _configure_wasm_cc_env(env)
     _configure_wasi_sysroot_env(env)
     _configure_wasm_long_double_env(env)
-    if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
-        _maybe_enable_sccache(env)
-    else:
-        env.pop("RUSTC_WRAPPER", None)
     started = time.perf_counter()
     try:
         build, src = _run_runtime_wasm_cargo_build(

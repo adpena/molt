@@ -24,9 +24,6 @@ from molt.cli.artifact_state import (
 from molt.cli.atomic_io import (
     _atomic_write_text,
 )
-from molt.cli.cargo_execution import (
-    _maybe_enable_sccache,
-)
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
 )
@@ -192,10 +189,6 @@ def _combined_runtime_wasm_command(
         _configure_wasm_cc_env(env)
     _configure_wasi_sysroot_env(env)
     _configure_wasm_long_double_env(env)
-    if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
-        _maybe_enable_sccache(env)
-    else:
-        env.pop("RUSTC_WRAPPER", None)
     cmd = [
         "cargo",
         "rustc",

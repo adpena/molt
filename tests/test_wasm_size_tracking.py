@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
@@ -37,7 +36,7 @@ def _build_and_measure(src_path: Path, tmp_path: Path, target: str = "wasm") -> 
             str(linked),
         ],
         cwd=PROJECT_ROOT,
-        env=os.environ,
+        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
         timeout=180,
     )
     if result.returncode != 0:

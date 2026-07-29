@@ -19,7 +19,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tools import wasm_optimize
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -42,10 +43,6 @@ def _find_wasm_ld() -> str | None:
     return wasm_link._find_wasm_ld()
 
 
-def _find_wasm_opt() -> str | None:
-    return shutil.which("wasm-opt")
-
-
 def _find_wasmtime() -> str | None:
     return shutil.which("wasmtime")
 
@@ -58,21 +55,13 @@ def _molt_build(
     extra_env: dict[str, str] | None = None,
 ) -> Path | None:
     """Run `molt build` and return the output .wasm path, or None on failure."""
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
-    )
-    env["MOLT_BACKEND_DAEMON"] = "0"
+    env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
         env["MOLT_WASM_LINK"] = "1"
         wasm_ld_path = _find_wasm_ld()
         if wasm_ld_path:
             ld_dir = str(Path(wasm_ld_path).parent)
             env["PATH"] = ld_dir + os.pathsep + env.get("PATH", "")
-    else:
-        env["MOLT_WASM_LINKED"] = "0"
     if extra_env:
         env.update(extra_env)
     cmd = [
@@ -105,32 +94,16 @@ def _molt_build(
     return None
 
 
-def _wasm_opt(input_path: Path, output_path: Path) -> bool:
-    """Run wasm-opt -Oz on input, return True on success."""
-    wasm_opt = _find_wasm_opt()
-    if not wasm_opt:
-        return False
-    result = _run_wasm_test_process(
-        [
-            wasm_opt,
-            "-Oz",
-            "--enable-reference-types",
-            "--enable-bulk-memory",
-            "--enable-simd",
-            "--enable-sign-ext",
-            "--enable-mutable-globals",
-            "--enable-nontrapping-float-to-int",
-            "--strip-debug",
-            "--no-validation",
-            str(input_path),
-            "-o",
-            str(output_path),
-        ],
-        cwd=ROOT,
-        env=os.environ,
+def _wasm_opt(input_path: Path, output_path: Path) -> dict[str, object]:
+    """Run the canonical Oz optimizer and return its typed result."""
+    return wasm_optimize.optimize(
+        input_path,
+        output_path=output_path,
+        level="Oz",
+        extra_passes=("--strip-debug",),
+        required_exports=wasm_optimize._collect_exports(input_path),
         timeout=120,
     )
-    return result.returncode == 0 and output_path.exists()
 
 
 def _wasmtime_run(wasm_path: Path) -> tuple[bool, str]:
@@ -181,16 +154,20 @@ def test_wasm_pipeline_external_tools_use_guarded_process(
 ) -> None:
     input_wasm = tmp_path / "in.wasm"
     output_wasm = tmp_path / "out.wasm"
-    input_wasm.write_bytes(b"\x00asm")
-    calls: list[list[str]] = []
+    input_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    process_calls: list[list[str]] = []
+    optimizer_calls: list[tuple[Path, dict[str, object]]] = []
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        calls.append(list(cmd))
-        if "-o" in cmd:
-            output_wasm.write_bytes(b"\x00asm")
+        process_calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, stdout="42\n", stderr="")
 
-    monkeypatch.setattr(sys.modules[__name__], "_find_wasm_opt", lambda: "wasm-opt")
+    def fake_optimize(input_path, **kwargs):  # type: ignore[no-untyped-def]
+        optimizer_calls.append((input_path, kwargs))
+        output_wasm.write_bytes(b"\x00asm")
+        return {"ok": True}
+
+    monkeypatch.setattr(wasm_optimize, "optimize", fake_optimize)
     monkeypatch.setattr(sys.modules[__name__], "_find_wasmtime", lambda: "wasmtime")
     monkeypatch.setattr(
         sys.modules[__name__],
@@ -198,10 +175,21 @@ def test_wasm_pipeline_external_tools_use_guarded_process(
         fake_run,
     )
 
-    assert _wasm_opt(input_wasm, output_wasm) is True
+    assert _wasm_opt(input_wasm, output_wasm)["ok"] is True
     assert _wasmtime_run(output_wasm) == (True, "42")
-    assert calls[0][0] == "wasm-opt"
-    assert calls[1][0] == "wasmtime"
+    assert optimizer_calls == [
+        (
+            input_wasm,
+            {
+                "output_path": output_wasm,
+                "level": "Oz",
+                "extra_passes": ("--strip-debug",),
+                "required_exports": set(),
+                "timeout": 120,
+            },
+        )
+    ]
+    assert process_calls[0][0] == "wasmtime"
 
 
 # ---------------------------------------------------------------------------
@@ -238,25 +226,31 @@ def pipeline_results() -> dict:
                     "size": linked.stat().st_size,
                 }
 
+        optimizer_available = wasm_optimize.find_wasm_opt() is not None
+
         # Stage 3: wasm-opt optimization (on standalone)
-        if "standalone" in results["stages"]:
+        if "standalone" in results["stages"] and optimizer_available:
             opt_path = tmpdir_path / "output_optimized.wasm"
             src = results["stages"]["standalone"]["path"]
-            if _wasm_opt(src, opt_path):
-                results["stages"]["optimized"] = {
-                    "path": opt_path,
-                    "size": opt_path.stat().st_size,
-                }
+            optimize_result = _wasm_opt(src, opt_path)
+            assert optimize_result["ok"], optimize_result["error"]
+            assert opt_path.exists(), "canonical optimizer published no artifact"
+            results["stages"]["optimized"] = {
+                "path": opt_path,
+                "size": opt_path.stat().st_size,
+            }
 
         # Stage 4: wasm-opt on linked
-        if "linked" in results["stages"]:
+        if "linked" in results["stages"] and optimizer_available:
             linked_opt = tmpdir_path / "linked_optimized.wasm"
             src = results["stages"]["linked"]["path"]
-            if _wasm_opt(src, linked_opt):
-                results["stages"]["linked_optimized"] = {
-                    "path": linked_opt,
-                    "size": linked_opt.stat().st_size,
-                }
+            optimize_result = _wasm_opt(src, linked_opt)
+            assert optimize_result["ok"], optimize_result["error"]
+            assert linked_opt.exists(), "canonical optimizer published no artifact"
+            results["stages"]["linked_optimized"] = {
+                "path": linked_opt,
+                "size": linked_opt.stat().st_size,
+            }
 
         # Report
         print("\n=== WASM Pipeline Size Report ===")

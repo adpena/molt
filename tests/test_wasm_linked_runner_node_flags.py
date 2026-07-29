@@ -307,7 +307,9 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
-    monkeypatch.delenv("MOLT_WASM_DISABLE_SCCACHE", raising=False)
+    monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
+    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     output = wasm_runner.build_wasm_linked(root, src, tmp_path)
 
@@ -319,7 +321,69 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
     )
     assert "MOLT_REQUIRE_EXTERNAL_ARTIFACTS" not in env
     assert "CARGO_BUILD_JOBS" not in env
-    assert "MOLT_WASM_DISABLE_SCCACHE" not in env
+
+
+def test_wasm_test_build_env_delegates_cargo_parallelism_and_cache_policy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def _fake_development_artifact_env(
+        repo_root: Path,
+        base: dict[str, str],
+        **kwargs: object,
+    ) -> dict[str, str]:
+        calls.append({"repo_root": repo_root, "base": dict(base), **kwargs})
+        env = dict(base)
+        env["PYTHONPATH"] = str(repo_root / "src")
+        return env
+
+    monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
+    monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
+    monkeypatch.setattr(
+        wasm_runner,
+        "development_artifact_env",
+        _fake_development_artifact_env,
+    )
+
+    env = wasm_runner.wasm_test_build_env(
+        tmp_path,
+        linked=False,
+        session_prefix="browser-proof",
+        session_id="browser-proof-local",
+        create_dirs=False,
+    )
+
+    assert env["PYTHONPATH"] == str(tmp_path / "src")
+    assert env["MOLT_WASM_LINKED"] == "0"
+    assert "CARGO_BUILD_JOBS" not in env
+    assert len(calls) == 1
+    assert calls[0]["repo_root"] == tmp_path
+    assert calls[0]["session_prefix"] == "browser-proof"
+    assert calls[0]["session_id"] == "browser-proof-local"
+    assert calls[0]["create_dirs"] is False
+
+    calls.clear()
+    wasm_runner.wasm_test_build_env(
+        tmp_path,
+        base_env={
+            "MOLT_SESSION_ID": "pytest-ephemeral",
+            "MOLT_SESSION_ID_GENERATED": "1",
+        },
+        create_dirs=False,
+    )
+    assert calls[0]["session_id"] == "test-wasm-local"
+
+    explicit = wasm_runner.wasm_test_build_env(
+        tmp_path,
+        base_env={
+            "CARGO_BUILD_JOBS": "3",
+            "MOLT_USE_SCCACHE": "0",
+        },
+    )
+    assert explicit["CARGO_BUILD_JOBS"] == "3"
+    assert explicit["MOLT_USE_SCCACHE"] == "0"
 
 
 def test_wasm_test_target_dir_uses_stable_local_lane(
@@ -412,8 +476,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     src = tmp_path / "direct_bootstrap.py"
     src.write_text("import abc\nprint('after')\n", encoding="utf-8")
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
+    env = wasm_runner.wasm_test_build_env(root)
     build = wasm_runner._run_wasm_test_process(
         [
             sys.executable,

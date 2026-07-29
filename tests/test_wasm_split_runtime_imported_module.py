@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
-from tests.wasm_linked_runner import _run_wasm_test_process
+from molt.dx import cargo_target_dir_for_artifact_root
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,19 +44,11 @@ def _split_runtime_imported_module_build_env(
     *,
     session_id: str = "split-runtime-imported-module",
 ) -> dict[str, str]:
-    env = development_artifact_env(
+    return wasm_test_build_env(
         ROOT,
-        os.environ,
         session_prefix=session_id,
         session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
-        create_dirs=True,
     )
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    return env
 
 
 def test_split_runtime_imported_module_target_dir_respects_explicit_env_override() -> (

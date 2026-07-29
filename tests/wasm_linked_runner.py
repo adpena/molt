@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+from molt.dx import development_artifact_env, generated_session_id
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
 
@@ -244,6 +245,40 @@ def require_wasm_toolchain() -> None:
     require_wasm_build_toolchain()
 
 
+def wasm_test_build_env(
+    root: Path,
+    *,
+    base_env: Mapping[str, str] | None = None,
+    linked: bool | None = None,
+    session_prefix: str = "test-wasm",
+    session_id: str | None = None,
+    create_dirs: bool = True,
+) -> dict[str, str]:
+    """Return shared WASM test policy without overriding Cargo/DX authority."""
+    base = dict(os.environ if base_env is None else base_env)
+    inherited_session_id = base.get("MOLT_SESSION_ID", "").strip()
+    if generated_session_id(base):
+        inherited_session_id = ""
+    resolved_session_id = (
+        session_id
+        or inherited_session_id
+        or f"{session_prefix}-{_wasm_test_lane()}"
+    )
+    env = development_artifact_env(
+        root,
+        base,
+        session_prefix=session_prefix,
+        session_id=resolved_session_id,
+        create_dirs=create_dirs,
+    )
+    if linked is not None:
+        env["MOLT_WASM_LINKED"] = "1" if linked else "0"
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    return env
+
+
 def build_wasm_linked(
     root: Path,
     src: Path,
@@ -251,22 +286,16 @@ def build_wasm_linked(
     *,
     extra_args: list[str] | None = None,
 ) -> Path:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
     out_dir = _select_out_dir(out_dir, root)
     artifact_root = _linked_test_artifact_root(root, out_dir)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
-    env.setdefault(
-        "MOLT_SESSION_ID",
-        f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
+    env = wasm_test_build_env(
+        root,
+        linked=True,
+        session_id=f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
     )
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    # Cargo parallelism and wasm sccache policy are owned by the DX/cargo
-    # authorities. This helper must not silently force the cold serial path.
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     if allow_external and artifact_root != root:

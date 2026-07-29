@@ -84,6 +84,46 @@ from molt.cli.runtime_wasm_build_timings import (
 from molt.cli.wasm_link_args import (
     wasm_link_args_response_file as _wasm_link_args_response_file,
 )
+from molt.file_hashing import _sha256_file
+
+
+_RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS = (
+    "src/molt/_wasm_runtime_exports.py",
+    "src/molt/cli/runtime_wasm_build.py",
+    "src/molt/cli/runtime_wasm_build_support.py",
+    "src/molt/wasm_artifact.py",
+)
+
+
+def _runtime_wasm_publication_authority(root: Path) -> dict[str, object]:
+    """Return the exact source identity for post-Cargo runtime publication.
+
+    Cargo fingerprints own compilation reuse.  These Python authorities own the
+    later reloc link, export rewrite, custom-section transform, and final member
+    publication.  Keeping their content identity separate lets a transform-only
+    change reuse the staticlib while making every older published pair ineligible.
+    """
+
+    files: list[dict[str, object]] = []
+    digest = hashlib.sha256()
+    for relative in _RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS:
+        path = root / relative
+        if not path.is_file():
+            raise ValueError(f"runtime WASM publication authority is missing: {path}")
+        content_digest = _sha256_file(path)
+        size = path.stat().st_size
+        files.append({"path": relative, "sha256": content_digest, "size": size})
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_digest.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(size).encode("ascii"))
+        digest.update(b"\0")
+    return {
+        "schema": "molt.runtime-wasm-publication-authority.v1",
+        "digest": digest.hexdigest(),
+        "files": files,
+    }
 
 
 class _RuntimeWasmBuildSpec(NamedTuple):
@@ -162,19 +202,20 @@ def _resolved_runtime_wasm_pair_identities(
         runtime_features=shared_spec.fingerprint_features,
         base_rustflags=shared_spec.cargo_rustflags,
         producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
+        publication_authority=_runtime_wasm_publication_authority(root),
         shared=RuntimePairMemberPlan(
             kind="shared",
             resolved_rustflags=shared_spec.fingerprint_rustflags,
             link_args=tuple(shlex.split(shared_spec.link_flags)),
-            publication_transform="strip-final-link-metadata-v1",
+            publication_transform="shared-runtime-publication-v2",
             preserve_debug=preserve_debug,
         ),
         reloc=RuntimePairMemberPlan(
             kind="reloc",
             resolved_rustflags=reloc_spec.fingerprint_rustflags,
             link_args=tuple(shlex.split(reloc_spec.link_flags)),
-            publication_transform="relocatable-wasm-byte-identity-v1",
-            preserve_debug=preserve_debug,
+            publication_transform="relocatable-runtime-publication-v2",
+            preserve_debug=True,
         ),
         wasi_sysroot=Path(sysroot_raw),
         wasm_linker=linker.path,

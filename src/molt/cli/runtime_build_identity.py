@@ -540,7 +540,9 @@ def _python_identity(env: Mapping[str, str]) -> dict[str, object]:
     try:
         runtime = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise ValueError("runtime build Python identity probe emitted invalid JSON") from exc
+        raise ValueError(
+            "runtime build Python identity probe emitted invalid JSON"
+        ) from exc
     return {
         "logical_name": "build-python",
         "sha256": _sha256_file(path),
@@ -646,7 +648,9 @@ def _canonical_flag_text(
     logical_paths: Sequence[tuple[str, Path]],
 ) -> list[str]:
     if os.name != "nt" and re.search(r"(?i)[a-z]:[\\/]", value):
-        raise ValueError(f"unknown absolute host path in canonical runtime flags: {value!r}")
+        raise ValueError(
+            f"unknown absolute host path in canonical runtime flags: {value!r}"
+        )
     try:
         tokens = shlex.split(value, posix=os.name != "nt")
     except ValueError as exc:
@@ -916,6 +920,7 @@ def resolve_runtime_build_pair_identities(
     runtime_features: tuple[str, ...],
     base_rustflags: str,
     producer_artifact_selection: RuntimeArtifactSelection,
+    publication_authority: Mapping[str, object],
     shared: RuntimePairMemberPlan,
     reloc: RuntimePairMemberPlan,
     wasi_sysroot: Path,
@@ -985,10 +990,16 @@ def resolve_runtime_build_pair_identities(
     members = {"shared": member(shared), "reloc": member(reloc)}
     if shared.kind != "shared" or reloc.kind != "reloc":
         raise ValueError("runtime pair member kinds are invalid")
+    publication_authority_payload = json.loads(
+        json.dumps(publication_authority, sort_keys=True, separators=(",", ":"))
+    )
+    if not isinstance(publication_authority_payload, dict):
+        raise ValueError("runtime publication authority is invalid")
     pair = {
         "schema": _PAIR_SCHEMA,
         "sources": sources,
         "toolchain": toolchain,
+        "publication_authority": publication_authority_payload,
         "common_config": {
             "cargo_profile": cargo_profile,
             "target_triple": target_triple,

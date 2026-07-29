@@ -343,7 +343,7 @@ runtime/molt-backend-wasm/src/wasm.rs  -->  output.wasm (relocatable object)
 wasm-ld (link with molt_runtime.wasm)  -->  output_linked.wasm
   |
   v
-wasm-opt --remove-unused-module-elements -Oz  -->  output_optimized.wasm
+wasm-opt (policy from src/molt/wasm_optimization.py)  -->  output_optimized.wasm
   |
   v
 wasm-tools strip (remove name/debug sections)  -->  output_stripped.wasm
@@ -370,37 +370,22 @@ brotli / gzip  -->  output_stripped.wasm.br
 
 ### 4.4 wasm-opt Pass Selection
 
-**UPDATE 2026-03-20:** Both the Oz (size-focused) and O3 (speed-focused) pipelines below are now integrated into the build via the `--wasm-opt-level` flag (bf65d218). The pipelines run automatically as a post-link step when wasm-opt is available, achieving 15-30% binary size reduction.
+**UPDATE 2026-07-29:** `src/molt/wasm_optimization.py` is the single executable
+policy authority for all Binaryen levels, feature gates, and Molt pass sets. Dev app/monolithic
+builds select a non-converging `O1` policy; release artifacts select the named
+shipping policy. Optimized publication is fail-closed and the exact pipeline
+participates in the content cache identity. Cargo/LLVM runtime generation owns
+the current shared-runtime body optimization; app linking only performs cached
+structural cleanup over its canonical full export graph. Any future Binaryen
+runtime policy belongs in runtime-generation custody, never a per-app linker lane.
 
-Recommended `wasm-opt` pass pipeline for Molt output:
-
-```bash
-# Size-focused (browser deployment)
-wasm-opt -Oz \
-  --remove-unused-module-elements \
-  --remove-unused-names \
-  --strip-debug \
-  --coalesce-locals \
-  --reorder-locals \
-  --dce \
-  --vacuum \
-  --duplicate-function-elimination \
-  --code-folding \
-  input.wasm -o output.wasm
-
-# Speed-focused (server/edge deployment)
-wasm-opt -O3 \
-  --remove-unused-module-elements \
-  --remove-unused-names \
-  --coalesce-locals \
-  --reorder-locals \
-  --dce \
-  --vacuum \
-  --inlining \
-  --flatten \
-  --local-cse \
-  input.wasm -o output.wasm
-```
+This document intentionally does not copy the pass sequences. Consumers obtain
+the exact command-line tuple through `wasm_opt_pipeline()` or
+`wasm_link_policy()` in that module. `WASM_OPT_DEV_DEFAULT` and
+`WASM_OPT_RELEASE_DEFAULT` own the default level names, while
+`WASM_OPT_FEATURE_FLAGS` owns the cross-engine feature envelope. Changing a
+pass, level, or feature gate therefore changes one executable authority and its
+cache identity instead of requiring a documentation recipe to stay in sync.
 
 ### 4.5 Size Targets
 
@@ -614,7 +599,9 @@ Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT defi
 
 ### Phase 1: Quick Wins (P0/P1, 1-2 months)
 
-1. **Integrate `wasm-opt` into build pipeline** -- run `wasm-opt -Oz --remove-unused-module-elements` as post-link step.
+1. **Maintain the post-link optimizer authority** -- evolve and benchmark the
+   named policies in `src/molt/wasm_optimization.py`; build consumers must not
+   reconstruct pass lists.
 2. **Implement `--wasm-profile pure`** -- conditional import registration in `wasm.rs` for pure-compute modules.
 3. **Inline integer arithmetic fast paths** -- emit WASM-native `i64.add/sub/mul` with tag-check guards, host-call fallback.
 4. **Name/debug section stripping** -- `wasm-tools strip` in production builds.

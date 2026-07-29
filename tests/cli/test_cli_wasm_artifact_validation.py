@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -357,6 +358,52 @@ def test_reloc_runtime_publication_preserves_linker_metadata_bytes() -> None:
         )
         == reloc
     )
+
+
+def test_release_reloc_member_preserves_section_index_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    runtime.write_bytes(b"\0asm\x01\0\0\0")
+    seen: dict[str, object] = {}
+
+    def fake_transform(path: Path, **kwargs: object) -> object:
+        assert path == runtime
+        seen.update(kwargs)
+        return SimpleNamespace(
+            input_bytes=8,
+            output_bytes=8,
+            scanned_bytes=8,
+            written_bytes=0,
+            max_buffer_bytes=8,
+            changed=False,
+        )
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD,
+        "transform_wasm_publication_file",
+        fake_transform,
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD,
+        "_record_runtime_wasm_build_phase",
+        lambda *_args, **_kwargs: None,
+    )
+    member = SimpleNamespace(
+        runtime_wasm=runtime,
+        reloc=True,
+        json_output=True,
+        spec=SimpleNamespace(cargo_profile="release-output"),
+        required_exports=None,
+        kind="reloc",
+    )
+
+    assert RUNTIME_WASM_BUILD._RuntimeWasmMemberBuild.finalize_publication(member)
+    assert seen == {
+        "rename_map": {},
+        "final_artifact": False,
+        "preserve_debug": True,
+    }
 
 
 def test_shared_runtime_publication_still_uses_final_artifact_strip(
@@ -1303,7 +1350,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
-    monkeypatch.setenv("MOLT_WASM_DISABLE_SCCACHE", "1")
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
     wasi_sysroot = tmp_path / "wasi-sysroot"
     monkeypatch.delenv("WASI_SYSROOT", raising=False)
     monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)

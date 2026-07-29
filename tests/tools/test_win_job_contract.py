@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import win_job
+from tools.memory_guard_core import payloads
 
 
 @pytest.fixture(autouse=True)
@@ -118,8 +119,8 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
     calls: list[str] = []
     accounting = iter(
         (
-            win_job.WindowsJobAccounting(8, 3, 5, 4096),
-            win_job.WindowsJobAccounting(8, 0, 8, 4096),
+            win_job.WindowsJobAccounting(8, 3, 5, 4096, 100, 200, 300),
+            win_job.WindowsJobAccounting(8, 0, 8, 4096, 400, 500, 600),
         )
     )
     resources = iter(
@@ -152,7 +153,7 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
 
 
 def test_complete_job_custody_does_not_terminate_an_empty_job(monkeypatch) -> None:
-    empty = win_job.WindowsJobAccounting(1, 0, 1, 2048)
+    empty = win_job.WindowsJobAccounting(1, 0, 1, 2048, 100, 200, 300)
     resources = win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1)
     calls: list[str] = []
     monkeypatch.setattr(win_job, "job_accounting", lambda _job: empty)
@@ -174,6 +175,29 @@ def test_complete_job_custody_does_not_terminate_an_empty_job(monkeypatch) -> No
     assert cleanup.completed
     assert not cleanup.terminated_remaining_processes
     assert calls == ["wait:1.0"]
+
+
+def test_job_accounting_payload_serializes_cpu_and_page_fault_totals() -> None:
+    accounting = win_job.WindowsJobAccounting(
+        total_processes=8,
+        active_processes=3,
+        total_terminated_processes=5,
+        peak_job_commit_bytes=4096,
+        total_user_time_100ns=12_500_000,
+        total_kernel_time_100ns=7_500_000,
+        total_page_fault_count=321,
+    )
+
+    assert payloads._windows_job_accounting_payload(accounting) == {
+        "total_processes": 8,
+        "active_processes": 3,
+        "total_terminated_processes": 5,
+        "peak_job_commit_bytes": 4096,
+        "total_user_time_100ns": 12_500_000,
+        "total_kernel_time_100ns": 7_500_000,
+        "total_cpu_seconds": 2.0,
+        "total_page_fault_count": 321,
+    }
 
 
 def test_system_resources_converts_page_counts_without_open_handles(

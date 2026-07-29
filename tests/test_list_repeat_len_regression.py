@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests.wasm_linked_runner import wasm_test_build_env
 
 
 SCRIPT = (
@@ -46,14 +47,7 @@ def _native_env(root: Path) -> dict[str, str]:
 
 
 def _browser_wasm_build_env(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    return env
+    return wasm_test_build_env(root)
 
 
 def _expected_lines() -> list[str]:
