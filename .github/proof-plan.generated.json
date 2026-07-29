@@ -74,7 +74,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "923904e89c6308ad16caf562b9b805ecd4da4fb8db2da99640778f5672db7bbd",
+  "authority_sha256": "22148778f5113cfafda5cd5d40ea3210c3f80931fee4847b0a4854913ab7897f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3951,7 +3951,7 @@
       "target": "host"
     }
   ],
-  "receipt_schema": "molt.proof-receipt.v2",
+  "receipt_schema": "molt.proof-receipt.v3",
   "schema": "molt.proof-plan-projection.v4",
   "toolchain_policies": [
     {

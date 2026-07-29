@@ -78,7 +78,7 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "setup_value",
     "setup_evidence",
 )
-RECEIPT_SCHEMA = "molt.proof-receipt.v2"
+RECEIPT_SCHEMA = "molt.proof-receipt.v3"
 
 
 @dataclass(frozen=True, slots=True)

@@ -91,7 +91,7 @@ always = [
   "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
 ]
 
-receipt_schema = "molt.proof-receipt.v2"
+receipt_schema = "molt.proof-receipt.v3"
 
 # One deterministic DAG executor owns command admission. The global ceiling
 # bounds process fanout; each resource policy additionally serializes or limits
