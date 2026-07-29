@@ -20,7 +20,9 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
+    SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
 
 if TYPE_CHECKING:
@@ -841,11 +843,9 @@ class AttributeAccessMixin(_MixinBase):
         # exact sys/inspect binding. Target admission rejects this op itself, so
         # no use-sensitive callable/heap taint lane is necessary downstream.
         runtime_symbol, runtime_requirement_bits = (
-            self._runtime_qualified_callable_provenance_for_binding(
-            obj_name, node.attr
-            )
+            self._runtime_qualified_callable_provenance_for_binding(obj_name, node.attr)
         )
-        if runtime_symbol is not None or runtime_requirement_bits:
+        if runtime_symbol is not None:
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
             result = MoltValue(self.next_var(), type_hint="Any")
@@ -854,17 +854,32 @@ class AttributeAccessMixin(_MixinBase):
                     kind="MODULE_GET_ATTR",
                     args=[obj, attr_name],
                     result=result,
+                    metadata={"runtime_symbol": runtime_symbol},
+                )
+            )
+            return result
+        if runtime_requirement_bits or (
+            node.attr in SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS
+            and exact_class is None
+            and not obj.type_hint.startswith("super")
+        ):
+            # Protected runtime callable acquisition is a value capability,
+            # not a lexical-import spelling. Unknown receivers may carry a
+            # sys/inspect module through conditionals, containers, calls, heap
+            # storage, or any other Python value transport. Preserve ordinary
+            # generic attribute semantics while stamping the acquisition
+            # unless an exact non-module class is constructionally proven.
+            result = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_OBJ",
+                    args=[obj, node.attr],
+                    result=result,
                     metadata={
-                        **(
-                            {"runtime_symbol": runtime_symbol}
-                            if runtime_symbol is not None
-                            else {}
-                        ),
-                        **(
-                            {"runtime_requirement_bits": runtime_requirement_bits}
-                            if runtime_requirement_bits
-                            else {}
-                        ),
+                        "runtime_requirement_bits": (
+                            runtime_requirement_bits
+                            | SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+                        )
                     },
                 )
             )
@@ -1009,9 +1024,7 @@ class AttributeAccessMixin(_MixinBase):
                     args=[obj, attr_name],
                     result=res,
                     metadata=(
-                        {"runtime_symbol": runtime_symbol}
-                        if runtime_symbol
-                        else None
+                        {"runtime_symbol": runtime_symbol} if runtime_symbol else None
                     ),
                 )
             )

@@ -446,7 +446,9 @@ class StatementScopeVisitorMixin(_MixinBase):
                 return symbol
 
             def flush_chunk(symbol: str) -> None:
-                self._emit_function_exception_handler(clear_handlers=True)
+                self._emit_function_exception_handler(
+                    inherited_execution_context=True,
+                )
                 old_ops = self.funcs_map["molt_main"]["ops"]
                 self.funcs_map["molt_main"]["ops"] = wrapper_ops
                 self._adjust_module_pressure_counts(
@@ -521,14 +523,14 @@ class StatementScopeVisitorMixin(_MixinBase):
             self.locals["__annotate__"] = annotate_val
             self._emit_module_attr_set("__annotate__", annotate_val)
         if self.current_func_name == "molt_main":
-            self._emit_raise_if_pending(emit_exit=True, clear_handlers=True)
+            self._emit_raise_if_pending()
             complete_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=complete_val))
             self._emit_module_attr_set("__molt_module_complete__", complete_val)
             self.globals["__molt_module_complete__"] = complete_val
             self.locals["__molt_module_complete__"] = complete_val
             self._emit_module_frame_exit()
-            self._emit_function_exception_handler(clear_handlers=True)
+            self._emit_function_exception_handler()
         self.defer_module_attrs = prev_defer
         self.deferred_module_attrs = prev_dirty
         self.stable_module_funcs = prev_stable

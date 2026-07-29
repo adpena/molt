@@ -440,15 +440,9 @@ class ExceptionLoweringMixin(_MixinBase):
             return
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        self.emit(MoltOp(kind="ret", args=[none_val], result=MoltValue("none")))
+        self._emit_normal_return_terminator(none_val)
 
-    def _emit_raise_if_pending(
-        self,
-        *,
-        emit_exit: bool = False,
-        clear_handlers: bool = False,
-        force_exit: bool = False,
-    ) -> None:
+    def _emit_raise_if_pending(self) -> None:
         # Use the same fast inline flag check as check_exception instead
         # of the exception_last → is → not → if → raise pattern.  The old
         # pattern produced stale-exception re-raise bugs because
@@ -630,7 +624,7 @@ class ExceptionLoweringMixin(_MixinBase):
             )
         )
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(
             MoltOp(

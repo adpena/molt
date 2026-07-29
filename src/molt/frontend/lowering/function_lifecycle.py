@@ -342,9 +342,7 @@ class FunctionLifecycleMixin(_MixinBase):
             if self.current_func_name != "molt_main":
                 self._emit_boxed_locals_cleanup()
             self._emit_restore_exception_stack_depth(exit_baseline=True)
-            if self._function_needs_frame_trace():
-                self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+            self._emit_normal_return_terminator(value)
             return
         self._emit_restore_exception_stack_depth(exit_baseline=False)
         slot = self._load_return_slot()
@@ -352,9 +350,7 @@ class FunctionLifecycleMixin(_MixinBase):
             self._emit_plain_local_scope_exit_boundaries(preserve=value)
             if self.current_func_name != "molt_main":
                 self._emit_boxed_locals_cleanup()
-            if self._function_needs_frame_trace():
-                self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+            self._emit_normal_return_terminator(value)
             return
         idx = self._load_return_slot_index()
         self.emit(
@@ -384,9 +380,29 @@ class FunctionLifecycleMixin(_MixinBase):
         res = MoltValue(self.next_var())
         idx = self._load_return_slot_index()
         self.emit(MoltOp(kind="INDEX", args=[slot, idx], result=res))
-        if self._function_needs_frame_trace():
+        self._emit_normal_return_terminator(res)
+
+    def _emit_normal_return_terminator(self, value: MoltValue) -> None:
+        """Emit the single canonical normal-return lifecycle boundary.
+
+        Generated pollers, comprehensions, annotation helpers, class methods,
+        and exception exits all terminate functions. They may not spell raw
+        ``ret`` independently because local execution contexts require exactly
+        one adjacent ``TRACE_EXIT``. Keeping the adjacency here makes it
+        constructional rather than a validator-only invariant.
+        """
+
+        self._emit_return_terminator("ret", [value])
+
+    def _emit_void_return_terminator(self) -> None:
+        self._emit_return_terminator("ret_void", [])
+
+    def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None:
+        if self._function_needs_frame_trace() and (
+            not self.current_ops or self.current_ops[-1].kind != "TRACE_EXIT"
+        ):
             self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+        self.emit(MoltOp(kind=kind, args=args, result=MoltValue("none")))
 
     def _emit_boxed_locals_cleanup(self) -> None:
         if not self.boxed_locals:
@@ -431,9 +447,13 @@ class FunctionLifecycleMixin(_MixinBase):
             )
         )
 
-    def _emit_function_exception_handler(self, *, clear_handlers: bool = False) -> None:
-        label = self.function_exception_label
-        if label is None:
+    def _emit_function_exception_handler(
+        self,
+        *,
+        inherited_execution_context: bool = False,
+    ) -> None:
+        active_label = self.function_exception_label
+        if active_label is None:
             return
         module_failure_cleanup = bool(
             self.module_name
@@ -443,49 +463,63 @@ class FunctionLifecycleMixin(_MixinBase):
             )
         )
         if module_failure_cleanup and not self._ends_with_return_jump():
-            self.emit(MoltOp(kind="ret_void", args=[], result=MoltValue("none")))
-        prev_label = self.function_exception_label
+            self._emit_void_return_terminator()
+        pre_frame_label = (
+            self.module_pre_frame_exception_label
+            if module_failure_cleanup and not inherited_execution_context
+            else None
+        )
+        handler_labels = [
+            (active_label, pre_frame_label is None and not inherited_execution_context)
+        ]
+        if pre_frame_label is not None and pre_frame_label != active_label:
+            handler_labels = [(active_label, True), (pre_frame_label, False)]
+        prev_label = active_label
         self.function_exception_label = None
-        with self._suppress_check_exception(emit_on_exit=False):
-            self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
-            if module_failure_cleanup:
-                module_name_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(
-                        kind="CONST_STR",
-                        args=[self.module_name],
-                        result=module_name_val,
-                    )
-                )
-                self.emit(
-                    MoltOp(
-                        kind="MODULE_CACHE_DEL",
-                        args=[module_name_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                if (
-                    self.entry_module
-                    and self.module_name == self.entry_module
-                    and self.module_name != "__main__"
-                ):
-                    main_name_val = MoltValue(self.next_var(), type_hint="str")
+        for label, owns_active_frame in handler_labels:
+            with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
+                if module_failure_cleanup:
+                    module_name_val = MoltValue(self.next_var(), type_hint="str")
                     self.emit(
                         MoltOp(
-                            kind="CONST_STR", args=["__main__"], result=main_name_val
+                            kind="CONST_STR",
+                            args=[self.module_name],
+                            result=module_name_val,
                         )
                     )
                     self.emit(
                         MoltOp(
                             kind="MODULE_CACHE_DEL",
-                            args=[main_name_val],
+                            args=[module_name_val],
                             result=MoltValue("none"),
                         )
                     )
-        self._emit_restore_exception_stack_depth()
-        if self._function_needs_frame_trace():
-            self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True, clear_handlers=clear_handlers)
+                    if (
+                        self.entry_module
+                        and self.module_name == self.entry_module
+                        and self.module_name != "__main__"
+                    ):
+                        main_name_val = MoltValue(self.next_var(), type_hint="str")
+                        self.emit(
+                            MoltOp(
+                                kind="CONST_STR",
+                                args=["__main__"],
+                                result=main_name_val,
+                            )
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="MODULE_CACHE_DEL",
+                                args=[main_name_val],
+                                result=MoltValue("none"),
+                            )
+                        )
+            self._emit_restore_exception_stack_depth()
+            self._emit_raise_if_pending()
+            if owns_active_frame and module_failure_cleanup:
+                self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
+            self._emit_void_return_terminator()
         self.function_exception_label = prev_label
 
     def _ends_with_return_jump(self) -> bool:

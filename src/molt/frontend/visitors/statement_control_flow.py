@@ -1308,7 +1308,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.try_handler_scopes.pop()
         self.try_suppress_depth = prior_suppress
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         self.try_scopes.pop()
         self.unbound_check_names = unbound_snapshot_try
         self.control_flow_depth -= 1
@@ -1892,7 +1892,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.try_handler_scopes.pop()
         self.try_suppress_depth = prior_suppress
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         self.try_scopes.pop()
         self.unbound_check_names = unbound_snapshot_try_star
         self.control_flow_depth -= 1

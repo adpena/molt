@@ -367,7 +367,8 @@ The WASM backend (`wasm.rs`, 9740 lines) generates wasm32 code using `wasm-encod
 - Relocation tables for linking (`RELOC_TABLE_BASE_DEFAULT = 4096`)
 
 The backend does **not** currently use:
-- Multi-value returns
+- Internal multi-value transport (the Python-callable ABI intentionally stays
+  one tagged `i64` result)
 - Reference types (`externref`, `funcref` in tables)
 - Bulk memory operations (`memory.copy`, `memory.fill`)
 - Tail calls (`return_call`)
@@ -380,10 +381,14 @@ The backend does **not** currently use:
 - **Expected impact**: 10-20% improvement on string/bytes operations in WASM.
 - **Effort**: Low (2 days). Use `Instruction::MemoryCopy` and `Instruction::MemoryFill`.
 
-**P2: Multi-value returns for tuple unpacking.** Python functions returning tuples currently box the tuple on the heap. With multi-value returns, small tuples (2-4 elements) can be returned directly on the WASM stack, avoiding heap allocation.
+**P2: Scalarize non-escaping tuple construction and unpacking.** Python
+functions continue returning one owned tagged-`i64` object. When whole-program
+proof shows the aggregate never crosses that callable boundary, scalar
+replacement may eliminate its heap allocation inside the function/caller pair.
 
 - **Expected impact**: 15-25% improvement on tuple-returning functions.
-- **Effort**: Medium (5 days). Requires frontend to detect tuple returns, backend to emit multi-value return types.
+- **Effort**: Medium (5 days). Requires escape proof and scalar replacement;
+  it must not create a second public callable ABI.
 
 **P3: Tail calls for recursive dispatch.** The WASM tail-call proposal (`return_call`, `return_call_indirect`) is now supported in Chrome 112+ and Firefox 121+. Use for self-recursive and mutually-recursive functions to prevent stack overflow in WASM.
 
@@ -475,7 +480,7 @@ MOLT_PGO_PROFILE=pgo_profile.json python -m molt.cli build --profile release app
 | 5.1 | Branch | Systematic cold-block marking | 2-5% runtime | Low | **P2** |
 | 5.3 | Branch | Elif chain to Switch | 5-10% runtime | Medium | **P2** |
 | 3.1 | Regalloc | Reduce fast_int variable pressure | 5-8% runtime | Medium | **P2** |
-| 10.2 | WASM | Multi-value returns | 15-25% WASM | Medium | **P2** |
+| 10.2 | WASM | Proven aggregate scalarization | 15-25% WASM | Medium | **P2** |
 | 10.3 | WASM | Tail calls | correctness | Medium | **P2** |
 | 2.3 | Calling | Tail call optimization | correctness | Medium | **P2** |
 | 11.2 | PGO | Branch frequency profiling | 3-8% runtime | High | **P3** |

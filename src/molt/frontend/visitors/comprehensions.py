@@ -245,7 +245,7 @@ class ComprehensionMixin(_MixinBase):
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
             pair = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-            self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+            self._emit_normal_return_terminator(pair)
         self._spill_async_temporaries()
         closure_size = self._task_closure_size(
             frame_plan.payload_slots,

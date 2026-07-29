@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from molt.frontend._types import _MOLT_GLOBALS_BUILTIN, MoltOp, MoltValue
+
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
@@ -156,7 +157,7 @@ class ModuleGlobalsMixin(_MixinBase):
             func_symbol, params=[], type_facts_name=_MOLT_GLOBALS_BUILTIN
         )
         res = self._emit_globals_dict()
-        self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+        self._emit_normal_return_terminator(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
         self.globals_builtin_val = func_val

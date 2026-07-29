@@ -661,7 +661,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
             pair = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-            self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+            self._emit_normal_return_terminator(pair)
         self._spill_async_temporaries()
         gen_public_locals = self._async_locals_public_entries()
         closure_size = self._task_closure_size(
@@ -940,7 +940,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
             res = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+            self._emit_normal_return_terminator(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
         self.current_class = prev_class
@@ -1226,7 +1226,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-                self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+                self._emit_normal_return_terminator(pair)
             self._spill_async_temporaries()
             asyncgen_public_locals = self._async_locals_public_entries()
             closure_size = self._task_closure_size(
@@ -1387,7 +1387,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             )
             res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
             self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-            self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+            self._emit_normal_return_terminator(res)
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
 
@@ -1509,7 +1509,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         else:
             res = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+            self._emit_normal_return_terminator(res)
         self._spill_async_temporaries()
         closure_size = self._task_closure_size(
             frame_plan.payload_slots,
@@ -1641,7 +1641,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 metadata={"task_kind": frame_plan.task_kind},
             )
         )
-        self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+        self._emit_normal_return_terminator(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
 

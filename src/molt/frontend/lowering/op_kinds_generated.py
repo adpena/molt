@@ -822,6 +822,17 @@ SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
     "sys.settrace": "molt_sys_settrace",
 }
 
+SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(
+    {
+        "_getframe",
+        "currentframe",
+        "getprofile",
+        "gettrace",
+        "setprofile",
+        "settrace",
+    }
+)
+
 FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     {
         "ABS",
