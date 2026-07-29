@@ -18,6 +18,7 @@ from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
 )
+from tools.proof_queue_pkg import interpreter
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -84,6 +85,7 @@ def _resource_mutex_key(
 def _edge_kind_requires_local_parent(kind: str) -> bool:
     return kind in _SCHEDULING_EDGE_KINDS
 
+
 NOTE_KINDS = frozenset(NOTE_KIND_DESCRIPTIONS)
 
 DEFAULT_NOTE_KIND = "observation"
@@ -116,16 +118,26 @@ PROOF_QUEUE_LOCKED_WRITE_RETRIES = 8
 
 PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS = 0.25
 
+UNATTESTED_RECEIPT_CONTEXT_SCHEMA = "molt.proof-receipt-context-unattested.v1"
+
+
+def _unattested_receipt_context(
+    *, status: str, phase: str, reason: str
+) -> dict[str, str]:
+    return {
+        "schema": UNATTESTED_RECEIPT_CONTEXT_SCHEMA,
+        "status": status,
+        "phase": phase,
+        "reason": reason,
+    }
 
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
-
 def _compact_utc() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S")
-
 
 
 def _slug(text: str) -> str:
@@ -134,13 +146,11 @@ def _slug(text: str) -> str:
     return out[:72] or "proof"
 
 
-
 def _proof_session_id(resource_family: str, contention_key: str) -> str:
     digest = hashlib.sha256(contention_key.encode("utf-8")).hexdigest()[:12]
     family = _slug(resource_family)[:10]
     label = _slug(contention_key)[:8]
     return f"proof-{family}-{digest}-{label}"
-
 
 
 def _positive_int(value: object, *, source: str) -> int:
@@ -153,7 +163,6 @@ def _positive_int(value: object, *, source: str) -> int:
     return result
 
 
-
 def _configured_queue_size(value: int | None = None) -> int:
     if value is not None:
         return _positive_int(value, source="--queue-size")
@@ -163,7 +172,6 @@ def _configured_queue_size(value: int | None = None) -> int:
     return _positive_int(raw, source=PROOF_QUEUE_SIZE_ENV)
 
 
-
 def _configured_run_limit(args: argparse.Namespace, *, queue_size: int) -> int:
     raw_limit = getattr(args, "limit", None)
     if raw_limit is not None:
@@ -171,7 +179,6 @@ def _configured_run_limit(args: argparse.Namespace, *, queue_size: int) -> int:
     if getattr(args, "detach", False):
         return queue_size
     return 1
-
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -195,6 +202,8 @@ def _connect(db: Path) -> sqlite3.Connection:
             status TEXT NOT NULL,
             returncode INTEGER,
             command_json TEXT NOT NULL,
+            python_interpreter_json TEXT NOT NULL DEFAULT '{}',
+            receipt_context_json TEXT,
             cwd TEXT NOT NULL,
             resource_family TEXT NOT NULL,
             contention_key TEXT NOT NULL,
@@ -361,6 +370,55 @@ def _connect(db: Path) -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
         )
+    if "python_interpreter_json" not in columns:
+        conn.execute(
+            "ALTER TABLE proof_runs ADD COLUMN python_interpreter_json "
+            "TEXT NOT NULL DEFAULT '{}'"
+        )
+    receipt_context_added = "receipt_context_json" not in columns
+    if receipt_context_added:
+        conn.execute("ALTER TABLE proof_runs ADD COLUMN receipt_context_json TEXT")
+    for run_id, command_json in conn.execute(
+        "SELECT run_id, command_json FROM proof_runs "
+        "WHERE python_interpreter_json = '{}'"
+    ).fetchall():
+        command = json.loads(str(command_json))
+        if not isinstance(command, list):
+            raise ValueError(f"proof run {run_id!r} command is not a list")
+        authority = interpreter.authority_for_command([str(value) for value in command])
+        conn.execute(
+            "UPDATE proof_runs SET python_interpreter_json = ? WHERE run_id = ?",
+            (json.dumps(authority, sort_keys=True), run_id),
+        )
+    if receipt_context_added:
+        unattested = json.dumps(
+            _unattested_receipt_context(
+                status="legacy-unattested",
+                phase="schema-migration",
+                reason=(
+                    "run predates execution-host proof interpreter receipt custody"
+                ),
+            ),
+            sort_keys=True,
+        )
+        placeholders = ",".join("?" for _ in RUNNING | {"blocked"})
+        conn.execute(
+            "UPDATE proof_runs SET receipt_context_json = ? "
+            f"WHERE status NOT IN ({placeholders}) AND receipt_context_json IS NULL",
+            (unattested, *sorted(RUNNING | {"blocked"})),
+        )
+    for run_id, status in conn.execute(
+        "SELECT run_id, status FROM proof_runs WHERE receipt_context_json IS NULL"
+    ).fetchall():
+        state_payload = _unattested_receipt_context(
+            status="not-executed",
+            phase=f"reconciled-{status}",
+            reason="execution-host receipt capture has not completed",
+        )
+        conn.execute(
+            "UPDATE proof_runs SET receipt_context_json = ? WHERE run_id = ?",
+            (json.dumps(state_payload, sort_keys=True), run_id),
+        )
     if "guard_identity" not in columns:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
     if "resource_mutex_key" not in columns:
@@ -429,13 +487,11 @@ def _connect(db: Path) -> sqlite3.Connection:
     return conn
 
 
-
 def _proof_run_edges_has_parent_fk(conn: sqlite3.Connection) -> bool:
     return any(
         row[3] == "parent_run_id"
         for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
     )
-
 
 
 def _migrate_proof_run_edges_for_external_lineage(conn: sqlite3.Connection) -> None:
@@ -485,14 +541,12 @@ def _migrate_proof_run_edges_for_external_lineage(conn: sqlite3.Connection) -> N
         conn.execute("PRAGMA foreign_keys=ON")
 
 
-
 def _default_note_author() -> str:
     for name in ("MOLT_PROOF_QUEUE_AUTHOR", "USERNAME", "USER"):
         value = os.environ.get(name)
         if value and value.strip():
             return value.strip()
     return "agent"
-
 
 
 def _insert_note(
@@ -528,7 +582,6 @@ def _insert_note(
     return int(cursor.lastrowid)
 
 
-
 def _strings_from_raw(raw: object, *, field_name: str) -> list[str]:
     if raw is None:
         return []
@@ -539,15 +592,12 @@ def _strings_from_raw(raw: object, *, field_name: str) -> list[str]:
     raise SystemExit(f"{field_name} must be a string or list of strings")
 
 
-
 def _notes_from_raw(raw: object) -> list[str]:
     return _strings_from_raw(raw, field_name="proof notes")
 
 
-
 def _dependencies_from_raw(raw: object) -> list[str]:
     return _strings_from_raw(raw, field_name="proof dependencies")
-
 
 
 def _run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
@@ -555,7 +605,6 @@ def _run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
         conn.execute("SELECT 1 FROM proof_runs WHERE run_id = ?", (run_id,)).fetchone()
         is not None
     )
-
 
 
 def _edge_would_create_cycle(
@@ -584,7 +633,6 @@ def _edge_would_create_cycle(
     return row is not None
 
 
-
 def _planned_edge_would_create_cycle(
     children_by_parent: dict[str, list[str]], parent_run_id: str, child_run_id: str
 ) -> bool:
@@ -601,7 +649,6 @@ def _planned_edge_would_create_cycle(
         seen.add(current)
         stack.extend(children_by_parent.get(current, []))
     return False
-
 
 
 def _insert_edge(
@@ -658,7 +705,6 @@ def _insert_edge(
     return int(cursor.lastrowid)
 
 
-
 def _notes_for_run_ids(
     conn: sqlite3.Connection, run_ids: list[str]
 ) -> dict[str, list[dict[str, object]]]:
@@ -692,7 +738,6 @@ def _notes_for_run_ids(
     return out
 
 
-
 def _edge_payload(row: sqlite3.Row) -> dict[str, object]:
     return {
         "edge_id": row["edge_id"],
@@ -705,7 +750,6 @@ def _edge_payload(row: sqlite3.Row) -> dict[str, object]:
         "kind": row["kind"],
         "note": row["note"],
     }
-
 
 
 def _edges_for_run_ids(
@@ -752,7 +796,6 @@ def _edges_for_run_ids(
     return out
 
 
-
 def _format_note_summary(notes: list[dict[str, object]]) -> str | None:
     if not notes:
         return None
@@ -763,7 +806,6 @@ def _format_note_summary(notes: list[dict[str, object]]) -> str | None:
     )
 
 
-
 def _note_kind_counts(notes: list[dict[str, object]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for note in notes:
@@ -772,14 +814,12 @@ def _note_kind_counts(notes: list[dict[str, object]]) -> dict[str, int]:
     return {kind: counts[kind] for kind in sorted(counts)}
 
 
-
 def _edge_kind_counts(edges: list[dict[str, object]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for edge in edges:
         kind = str(edge["kind"])
         counts[kind] = counts.get(kind, 0) + 1
     return {kind: counts[kind] for kind in sorted(counts)}
-
 
 
 def _format_dag_summary(dag: dict[str, object]) -> str | None:
@@ -795,7 +835,6 @@ def _format_dag_summary(dag: dict[str, object]) -> str | None:
             f"{last['kind']} {last['parent_run_id']} status={last['parent_status']}"
         )
     return "  dag=" + " ".join(parts)
-
 
 
 def _git_snapshot(cwd: Path) -> dict[str, object]:
@@ -827,7 +866,6 @@ def _git_snapshot(cwd: Path) -> dict[str, object]:
     }
 
 
-
 def _log_path_for_run(conn: sqlite3.Connection, run_id: str) -> Path:
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -838,14 +876,12 @@ def _log_path_for_run(conn: sqlite3.Connection, run_id: str) -> Path:
     return Path(row["log_path"])
 
 
-
 def _db_path(args: argparse.Namespace) -> Path:
     if args.db:
         return Path(args.db)
     custody = checkout_custody(ROOT, os.environ)
     state_root = custody.custody_root if custody.ephemeral else custody.source_root
     return state_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
-
 
 
 def _logs_root(args: argparse.Namespace) -> Path:
@@ -856,10 +892,8 @@ def _logs_root(args: argparse.Namespace) -> Path:
     return state_root / "logs" / "proof_queue" / "runs"
 
 
-
 def _repo_root(args: argparse.Namespace) -> Path:
     return Path(args.repo_root).resolve() if args.repo_root else ROOT
-
 
 
 def _row_by_run_id(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
@@ -870,7 +904,6 @@ def _row_by_run_id(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
-
 def _row_value(row: sqlite3.Row, key: str) -> object | None:
     """Fetch ``key`` from a row, tolerating rows without the column."""
     try:
@@ -879,13 +912,11 @@ def _row_value(row: sqlite3.Row, key: str) -> object | None:
         return None
 
 
-
 def _is_sqlite_locked_error(exc: BaseException) -> bool:
     if not isinstance(exc, sqlite3.OperationalError):
         return False
     message = str(exc).lower()
     return "database is locked" in message or "database is busy" in message
-
 
 
 def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
@@ -909,7 +940,6 @@ def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
                 time.sleep(PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS)
     if last_exc is not None:
         raise last_exc
-
 
 
 def _update_run(conn: sqlite3.Connection, run_id: str, **values: object) -> None:

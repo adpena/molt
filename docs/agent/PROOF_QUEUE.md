@@ -179,6 +179,27 @@ uv run --active --project . --python 3.12 ...
 Non-active `uv run` is rejected because it creates throwaway environments and
 destroys proof latency.
 
+### Python Interpreter Custody
+
+Each queue row stores one command-derived Python interpreter authority when it
+is admitted. An explicit `uv run ... --python 3.12` selects that project
+interpreter; a direct `python`, versioned `python3.12`, or Windows `py -3.12`
+command selects its named interpreter; commands without a Python launcher use
+the canonical project Python 3.12 authority for queue-side proof tooling.
+
+The execution worker resolves that authority once, before launching the proof,
+and persists the complete receipt context. Terminal evidence, status output,
+and generated notebooks read the persisted context and never re-fingerprint
+with the ambient interpreter that happens to inspect the row later. Receipts
+attest both roles separately: `queue_control_plane` is the Python running the
+queue and memory guard, while `proof_command` is the interpreter selected by
+the proof envelope. The receipt `environment.python` and Python toolchain hash
+describe `proof_command`; Cargo and rustc retain their own toolchain hashes.
+
+Rows created before this authority existed are migrated with a command-derived
+interpreter descriptor, but no historical execution fingerprint is fabricated.
+They have no executable proof receipt unless an execution worker captured one.
+
 ## Detached Long Runs
 
 Do not hand-roll background proof launchers with PowerShell `Start-Process`,

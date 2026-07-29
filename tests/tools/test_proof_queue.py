@@ -31,6 +31,7 @@ from molt.scientific_stack_versions import (
 from tools.proof_queue_pkg import cli, custody, pact, policy, runner, scheduling, state
 from tools.proof_queue_pkg import diagnostics as diagnostics_module
 from tools.proof_queue_pkg import evidence as evidence_module
+from tools.proof_queue_pkg import interpreter as interpreter_module
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -43,6 +44,53 @@ _REAL_GIT_SNAPSHOT_TESTS = {
     "test_proof_queue_git_snapshot_tracks_runtime_generation_changes",
     "test_proof_queue_git_snapshot_expands_untracked_directories",
 }
+
+
+def _terminalize_synthetic_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    status: str,
+    returncode: int,
+    executed: bool = True,
+    phase: str = "synthetic fixture",
+) -> None:
+    if executed:
+        receipt_context: dict[str, object] = {
+            "schema": "molt.proof-receipt.v2",
+            "authority_sha256": "a" * 64,
+            "source_commit": "b" * 40,
+            "source_tree_state": "clean",
+            "environment": {"os": "test", "arch": "test", "python": "3.12"},
+            "toolchains": {"python": {"identity_sha256": "c" * 64}},
+            "python_interpreters": {
+                "queue_control_plane": {
+                    "executable": sys.executable,
+                    "implementation": "CPython",
+                    "version": "3.12.test",
+                    "role": "queue-runner-and-memory-guard",
+                },
+                "proof_command": {
+                    "executable": sys.executable,
+                    "implementation": "CPython",
+                    "version": "3.12.test",
+                    "role": "proof-command-envelope",
+                },
+            },
+        }
+    else:
+        receipt_context = state._unattested_receipt_context(
+            status="not-executed",
+            phase=phase,
+            reason="synthetic fixture did not launch a proof command",
+        )
+    state._update_run(
+        conn,
+        run_id,
+        status=status,
+        returncode=returncode,
+        receipt_context_json=json.dumps(receipt_context, sort_keys=True),
+    )
 
 
 def test_proof_queue_default_state_is_owned_by_checkout_custody(
@@ -66,6 +114,180 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
     assert state._logs_root(args) == (custody_root / "logs" / "proof_queue" / "runs")
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            [
+                "C:\\Tools\\uv.exe",
+                "run",
+                "--active",
+                "--project",
+                ".",
+                "--python",
+                "3.12",
+                "--no-sync",
+                "python",
+                "-m",
+                "pytest",
+            ],
+            {
+                "kind": "uv-project",
+                "launcher": "C:\\Tools\\uv.exe",
+                "project": ".",
+                "python_request": "3.12",
+                "active": True,
+                "no_sync": True,
+            },
+        ),
+        (
+            ["C:\\Python312\\python.exe", "-m", "pytest"],
+            {
+                "kind": "direct",
+                "executable": "C:\\Python312\\python.exe",
+            },
+        ),
+        (
+            ["/opt/python3.12/bin/python3.12", "-m", "pytest"],
+            {
+                "kind": "direct",
+                "executable": "/opt/python3.12/bin/python3.12",
+            },
+        ),
+        (
+            ["C:\\Windows\\py.exe", "-3.12", "-m", "pytest"],
+            {
+                "kind": "py-launcher",
+                "launcher": "C:\\Windows\\py.exe",
+                "python_request": "-3.12",
+            },
+        ),
+        (
+            ["cargo", "test"],
+            {
+                "kind": "project-default",
+                "launcher": "uv",
+                "project": ".",
+                "python_request": "3.12",
+                "active": True,
+                "no_sync": True,
+            },
+        ),
+    ],
+)
+def test_proof_python_interpreter_authority_is_command_derived_cross_platform(
+    command: list[str], expected: dict[str, object]
+) -> None:
+    assert interpreter_module.authority_for_command(command) == {
+        "schema": interpreter_module.AUTHORITY_SCHEMA,
+        **expected,
+    }
+
+
+def test_proof_receipt_attests_control_plane_and_commanded_python_separately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = interpreter_module.authority_for_command(
+        [
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "--no-sync",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "cargo",
+            "test",
+        ]
+    )
+    monkeypatch.setattr(
+        interpreter_module,
+        "resolve_interpreter",
+        lambda *_args, **_kwargs: {
+            "executable": "C:/project/.venv/Scripts/python.exe",
+            "implementation": "CPython",
+            "version": "3.12.13",
+        },
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan.ProofPlan,
+        "load",
+        classmethod(
+            lambda cls: SimpleNamespace(receipt_schema="molt.proof-receipt.v2")
+        ),
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan, "_authority_sha256", lambda _plan: "a" * 64
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan, "_source_commit", lambda: "b" * 40
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan, "_source_tree_state", lambda: "clean"
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan, "_normalized_os", lambda: "windows"
+    )
+    monkeypatch.setattr(
+        interpreter_module.proof_plan, "_normalized_arch", lambda: "x86_64"
+    )
+    observed: dict[str, object] = {}
+
+    def fake_fingerprints(
+        _plan: object,
+        names: tuple[str, ...],
+        *,
+        executable_overrides: dict[str, str],
+    ) -> dict[str, dict[str, str]]:
+        observed["names"] = names
+        observed["overrides"] = executable_overrides
+        return {
+            "python": {"version": "Python 3.12.13"},
+            "cargo": {"version": "cargo 1.96.1"},
+            "rustc": {"version": "rustc 1.96.1"},
+        }
+
+    monkeypatch.setattr(
+        interpreter_module.proof_plan,
+        "toolchain_fingerprints",
+        fake_fingerprints,
+    )
+    monkeypatch.setattr(interpreter_module.sys, "executable", "C:/Python314/python.exe")
+    monkeypatch.setattr(interpreter_module.platform, "python_version", lambda: "3.14.3")
+
+    context = interpreter_module.receipt_context(
+        authority,
+        command=[
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "cargo",
+            "test",
+        ],
+        cwd=tmp_path,
+        env={"PATH": "C:/Tools"},
+    )
+
+    assert observed == {
+        "names": ("python", "cargo", "rustc"),
+        "overrides": {"python": "C:/project/.venv/Scripts/python.exe"},
+    }
+    assert context["environment"]["python"] == "3.12"
+    assert context["python_interpreters"]["queue_control_plane"]["version"] == "3.14.3"
+    assert context["python_interpreters"]["proof_command"]["version"] == "3.12.13"
+
+
 def test_proof_queue_durable_state_remains_with_its_source_checkout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -85,6 +307,103 @@ def test_proof_queue_durable_state_remains_with_its_source_checkout(
         source_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
     )
     assert state._logs_root(args) == source_root / "logs" / "proof_queue" / "runs"
+
+
+def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "legacy.sqlite3"
+    legacy = sqlite3.connect(db)
+    legacy.execute(
+        """
+        CREATE TABLE proof_runs (
+            run_id TEXT PRIMARY KEY,
+            logical_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            returncode INTEGER,
+            command_json TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            resource_family TEXT NOT NULL,
+            contention_key TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            env_json TEXT NOT NULL DEFAULT '{}',
+            git_json TEXT NOT NULL DEFAULT '{}',
+            log_path TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            guard_pid INTEGER,
+            started_at TEXT,
+            finished_at TEXT,
+            elapsed_s REAL
+        )
+        """
+    )
+    command = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+    ]
+    legacy.execute(
+        """
+        INSERT INTO proof_runs (
+            run_id, logical_id, reason, status, returncode, command_json, cwd,
+            resource_family, contention_key, scopes_json, log_path, summary_json
+        ) VALUES (?, ?, ?, 'passed', 0, ?, ?, ?, ?, '[]', ?, ?)
+        """,
+        (
+            "legacy-run",
+            "legacy",
+            "migration fixture",
+            json.dumps(command),
+            str(tmp_path),
+            "python",
+            "python:legacy",
+            str(tmp_path / "legacy.log"),
+            str(tmp_path / "legacy.summary.json"),
+        ),
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = state._connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = 'legacy-run'"
+    ).fetchone()
+    assert row is not None
+    payload = evidence_module._row_to_payload(row)
+    conn.close()
+
+    assert json.loads(row["python_interpreter_json"])["python_request"] == "3.12"
+    assert json.loads(row["receipt_context_json"])["status"] == "legacy-unattested"
+    assert payload["python_interpreter_authority"]["kind"] == "uv-project"
+    assert payload["proof_receipt_state"]["status"] == "legacy-unattested"
+    assert "proof_receipt" not in payload
+
+    rc = cli.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(tmp_path / "runs"),
+            "audit",
+            "--all",
+            "--json",
+        ]
+    )
+    audit = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert "audit-legacy-unattested-proof-receipt" in {
+        issue["signal_id"] for issue in audit["issues"]
+    }
 
 
 def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
@@ -273,7 +592,9 @@ def test_proof_queue_git_snapshot_tracks_runtime_generation_changes(
     generation.write_text('{"pair_digest":"new"}\n', encoding="utf-8")
     snapshot = state._git_snapshot(tmp_path)
     assert snapshot["dirty"] is True
-    assert any("wasm/molt_runtime.generation.json" in line for line in snapshot["status"])
+    assert any(
+        "wasm/molt_runtime.generation.json" in line for line in snapshot["status"]
+    )
     assert snapshot["ignored_status_count"] == 0
 
     (tmp_path / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
@@ -358,6 +679,12 @@ def test_proof_queue_exec_records_passed_run(
     assert len(rows) == 1
     assert rows[0]["status"] == "passed"
     assert rows[0]["returncode"] == 0
+    receipt_context = json.loads(rows[0]["receipt_context_json"])
+    assert receipt_context["environment"]["python"] == "3.12"
+    assert (
+        receipt_context["python_interpreters"]["proof_command"]["executable"]
+        == sys.executable
+    )
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "queue-ok" in log_text
     assert "memory_guard_poll_sec=2.0" in log_text
@@ -657,6 +984,9 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
     assert len(rows) == 1
     assert rows[0]["status"] == "failed"
     assert rows[0]["returncode"] == 2
+    receipt_state = json.loads(rows[0]["receipt_context_json"])
+    assert receipt_state["status"] == "not-executed"
+    assert receipt_state["phase"] == "command policy rejection"
     assert launched == []
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "proof queue refuses invalid environment override" in log_text
@@ -775,6 +1105,16 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     )
     assert "RuntimeError: notebook projection exploded" in log_text
     assert "--- proof_queue command execution ---" in log_text
+    assert "queue_control_plane_python=" in log_text
+    assert "proof_command_python=" in log_text
+
+    monkeypatch.setattr(
+        evidence_module,
+        "_queue_receipt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("terminal evidence must use the persisted execution context")
+        ),
+    )
 
     capsys.readouterr()
     assert (
@@ -794,6 +1134,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
         == 0
     )
     evidence = json.loads(capsys.readouterr().out)
+    assert evidence[0]["proof_receipt"]["environment"]["python"] == "3.12"
     signals = {item["signal_id"] for item in evidence[0]["diagnostics"]}
     assert "queue-infra-warning" in signals
 
@@ -846,6 +1187,9 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     assert len(rows) == 1
     assert rows[0]["status"] == "failed"
     assert rows[0]["returncode"] == 2
+    receipt_state = json.loads(rows[0]["receipt_context_json"])
+    assert receipt_state["status"] == "not-executed"
+    assert receipt_state["phase"] == "submission metadata"
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert (
         "proof queue fatal infrastructure failure during submission metadata"
@@ -871,6 +1215,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
         == 0
     )
     evidence = json.loads(capsys.readouterr().out)
+    assert evidence[0]["proof_receipt_state"]["status"] == "not-executed"
     signals = [item["signal_id"] for item in evidence[0]["diagnostics"]]
     assert signals[0] == "queue-preexecution-failure"
     assert "queue-infra-warning" not in signals
@@ -902,6 +1247,57 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
 
     assert rc == 0
     assert followup_marker.read_text(encoding="utf-8") == "ran"
+
+
+def test_proof_queue_interpreter_capture_failure_is_explicit_nonexecution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    marker = tmp_path / "must-not-run.txt"
+    monkeypatch.setattr(
+        evidence_module,
+        "_capture_execution_receipt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("commanded interpreter probe failed")
+        ),
+    )
+
+    rc = cli.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(state.ROOT),
+            "exec",
+            "--id",
+            "interpreter-capture-failure",
+            "--reason",
+            "prove capture failure is terminal before command launch",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:interpreter-capture-failure",
+            "--note",
+            "the commanded interpreter must be attested before proof execution",
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path(r'" + str(marker) + "').write_text('ran')",
+        ]
+    )
+
+    row = _rows(db)[0]
+    receipt_state = json.loads(row["receipt_context_json"])
+    assert rc == 2
+    assert row["status"] == "failed"
+    assert not marker.exists()
+    assert receipt_state["status"] == "not-executed"
+    assert receipt_state["phase"] == "proof interpreter and receipt capture"
+    assert "commanded interpreter probe failed" in receipt_state["reason"]
 
 
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
@@ -4185,29 +4581,83 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
     notebook = tmp_path / "notebooks" / f"{rows[0]['run_id']}.py"
     assert notebook.exists()
-    assert '"proof_receipt"' not in notebook.read_text(encoding="utf-8")
+    assert '"proof_receipt":' not in notebook.read_text(encoding="utf-8")
+    authority = json.loads(rows[0]["python_interpreter_json"])
+    assert authority == {
+        "active": True,
+        "kind": "uv-project",
+        "launcher": "uv",
+        "no_sync": True,
+        "project": ".",
+        "python_request": "3.12",
+        "schema": interpreter_module.AUTHORITY_SCHEMA,
+    }
+    assert json.loads(rows[0]["receipt_context_json"]) == {
+        "schema": state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA,
+        "status": "not-executed",
+        "phase": "queued",
+        "reason": "execution worker has not captured receipt context",
+    }
 
-    requested_toolchains: list[tuple[str, ...]] = []
-
-    def fake_fingerprints(_plan: object, names: tuple[str, ...]) -> dict[str, dict]:
-        requested_toolchains.append(names)
-        return {name: {"identity_sha256": name} for name in names}
-
-    monkeypatch.setattr(
-        evidence_module.proof_plan, "toolchain_fingerprints", fake_fingerprints
-    )
+    requested_toolchains = interpreter_module.requested_toolchains(command)
+    receipt_context = {
+        "schema": "molt.proof-receipt.v2",
+        "authority_sha256": "a" * 64,
+        "source_commit": "b" * 40,
+        "source_tree_state": "clean",
+        "environment": {"os": "windows", "arch": "x86_64", "python": "3.12"},
+        "toolchains": {
+            name: {"identity_sha256": name} for name in requested_toolchains
+        },
+        "python_interpreters": {
+            "queue_control_plane": {
+                "executable": "C:/Python314/python.exe",
+                "implementation": "CPython",
+                "version": "3.14.3",
+                "role": "queue-runner-and-memory-guard",
+            },
+            "proof_command": {
+                "executable": "C:/project/.venv/Scripts/python.exe",
+                "implementation": "CPython",
+                "version": "3.12.13",
+                "authority": authority,
+                "role": "proof-command-envelope",
+            },
+        },
+    }
     conn = state._connect(db)
-    state._update_run(conn, rows[0]["run_id"], status="passed", returncode=0)
+    state._update_run(
+        conn,
+        rows[0]["run_id"],
+        status="passed",
+        returncode=0,
+        receipt_context_json=json.dumps(receipt_context, sort_keys=True),
+    )
     conn.row_factory = sqlite3.Row
     terminal_row = conn.execute(
         "SELECT * FROM proof_runs WHERE run_id = ?", (rows[0]["run_id"],)
     ).fetchone()
     assert terminal_row is not None
     terminal_payload = evidence_module._row_to_payload(terminal_row)
+    terminal_notebook = evidence_module._write_marimo_notebook(
+        argparse.Namespace(notebooks_root=str(tmp_path / "notebooks")),
+        conn,
+        rows[0]["run_id"],
+    )
     conn.close()
 
-    assert requested_toolchains == [("python", "cargo", "rustc")]
+    assert requested_toolchains == ("python", "cargo", "rustc")
     assert terminal_payload["proof_receipt"]["status"] == "success"
+    assert terminal_payload["proof_receipt"]["environment"]["python"] == "3.12"
+    assert (
+        terminal_payload["proof_receipt"]["python_interpreters"]["queue_control_plane"][
+            "version"
+        ]
+        == "3.14.3"
+    )
+    terminal_notebook_text = terminal_notebook.read_text(encoding="utf-8")
+    assert "3.14.3" in terminal_notebook_text
+    assert "3.12.13" in terminal_notebook_text
 
 
 def test_proof_queue_cargo_rejects_pre_delimiter_residue(tmp_path: Path) -> None:
@@ -5806,7 +6256,9 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
         ),
         encoding="utf-8",
     )
-    state._update_run(conn, "nested-guarded-exec-run", status="passed", returncode=0)
+    _terminalize_synthetic_run(
+        conn, "nested-guarded-exec-run", status="passed", returncode=0
+    )
 
     assert (
         cli.main(
@@ -7963,12 +8415,7 @@ def test_proof_queue_audit_flags_weak_metadata(
         summary_json=tmp_path / "weak-metadata.memory_guard.json",
     )
     log_path.write_text("passed with weak metadata\n", encoding="utf-8")
-    state._update_run(
-        conn,
-        "weak-metadata-run",
-        status="passed",
-        returncode=0,
-    )
+    _terminalize_synthetic_run(conn, "weak-metadata-run", status="passed", returncode=0)
 
     assert (
         cli.main(
@@ -8035,7 +8482,7 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         "ABI/link import surface\n",
         encoding="utf-8",
     )
-    state._update_run(conn, "frontier-run", status="failed", returncode=2)
+    _terminalize_synthetic_run(conn, "frontier-run", status="failed", returncode=2)
 
     scheduling._insert_run(
         conn,
@@ -8068,7 +8515,7 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
         encoding="utf-8",
     )
-    state._update_run(conn, "guard-warning-run", status="passed", returncode=0)
+    _terminalize_synthetic_run(conn, "guard-warning-run", status="passed", returncode=0)
 
     assert (
         cli.main(
@@ -8125,7 +8572,7 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         author="codex",
     )
     error_log.write_text("mystery failure without a diagnostic\n", encoding="utf-8")
-    state._update_run(conn, "error-run", status="failed", returncode=1)
+    _terminalize_synthetic_run(conn, "error-run", status="failed", returncode=1)
 
     warning_log = tmp_path / "warning.log"
     scheduling._insert_run(
@@ -8159,7 +8606,7 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
         encoding="utf-8",
     )
-    state._update_run(conn, "warning-run", status="passed", returncode=0)
+    _terminalize_synthetic_run(conn, "warning-run", status="passed", returncode=0)
 
     assert (
         cli.main(
@@ -8228,7 +8675,7 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
             "ABI/link import surface\n",
             encoding="utf-8",
         )
-        state._update_run(
+        _terminalize_synthetic_run(
             conn,
             run_id,
             status=status,
@@ -8308,7 +8755,7 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
             else "ok\n",
             encoding="utf-8",
         )
-        state._update_run(
+        _terminalize_synthetic_run(
             conn,
             run_id,
             status=status,
