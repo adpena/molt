@@ -39,6 +39,7 @@ pub(crate) fn append_referenced_inherited_declarations(
     let referenced = batch_functions
         .iter()
         .flat_map(|func| func.ops.iter())
+        .filter(|op| op.passes_execution_context)
         .filter_map(|op| op.s_value.as_deref())
         .filter(|target| !local_names.contains(*target) && declarations.contains_key(*target))
         .collect::<BTreeSet<_>>();
