@@ -15,6 +15,7 @@ from pathlib import Path
 
 from molt.dx import development_artifact_env
 from tools.proof_queue_pkg import (
+    command_envelope,
     custody,
     evidence,
     policy,
@@ -22,6 +23,44 @@ from tools.proof_queue_pkg import (
     state,
 )
 from tools.proof_queue_pkg import diagnostics as diagnostic_engine
+
+
+def _write_execution_request(
+    *,
+    row: sqlite3.Row,
+    command: list[str],
+    repo_root: Path,
+    resource_family: str,
+    log_path: Path,
+) -> tuple[Path, Path, dict[str, object]]:
+    envelope = json.loads(str(row["command_envelope_json"]))
+    if not isinstance(envelope, dict):
+        raise ValueError("proof row command envelope is malformed")
+    command_envelope.validate_envelope(envelope, command)
+    request_path = log_path.with_suffix(".execution-request.json")
+    result_path = log_path.with_suffix(".execution.json")
+    request = {
+        "schema": command_envelope.EXECUTION_SCHEMA,
+        "command": command,
+        "envelope": envelope,
+        "cwd": str(repo_root),
+        "resource_family": resource_family,
+        "result_path": str(result_path),
+    }
+    request_path.write_text(
+        json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return request_path, result_path, envelope
+
+
+def _read_execution_record(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"guarded proof execution record is unavailable: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != command_envelope.EXECUTION_SCHEMA:
+        raise ValueError("guarded proof execution record schema mismatch")
+    return payload
 
 
 def _wait_for_guard_completion_or_stale(
@@ -564,76 +603,23 @@ def _run_one(
         row = state._row_by_run_id(conn, run_id)
         if row is None:
             raise ValueError(f"proof run {run_id!r} disappeared before execution")
-        receipt_context = evidence._capture_execution_receipt_context(row, env=env)
-        state._update_run(
-            conn,
-            run_id,
-            receipt_context_json=json.dumps(receipt_context, sort_keys=True),
-        )
-    except Exception as exc:
-        return evidence._fail_preexecution_run(
-            args,
-            conn,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
+        request_path, execution_path, envelope = _write_execution_request(
+            row=row,
             command=command,
+            repo_root=repo_root,
+            resource_family=resource_family,
             log_path=log_path,
-            exc=exc,
-            phase="proof interpreter and receipt capture",
         )
-    preflight_errors = policy._ensure_run_toolchain_preflight(
-        repo_root=repo_root,
-        resource_family=resource_family,
-    )
-    if preflight_errors is not None:
-        now = state._utc_now()
-        state._update_run(
-            conn,
-            run_id,
-            status="failed",
-            returncode=2,
-            started_at=now,
-            finished_at=now,
-            elapsed_s=0.0,
-            receipt_context_json=json.dumps(
-                state._unattested_receipt_context(
-                    status="not-executed",
-                    phase="toolchain preflight",
-                    reason="; ".join(preflight_errors),
-                ),
-                sort_keys=True,
-            ),
-        )
-        lines = ["proof queue toolchain preflight failed:", *preflight_errors]
-        evidence._write_failed_run_log(
-            log_path,
-            run_id=run_id,
-            logical_id=logical_id,
-            reason=reason,
-            repo_root=repo_root,
-            command=command,
-            lines=lines,
-        )
-        print(f"rejected {run_id} rc=2")
-        for line in lines:
-            print(line, file=sys.stderr)
-        print(f"log: {log_path}")
-        if state._notes_for_run_ids(conn, [run_id]).get(run_id):
-            evidence._try_write_marimo_notebook(
-                args,
-                conn,
-                run_id,
-                log_path=log_path,
-                phase="toolchain preflight projection",
-            )
-        return 2
-    try:
         poll_interval = custody._proof_queue_memory_guard_poll_sec(env_overrides)
         env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
+        guarded_command = [
+            sys.executable,
+            str(state.ROOT / "tools" / "proof_queue_pkg" / "command_envelope.py"),
+            "--request",
+            str(request_path),
+        ]
         wrapped = custody._memory_guard_command(
-            command=command,
+            command=guarded_command,
             summary_json=summary_json,
             timeout=timeout,
             poll_interval=poll_interval,
@@ -672,19 +658,7 @@ def _run_one(
         print(f"proof_session_id={session_id}", file=log)
         print(f"cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
         print(
-            "queue_control_plane_python="
-            + json.dumps(
-                receipt_context["python_interpreters"]["queue_control_plane"],
-                sort_keys=True,
-            ),
-            file=log,
-        )
-        print(
-            "proof_command_python="
-            + json.dumps(
-                receipt_context["python_interpreters"]["proof_command"],
-                sort_keys=True,
-            ),
+            "command_envelope=" + json.dumps(envelope, sort_keys=True),
             file=log,
         )
         print(f"memory_guard_poll_sec={poll_interval}", file=log)
@@ -736,6 +710,58 @@ def _run_one(
         )
     finally:
         log.close()
+    receipt_context: dict[str, object] | None = None
+    execution_error: str | None = None
+    try:
+        execution_record = _read_execution_record(execution_path)
+        if execution_record.get("envelope") != envelope:
+            raise ValueError("guarded execution record changed the admitted envelope")
+        raw_context = execution_record.get("receipt_context")
+        if isinstance(raw_context, dict):
+            receipt_context = raw_context
+        if execution_record.get("phase") == "complete":
+            command_rc = execution_record.get("command_returncode")
+            if not isinstance(command_rc, int) or command_rc != rc:
+                raise ValueError(
+                    "guard/command return-code custody mismatch: "
+                    f"guard={rc!r} command={command_rc!r}"
+                )
+            source_custody = (
+                receipt_context.get("source_custody")
+                if receipt_context is not None
+                else None
+            )
+            eligible = (
+                isinstance(source_custody, dict)
+                and source_custody.get("evidence_eligible") is True
+            )
+            if status == "passed" and not eligible:
+                status = "non-evidence"
+                rc = 2
+                execution_error = (
+                    "source custody changed or was unavailable between prelaunch "
+                    "and postcompletion"
+                )
+        elif status == "passed":
+            raise ValueError(
+                "memory guard passed without a complete command execution record"
+            )
+        if isinstance(execution_record.get("error"), str):
+            execution_error = str(execution_record["error"])
+    except Exception as exc:
+        execution_error = f"{type(exc).__name__}: {exc}"
+        if status == "passed":
+            status = "failed"
+            rc = 2
+    if receipt_context is None:
+        receipt_context = state._unattested_receipt_context(
+            status="non-evidence",
+            phase="guarded command envelope",
+            reason=execution_error or "guarded execution produced no receipt context",
+        )
+    if execution_error:
+        with log_path.open("a", encoding="utf-8") as terminal_log:
+            print(f"proof_queue execution custody: {execution_error}", file=terminal_log)
     state._update_run(
         conn,
         run_id,
@@ -743,6 +769,7 @@ def _run_one(
         returncode=rc,
         finished_at=state._utc_now(),
         elapsed_s=elapsed,
+        receipt_context_json=json.dumps(receipt_context, sort_keys=True),
     )
     if state._notes_for_run_ids(conn, [run_id]).get(run_id):
         evidence._try_write_marimo_notebook(

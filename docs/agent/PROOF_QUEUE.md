@@ -179,26 +179,32 @@ uv run --active --project . --python 3.12 ...
 Non-active `uv run` is rejected because it creates throwaway environments and
 destroys proof latency.
 
-### Python Interpreter Custody
+### Command, Toolchain, Environment, and Source Custody
 
-Each queue row stores one command-derived Python interpreter authority when it
-is admitted. An explicit `uv run ... --python 3.12` selects that project
-interpreter; a direct `python`, versioned `python3.12`, or Windows `py -3.12`
-command selects its named interpreter; commands without a Python launcher use
-the canonical project Python 3.12 authority for queue-side proof tooling.
+Each row persists one typed command envelope at admission. It contains the
+exact argv, an explicit `python` or `none` kind, the complete interpreter-
+affecting `uv run` prefix, Windows `py` selector, and declared toolchains. The
+queue never invents project Python for a non-Python command. Opaque shells,
+unmodeled `uv` options, ambiguous console scripts, and noncanonical Rust
+wrappers are rejected before execution.
 
-The execution worker resolves that authority once, before launching the proof,
-and persists the complete receipt context. Terminal evidence, status output,
-and generated notebooks read the persisted context and never re-fingerprint
-with the ambient interpreter that happens to inspect the row later. Receipts
-attest both roles separately: `queue_control_plane` is the Python running the
-queue and memory guard, while `proof_command` is the interpreter selected by
-the proof envelope. The receipt `environment.python` and Python toolchain hash
-describe `proof_command`; Cargo and rustc retain their own toolchain hashes.
+One queue-owned memory guard contains interpreter/tool identity probes,
+toolchain preflight, the proof command, and both source snapshots. The guarded
+child resolves the exact outer executable and records its path, size, and
+content hash; validates Python, Cargo, and rustc versions and hashes against the
+proof plan; attests the normalized PATH/Rust/Cargo-wrapper environment; and
+records the normalized Python distribution inventory selected by any `uv`
+overlay. `--with-requirements` files are resolved inside the admitted source
+root and content-hashed before and after execution. `--directory` and
+`--project` may not escape that root.
 
-Rows created before this authority existed are migrated with a command-derived
-interpreter descriptor, but no historical execution fingerprint is fabricated.
-They have no executable proof receipt unless an execution worker captured one.
+Receipts bind row cwd, effective command cwd, Git root, commit, cleanliness,
+status digest, overlay inputs, and command executable at both prelaunch and
+postcompletion. A dirty, unavailable, or changed source; changed overlay; or
+changed executable is terminal `non-evidence`, even if the command returned
+zero. Terminal projections read the persisted context and never re-probe an
+ambient host. Legacy rows are marked `legacy-unattested`; migration derives an
+admission envelope but never fabricates historical execution evidence.
 
 ## Detached Long Runs
 

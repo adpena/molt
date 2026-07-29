@@ -1312,17 +1312,9 @@ def _normalized_arch() -> str:
     return {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64"}.get(value, value)
 
 
-def _version_fingerprint(
-    policy: ToolchainPolicy,
-    *,
-    executable_override: str | None = None,
-) -> dict[str, str] | None:
+def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     executable = str(policy.data["executable"])
-    requested = (
-        executable_override
-        if executable_override is not None
-        else (sys.executable if executable == "{python}" else executable)
-    )
+    requested = sys.executable if executable == "{python}" else executable
     path = shutil.which(requested)
     if path is None:
         return None
@@ -1400,8 +1392,6 @@ def _version_fingerprint(
 def toolchain_fingerprints(
     plan: ProofPlan,
     names: tuple[str, ...],
-    *,
-    executable_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, str]]:
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     fingerprints: dict[str, dict[str, str]] = {}
@@ -1421,15 +1411,7 @@ def toolchain_fingerprints(
         # Launchers in one provisioning domain can share mutable install state
         # (notably rustup). Probe that domain serially while independent
         # toolchains retain bounded parallelism.
-        results: dict[str, dict[str, str] | None] = {}
-        for name in domain_names:
-            override = (executable_overrides or {}).get(name)
-            results[name] = (
-                _version_fingerprint(policies[name], executable_override=override)
-                if override is not None
-                else _version_fingerprint(policies[name])
-            )
-        return results
+        return {name: _version_fingerprint(policies[name]) for name in domain_names}
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {

@@ -28,10 +28,18 @@ from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_set,
 )
-from tools.proof_queue_pkg import cli, custody, pact, policy, runner, scheduling, state
+from tools.proof_queue_pkg import (
+    cli,
+    command_envelope,
+    custody,
+    pact,
+    policy,
+    runner,
+    scheduling,
+    state,
+)
 from tools.proof_queue_pkg import diagnostics as diagnostics_module
 from tools.proof_queue_pkg import evidence as evidence_module
-from tools.proof_queue_pkg import interpreter as interpreter_module
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -93,6 +101,41 @@ def _terminalize_synthetic_run(
     )
 
 
+def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -> None:
+    request_path = Path(command[command.index("--request") + 1])
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    result_path = Path(request["result_path"])
+    receipt_context = {
+        "schema": "molt.proof-receipt.v2",
+        "authority_sha256": "a" * 64,
+        "source_commit": "b" * 40,
+        "source_tree_state": "clean",
+        "environment": {"os": "test", "arch": "test", "python": "3.12"},
+        "toolchains": {"python": {"identity_sha256": "c" * 64}},
+        "command_envelope": request["envelope"],
+        "source_custody": {
+            "prelaunch": {"available": True, "clean": True, "commit": "b" * 40},
+            "postcompletion": {"available": True, "clean": True, "commit": "b" * 40},
+            "identical": True,
+            "evidence_eligible": True,
+            "ineligible_reasons": [],
+        },
+    }
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema": command_envelope.EXECUTION_SCHEMA,
+                "envelope": request["envelope"],
+                "phase": "complete",
+                "command_started": True,
+                "command_returncode": returncode,
+                "receipt_context": receipt_context,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_proof_queue_default_state_is_owned_by_checkout_custody(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -115,7 +158,7 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
 
 
 @pytest.mark.parametrize(
-    ("command", "expected"),
+    ("command", "kind", "python_kind"),
     [
         (
             [
@@ -126,68 +169,321 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
                 ".",
                 "--python",
                 "3.12",
+                "--with",
+                "numpy==2.3.1",
+                "--with-requirements=requirements/proof.txt",
+                "--isolated",
+                "--directory",
+                "runtime",
                 "--no-sync",
                 "python",
                 "-m",
                 "pytest",
             ],
-            {
-                "kind": "uv-project",
-                "launcher": "C:\\Tools\\uv.exe",
-                "project": ".",
-                "python_request": "3.12",
-                "active": True,
-                "no_sync": True,
-            },
+            "python",
+            "uv",
         ),
         (
             ["C:\\Python312\\python.exe", "-m", "pytest"],
-            {
-                "kind": "direct",
-                "executable": "C:\\Python312\\python.exe",
-            },
+            "python",
+            "direct",
         ),
         (
             ["/opt/python3.12/bin/python3.12", "-m", "pytest"],
-            {
-                "kind": "direct",
-                "executable": "/opt/python3.12/bin/python3.12",
-            },
+            "python",
+            "direct",
         ),
         (
-            ["C:\\Windows\\py.exe", "-3.12", "-m", "pytest"],
-            {
-                "kind": "py-launcher",
-                "launcher": "C:\\Windows\\py.exe",
-                "python_request": "-3.12",
-            },
+            ["C:\\Windows\\py.exe", "-V:PythonCore/3.12", "-m", "pytest"],
+            "python",
+            "py-launcher",
         ),
         (
-            ["cargo", "test"],
-            {
-                "kind": "project-default",
-                "launcher": "uv",
-                "project": ".",
-                "python_request": "3.12",
-                "active": True,
-                "no_sync": True,
-            },
+            ["C:\\bin\\compiled-native-binary.exe", "--check"],
+            "none",
+            None,
         ),
     ],
 )
-def test_proof_python_interpreter_authority_is_command_derived_cross_platform(
-    command: list[str], expected: dict[str, object]
+def test_proof_command_envelope_is_typed_and_command_derived_cross_platform(
+    command: list[str], kind: str, python_kind: str | None
 ) -> None:
-    assert interpreter_module.authority_for_command(command) == {
-        "schema": interpreter_module.AUTHORITY_SCHEMA,
-        **expected,
+    envelope = command_envelope.envelope_for_command(command)
+    assert envelope["schema"] == command_envelope.ENVELOPE_SCHEMA
+    assert envelope["kind"] == kind
+    assert envelope["argv"] == command
+    python = envelope["python"]
+    assert (python["kind"] if isinstance(python, dict) else None) == python_kind
+    if python_kind == "uv":
+        assert python["prefix"] == command[:-3]
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["-3", "-3.12", "-3.12-32", "-3.12-64", "-V:3.12", "-V:PythonCore/3.12"],
+)
+def test_windows_py_selector_authority_is_complete(selector: str) -> None:
+    envelope = command_envelope.envelope_for_command(
+        ["py.exe", selector, "-m", "pytest"]
+    )
+    assert envelope["python"]["selector"] == selector
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash", "-lc", "python -m pytest"],
+        ["cmd.exe", "/c", "pytest"],
+        ["pytest", "tests"],
+        ["py.exe", "-V:bad/company/tag", "-m", "pytest"],
+        ["uv", "run", "--unknown-interpreter-option", "python", "-V"],
+        ["uv", "run", "ruff", "check", "."],
+        [
+            "uv",
+            "run",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "bash",
+            "-lc",
+            "cargo test",
+        ],
+        [
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "cargo",
+            "test",
+        ],
+    ],
+)
+def test_opaque_or_ambiguous_commands_are_rejected_before_execution(
+    command: list[str],
+) -> None:
+    with pytest.raises(ValueError):
+        command_envelope.envelope_for_command(command)
+    rejected = command_envelope.admission_envelope(command)
+    assert rejected["kind"] == "rejected"
+    assert rejected["python"] is None
+    assert rejected["toolchains"] == []
+
+
+def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -> None:
+    command = policy._canonical_cargo_proof_command(["test", "-p", "molt-ir"])
+    envelope = command_envelope.envelope_for_command(command)
+    assert envelope["kind"] == "python"
+    assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc"]
+    assert envelope["python"]["prefix"] == command[: command.index("python")]
+    assert envelope["delegated"]["argv"][:2] == ["cargo", "test"]
+
+
+def test_guarded_exec_delegation_is_exact_and_generic_binary_is_typed() -> None:
+    generic = command_envelope.envelope_for_command(
+        [
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            "C:/artifacts/native-proof.exe",
+            "--self-test",
+        ]
+    )
+    assert generic["delegated"] == {
+        "schema": command_envelope.ENVELOPE_SCHEMA,
+        "kind": "none",
+        "argv": ["C:/artifacts/native-proof.exe", "--self-test"],
+        "python": None,
+        "toolchains": [],
+        "delegated": None,
+    }
+    disguised = command_envelope.envelope_for_command(
+        ["python", "eviltools/guarded_exec.py", "--", "bash", "-lc", "whoami"]
+    )
+    assert disguised["delegated"] is None
+
+
+def test_guarded_exec_rejects_opaque_delegated_shell() -> None:
+    with pytest.raises(ValueError, match="opaque shell wrappers"):
+        command_envelope.envelope_for_command(
+            [
+                "python",
+                "tools/guarded_exec.py",
+                "--",
+                "bash",
+                "-lc",
+                "cargo test",
+            ]
+        )
+
+
+def test_guarded_exec_rejects_two_delegation_layers() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "guarded_exec may not delegate another Python authority|"
+            "nested guarded_exec delegation is limited to one typed layer"
+        ),
+    ):
+        command_envelope.envelope_for_command(
+            [
+                "python",
+                "tools/guarded_exec.py",
+                "--",
+                "python",
+                "tools/guarded_exec.py",
+                "--",
+                "cargo",
+                "test",
+            ]
+        )
+
+
+def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -> None:
+    git = shutil.which("git")
+    assert git is not None
+    command = [
+        sys.executable,
+        "tools/guarded_exec.py",
+        "--",
+        git,
+        "--version",
+    ]
+    envelope = command_envelope.envelope_for_command(command)
+    exact = list(command)
+    guarded_exec, delegated = command_envelope._bind_delegated_command(
+        envelope,
+        exact,
+        cwd=state.ROOT,
+        env=os.environ,
+    )
+    assert exact[1] == str((state.ROOT / "tools" / "guarded_exec.py").resolve())
+    assert exact[3] == str(Path(git).resolve())
+    assert guarded_exec is not None and command_envelope._content_identity_available(
+        guarded_exec
+    )
+    assert delegated is not None and command_envelope._content_identity_available(
+        delegated
+    )
+
+
+def test_uv_console_script_binds_to_exact_overlay_interpreter_prefix() -> None:
+    command = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--with",
+        "pytest==8.4.1",
+        "--isolated",
+        "pytest",
+        "tests/tools/test_proof_queue.py",
+    ]
+    envelope = command_envelope.envelope_for_command(command)
+    assert envelope["python"] == {
+        "kind": "uv-console-script",
+        "prefix": command[: command.index("pytest")],
+        "console_script": "pytest",
     }
 
 
-def test_proof_receipt_attests_control_plane_and_commanded_python_separately(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_non_python_command_has_no_fabricated_python_or_toolchain() -> None:
+    envelope = command_envelope.envelope_for_command(
+        ["C:/artifacts/native-proof.exe", "--self-test"]
+    )
+    assert envelope == {
+        "schema": command_envelope.ENVELOPE_SCHEMA,
+        "kind": "none",
+        "argv": ["C:/artifacts/native-proof.exe", "--self-test"],
+        "python": None,
+        "toolchains": [],
+        "delegated": None,
+    }
+
+
+def test_exact_uv_prefix_probe_preserves_every_interpreter_affecting_option(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    authority = interpreter_module.authority_for_command(
+    command = [
+        "uv",
+        "run",
+        "--with",
+        "numpy==2.3.1",
+        "--with-requirements",
+        "requirements/proof.txt",
+        "--isolated",
+        "--directory=runtime",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+    ]
+    envelope = command_envelope.envelope_for_command(command)
+    exact = ["C:/Tools/uv.exe", *command[1:]]
+    probe = command_envelope._python_probe_command(envelope, exact)
+    assert probe is not None
+    assert probe[: command.index("python")] == ["C:/Tools/uv.exe", *command[1:command.index("python")]]
+    assert probe[-3:-1] == ["python", "-c"]
+    del monkeypatch
+
+
+def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "runtime").mkdir()
+    inside = command_envelope.envelope_for_command(
+        ["uv", "run", "--directory", "runtime", "--project", ".", "python", "-V"]
+    )
+    effective, overlays = command_envelope._execution_source_paths(inside, cwd=root)
+    assert effective == (root / "runtime").resolve()
+    assert overlays == []
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escaped = command_envelope.envelope_for_command(
+        ["uv", "run", "--directory", str(outside), "python", "-V"]
+    )
+    with pytest.raises(ValueError, match="escapes admitted source root"):
+        command_envelope._execution_source_paths(escaped, cwd=root)
+
+
+def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source"
+    runtime = root / "runtime"
+    runtime.mkdir(parents=True)
+    requirements = runtime / "proof-requirements.txt"
+    requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
+    envelope = command_envelope.envelope_for_command(
+        [
+            "uv",
+            "run",
+            "--directory",
+            "runtime",
+            "--with-requirements",
+            "proof-requirements.txt",
+            "python",
+            "-V",
+        ]
+    )
+    effective, overlays = command_envelope._execution_source_paths(envelope, cwd=root)
+    assert effective == runtime.resolve()
+    assert overlays == [requirements.resolve()]
+    identity = command_envelope._file_identity(overlays[0])
+    assert identity["size_bytes"] == len(requirements.read_bytes())
+    assert len(identity["sha256"]) == 64
+
+
+def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
+    envelope = command_envelope.envelope_for_command(
         [
             "uv",
             "run",
@@ -204,88 +500,282 @@ def test_proof_receipt_attests_control_plane_and_commanded_python_separately(
             "test",
         ]
     )
-    monkeypatch.setattr(
-        interpreter_module,
-        "resolve_interpreter",
-        lambda *_args, **_kwargs: {
-            "executable": "C:/project/.venv/Scripts/python.exe",
-            "implementation": "CPython",
-            "version": "3.12.13",
-        },
+    assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc"]
+
+
+def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
+    plan = SimpleNamespace(
+        toolchain_policies=(
+            SimpleNamespace(
+                name="python",
+                data={"version_pattern": r"^Python 3\.12\."},
+            ),
+        )
+    )
+    with pytest.raises(ValueError, match="violates canonical policy"):
+        command_envelope._validate_toolchain_identity(
+            plan,
+            "python",
+            {
+                "version": "3.13.1",
+                "executable_sha256": "a" * 64,
+            },
+        )
+
+
+def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -> None:
+    base = {
+        "PATH": "C:\\Tools;C:\\Rust\\bin",
+        "RUSTUP_TOOLCHAIN": "1.96.1-x86_64-pc-windows-msvc",
+        "RUSTC": "C:\\Rust\\bin\\rustc.exe",
+        "CARGO_HOME": "C:\\Cargo",
+        "RUSTFLAGS": "-Ctarget-cpu=native",
+        "RUSTC_WRAPPER": "sccache",
+        "RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
+        "CARGO_BUILD_RUSTC_WRAPPER": "build-wrapper",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "build-workspace-wrapper",
+        "CARGO_BUILD_TARGET": "x86_64-pc-windows-msvc",
+        "UV_INDEX_URL": "https://user:credential@example.invalid/simple",
+        "UV_CACHE_DIR": "C:\\uv-cache",
+        "UNRELATED_SECRET_TOKEN": "must-not-appear",
+    }
+    normalized, policies = command_envelope.normalize_cargo_environment(base)
+    authority = command_envelope._execution_environment_authority(
+        normalized, applied_cargo_policies=policies
+    )
+    variables = authority["variables"]
+    assert variables["PATH"]["redacted"] is True
+    assert "value" not in variables["PATH"]
+    assert variables["CARGO_INCREMENTAL"]["value"] == "0"
+    for name in (
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_TARGET",
+    ):
+        assert name in variables
+    assert "UNRELATED_SECRET_TOKEN" not in variables
+    assert variables["UV_INDEX_URL"]["redacted"] is True
+    assert "value" not in variables["UV_INDEX_URL"]
+    assert "entry_count" not in variables["UV_INDEX_URL"]
+    assert variables["UV_CACHE_DIR"]["redacted"] is True
+    changed = command_envelope._execution_environment_authority(
+        {**normalized, "RUSTUP_TOOLCHAIN": "nightly"},
+        applied_cargo_policies=policies,
+    )
+    assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+def _initialize_clean_git_repo(path: Path) -> str:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "proof@example.invalid"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Proof Queue"], cwd=path, check=True)
+    (path / "tracked.txt").write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True)
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+
+
+def _execute_request(
+    repo: Path,
+    result: Path,
+    command: list[str],
+    *,
+    resource_family: str = "python-tests",
+) -> tuple[int, dict[str, object]]:
+    envelope = command_envelope.envelope_for_command(command)
+    request = result.with_suffix(".request.json")
+    request.write_text(
+        json.dumps(
+            {
+                "schema": command_envelope.EXECUTION_SCHEMA,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(repo),
+                "resource_family": resource_family,
+                "result_path": str(result),
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = command_envelope.execute_guarded_request(request)
+    return rc, json.loads(result.read_text(encoding="utf-8"))
+
+
+def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "alternate-repo"
+    commit = _initialize_clean_git_repo(repo)
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "execution.json",
+        [sys.executable, "-c", "print('proof')"],
+    )
+    assert rc == 0
+    context = record["receipt_context"]
+    assert context["source_commit"] == commit
+    assert context["source_custody"]["evidence_eligible"] is True
+    executable = context["command_executable"]
+    assert executable["identical"] is True
+    assert executable["prelaunch"]["path"] == str(Path(sys.executable).resolve())
+    assert executable["prelaunch"]["size_bytes"] > 0
+    assert len(executable["prelaunch"]["sha256"]) == 64
+    python_identity = context["toolchains"]["python"]
+    assert len(python_identity["distribution_inventory_sha256"]) == 64
+    assert python_identity["distributions"]
+    assert {
+        "record_sha256",
+        "file_manifest_sha256",
+        "direct_url_sha256",
+        "installer_sha256",
+    } <= python_identity["distributions"][0].keys()
+
+
+def test_guarded_receipt_rejects_stable_dirty_source(tmp_path: Path) -> None:
+    repo = tmp_path / "dirty-repo"
+    _initialize_clean_git_repo(repo)
+    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "dirty-execution.json",
+        [sys.executable, "-c", "pass"],
+    )
+    assert rc == 0
+    custody_payload = record["receipt_context"]["source_custody"]
+    assert custody_payload["identical"] is True
+    assert custody_payload["evidence_eligible"] is False
+    assert custody_payload["ineligible_reasons"] == [
+        "source-dirty-prelaunch",
+        "source-dirty-postcompletion",
+    ]
+
+
+def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) -> None:
+    repo = tmp_path / "mutated-repo"
+    _initialize_clean_git_repo(repo)
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "mutated-execution.json",
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('tracked.txt').write_text('mutated\\n')",
+        ],
+    )
+    assert rc == 0
+    custody_payload = record["receipt_context"]["source_custody"]
+    assert custody_payload["evidence_eligible"] is False
+    assert "source-dirty-postcompletion" in custody_payload["ineligible_reasons"]
+    assert "source-snapshot-changed" in custody_payload["ineligible_reasons"]
+
+
+def test_guarded_identity_timeout_is_terminal_before_command_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "timeout-repo"
+    _initialize_clean_git_repo(repo)
+    result = tmp_path / "timeout-execution.json"
+    marker = tmp_path / "must-not-run"
+    command = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
+    ]
+    envelope = command_envelope.envelope_for_command(command)
+    request = result.with_suffix(".request.json")
+    request.write_text(
+        json.dumps(
+            {
+                "schema": command_envelope.EXECUTION_SCHEMA,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+            }
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(
-        interpreter_module.proof_plan.ProofPlan,
-        "load",
-        classmethod(
-            lambda cls: SimpleNamespace(receipt_schema="molt.proof-receipt.v2")
+        command_envelope,
+        "_python_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired("python-probe", 0.01)
         ),
     )
-    monkeypatch.setattr(
-        interpreter_module.proof_plan, "_authority_sha256", lambda _plan: "a" * 64
-    )
-    monkeypatch.setattr(
-        interpreter_module.proof_plan, "_source_commit", lambda: "b" * 40
-    )
-    monkeypatch.setattr(
-        interpreter_module.proof_plan, "_source_tree_state", lambda: "clean"
-    )
-    monkeypatch.setattr(
-        interpreter_module.proof_plan, "_normalized_os", lambda: "windows"
-    )
-    monkeypatch.setattr(
-        interpreter_module.proof_plan, "_normalized_arch", lambda: "x86_64"
-    )
-    observed: dict[str, object] = {}
+    assert command_envelope.execute_guarded_request(request) == 2
+    record = json.loads(result.read_text(encoding="utf-8"))
+    assert record["phase"] == "failed"
+    assert record["command_started"] is False
+    assert "TimeoutExpired" in record["error"]
+    assert not marker.exists()
 
-    def fake_fingerprints(
-        _plan: object,
-        names: tuple[str, ...],
-        *,
-        executable_overrides: dict[str, str],
-    ) -> dict[str, dict[str, str]]:
-        observed["names"] = names
-        observed["overrides"] = executable_overrides
-        return {
-            "python": {"version": "Python 3.12.13"},
-            "cargo": {"version": "cargo 1.96.1"},
-            "rustc": {"version": "rustc 1.96.1"},
-        }
 
-    monkeypatch.setattr(
-        interpreter_module.proof_plan,
-        "toolchain_fingerprints",
-        fake_fingerprints,
-    )
-    monkeypatch.setattr(interpreter_module.sys, "executable", "C:/Python314/python.exe")
-    monkeypatch.setattr(interpreter_module.platform, "python_version", lambda: "3.14.3")
-
-    context = interpreter_module.receipt_context(
-        authority,
-        command=[
-            "uv",
-            "run",
-            "--active",
-            "--project",
-            ".",
-            "--python",
-            "3.12",
-            "python",
-            "tools/guarded_exec.py",
-            "--",
-            "cargo",
-            "test",
-        ],
-        cwd=tmp_path,
-        env={"PATH": "C:/Tools"},
-    )
-
-    assert observed == {
-        "names": ("python", "cargo", "rustc"),
-        "overrides": {"python": "C:/project/.venv/Scripts/python.exe"},
+def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, str]] = []
+    execution_env = {
+        "PATH": str(Path(sys.executable).parent),
+        "RUSTUP_TOOLCHAIN": "1.96.1-x86_64-pc-windows-msvc",
     }
-    assert context["environment"]["python"] == "3.12"
-    assert context["python_interpreters"]["queue_control_plane"]["version"] == "3.14.3"
-    assert context["python_interpreters"]["proof_command"]["version"] == "3.12.13"
+
+    def fake_which(
+        name: str,
+        _envelope: object,
+        _exact: object,
+        *,
+        cwd: Path,
+        env: dict[str, str],
+    ) -> Path:
+        del cwd
+        observed.append((name, env["RUSTUP_TOOLCHAIN"]))
+        return Path(sys.executable)
+
+    def fake_run(
+        command: object, *, cwd: Path, env: dict[str, str], timeout: float = 30.0
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout
+        assert env["RUSTUP_TOOLCHAIN"] == execution_env["RUSTUP_TOOLCHAIN"]
+        argv = list(command)
+        if "which" in argv:
+            return subprocess.CompletedProcess(argv, 0, str(Path(sys.executable)), "")
+        return subprocess.CompletedProcess(argv, 0, "cargo 1.96.1", "")
+
+    monkeypatch.setattr(command_envelope, "_which_in_command_environment", fake_which)
+    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
+    identity = command_envelope._tool_identity(
+        "cargo",
+        "cargo",
+        {"python": None},
+        [sys.executable],
+        cwd=Path.cwd(),
+        env=execution_env,
+    )
+    assert observed == [
+        ("cargo", execution_env["RUSTUP_TOOLCHAIN"]),
+        ("rustup", execution_env["RUSTUP_TOOLCHAIN"]),
+    ]
+    assert identity["version"] == "cargo 1.96.1"
+
+
+def test_unavailable_executable_and_requirements_hashes_are_never_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        command_envelope,
+        "_hash_file",
+        lambda _path: "unavailable:PermissionError",
+    )
+    executable = command_envelope._executable_identity(Path(sys.executable))
+    overlay = command_envelope._file_identity(requirements)
+    assert command_envelope._content_identity_available(executable) is False
+    assert command_envelope._content_identity_available(overlay) is False
 
 
 def test_proof_queue_durable_state_remains_with_its_source_checkout(
@@ -324,6 +814,8 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
             status TEXT NOT NULL,
             returncode INTEGER,
             command_json TEXT NOT NULL,
+            python_interpreter_json TEXT NOT NULL,
+            receipt_context_json TEXT,
             cwd TEXT NOT NULL,
             resource_family TEXT NOT NULL,
             contention_key TEXT NOT NULL,
@@ -354,15 +846,30 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
     legacy.execute(
         """
         INSERT INTO proof_runs (
-            run_id, logical_id, reason, status, returncode, command_json, cwd,
+            run_id, logical_id, reason, status, returncode, command_json,
+            python_interpreter_json, receipt_context_json, cwd,
             resource_family, contention_key, scopes_json, log_path, summary_json
-        ) VALUES (?, ?, ?, 'passed', 0, ?, ?, ?, ?, '[]', ?, ?)
+        ) VALUES (?, ?, ?, 'passed', 0, ?, ?, ?, ?, ?, ?, '[]', ?, ?)
         """,
         (
             "legacy-run",
             "legacy",
             "migration fixture",
             json.dumps(command),
+            json.dumps(
+                {
+                    "schema": "molt.proof-python-interpreter-authority.v1",
+                    "kind": "project-default",
+                    "python_request": "3.12",
+                }
+            ),
+            json.dumps(
+                {
+                    "schema": "molt.proof-receipt.v2",
+                    "source_commit": "f" * 40,
+                    "status": "success",
+                }
+            ),
             str(tmp_path),
             "python",
             "python:legacy",
@@ -382,9 +889,11 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
     payload = evidence_module._row_to_payload(row)
     conn.close()
 
-    assert json.loads(row["python_interpreter_json"])["python_request"] == "3.12"
+    envelope = json.loads(row["command_envelope_json"])
+    assert envelope["schema"] == command_envelope.ENVELOPE_SCHEMA
+    assert envelope["python"]["kind"] == "uv"
     assert json.loads(row["receipt_context_json"])["status"] == "legacy-unattested"
-    assert payload["python_interpreter_authority"]["kind"] == "uv-project"
+    assert payload["command_envelope"] == envelope
     assert payload["proof_receipt_state"]["status"] == "legacy-unattested"
     assert "proof_receipt" not in payload
 
@@ -1105,16 +1614,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     )
     assert "RuntimeError: notebook projection exploded" in log_text
     assert "--- proof_queue command execution ---" in log_text
-    assert "queue_control_plane_python=" in log_text
-    assert "proof_command_python=" in log_text
-
-    monkeypatch.setattr(
-        evidence_module,
-        "_queue_receipt_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("terminal evidence must use the persisted execution context")
-        ),
-    )
+    assert "command_envelope=" in log_text
 
     capsys.readouterr()
     assert (
@@ -1249,21 +1749,12 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     assert followup_marker.read_text(encoding="utf-8") == "ran"
 
 
-def test_proof_queue_interpreter_capture_failure_is_explicit_nonexecution(
-    monkeypatch: pytest.MonkeyPatch,
+def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     marker = tmp_path / "must-not-run.txt"
-    monkeypatch.setattr(
-        evidence_module,
-        "_capture_execution_receipt_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("commanded interpreter probe failed")
-        ),
-    )
-
     rc = cli.main(
         [
             "--db",
@@ -1274,19 +1765,18 @@ def test_proof_queue_interpreter_capture_failure_is_explicit_nonexecution(
             str(state.ROOT),
             "exec",
             "--id",
-            "interpreter-capture-failure",
+            "identity-capture-failure",
             "--reason",
             "prove capture failure is terminal before command launch",
             "--resource-family",
             "python",
             "--contention-key",
-            "python:interpreter-capture-failure",
+            "python:identity-capture-failure",
             "--note",
-            "the commanded interpreter must be attested before proof execution",
+            "the commanded executable must be attested before proof execution",
             "--",
-            sys.executable,
-            "-c",
-            "from pathlib import Path; Path(r'" + str(marker) + "').write_text('ran')",
+            str(tmp_path / "missing-proof-executable"),
+            str(marker),
         ]
     )
 
@@ -1295,9 +1785,9 @@ def test_proof_queue_interpreter_capture_failure_is_explicit_nonexecution(
     assert rc == 2
     assert row["status"] == "failed"
     assert not marker.exists()
-    assert receipt_state["status"] == "not-executed"
-    assert receipt_state["phase"] == "proof interpreter and receipt capture"
-    assert "commanded interpreter probe failed" in receipt_state["reason"]
+    assert receipt_state["status"] == "non-evidence"
+    assert receipt_state["phase"] == "guarded command envelope"
+    assert "proof executable" in receipt_state["reason"]
 
 
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
@@ -3018,6 +3508,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             if self.wait_count == 1:
                 raise subprocess.TimeoutExpired(self.command, timeout)
             self.returncode = 0
+            _write_synthetic_guarded_execution(self.command, returncode=0)
             return self.returncode
 
         def poll(self) -> int | None:
@@ -3129,6 +3620,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             if self.wait_count == 1:
                 raise subprocess.TimeoutExpired(self.command, timeout)
             self.returncode = 0
+            _write_synthetic_guarded_execution(self.command, returncode=0)
             return self.returncode
 
         def poll(self) -> int | None:
@@ -3349,8 +3841,8 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    db = tmp_path / "proof_queue.sqlite3"
-    logs = tmp_path / "runs"
+    repo = tmp_path / "wasm-preflight-repo"
+    _initialize_clean_git_repo(repo)
     calls: list[tuple[str, Path | None]] = []
     required_targets = ("wasm32-wasip1", "wasm32-unknown-unknown")
 
@@ -3370,43 +3862,25 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     )
     monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 
-    rc = cli.main(
-        [
-            "--db",
-            str(db),
-            "--logs-root",
-            str(logs),
-            "--repo-root",
-            str(state.ROOT),
-            "exec",
-            "--id",
-            "wasm-preflight",
-            "--reason",
-            "prove wasm target preflight",
-            "--resource-family",
-            "wasm-browser",
-            "--contention-key",
-            "wasm:preflight",
-            "--",
-            sys.executable,
-            "-c",
-            "print('ran')",
-        ]
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "wasm-preflight.execution.json",
+        [sys.executable, "-c", "print('ran')"],
+        resource_family="wasm-browser",
     )
 
     assert rc == 0
-    assert calls == [(target, state.ROOT) for target in required_targets]
-    assert ("wasm32-wasip1", state.ROOT) in calls
-    rows = _rows(db)
-    assert rows[0]["status"] == "passed"
-    assert "ran" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert calls == [(target, repo) for target in required_targets]
+    assert record["phase"] == "complete"
+    assert record["command_started"] is True
 
 
 def test_proof_queue_wasm_preflight_fails_before_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    db = tmp_path / "proof_queue.sqlite3"
-    logs = tmp_path / "runs"
+    repo = tmp_path / "wasm-preflight-fail-repo"
+    _initialize_clean_git_repo(repo)
+    marker = tmp_path / "should-not-run"
     required_targets = ("wasm32-wasip1",)
 
     def fake_ensure(
@@ -3425,38 +3899,22 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     )
     monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 
-    rc = cli.main(
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "wasm-preflight-fail.execution.json",
         [
-            "--db",
-            str(db),
-            "--logs-root",
-            str(logs),
-            "--repo-root",
-            str(state.ROOT),
-            "exec",
-            "--id",
-            "wasm-preflight-fail",
-            "--reason",
-            "prove wasm target preflight fails closed",
-            "--resource-family",
-            "wasm-browser",
-            "--contention-key",
-            "wasm:preflight-fail",
-            "--",
             sys.executable,
             "-c",
-            "print('should-not-run')",
-        ]
+            "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
+        ],
+        resource_family="wasm-browser",
     )
 
-    rows = _rows(db)
     assert rc == 2
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["returncode"] == 2
-    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
-    assert "proof queue toolchain preflight failed" in log_text
-    assert "missing wasm32-wasip1" in log_text
-    assert "should-not-run" in log_text
+    assert record["phase"] == "failed"
+    assert record["command_started"] is False
+    assert "missing wasm32-wasip1" in record["error"]
+    assert not marker.exists()
 
 
 def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) -> None:
@@ -4582,16 +5040,8 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     notebook = tmp_path / "notebooks" / f"{rows[0]['run_id']}.py"
     assert notebook.exists()
     assert '"proof_receipt":' not in notebook.read_text(encoding="utf-8")
-    authority = json.loads(rows[0]["python_interpreter_json"])
-    assert authority == {
-        "active": True,
-        "kind": "uv-project",
-        "launcher": "uv",
-        "no_sync": True,
-        "project": ".",
-        "python_request": "3.12",
-        "schema": interpreter_module.AUTHORITY_SCHEMA,
-    }
+    authority = json.loads(rows[0]["command_envelope_json"])
+    assert authority == command_envelope.envelope_for_command(command)
     assert json.loads(rows[0]["receipt_context_json"]) == {
         "schema": state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA,
         "status": "not-executed",
@@ -4599,7 +5049,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "reason": "execution worker has not captured receipt context",
     }
 
-    requested_toolchains = interpreter_module.requested_toolchains(command)
+    requested_toolchains = tuple(authority["toolchains"])
     receipt_context = {
         "schema": "molt.proof-receipt.v2",
         "authority_sha256": "a" * 64,
@@ -4646,7 +5096,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     )
     conn.close()
 
-    assert requested_toolchains == ("python", "cargo", "rustc")
+    assert requested_toolchains == ("python", "uv", "cargo", "rustc")
     assert terminal_payload["proof_receipt"]["status"] == "success"
     assert terminal_payload["proof_receipt"]["environment"]["python"] == "3.12"
     assert (
@@ -7063,44 +7513,44 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
 
 
 def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     command_marker = tmp_path / "proof-command-ran.txt"
-
-    def fail_toolchain_import():
-        raise ModuleNotFoundError("No module named 'packaging.specifiers'")
-
-    monkeypatch.setattr(policy, "_load_wasm_toolchain", fail_toolchain_import)
-
-    rc = cli.main(
-        [
-            "--db",
-            str(db),
-            "--logs-root",
-            str(logs),
-            "--repo-root",
-            str(state.ROOT),
-            "exec",
-            "--id",
-            "wasm-contract-import-missing-run",
-            "--reason",
-            "prove wasm preflight import-missing diagnosis",
-            "--resource-family",
-            "wasm-browser",
-            "--contention-key",
-            "wasm:contract-import-missing",
-            "--",
-            sys.executable,
-            "-c",
-            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
-            str(command_marker),
-        ]
+    run_id = "wasm-contract-import-missing-run"
+    log_path = logs / f"{run_id}.log"
+    summary_path = logs / f"{run_id}.memory_guard.json"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id=run_id,
+        logical_id=run_id,
+        reason="prove wasm preflight import-missing diagnosis",
+        command=[sys.executable, "-c", "print('must not run')"],
+        cwd=state.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:contract-import-missing",
+        scopes=[],
+        log_path=log_path,
+        summary_json=summary_path,
     )
-    assert rc == 2
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "failed to import WASM toolchain contract: "
+        "No module named 'packaging.specifiers'\n",
+        encoding="utf-8",
+    )
+    _terminalize_synthetic_run(
+        conn,
+        run_id,
+        status="failed",
+        returncode=2,
+        executed=False,
+        phase="guarded toolchain preflight",
+    )
+    conn.close()
     assert not command_marker.exists()
     rows = _rows(db)
     assert rows[0]["status"] == "failed"

@@ -811,7 +811,8 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                     evidence=str(receipt_context.get("reason", "")),
                     next_action=(
                         "Do not cite this row as executable evidence; rerun the proof "
-                        "through current interpreter custody if evidence is still needed."
+                        "through current guarded command-envelope custody if evidence "
+                        "is still needed."
                     ),
                 )
             )
