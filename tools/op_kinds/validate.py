@@ -243,9 +243,13 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_runtime_requirement_roles requires non-empty table/constant rows"
         )
     if len({row["table"] for row in requirement_roles}) != len(requirement_roles):
-        raise OpKindTableError("simpleir_runtime_requirement_roles has duplicate tables")
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_roles has duplicate tables"
+        )
     if len({row["constant"] for row in requirement_roles}) != len(requirement_roles):
-        raise OpKindTableError("simpleir_runtime_requirement_roles has duplicate constants")
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_roles has duplicate constants"
+        )
     if len(requirement_roles) > 16:
         raise OpKindTableError(
             "simpleir_runtime_requirement_roles exceeds u16 storage width"
@@ -289,31 +293,31 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_runtime_qualified_callable has duplicate runtime symbols"
         )
     for qualified in qualified_names:
-        if qualified != qualified.strip() or re.fullmatch(
-            r"(?:inspect|sys)\.[A-Za-z_][A-Za-z0-9_]*", qualified
-        ) is None:
+        if (
+            qualified != qualified.strip()
+            or re.fullmatch(r"(?:inspect|sys)\.[A-Za-z_][A-Za-z0-9_]*", qualified)
+            is None
+        ):
             raise OpKindTableError(
                 "simpleir_runtime_qualified_callable must use exact canonical sys/inspect spellings, not source aliases"
             )
-    unknown_symbols = {
-        row["symbol"] for row in qualified_callables
-    } - set(runtime_symbols)
+    unknown_symbols = {row["symbol"] for row in qualified_callables} - set(
+        runtime_symbols
+    )
     if unknown_symbols:
         raise OpKindTableError(
             "simpleir_runtime_qualified_callable references unclassified runtime symbols: "
             + ", ".join(sorted(unknown_symbols))
         )
 
-    protected_gateways = data.get(
-        "simpleir_runtime_protected_attribute_gateways", []
-    )
+    protected_gateways = data.get("simpleir_runtime_protected_attribute_gateways", [])
     if (
         not isinstance(protected_gateways, list)
         or not protected_gateways
         or not all(
-        isinstance(name, str)
-        and re.fullmatch(r"__[a-z][a-z0-9_]*__", name) is not None
-        for name in protected_gateways
+            isinstance(name, str)
+            and re.fullmatch(r"__[a-z][a-z0-9_]*__", name) is not None
+            for name in protected_gateways
         )
     ):
         raise OpKindTableError(
@@ -324,9 +328,31 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_runtime_protected_attribute_gateways has duplicate names"
         )
 
-    function_reference_kinds = data.get(
-        "simpleir_function_reference_s_value_kinds", []
+    protected_gateway_callables = data.get(
+        "simpleir_runtime_protected_gateway_callables", []
     )
+    if (
+        not isinstance(protected_gateway_callables, list)
+        or not protected_gateway_callables
+        or not all(
+            isinstance(qualified, str)
+            and re.fullmatch(
+                r"[a-z_][a-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+",
+                qualified,
+            )
+            is not None
+            for qualified in protected_gateway_callables
+        )
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_protected_gateway_callables must contain canonical qualified callable names"
+        )
+    if len(set(protected_gateway_callables)) != len(protected_gateway_callables):
+        raise OpKindTableError(
+            "simpleir_runtime_protected_gateway_callables has duplicate names"
+        )
+
+    function_reference_kinds = data.get("simpleir_function_reference_s_value_kinds", [])
     if not isinstance(function_reference_kinds, list) or not all(
         isinstance(kind, str) and kind for kind in function_reference_kinds
     ):

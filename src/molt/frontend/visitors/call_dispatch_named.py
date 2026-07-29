@@ -535,12 +535,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     if isinstance(node.args[0], ast.Name)
                     else None
                 )
-                requirement_bits = (
-                    self._runtime_protected_attribute_requirement_bits(
-                        obj,
-                        "__dict__",
-                        exact_class=exact_class,
-                    )
+                requirement_bits = self._runtime_protected_attribute_requirement_bits(
+                    obj,
+                    "__dict__",
+                    exact_class=exact_class,
                 )
                 self.emit(
                     MoltOp(
@@ -616,6 +614,11 @@ class CallNamedDispatchMixin(_MixinBase):
                     if isinstance(node.args[0], ast.Name)
                     else None
                 )
+                receiver_module_name = (
+                    self._imported_module_binding_target(node.args[0].id)
+                    if isinstance(node.args[0], ast.Name)
+                    else None
+                )
                 if name_lit and obj.type_hint in self.classes:
                     class_info = self.classes[obj.type_hint]
                     if not class_info.get("dynamic"):
@@ -685,6 +688,7 @@ class CallNamedDispatchMixin(_MixinBase):
                         res,
                         literal_name=name_lit,
                         exact_class=receiver_exact_class,
+                        qualified_module_name=receiver_module_name,
                     )
                 else:
                     default = self._emit_missing_value()
@@ -695,6 +699,7 @@ class CallNamedDispatchMixin(_MixinBase):
                         res,
                         literal_name=name_lit,
                         exact_class=receiver_exact_class,
+                        qualified_module_name=receiver_module_name,
                     )
                 return res
             if func_id == "setattr":

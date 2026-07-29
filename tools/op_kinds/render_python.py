@@ -120,6 +120,18 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     for kind in sorted(effects):
         out.append(f'    "{kind}": "{effects[kind]}",\n')
     out.append("}\n\n")
+
+    protected_gateway_callables = sorted(
+        set(data.get("simpleir_runtime_protected_gateway_callables", []))
+    )
+    out.append(
+        "SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(\n"
+    )
+    out.append("    {\n")
+    for qualified in protected_gateway_callables:
+        out.append(f'        "{qualified}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
     role_constants = [
         row["constant"] for row in data["simpleir_runtime_requirement_roles"]
     ]

@@ -2482,6 +2482,145 @@ def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
     assert protected, (case, function["ops"])
 
 
+@pytest.mark.parametrize(
+    ("transport", "source", "expected_kind"),
+    [
+        (
+            "builtin-alias-call",
+            'import sys\ndef f():\n    gateway = getattr\n    return gateway(sys, "_getframe")\n',
+            "builtin_func",
+        ),
+        (
+            "builtin-list-store",
+            "def f():\n    return [vars]\n",
+            "builtin_func",
+        ),
+        (
+            "builtin-argument-pass",
+            "def sink(value):\n    return value\ndef f():\n    return sink(getattr)\n",
+            "builtin_func",
+        ),
+        (
+            "builtins-qualified",
+            "import builtins\ndef f():\n    return builtins.getattr\n",
+            "get_attr_generic_obj",
+        ),
+        (
+            "operator-alias",
+            "import operator as op\ndef f():\n    return op.attrgetter\n",
+            "get_attr_generic_obj",
+        ),
+        (
+            "operator-methodcaller",
+            "import operator\ndef f():\n    return operator.methodcaller\n",
+            "get_attr_generic_obj",
+        ),
+        (
+            "inspect-getattr-static",
+            "import inspect\ndef f():\n    return inspect.getattr_static\n",
+            "get_attr_generic_obj",
+        ),
+        (
+            "from-import-builtins",
+            "from builtins import getattr as gateway\ndef f():\n    return gateway\n",
+            "module_get_global",
+        ),
+        (
+            "from-import-operator",
+            "from operator import attrgetter as gateway\ndef f():\n    return gateway\n",
+            "module_get_global",
+        ),
+        (
+            "recursive-builtin-getattr",
+            'import builtins\ndef f():\n    return getattr(builtins, "getattr")\n',
+            "get_attr_name_default",
+        ),
+        (
+            "recursive-operator-getattr",
+            'import operator as op\ndef f():\n    return getattr(op, "attrgetter")\n',
+            "get_attr_name_default",
+        ),
+    ],
+)
+def test_runtime_protected_gateway_callable_identity_is_stamped_at_acquisition(
+    transport: str, source: str, expected_kind: str
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    protected = [
+        op
+        for op in function["ops"]
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert len(protected) == 1, (transport, protected)
+    assert protected[0]["kind"] == expected_kind, (transport, protected)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "attr_name"),
+    [
+        ("builtins", "getattr"),
+        ("builtins", "vars"),
+        ("inspect", "getattr_static"),
+        ("operator", "attrgetter"),
+        ("operator", "methodcaller"),
+    ],
+)
+def test_runtime_protected_gateway_from_import_stamps_import_and_global_load(
+    module_name: str, attr_name: str
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            f"from {module_name} import {attr_name} as gateway\n"
+            "def f():\n"
+            "    return gateway\n"
+        )
+    )
+    protected_kinds = {
+        op["kind"]
+        for function in gen.to_json()["functions"]
+        for op in function["ops"]
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    }
+    assert {"module_import_from", "module_get_global"} <= protected_kinds
+
+
+def test_runtime_gateway_identity_exact_negative_authorities_stay_untagged() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "import operator\n"
+            "def getattr(value):\n"
+            "    return value\n"
+            "class Safe:\n"
+            "    attrgetter = 1\n"
+            "def f():\n"
+            "    safe = Safe()\n"
+            "    return getattr, safe.attrgetter, operator.itemgetter\n"
+        )
+    )
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    assert all(
+        not (
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        )
+        for op in function["ops"]
+    )
+
+
 def test_runtime_callable_reflection_gateways_preserve_exact_class_negatives() -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
