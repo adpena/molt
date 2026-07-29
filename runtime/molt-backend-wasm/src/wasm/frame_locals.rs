@@ -2,7 +2,6 @@ mod anonymous_locals;
 mod constant_cache_locals;
 mod dispatch_locals;
 mod literal_scratch;
-mod multi_return_locals;
 mod synthetic_locals;
 
 pub(in crate::wasm) use anonymous_locals::WasmFrameAnonymousLocal;
@@ -30,8 +29,6 @@ pub(in crate::wasm) enum WasmFrameLocalKind {
     FixedSynthetic(WasmFrameSyntheticLocal),
     LiteralScratchPtr,
     LiteralScratchLen,
-    MultiReturnCalleeValue,
-    MultiReturnCallValue,
 }
 
 impl WasmFrameLocalKind {

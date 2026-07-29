@@ -53,7 +53,7 @@ fn typed_int_function() -> FunctionIR {
             binop("inplace_mul", "s4", "b", "s5"),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("s5".to_string()),
+                args: Some(vec!["s5".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -80,7 +80,7 @@ fn generic_function() -> FunctionIR {
             binop("inplace_mul", "g4", "y", "g5"),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("g5".to_string()),
+                args: Some(vec!["g5".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -106,7 +106,7 @@ fn typed_float_function() -> FunctionIR {
             binop("inplace_mul", "f4", "q", "f5"),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("f5".to_string()),
+                args: Some(vec!["f5".to_string()]),
                 ..OpIR::default()
             },
         ],

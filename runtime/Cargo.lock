@@ -2588,6 +2588,7 @@ name = "molt-passes"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memmap2",
  "molt-ir",
  "rayon",
  "rmp-serde",

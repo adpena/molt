@@ -1,4 +1,5 @@
 use crate::FunctionIR;
+use crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator;
 use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,6 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
 
     // Op kinds that definitely cause escape for any argument.
     let escaping_ops: BTreeSet<&str> = [
-        "ret",
         "call",
         "call_internal",
         "call_method",
@@ -143,7 +143,7 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
                     continue; // non-escaping use
                 }
 
-                if escaping_ops.contains(kind) {
+                if escaping_ops.contains(kind) || simpleir_kind_is_return_terminator(kind) {
                     escaped.insert(root);
                     continue;
                 }
@@ -153,10 +153,11 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
             }
         }
 
-        // Also check `var` field (used by ret and some other ops).
+        // Also check `var` for the remaining operations whose generated field
+        // role permits a source value.
         if let Some(ref var) = op.var
             && let Some(root) = alias_to_alloc.get(var).cloned()
-            && (kind == "ret" || escaping_ops.contains(kind))
+            && (escaping_ops.contains(kind) || simpleir_kind_is_return_terminator(kind))
         {
             escaped.insert(root);
         }

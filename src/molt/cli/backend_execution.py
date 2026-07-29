@@ -54,7 +54,7 @@ _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 4
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 4
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 5
 
 
 _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
@@ -119,6 +119,7 @@ _BACKEND_REQUEST_ENV_KNOBS = (
 
 
 _NATIVE_CODEGEN_ENV_KNOBS = _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + (
+    "MOLT_BACKEND_COMPILER_FINGERPRINT",
     "MOLT_BACKEND_OPT_LEVEL",
     "MOLT_BACKEND_REGALLOC_ALGORITHM",
     "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
@@ -403,6 +404,7 @@ def _backend_daemon_config_digest(
     target_triple: str | None = None,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> str:
+    source = env if env is not None else os.environ
     payload = {
         "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
         "project_root": str(project_root.resolve()),
@@ -410,6 +412,9 @@ def _backend_daemon_config_digest(
         "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
         "native_relocatable_linker": _native_relocatable_linker_identity(env),
         "backend_features": sorted(backend_features),
+        "backend_compiler_fingerprint": source.get(
+            "MOLT_BACKEND_COMPILER_FINGERPRINT", ""
+        ),
         "compiler_runtime_backend_fingerprint": _cache_fingerprint(
             backend_features=backend_features
         ),
@@ -1394,6 +1399,7 @@ def _start_backend_daemon(
     startup_timeout: float | None,
     json_output: bool,
     warnings: list[str],
+    backend_env: Mapping[str, str] | None = None,
 ) -> bool:
     def _report_daemon_issue(message: str) -> None:
         if json_output:
@@ -1557,7 +1563,7 @@ def _start_backend_daemon(
         pass
     daemon_pid: int | None = None
     daemon_proc: subprocess.Popen[bytes] | None = None
-    daemon_env = dict(os.environ)
+    daemon_env = dict(os.environ if backend_env is None else backend_env)
     harness_memory_guard = _load_cli_harness_memory_guard(project_root)
     daemon_context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_BUILD",

@@ -237,9 +237,8 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         "loop_break_if_true": {"structural", "conditional_branch"},
         "loop_break_if_false": {"structural", "conditional_branch"},
         "loop_break_if_exception": {"structural", "conditional_branch"},
-        "ret": {"structural", "terminator", "return_terminator"},
-        "ret_void": {"structural", "terminator", "return_terminator"},
-        "return": {"structural", "terminator", "return_terminator"},
+        "ret": {"structural", "terminator"},
+        "ret_void": {"structural", "terminator"},
         "nop": {"structural"},
         "state_switch": {"structural", "block_ender"},
         "state_yield": {"suspend", "block_ender"},
@@ -295,7 +294,6 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         },
         "ret": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
         "ret_void": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "return": {"wasm_split_barrier"},
         "state_switch": {
             "wasm_split_barrier",
             "wasm_dispatch_block_terminator",
@@ -361,6 +359,16 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         for kind, facts in expected.items():
             assert (f'"{kind}"' in body) == (field in facts)
         assert ('"async_work_poll"' in body) == (field in expected["check_exception"])
+
+    return_body = _rust_fn_body(
+        rendered, "pub fn simpleir_kind_is_return_terminator("
+    )
+    assert 'matches!(kind, "ret" | "ret_void")' in return_body
+    assert '"return"' not in return_body
+    return_shape_body = _rust_fn_body(rendered, "pub fn simpleir_return_shape(")
+    assert '"ret_void" => SimpleIrReturnShape::Void' in return_shape_body
+    assert '"ret" => SimpleIrReturnShape::Value' in return_shape_body
+    assert "_ => SimpleIrReturnShape::NotReturn" in return_shape_body
 
     consumed_body = _rust_fn_body(
         rendered, "pub fn simpleir_kind_is_cfg_or_ssa_consumed("
@@ -5173,6 +5181,29 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
     assert '"unpack_sequence": 1' in rendered_py
 
 
+def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    return_kinds = {
+        row["kind"]
+        for row in data["simpleir_control_kind"]
+        if row.get("return_shape") is not None
+    }
+    assert return_kinds == {"ret", "ret_void"}
+    assert {
+        row["kind"]: row["return_shape"]
+        for row in data["simpleir_control_kind"]
+        if row.get("return_shape") is not None
+    } == {"ret": "value", "ret_void": "void"}
+    assert "simpleir_var_forbidden_kinds" not in data
+    rendered = gen.render_rs(data)
+    assert "Forbidden" in rendered
+    assert (
+        '"ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden'
+        in rendered
+    )
+
+
 def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
     gen = _gen()
     data = gen.load_table()
@@ -5213,6 +5244,69 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
         "simpleir_module_slot_access_table",
     ):
         assert dead_callable_transport_authority not in rendered
+
+
+def test_runtime_requirement_role_registry_owns_width_shape_and_bit_order(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    frame_row = (
+        '    { table = "simpleir_frame_introspection_semantics_kinds", '
+        'constant = "FRAME_INTROSPECTION" },'
+    )
+
+    mutations = {
+        "missing frame role": source.replace(
+            'constant = "FRAME_INTROSPECTION"',
+            'constant = "FRAME_OBJECTS"',
+            1,
+        ),
+        "missing table": source.replace(
+            'table = "simpleir_identity_semantics_kinds"',
+            'table = "simpleir_missing_semantics_kinds"',
+            1,
+        ),
+        "noncanonical constant": source.replace(
+            'constant = "IDENTITY"',
+            'constant = "identity"',
+            1,
+        ),
+        "storage overflow": source.replace(
+            frame_row + "\n]",
+            frame_row
+            + "\n"
+            + '    { table = "simpleir_integer_semantics_kinds", constant = "INTEGER" },\n'
+            + '    { table = "simpleir_runtime_neutral_semantics_kinds", constant = "NEUTRAL" },\n'
+            + "]",
+            1,
+        ),
+    }
+    expected = {
+        "missing frame role": "must own FRAME_INTROSPECTION",
+        "missing table": "missing/non-string list",
+        "noncanonical constant": "canonical uppercase identifiers",
+        "storage overflow": "exceeds u16 storage width",
+    }
+    for case, mutated in mutations.items():
+        table = tmp_path / f"{case.replace(' ', '_')}.toml"
+        table.write_text(mutated, encoding="utf-8", newline="\n")
+        with pytest.raises(gen.OpKindTableError, match=expected[case]):
+            gen.load_table(table)
+
+    reordered = gen.load_table()
+    roles = reordered["simpleir_runtime_requirement_roles"]
+    frame = next(row for row in roles if row["constant"] == "FRAME_INTROSPECTION")
+    reordered["simpleir_runtime_requirement_roles"] = [frame] + [
+        row for row in roles if row is not frame
+    ]
+    assert "pub const FRAME_INTROSPECTION: Self = Self(1 << 0);" in gen.render_rs(
+        reordered
+    )
+    assert (
+        "SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 0"
+        in gen.render_py(reordered)
+    )
 
 
 def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_extra_keys(

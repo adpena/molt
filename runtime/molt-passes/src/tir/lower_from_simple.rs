@@ -21,7 +21,9 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, TirBlock};
 use super::cfg::CFG;
 use super::function::{TirFunction, TirModule};
-use super::op_kinds_generated::opcode_sets_exception_handling_table;
+use super::op_kinds_generated::{
+    SimpleIrReturnShape, opcode_sets_exception_handling_table, simpleir_return_shape,
+};
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
 
@@ -253,7 +255,11 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_block,
         attrs: {
             let mut a = super::ops::AttrDict::new();
-            if ir.ops.iter().any(|op| op.kind == "ret") {
+            if ir
+                .ops
+                .iter()
+                .any(|op| simpleir_return_shape(op.kind.as_str()) == SimpleIrReturnShape::Value)
+            {
                 a.insert(
                     "_original_has_ret".into(),
                     super::ops::AttrValue::Bool(true),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins as py_builtins
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib
 import importlib.util
@@ -14,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import types
 from dataclasses import replace
@@ -9917,7 +9919,6 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", str(clang))
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
@@ -9937,6 +9938,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
         source_root=tmp_path,
         source_fingerprint={},
         stdlib_obj_path=None,
+        host_platform="linux",
     )
 
     assert link_plan.linker_hint is None
@@ -9958,7 +9960,6 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", str(clang))
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
@@ -9976,6 +9977,7 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
         source_fingerprint={},
         stdlib_obj_path=None,
         export_molt_runtime_symbols=True,
+        host_platform="linux",
     )
 
     assert "-Wl,--export-dynamic" in link_plan.command
@@ -9998,7 +10000,6 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
 
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", str(clang))
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_args, **_kwargs: ()
@@ -10020,6 +10021,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
         source_root=tmp_path,
         source_fingerprint={},
         stdlib_obj_path=None,
+        host_platform="linux",
     )
 
     assert link_plan.linker_hint == "lld"
@@ -10040,7 +10042,6 @@ def test_windows_link_omits_icf_for_fn_identity(
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
 
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
@@ -10057,6 +10058,7 @@ def test_windows_link_omits_icf_for_fn_identity(
         source_root=tmp_path,
         source_fingerprint={},
         stdlib_obj_path=None,
+        host_platform="win32",
     )
 
     assert "-Wl,/OPT:REF" in link_plan.command
@@ -10077,7 +10079,6 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
 
-    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
@@ -10100,6 +10101,7 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
         source_fingerprint={},
         stdlib_obj_path=None,
         export_molt_runtime_symbols=True,
+        host_platform="win32",
     )
 
     def_path = tmp_path / ".molt_exports.def"
@@ -28414,3 +28416,144 @@ def test_runtime_callable_symbol_digest_changes_backend_cache_identity() -> None
 
     assert variant_a != variant_b
     assert "runtime_callables=" in variant_a
+def test_backend_compiler_fingerprint_env_is_concurrent_compile_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient_name = "MOLT_BACKEND_COMPILER_FINGERPRINT"
+    monkeypatch.setenv(ambient_name, "ambient-must-not-move")
+    barrier = threading.Barrier(2)
+
+    def prepare(fingerprint: str) -> set[str]:
+        barrier.wait(timeout=5.0)
+        observed = {
+            cli_backend_compile._backend_environment_with_compiler_fingerprint(
+                {ambient_name: "stale", "COMPILE_LANE": fingerprint},
+                fingerprint,
+            )[ambient_name]
+            for _ in range(1_000)
+        }
+        barrier.wait(timeout=5.0)
+        return observed
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        result_a = executor.submit(prepare, "compiler-a")
+        result_b = executor.submit(prepare, "compiler-b")
+        assert result_a.result(timeout=10.0) == {"compiler-a"}
+        assert result_b.result(timeout=10.0) == {"compiler-b"}
+
+    assert os.environ[ambient_name] == "ambient-must-not-move"
+
+
+def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient_name = "MOLT_BACKEND_COMPILER_FINGERPRINT"
+    monkeypatch.setenv(ambient_name, "ambient-must-not-move")
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_bytes(b"backend")
+    barrier = threading.Barrier(2)
+    captured: dict[str, tuple[str, str, str, str]] = {}
+    capture_lock = threading.Lock()
+
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_backend_daemon_config_digest",
+        lambda *args, **kwargs: cast(Mapping[str, str], kwargs["env"])[ambient_name],
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_backend_daemon_socket_path",
+        lambda *args, **kwargs: tmp_path / f"{kwargs['config_digest']}.sock",
+    )
+    monkeypatch.setattr(
+        cli_backend_compile, "_backend_daemon_start_timeout", lambda: 1.0
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+    )
+
+    def capture_daemon(*args: object, **kwargs: object) -> bool:
+        env = cast(Mapping[str, str], kwargs["backend_env"])
+        fingerprint = env[ambient_name]
+        barrier.wait(timeout=5.0)
+        with capture_lock:
+            captured[fingerprint] = (
+                env[ambient_name],
+                env["SOURCE_DATE_EPOCH"],
+                env["MOLT_BACKEND_OPT_LEVEL"],
+                str(args[1]),
+            )
+        barrier.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(cli_backend_compile, "_start_backend_daemon", capture_daemon)
+
+    def dispatch(fingerprint: str) -> str:
+        prepared, error = cli_backend_compile._prepare_backend_dispatch(
+            is_rust_transpile=False,
+            is_luau_transpile=False,
+            is_wasm=False,
+            linked=False,
+            deterministic=True,
+            profile="release-size",
+            runtime_state=cli._RuntimeArtifactState(),
+            runtime_cargo_profile="release-fast",
+            cargo_timeout=1.0,
+            molt_root=tmp_path,
+            target_triple=None,
+            backend_cargo_profile="release-fast",
+            diagnostics_enabled=False,
+            phase_starts={},
+            json_output=True,
+            backend_daemon_config_digest=None,
+            ensure_runtime_wasm_both=lambda required=None: True,
+            resolved_modules=frozenset(),
+            ir={"functions": []},
+            warnings=[],
+            backend_bin=backend_bin,
+            backend_compiler_fingerprint=fingerprint,
+        )
+        assert error is None
+        assert prepared is not None
+        assert prepared.backend_env is not None
+        return prepared.backend_env[ambient_name]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        result_a = executor.submit(dispatch, "compiler-a")
+        result_b = executor.submit(dispatch, "compiler-b")
+        assert result_a.result(timeout=10.0) == "compiler-a"
+        assert result_b.result(timeout=10.0) == "compiler-b"
+
+    assert captured == {
+        "compiler-a": (
+            "compiler-a",
+            "315532800",
+            "speed_and_size",
+            str(tmp_path / "compiler-a.sock"),
+        ),
+        "compiler-b": (
+            "compiler-b",
+            "315532800",
+            "speed_and_size",
+            str(tmp_path / "compiler-b.sock"),
+        ),
+    }
+    assert os.environ[ambient_name] == "ambient-must-not-move"
+
+
+def test_backend_daemon_digest_rejects_cross_fingerprint_reuse(tmp_path: Path) -> None:
+    env_a = {"MOLT_BACKEND_COMPILER_FINGERPRINT": "compiler-a"}
+    env_b = {"MOLT_BACKEND_COMPILER_FINGERPRINT": "compiler-b"}
+    digest_a = cli._backend_daemon_config_digest(tmp_path, "release-fast", env=env_a)
+    digest_b = cli._backend_daemon_config_digest(tmp_path, "release-fast", env=env_b)
+
+    assert digest_a != digest_b
+    assert cli._backend_daemon_socket_path(
+        tmp_path, "release-fast", config_digest=digest_a
+    ) != cli._backend_daemon_socket_path(
+        tmp_path, "release-fast", config_digest=digest_b
+    )

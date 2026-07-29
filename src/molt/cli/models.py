@@ -1751,6 +1751,7 @@ class _PreparedBackendSetup:
     stdlib_object_path: Path | None
     cache_candidates: list[tuple[str, Path]]
     runtime_callable_symbols_digest: str = ""
+    backend_compiler_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1796,6 +1797,7 @@ class _PreparedBackendRuntimeContext:
     cache_path: Path | None
     function_cache_path: Path | None
     stdlib_object_path: Path | None
+    backend_compiler_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)

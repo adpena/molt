@@ -30,7 +30,7 @@ def test_generated_field_roles_cover_every_multi_result_transport_shape() -> Non
             "var": "item",
             "out": "done",
         },
-        {"kind": "ret", "var": "product"},
+        {"kind": "ret", "args": ["product"]},
     ]
 
     assert verify_use_before_def("multi", ["iterator"], ops) == []

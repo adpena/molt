@@ -186,6 +186,12 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.runtime_symbol {
             attrs.insert("runtime_symbol".into(), AttrValue::Str(v.clone()));
         }
+        if op.runtime_requirement_bits != 0 {
+            attrs.insert(
+                "runtime_requirement_bits".into(),
+                AttrValue::Int(i64::from(op.runtime_requirement_bits)),
+            );
+        }
         if op.passes_execution_context {
             attrs.insert("passes_execution_context".into(), AttrValue::Bool(true));
         }

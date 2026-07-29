@@ -77,7 +77,7 @@ fn wasm_backend_uses_lir_fast_path_for_simple_scalar_function() {
     add.fast_int = Some(true);
 
     let mut ret = op("ret");
-    ret.var = Some("sum".to_string());
+    ret.args = Some(vec!["sum".to_string()]);
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {

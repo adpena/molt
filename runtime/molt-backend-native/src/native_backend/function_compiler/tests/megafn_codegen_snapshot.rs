@@ -36,7 +36,6 @@ fn const_str(out: &str, s: &str) -> OpIR {
 fn ret(name: &str) -> OpIR {
     OpIR {
         kind: "ret".to_string(),
-        var: Some(name.to_string()),
         args: Some(vec![name.to_string()]),
         ..OpIR::default()
     }

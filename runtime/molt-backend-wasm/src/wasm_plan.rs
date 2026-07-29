@@ -1,8 +1,6 @@
-mod multi_return;
 mod op_classifiers;
 mod stage_audit;
 
-pub(crate) use multi_return::detect_multi_return_candidates;
 pub(crate) use op_classifiers::{
     WasmScalarDirectNumericLane, is_shared_drop_fact_marker,
     wasm_scalar_direct_numeric_lane_for_op, wasm_scalar_integer_fast_path_for_op,

@@ -1,6 +1,10 @@
 use crate::OpIR;
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::effect_proof::{EffectProof, simple_ir_effect_proof};
+use crate::tir::op_kinds_generated::{
+    SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole, simpleir_return_shape,
+    simpleir_var_field_role_table,
+};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "abs",
@@ -198,6 +202,30 @@ pub(crate) fn validate_function_param_types(
 }
 
 fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
+    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Forbidden
+        && op.var.is_some()
+    {
+        return Err(format!(
+            "return-family op `{}` forbids `var`; `args` is the sole value carrier",
+            op.kind
+        ));
+    }
+    let args_len = op.args.as_ref().map_or(0, Vec::len);
+    match simpleir_return_shape(op.kind.as_str()) {
+        SimpleIrReturnShape::Value if args_len != 1 => {
+            return Err(format!(
+                "value return op `{}` requires exactly one `args` operand, found {args_len}",
+                op.kind
+            ));
+        }
+        SimpleIrReturnShape::Void if args_len != 0 => {
+            return Err(format!(
+                "void return op `{}` forbids `args` operands, found {args_len}",
+                op.kind
+            ));
+        }
+        _ => {}
+    }
     if op.fast_int == Some(true) && op.fast_float == Some(true) {
         return Err(format!(
             "op `{}` cannot set both fast_int and fast_float",
@@ -268,6 +296,20 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
         validate_clean_symbol(runtime_symbol, &format!("op `{}` runtime_symbol", op.kind))?;
         if !matches!(op.kind.as_str(), "module_get_attr" | "module_import_from") {
             return Err(format!("op `{}` cannot carry runtime_symbol", op.kind));
+        }
+    }
+    if op.runtime_requirement_bits != 0 {
+        if !matches!(op.kind.as_str(), "module_get_attr" | "module_import_from") {
+            return Err(format!(
+                "op `{}` cannot carry runtime_requirement_bits",
+                op.kind
+            ));
+        }
+        if SimpleIrRuntimeRequirements::from_bits(op.runtime_requirement_bits).is_none() {
+            return Err(format!(
+                "op `{}` carries unknown runtime_requirement_bits {}",
+                op.kind, op.runtime_requirement_bits
+            ));
         }
     }
     if let Some(effect_proof) = op.effect_proof.as_deref() {

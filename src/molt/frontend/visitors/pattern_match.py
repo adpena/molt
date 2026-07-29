@@ -783,6 +783,9 @@ class PatternMatchMixin(_MixinBase):
                 if name not in self.scope_assigned or name in self.closure_locals:
                     self._box_local(name)
 
+        provenance_flow = self._begin_module_provenance_flow(
+            record_exception_prefixes=True
+        )
         for case in node.cases:
             self._validate_match_pattern(case.pattern)
         done_cell, done_idx = self._emit_match_cell(False)
@@ -849,4 +852,5 @@ class PatternMatchMixin(_MixinBase):
 
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self._finish_module_provenance_flow(provenance_flow)
         return None

@@ -131,6 +131,7 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_attr_names: dict[str, str]
     global_imported_module_attr_mutations: set[tuple[str, str]]
     global_imported_modules: dict[str, str]
+    global_imported_module_provenance: dict[str, frozenset[str]]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     globals_builtin_emitted: Any
@@ -139,3 +140,7 @@ class _GeneratorProtocolAttrs(Protocol):
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_modules: dict[str, str]
+    imported_module_provenance: dict[str, frozenset[str]]
+    _module_provenance_flow_stack: list[
+        tuple[list[dict[str, frozenset[str]]], bool]
+    ]

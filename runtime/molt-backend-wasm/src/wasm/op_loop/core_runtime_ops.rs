@@ -1,4 +1,3 @@
-use super::super::multi_return_layout::WasmMultiReturnLayout;
 use super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_runtime_call};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
@@ -30,7 +29,6 @@ pub(super) fn emit_core_runtime_op(
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
-    multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,
     arena_local: Option<u32>,
     ops: &[OpIR],
@@ -53,7 +51,6 @@ pub(super) fn emit_core_runtime_op(
         import_ids,
         locals,
         scalar_plan,
-        multi_return,
         reloc_enabled,
         arena_local,
         ops,

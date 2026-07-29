@@ -113,7 +113,7 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
 #[test]
 fn gpu_context_runtime_ops_are_manifest_backed() {
     let mut ret = wasm_test_op("ret", None, vec!["context_sum"]);
-    ret.var = Some("context_sum".to_string());
+    ret.args = Some(vec!["context_sum".to_string()]);
     let func = wasm_test_function(
         "gpu_context_runtime_ops",
         vec![],

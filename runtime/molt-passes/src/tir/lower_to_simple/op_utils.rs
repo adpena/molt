@@ -50,6 +50,11 @@ pub(super) fn annotate_lowered_op(
     if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("runtime_symbol") {
         opir.runtime_symbol = Some(symbol.clone());
     }
+    if let Some(AttrValue::Int(bits)) = tir_op.attrs.get("runtime_requirement_bits") {
+        opir.runtime_requirement_bits = (*bits).try_into().unwrap_or_else(|_| {
+            panic!("TIR runtime_requirement_bits must be a non-negative u16: {bits}")
+        });
+    }
     opir.passes_execution_context = matches!(
         tir_op.attrs.get("passes_execution_context"),
         Some(AttrValue::Bool(true))

@@ -299,7 +299,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("v79".to_string()),
+                    args: Some(vec!["v79".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -356,7 +356,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("v84".to_string()),
+                    args: Some(vec!["v84".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -443,7 +443,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("v79".to_string()),
+                args: Some(vec!["v79".to_string()]),
                 ..OpIR::default()
             },
             OpIR {
@@ -500,7 +500,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("v84".to_string()),
+                args: Some(vec!["v84".to_string()]),
                 ..OpIR::default()
             },
             OpIR {
@@ -639,7 +639,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("total".into()),
+                args: Some(vec!["total".into()]),
                 ..OpIR::default()
             },
         ],

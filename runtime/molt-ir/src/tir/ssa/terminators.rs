@@ -30,38 +30,21 @@ impl<'a> SsaContext<'a> {
         // Determine terminator kind from the last op.
         let kind = last_op.map(|o| o.kind.as_str()).unwrap_or("");
 
-        match kind {
-            "ret" | "ret_void" | "return" => {
-                let mut values = Vec::new();
-                if (kind == "ret" || kind == "return")
-                    && let Some(op) = last_op
+        if let Some(op) = last_op
+            && crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind)
+        {
+            let mut values = Vec::new();
+            crate::tir::simple_def_use::visit_simple_ir_return_values(op, |a| {
+                if is_variable(a)
+                    && let Some(vid) = self.resolve_known_var(a, var_stacks)
                 {
-                    // Canonical ret surface:
-                    // - multi-value returns use `op.args`
-                    // - single-value returns may carry the value in `op.var`
-                    //   and/or redundantly in `op.args`
-                    //
-                    // Treat `op.args` as authoritative when present; only
-                    // fall back to `op.var` when args are absent. Otherwise
-                    // the roundtrip path duplicates the first return value.
-                    let candidates: Vec<&String> = if let Some(ref args) = op.args {
-                        args.iter().collect()
-                    } else if let Some(ref v) = op.var {
-                        vec![v]
-                    } else {
-                        Vec::new()
-                    };
-                    for a in candidates {
-                        if is_variable(a)
-                            && let Some(vid) = self.resolve_known_var(a, var_stacks)
-                        {
-                            values.push(vid);
-                        }
-                    }
+                    values.push(vid);
                 }
-                Terminator::Return { values }
-            }
+            });
+            return Terminator::Return { values };
+        }
 
+        match kind {
             "jump" | "goto" | "loop_break" => {
                 if let Some(&target_bid) = succs.first() {
                     let args = self.collect_branch_args(target_bid, var_stacks);

@@ -770,7 +770,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "RELEASE": "writes_heap",
     "RERAISE": "control",
     "RET": "control",
-    "RETURN": "control",
     "RET_VOID": "control",
     "RSHIFT": "pure",
     "SETATTR": "writes_heap",
@@ -810,6 +809,9 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "YIELD": "writes_heap",
     "YIELD_FROM": "writes_heap",
 }
+
+# Explicit acquisition-provenance requirement bits shared with target admission.
+SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 14
 
 SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
     "inspect.currentframe": "molt_inspect_currentframe",
@@ -1083,7 +1085,6 @@ FRONTEND_EFFECT_CONTROL_KINDS: frozenset[str] = frozenset(
         "RAISE_CAUSE",
         "RERAISE",
         "RET",
-        "RETURN",
         "RET_VOID",
         "STATE_LABEL",
         "STATE_SWITCH",

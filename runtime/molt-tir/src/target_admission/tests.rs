@@ -215,6 +215,32 @@ fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
 }
 
 #[test]
+fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
+    let acquisition = OpIR {
+        kind: "module_get_attr".to_string(),
+        runtime_requirement_bits: SimpleIrRuntimeRequirements::FRAME_INTROSPECTION.bits(),
+        out: Some("maybe_frame_callable".to_string()),
+        ..OpIR::default()
+    };
+    assert!(acquisition.runtime_symbol.is_none());
+    let requirements = simpleir_op_runtime_requirements(&acquisition)
+        .expect("typed requirement bits must participate in target admission");
+    assert!(requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
+
+    let error = validate_runtime_target_contract(
+        &function_ir(vec![acquisition]),
+        "execution-only",
+        runtime_without_frame_introspection(),
+    )
+    .expect_err("may-provenance must reject on a target without frame introspection");
+    assert!(error.contains("f:op#0 `module_get_attr`"), "{error}");
+    assert!(
+        error.contains("exact Python-visible frame objects"),
+        "{error}"
+    );
+}
+
+#[test]
 fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
     for symbol in [
         "molt_getframe",

@@ -5,8 +5,6 @@ use crate::runtime_import_abi::MOLT_INC_REF_OBJ;
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "ret",
-    "ret_void",
     "jump",
     "br_if",
     "label",
@@ -100,7 +98,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     };
 
     match op.kind.as_str() {
-        "ret" => {
+        kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
+            == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
+        {
             if !rc_authority.native_value_tracking_enabled() {
                 block_tracked_obj.clear();
                 block_tracked_ptr.clear();
@@ -119,7 +119,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     "debug ret cleanup func={} op_idx={} ret_var={:?} tracked_obj_vars_len={} tracked_vars_len={}",
                     func_name,
                     op_idx,
-                    op.var.as_deref(),
+                    op.args.as_ref().and_then(|args| args.first()),
                     tracked_obj_vars.len(),
                     tracked_vars.len(),
                 );
@@ -130,7 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     eprintln!("debug ret cleanup tracked_vars={:?}", tracked_vars);
                 }
             }
-            let Some(var_name) = op.var.as_ref() else {
+            let Some(var_name) = op.args.as_ref().and_then(|args| args.first()) else {
                 if let Some(block) = builder.current_block() {
                     // Function return: fully drain per-block tracked values.
                     if let Some(names) = block_tracked_obj.remove(&block) {
@@ -383,7 +383,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             *is_block_filled = true;
         }
-        "ret_void" => {
+        kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
+            == crate::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
+        {
             if !rc_authority.native_value_tracking_enabled() {
                 block_tracked_obj.clear();
                 block_tracked_ptr.clear();

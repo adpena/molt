@@ -2,7 +2,6 @@ mod emission;
 mod planning;
 
 use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals};
-use super::multi_return_layout::WasmMultiReturnLayout;
 use super::state_dispatch::NonLinearDispatchLocals;
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
@@ -44,7 +43,6 @@ pub(super) struct WasmFunctionFrame {
     const_seed_locals: Vec<(u32, i64)>,
     seeded_runtime_const_ops: Vec<(usize, OpIR)>,
     seeded_runtime_const_op_indices: BTreeSet<usize>,
-    multi_return: WasmMultiReturnLayout,
 }
 
 impl WasmFunctionFrame {
@@ -81,10 +79,6 @@ impl WasmFunctionFrame {
 
     pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
         &self.scalar_plan
-    }
-
-    pub(super) fn multi_return(&self) -> &WasmMultiReturnLayout {
-        &self.multi_return
     }
 
     pub(super) fn tail_call_eligible(&self) -> bool {

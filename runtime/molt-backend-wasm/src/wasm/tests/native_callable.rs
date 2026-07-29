@@ -19,7 +19,7 @@ fn lir_fast_literal_const_materialization_emits_valid_wasm() {
     let mut literal = wasm_test_op("const_str", Some("literal"), vec![]);
     literal.s_value = Some(String::from_utf8(literal_bytes.to_vec()).expect("ascii literal"));
     let mut ret = wasm_test_op("ret", None, vec!["literal"]);
-    ret.var = Some("literal".to_string());
+    ret.args = Some(vec!["literal".to_string()]);
     let func = wasm_test_function(
         "m____molt_globals_builtin__literal_const",
         vec![],
@@ -64,7 +64,7 @@ fn generic_attr_ic_uses_transported_source_op_idx() {
     load_attr.s_value = Some("field".to_string());
     load_attr.source_op_idx = Some(source_op_idx);
     let mut ret = wasm_test_op("ret", None, vec!["value"]);
-    ret.var = Some("value".to_string());
+    ret.args = Some(vec!["value".to_string()]);
     let func = wasm_test_function("generic_attr_ic", vec!["obj"], None, vec![load_attr, ret]);
     let ir = SimpleIR {
         functions: vec![func],

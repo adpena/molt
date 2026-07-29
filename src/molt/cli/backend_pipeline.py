@@ -352,6 +352,9 @@ def _run_backend_pipeline(
                 backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
                 backend_daemon_health=prepared_build_preamble.backend_daemon_health,
                 backend_bin=prepared_backend_runtime_context.backend_bin,
+                backend_compiler_fingerprint=(
+                    prepared_backend_runtime_context.backend_compiler_fingerprint
+                ),
             )
         )
         if pipeline_stage_ms is not None:

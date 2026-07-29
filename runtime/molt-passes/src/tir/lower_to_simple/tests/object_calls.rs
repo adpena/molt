@@ -42,7 +42,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
             },
             OpIR {
                 kind: "ret".into(),
-                var: Some("v100".into()),
+                args: Some(vec!["v100".into()]),
                 ..OpIR::default()
             },
         ],

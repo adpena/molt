@@ -293,7 +293,6 @@ _CANONICALIZE_BINARY_ACTIONS = {
 _SIMPLEIR_CONTROL_FACT_FIELDS = (
     "structural",
     "terminator",
-    "return_terminator",
     "suspend",
     "repoll",
     "block_leader",
@@ -308,6 +307,7 @@ _SIMPLEIR_CONTROL_FACT_FIELDS = (
     "wasm_state_resume_after",
     "wasm_state_resume_at",
 )
+_SIMPLEIR_RETURN_SHAPES = {"value", "void"}
 
 # The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
 # EXHAUSTIVE over this set (a new variant fails to render until classified —

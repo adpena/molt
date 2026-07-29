@@ -246,7 +246,7 @@ fn no_throw_unknown_for_opaque_target() {
 // -- typed_return --------------------------------------------------------
 
 #[test]
-fn typed_return_none_for_dynbox_result() {
+fn typed_return_unknown_for_dynbox_result() {
     // The call result's TirType defaults to DynBox (TirFunction::new doesn't
     // type fresh values) → typed_return = None.
     let (caller, res) = func_calling("a", TirType::None, &["b"], 0);

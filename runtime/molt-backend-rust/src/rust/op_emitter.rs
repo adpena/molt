@@ -108,8 +108,16 @@ impl RustBackend {
             "end_for" => self.emit_op_end_for(op),
             "break" => self.emit_op_break(op),
             "continue" => self.emit_op_continue(op),
-            "return" | "ret" => self.emit_op_return(op),
-            "return_none" | "ret_none" | "ret_void" => self.emit_op_return_none(op),
+            kind if molt_ir::tir::op_kinds_generated::simpleir_return_shape(kind)
+                == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
+            {
+                self.emit_op_return(op)
+            }
+            kind if molt_ir::tir::op_kinds_generated::simpleir_return_shape(kind)
+                == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
+            {
+                self.emit_op_ret_void(op)
+            }
             "call" | "call_func" | "call_internal" => self.emit_op_call(op),
             "call_method" => self.emit_op_call_method(op),
             "call_bind" | "call_indirect" => self.emit_op_call_bind(op),

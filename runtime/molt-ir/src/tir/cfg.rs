@@ -309,7 +309,7 @@ fn build_edges(
             }
 
             // Return — no successors.
-            "ret" | "ret_void" | "return" => {}
+            _ if crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind) => {}
 
             // Pure suspend: it `ret`s and has no regular successor. Its
             // continuation is reached only via `state_resume_edges`.

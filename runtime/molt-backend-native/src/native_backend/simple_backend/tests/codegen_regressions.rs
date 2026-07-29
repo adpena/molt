@@ -82,7 +82,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                     },
                     OpIR {
                         kind: "ret".to_string(),
-                        var: Some("result".to_string()),
+                        args: Some(vec!["result".to_string()]),
                         ..OpIR::default()
                     },
                 ],
@@ -133,7 +133,7 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("out".to_string()),
+                args: Some(vec!["out".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -172,7 +172,7 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("carried".to_string()),
+                args: Some(vec!["carried".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -204,7 +204,7 @@ fn native_boxed_or_retains_selected_operand_result() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("selected".to_string()),
+                args: Some(vec!["selected".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -291,7 +291,7 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("out".to_string()),
+                args: Some(vec!["out".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -447,7 +447,7 @@ fn semantic_branch_edges_explicitly_transport_live_parameter() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("carried".to_string()),
+                    args: Some(vec!["carried".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -457,7 +457,7 @@ fn semantic_branch_edges_explicitly_transport_live_parameter() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("carried".to_string()),
+                    args: Some(vec!["carried".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -494,7 +494,7 @@ fn exception_edges_explicitly_transport_live_parameter() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("carried".to_string()),
+                    args: Some(vec!["carried".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -504,7 +504,7 @@ fn exception_edges_explicitly_transport_live_parameter() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("carried".to_string()),
+                    args: Some(vec!["carried".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -568,7 +568,7 @@ fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("maxsize".to_string()),
+                    args: Some(vec!["maxsize".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -660,7 +660,7 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("i_cur".to_string()),
+                    args: Some(vec!["i_cur".to_string()]),
                     ..OpIR::default()
                 },
             ],
