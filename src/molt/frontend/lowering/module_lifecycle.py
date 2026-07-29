@@ -76,6 +76,7 @@ class ModuleLifecycleMixin(_MixinBase):
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
+        self.module_pre_frame_exception_label: int | None = None
         self.module_obj: MoltValue | None = None
         self.source_path = source_path
         self.module_is_package = False
@@ -192,9 +193,7 @@ class ModuleLifecycleMixin(_MixinBase):
         if self.module_execution_kind == "script":
             metadata_none = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=metadata_none))
-            self._emit_module_attr_set_on(
-                self.module_obj, "__package__", metadata_none
-            )
+            self._emit_module_attr_set_on(self.module_obj, "__package__", metadata_none)
             self._emit_module_attr_set_on(self.module_obj, "__spec__", metadata_none)
             return
         spec_name = self.module_spec_name or self.module_name or ""
@@ -334,6 +333,13 @@ class ModuleLifecycleMixin(_MixinBase):
                 result=MoltValue("none"),
             )
         )
+        # Module initialization has a real pre-frame prologue: module/code
+        # objects must exist before the execution frame can be entered. Split
+        # exception custody at the enter boundary so a pre-frame failure never
+        # executes TRACE_EXIT, while every post-enter failure does so exactly
+        # once. A single shared handler cannot distinguish those lifetimes.
+        self.module_pre_frame_exception_label = self.function_exception_label
+        self.function_exception_label = self.next_label()
         # Module-scope locals() must behave like globals(); pin the module dict on
         # the frame entry so builtins.locals/globals work even via getattr aliases.
         locals_dict = self._emit_globals_dict()

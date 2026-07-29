@@ -581,7 +581,7 @@ class LoopLoweringMixin(_MixinBase):
         if self.try_end_labels:
             self._emit_raise_if_pending()
         else:
-            self._emit_raise_if_pending(emit_exit=True)
+            self._emit_raise_if_pending()
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -606,7 +606,7 @@ class LoopLoweringMixin(_MixinBase):
             assert self.function_exception_label is not None, (
                 "every function must carry a function-level exception label"
             )
-            self._emit_raise_if_pending(emit_exit=True)
+            self._emit_raise_if_pending()
         return pair
 
     def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import __future__ as future_module
 import ast
 import os
 import types
@@ -19,6 +20,47 @@ from molt.type_facts import collect_type_facts_from_paths
 def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     gen = SimpleTIRGenerator()
     return gen.map_ops_to_json(ops)
+
+
+def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
+    source_path = Path(future_module.__file__)
+    gen = SimpleTIRGenerator(module_name="__future__", source_path=str(source_path))
+    gen.visit(ast.parse(source_path.read_text(encoding="utf-8")))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("_Feature___init__")
+    )
+    assert function["execution_context"] == "local"
+    return_indices = [
+        index
+        for index, op in enumerate(function["ops"])
+        if op["kind"] in {"ret", "ret_void"}
+    ]
+    assert len(return_indices) == 2
+    assert all(
+        index > 0 and function["ops"][index - 1]["kind"] == "trace_exit"
+        for index in return_indices
+    )
+
+    chunked = SimpleTIRGenerator(
+        module_name="__future__",
+        source_path=str(source_path),
+        module_chunking=True,
+        module_chunk_max_ops=1400,
+    )
+    chunked.visit(ast.parse(source_path.read_text(encoding="utf-8")))
+    chunks = [
+        function
+        for function in chunked.to_json()["functions"]
+        if "molt_module_chunk" in function["name"]
+    ]
+    assert chunks
+    for chunk in chunks:
+        assert chunk["execution_context"] == "inherited"
+        assert all(
+            op["kind"] not in {"trace_enter_slot", "trace_exit"} for op in chunk["ops"]
+        )
 
 
 def test_list_store_serialization_has_no_scalar_fast_hint() -> None:
@@ -2179,7 +2221,7 @@ def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acq
     "signature",
     ["system", "system, /", "*, system", "*system", "**system"],
 )
-def test_runtime_callable_import_provenance_respects_lexical_shadowing(
+def test_runtime_callable_unknown_parameter_receiver_is_stamped_fail_closed(
     signature: str,
 ) -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
@@ -2193,12 +2235,9 @@ def test_runtime_callable_import_provenance_respects_lexical_shadowing(
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
-    assert all(
-        "runtime_symbol" not in op
-        and not (
-            op.get("runtime_requirement_bits", 0)
-            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        )
+    assert any(
+        op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
         for op in function["ops"]
     )
 
@@ -2302,7 +2341,7 @@ def test_runtime_callable_module_alias_provenance_joins_conservatively(
         ), case
 
 
-def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenance() -> (
+def test_runtime_callable_unknown_rebind_loses_exact_symbol_but_keeps_capability() -> (
     None
 ):
     gen = SimpleTIRGenerator(module_name="__main__")
@@ -2323,9 +2362,73 @@ def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenan
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
+    assert not any(
+        op.get("runtime_symbol") == "molt_getframe" for op in function["ops"]
+    )
+    assert any(
+        op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        for op in function["ops"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expression"),
+    [
+        ("direct-conditional", "(sys if flag else other)"),
+        ("direct-boolean", "(flag and sys or other)"),
+        ("tuple-index", "(sys,)[0]"),
+        ("list-index", "[sys][0]"),
+        ("dict-index", "{'module': sys}['module']"),
+        ("identity-call", "identity(sys)"),
+    ],
+)
+def test_runtime_callable_protected_acquisition_survives_value_transport(
+    case: str, expression: str
+) -> None:
+    source = (
+        "import sys\n"
+        "def identity(value):\n"
+        "    return value\n"
+        "def f(flag, other):\n"
+        f"    return {expression}._getframe\n"
+    )
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    protected = [
+        op
+        for op in function["ops"]
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert len(protected) == 1, (case, protected)
+    assert protected[0]["kind"] == "get_attr_generic_obj"
+
+
+def test_runtime_callable_exact_class_receiver_is_proven_nonmodule() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "class Safe:\n"
+            "    def __init__(self):\n"
+            "        self._getframe = 1\n"
+            "def f():\n"
+            "    safe = Safe()\n"
+            "    return safe._getframe\n"
+        )
+    )
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
     assert all(
-        "runtime_symbol" not in op
-        and not (
+        not (
             op.get("runtime_requirement_bits", 0)
             & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
         )
@@ -2389,6 +2492,11 @@ def test_runtime_callable_provenance_stops_exactly_at_lexical_rebinding(
         and op.get("runtime_symbol") == "molt_getframe"
     ]
     assert len(frame_reads) == 1, (scope, frame_reads)
+    assert any(
+        op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        for op in function["ops"]
+    ), scope
 
 
 def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -> None:

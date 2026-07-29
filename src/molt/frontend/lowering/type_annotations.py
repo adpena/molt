@@ -668,9 +668,7 @@ class TypeAnnotationMixin(_MixinBase):
         name_value = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[node.name.id], result=name_value))
         params_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(
-            MoltOp(kind="TUPLE_NEW", args=type_param_values, result=params_tuple)
-        )
+        self.emit(MoltOp(kind="TUPLE_NEW", args=type_param_values, result=params_tuple))
         alias_value = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
@@ -833,7 +831,7 @@ class TypeAnnotationMixin(_MixinBase):
                 )
                 if exec_map_val is not None:
                     self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ret", args=[res_dict], result=MoltValue("none")))
+            self._emit_normal_return_terminator(res_dict)
 
         self.emit(MoltOp(kind="IF", args=[is_one], result=MoltValue("none")))
         emit_annotation_body(stringize)

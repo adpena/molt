@@ -84,6 +84,8 @@ pub struct CompilationCache {
     resident_epoch_barrier: Option<Arc<std::sync::Barrier>>,
     #[cfg(test)]
     poison_epoch_barrier: Option<Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    namespace_reset_enumeration_error: bool,
 
     /// In-memory index: `content_hash` → [`CacheEntry`].
     index: HashMap<Arc<str>, CacheEntry>,
@@ -100,8 +102,8 @@ pub struct CompilationCache {
     /// place, so warm hits allocate nothing and stale nodes never accumulate.
     memory_lru: Vec<MemoryLruNode>,
 
-    /// Deterministic metadata/disk LRU. The tuple tie-breaks same-second
-    /// accesses by canonical content hash, so pruning never depends on hash-map
+    /// Deterministic metadata/disk LRU. The tuple tie-breaks equal recency
+    /// stamps by canonical content hash, so pruning never depends on hash-map
     /// or directory iteration order.
     metadata_lru: BTreeSet<(u64, Arc<str>)>,
     persistent_bytes: u64,
@@ -377,6 +379,8 @@ impl CompilationCache {
             resident_epoch_barrier: None,
             #[cfg(test)]
             poison_epoch_barrier: None,
+            #[cfg(test)]
+            namespace_reset_enumeration_error: false,
             index: HashMap::new(),
             memory_bytes: 0,
             max_memory_bytes,
@@ -651,31 +655,44 @@ impl CompilationCache {
     /// so every reader remains fail-closed.
     fn reset_interrupted_namespace_locked(&mut self) -> Result<(), String> {
         let functions_dir = self.cache_dir.join("functions");
-        if let Ok(entries) = std::fs::read_dir(&functions_dir) {
-            for entry in entries {
-                let entry = entry.map_err(|error| {
-                    format!(
-                        "cannot enumerate interrupted cache namespace {}: {error}",
-                        functions_dir.display()
-                    )
-                })?;
-                let file_type = entry.file_type().map_err(|error| {
-                    format!(
-                        "cannot classify interrupted cache namespace entry {}: {error}",
-                        entry.path().display()
-                    )
-                })?;
-                if !file_type.is_file() && !file_type.is_symlink() {
-                    continue;
+        #[cfg(test)]
+        if self.namespace_reset_enumeration_error {
+            return Err("injected cache namespace enumeration failure".to_string());
+        }
+        match std::fs::read_dir(&functions_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry.map_err(|error| {
+                        format!(
+                            "cannot enumerate interrupted cache namespace {}: {error}",
+                            functions_dir.display()
+                        )
+                    })?;
+                    let file_type = entry.file_type().map_err(|error| {
+                        format!(
+                            "cannot classify interrupted cache namespace entry {}: {error}",
+                            entry.path().display()
+                        )
+                    })?;
+                    if !file_type.is_file() && !file_type.is_symlink() {
+                        continue;
+                    }
+                    std::fs::remove_file(entry.path()).map_err(|error| {
+                        format!(
+                            "cannot retire interrupted cache namespace entry {}: {error}",
+                            entry.path().display()
+                        )
+                    })?;
                 }
-                std::fs::remove_file(entry.path()).map_err(|error| {
-                    format!(
-                        "cannot retire interrupted cache namespace entry {}: {error}",
-                        entry.path().display()
-                    )
-                })?;
+                sync_cache_directory(&functions_dir)?;
             }
-            sync_cache_directory(&functions_dir)?;
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot enumerate interrupted cache namespace {}: {error}",
+                    functions_dir.display()
+                ));
+            }
         }
         self.discard_local_namespace_view();
         Ok(())
@@ -712,10 +729,32 @@ impl CompilationCache {
 
     fn finish_namespace_mutation_locked(&mut self, transition: u64) -> Result<u64, String> {
         debug_assert_eq!(transition & 1, 1);
+        self.sync_namespace_directories_locked()?;
         let complete = next_namespace_epoch(transition)?;
         self.write_namespace_epoch_locked(complete)?;
         self.observed_epoch_word = encode_namespace_epoch_word(complete);
         Ok(complete)
+    }
+
+    fn sync_namespace_directories_locked(&self) -> Result<(), String> {
+        let functions_dir = self.cache_dir.join("functions");
+        match std::fs::metadata(&functions_dir) {
+            Ok(metadata) if metadata.is_dir() => sync_cache_directory(&functions_dir)?,
+            Ok(_) => {
+                return Err(format!(
+                    "persistent cache functions namespace is not a directory: {}",
+                    functions_dir.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot stat persistent cache functions namespace {}: {error}",
+                    functions_dir.display()
+                ));
+            }
+        }
+        sync_cache_directory(&self.cache_dir)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1527,6 +1566,7 @@ impl CompilationCache {
         if required_bytes > self.max_persistent_bytes || self.max_entries == 0 {
             return false;
         }
+        self.project_resident_metadata_recency();
         loop {
             let current = self
                 .index
@@ -1571,10 +1611,28 @@ impl CompilationCache {
         if self.memory_lru.is_empty() {
             return;
         }
-        let now = unix_now();
-        for index in 0..self.memory_lru.len() {
-            let content_hash = Arc::clone(&self.memory_lru[index].content_hash);
-            self.touch_metadata_entry(content_hash.as_ref(), now);
+        let mut resident_order = self
+            .memory_lru
+            .iter()
+            .map(|node| (node.stamp, Arc::clone(&node.content_hash)))
+            .collect::<Vec<_>>();
+        resident_order.sort_unstable_by(|left, right| {
+            (left.0, left.1.as_ref()).cmp(&(right.0, right.1.as_ref()))
+        });
+        let count = resident_order.len() as u64;
+        let newest_existing = self
+            .index
+            .values()
+            .map(|entry| entry.last_access)
+            .max()
+            .unwrap_or(0);
+        let newest_projection = unix_now().max(newest_existing.saturating_add(count));
+        let base = newest_projection.saturating_sub(count);
+        for (rank, (_, content_hash)) in resident_order.into_iter().enumerate() {
+            self.touch_metadata_entry(
+                content_hash.as_ref(),
+                base.saturating_add(rank as u64).saturating_add(1),
+            );
         }
     }
 
@@ -3319,7 +3377,7 @@ mod tests {
         let mut hot_writer = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
         let mut stale_writer =
             CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
-        hot_writer.touch_metadata_entry(&h1, unix_now().saturating_add(100));
+        assert_eq!(hot_writer.get(&h1).as_deref(), Some(b"hot".as_slice()));
         hot_writer.save_index().unwrap();
         stale_writer.touch_metadata_entry(&h2, 1);
         stale_writer.put(&h3, b"new").unwrap();
@@ -3329,6 +3387,24 @@ mod tests {
         assert_eq!(recovered.get(&h1).as_deref(), Some(b"hot".as_slice()));
         assert_eq!(recovered.get(&h3).as_deref(), Some(b"new".as_slice()));
         assert!(recovered.get(&h2).is_none());
+    }
+
+    #[test]
+    fn resident_hit_order_controls_persistent_capacity_victims() {
+        let dir = tmp_cache_dir();
+        let h1 = fixture_hash("resident-hot", b"body");
+        let h2 = fixture_hash("resident-cold", b"body");
+        let h3 = fixture_hash("resident-new", b"body");
+        let mut cache = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
+        cache.put(&h1, b"hot").unwrap();
+        cache.put(&h2, b"cold").unwrap();
+        assert_eq!(cache.get(&h1).as_deref(), Some(b"hot".as_slice()));
+
+        cache.put(&h3, b"new").unwrap();
+
+        assert_eq!(cache.get(&h1).as_deref(), Some(b"hot".as_slice()));
+        assert_eq!(cache.get(&h3).as_deref(), Some(b"new".as_slice()));
+        assert!(cache.get(&h2).is_none());
     }
 
     #[test]
@@ -3500,6 +3576,33 @@ mod tests {
         let live = resident.read_namespace_epoch().unwrap();
         assert_eq!(live & 1, 0);
         assert_eq!(resident.read_durable_namespace_epoch().unwrap(), live);
+    }
+
+    #[test]
+    fn interrupted_epoch_enumeration_failure_stays_odd_and_serves_nothing() {
+        let dir = tmp_cache_dir();
+        let hash = fixture_hash("epoch-enumeration-failure", b"semantic-contract");
+        let mut cache = CompilationCache::open(dir.clone());
+        cache.put(&hash, b"artifact").unwrap();
+        assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+
+        let mut crashed_writer = CompilationCache::open(dir);
+        let transition = crashed_writer
+            .with_namespace_lock(true, |writer| writer.begin_namespace_mutation_locked())
+            .unwrap()
+            .unwrap();
+        drop(crashed_writer);
+
+        cache.namespace_reset_enumeration_error = true;
+        assert!(
+            cache.get(&hash).is_none(),
+            "resident bytes must fail closed"
+        );
+        cache.discard_resident_data();
+        assert!(cache.get(&hash).is_none(), "disk bytes must fail closed");
+        assert_eq!(cache.read_namespace_epoch().unwrap(), transition);
+        assert_eq!(cache.read_durable_namespace_epoch().unwrap(), transition);
+        assert!(cache.artifact_path(&hash).unwrap().is_file());
     }
 
     #[test]
