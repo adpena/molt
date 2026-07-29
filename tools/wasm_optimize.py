@@ -15,19 +15,30 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from tools import harness_memory_guard  # noqa: E402
+from tools import artifact_publish, harness_memory_guard  # noqa: E402
 from tools.wasm_metrics import wasm_metrics  # noqa: E402
+from molt.wasm_optimization import (  # noqa: E402
+    WASM_OPT_LEVELS,
+    wasm_opt_pipeline,
+)
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -35,33 +46,36 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-# Optimization levels supported by wasm-opt.
-VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
-# Explicit feature set instead of --all-features.  Binaryen's --all-features
-# enables --enable-custom-descriptors which rewrites typed function references
-# into `exact` heap types — rejected by Cloudflare Workers' V8 and other
-# engines that haven't shipped the custom-descriptors proposal yet.
-#
-# `--disable-gc` is load-bearing: with `--enable-gc`, wasm-opt re-encodes the
-# merged type section as a GC-proposal *recursive type group* (`0x4E`), which the
-# molt wasmtime host runner, Cloudflare Workers' V8, and any non-GC engine reject
-# ("rec group usage requires `gc` proposal to be enabled").  The LLD-22 link
-# output is pre-flattened to standalone func types by `_flatten_rec_groups`
-# (tools/wasm_link.py) before wasm-opt runs, and disabling gc keeps wasm-opt from
-# re-wrapping them — the module's `(ref $func)` typed references remain valid
-# under the reference-types feature without the gc rec-group encoding.
-_DEFAULT_FEATURE_FLAGS = [
-    "--enable-bulk-memory",
-    "--enable-mutable-globals",
-    "--enable-sign-ext",
-    "--enable-nontrapping-float-to-int",
-    "--enable-simd",
-    "--enable-multivalue",
-    "--enable-reference-types",
-    "--disable-gc",
-    "--enable-tail-call",
-    "--disable-custom-descriptors",
-]
+VALID_LEVELS = frozenset(WASM_OPT_LEVELS)
+
+
+def _stable_executable_sha256(
+    path: Path,
+) -> tuple[tuple[int, int, int, int], str] | None:
+    try:
+        before = path.stat()
+        identity = (
+            int(before.st_dev),
+            int(before.st_ino),
+            int(before.st_size),
+            int(before.st_mtime_ns),
+        )
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                hasher.update(chunk)
+        after = path.stat()
+    except OSError:
+        return None
+    after_identity = (
+        int(after.st_dev),
+        int(after.st_ino),
+        int(after.st_size),
+        int(after.st_mtime_ns),
+    )
+    if after_identity != identity:
+        return None
+    return identity, hasher.hexdigest()
 
 
 def find_wasm_opt() -> str | None:
@@ -123,7 +137,7 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
 def _collect_exports(path: Path) -> set[str]:
     data = path.read_bytes()
     if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
-        return set()
+        raise ValueError(f"not a canonical WebAssembly module: {path}")
     offset = 8
     exports: set[str] = set()
     while offset < len(data):
@@ -150,15 +164,50 @@ def _collect_exports(path: Path) -> set[str]:
     return exports
 
 
+def _optimizer_failure(
+    *,
+    status: str,
+    error: str,
+    input_bytes: int,
+    output_path: Path | None = None,
+    output_bytes: int = 0,
+    elapsed_s: float = 0.0,
+    pipeline: Sequence[str] = (),
+    peak_rss_kb: int | None = None,
+    peak_total_rss_kb: int | None = None,
+    wasm_opt_path: Path | None = None,
+    wasm_opt_sha256: str | None = None,
+) -> dict[str, object]:
+    """Return the one typed failure shape for every optimizer exit."""
+
+    return {
+        "ok": False,
+        "status": status,
+        "input_bytes": input_bytes,
+        "output_bytes": output_bytes,
+        "reduction_bytes": 0,
+        "reduction_pct": 0.0,
+        "elapsed_s": elapsed_s,
+        "peak_rss_kb": peak_rss_kb,
+        "peak_total_rss_kb": peak_total_rss_kb,
+        "output_path": str(output_path) if output_path is not None else None,
+        "wasm_opt_path": str(wasm_opt_path) if wasm_opt_path is not None else None,
+        "wasm_opt_sha256": wasm_opt_sha256,
+        "pipeline": list(pipeline),
+        "error": error,
+    }
+
+
 def optimize(
     input_path: Path,
     output_path: Path | None = None,
     level: str = "O2",
-    extra_passes: list[str] | None = None,
+    extra_passes: Sequence[str] | None = None,
     *,
-    converge: bool = True,
+    converge: bool | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
     apply_level: bool = True,
+    timeout: float | None = None,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
 
@@ -180,129 +229,262 @@ def optimize(
         error           – error message (empty on success)
     """
     if level not in VALID_LEVELS:
-        return {
-            "ok": False,
-            "input_bytes": input_path.stat().st_size,
-            "output_bytes": 0,
-            "reduction_bytes": 0,
-            "reduction_pct": 0.0,
-            "elapsed_s": 0.0,
-            "output_path": None,
-            "error": f"Invalid optimization level: {level!r} (valid: {VALID_LEVELS})",
-        }
+        return _optimizer_failure(
+            status="invalid-level",
+            input_bytes=input_path.stat().st_size,
+            error=f"Invalid optimization level: {level!r} (valid: {VALID_LEVELS})",
+        )
 
     wasm_opt = find_wasm_opt()
     if wasm_opt is None:
-        return {
-            "ok": False,
-            "input_bytes": input_path.stat().st_size if input_path.exists() else 0,
-            "output_bytes": 0,
-            "reduction_bytes": 0,
-            "reduction_pct": 0.0,
-            "elapsed_s": 0.0,
-            "output_path": None,
-            "error": "wasm-opt not found in PATH (install Binaryen)",
-        }
+        return _optimizer_failure(
+            status="unavailable",
+            input_bytes=input_path.stat().st_size if input_path.exists() else 0,
+            error="wasm-opt not found (install or provision Binaryen)",
+        )
+    try:
+        wasm_opt_path = Path(wasm_opt).expanduser().resolve(strict=True)
+    except OSError:
+        wasm_opt_path = Path(wasm_opt).expanduser()
+    executable_identity = _stable_executable_sha256(wasm_opt_path)
+    if executable_identity is None:
+        return _optimizer_failure(
+            status="identity-error",
+            input_bytes=input_path.stat().st_size if input_path.exists() else 0,
+            wasm_opt_path=wasm_opt_path,
+            error=f"wasm-opt identity is unstable or unreadable: {wasm_opt_path}",
+        )
+    executable_stat_identity, executable_sha256 = executable_identity
+    wasm_opt = str(wasm_opt_path)
+    try:
+        version_result = _COMMANDS.run(
+            [wasm_opt, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=10,
+        )
+        binaryen_version = (
+            version_result.stdout or version_result.stderr or "unknown"
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        binaryen_version = "unknown"
 
     if output_path is None:
         output_path = input_path.with_suffix(".opt.wasm")
 
     input_bytes = input_path.stat().st_size
+    try:
+        before = wasm_metrics(input_path)
+    except (OSError, ValueError) as exc:
+        return _optimizer_failure(
+            status="invalid-input",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to profile optimizer input: {exc}",
+        )
 
-    cmd = [wasm_opt]
-    if apply_level:
-        cmd.append(f"-{level}")
-    cmd.extend([*_DEFAULT_FEATURE_FLAGS, "--strip-producers"])
-    if converge:
-        cmd.append("--converge")
-    if extra_passes:
-        cmd.extend(extra_passes)
-    cmd.extend([str(input_path), "-o", str(output_path)])
+    pipeline = wasm_opt_pipeline(
+        level,
+        extra_passes=extra_passes or (),
+        converge=converge,
+        apply_level=apply_level,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f".{output_path.name}.wasm-opt-",
+        suffix=".wasm",
+        dir=output_path.parent,
+        delete=False,
+    )
+    staged_output = Path(handle.name)
+    handle.close()
+    cmd = [wasm_opt, *pipeline]
+    cmd.extend([str(input_path), "-o", str(staged_output)])
 
     t0 = time.monotonic()
-    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    guard_prefix = "MOLT_WASM_OPT"
+    timeout_s = harness_memory_guard.timeout_from_env(
+        guard_prefix,
+        os.environ,
+        explicit=timeout,
+        default=300.0,
+    )
+    limits = harness_memory_guard.limits_from_env(guard_prefix)
     try:
         proc = harness_memory_guard.guarded_completed_process(
             cmd,
-            prefix="MOLT_BENCH",
+            prefix=guard_prefix,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout_s,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "input_bytes": input_bytes,
-            "output_bytes": 0,
-            "reduction_bytes": 0,
-            "reduction_pct": 0.0,
-            "elapsed_s": time.monotonic() - t0,
-            "output_path": str(output_path),
-            "error": "wasm-opt timed out after 300s",
-        }
+        timeout_label = "disabled" if timeout_s is None else f"{timeout_s:g}s"
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="timeout",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            elapsed_s=time.monotonic() - t0,
+            pipeline=pipeline,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"wasm-opt timed out after {timeout_label}",
+        )
+    except (OSError, ValueError) as exc:
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="failed",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            elapsed_s=time.monotonic() - t0,
+            pipeline=pipeline,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to execute wasm-opt: {exc}",
+        )
     elapsed = time.monotonic() - t0
     peak = getattr(proc, "peak", None)
     peak_total = getattr(proc, "peak_total", None)
     peak_rss_kb = getattr(peak, "rss_kb", None)
     peak_total_rss_kb = getattr(peak_total, "rss_kb", None)
 
-    if proc.returncode != 0:
-        return {
-            "ok": False,
-            "input_bytes": input_bytes,
-            "output_bytes": 0,
-            "reduction_bytes": 0,
-            "reduction_pct": 0.0,
-            "elapsed_s": elapsed,
-            "peak_rss_kb": peak_rss_kb,
-            "peak_total_rss_kb": peak_total_rss_kb,
-            "output_path": str(output_path),
-            "error": (proc.stderr or proc.stdout)[:500],
-        }
+    if getattr(proc, "timed_out", False):
+        timeout_label = "disabled" if timeout_s is None else f"{timeout_s:g}s"
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="timeout",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"wasm-opt timed out after {timeout_label}",
+        )
 
+    if proc.returncode != 0:
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="failed",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=(proc.stderr or proc.stdout)[:500],
+        )
+
+    final_executable_identity = _stable_executable_sha256(wasm_opt_path)
+    if (
+        final_executable_identity is None
+        or final_executable_identity[0] != executable_stat_identity
+        or final_executable_identity[1] != executable_sha256
+    ):
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="identity-error",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error="wasm-opt executable identity changed during execution",
+        )
+
+    try:
+        exports = _collect_exports(staged_output)
+    except (OSError, ValueError) as exc:
+        staged_bytes = staged_output.stat().st_size if staged_output.exists() else 0
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="invalid-output",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            output_bytes=staged_bytes,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to verify optimized output: {exc}",
+        )
     if required_exports:
-        try:
-            exports = _collect_exports(output_path)
-        except (OSError, ValueError) as exc:
-            return {
-                "ok": False,
-                "input_bytes": input_bytes,
-                "output_bytes": output_path.stat().st_size
-                if output_path.exists()
-                else 0,
-                "reduction_bytes": 0,
-                "reduction_pct": 0.0,
-                "elapsed_s": elapsed,
-                "peak_rss_kb": peak_rss_kb,
-                "peak_total_rss_kb": peak_total_rss_kb,
-                "output_path": str(output_path),
-                "error": f"failed to verify optimized exports: {exc}",
-            }
         missing = sorted(set(required_exports) - exports)
         if missing:
-            return {
-                "ok": False,
-                "input_bytes": input_bytes,
-                "output_bytes": output_path.stat().st_size
-                if output_path.exists()
-                else 0,
-                "reduction_bytes": 0,
-                "reduction_pct": 0.0,
-                "elapsed_s": elapsed,
-                "peak_rss_kb": peak_rss_kb,
-                "peak_total_rss_kb": peak_total_rss_kb,
-                "output_path": str(output_path),
-                "error": "optimized wasm missing required exports: "
-                + ", ".join(missing),
-            }
+            staged_bytes = staged_output.stat().st_size if staged_output.exists() else 0
+            staged_output.unlink(missing_ok=True)
+            return _optimizer_failure(
+                status="invalid-output",
+                input_bytes=input_bytes,
+                output_path=output_path,
+                output_bytes=staged_bytes,
+                elapsed_s=elapsed,
+                pipeline=pipeline,
+                peak_rss_kb=peak_rss_kb,
+                peak_total_rss_kb=peak_total_rss_kb,
+                wasm_opt_path=wasm_opt_path,
+                wasm_opt_sha256=executable_sha256,
+                error="optimized wasm missing required exports: " + ", ".join(missing),
+            )
 
-    output_bytes = output_path.stat().st_size
+    output_bytes = staged_output.stat().st_size
     reduction = input_bytes - output_bytes
     pct = (reduction / input_bytes * 100) if input_bytes > 0 else 0.0
+    try:
+        after = wasm_metrics(staged_output)
+    except (OSError, ValueError) as exc:
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="invalid-output",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            output_bytes=output_bytes,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to profile optimized output: {exc}",
+        )
+    try:
+        artifact_publish.publish_validated_outputs([(staged_output, output_path)])
+    except (OSError, ValueError) as exc:
+        return _optimizer_failure(
+            status="publication-failed",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            output_bytes=output_bytes,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to publish optimized wasm atomically: {exc}",
+        )
+    finally:
+        staged_output.unlink(missing_ok=True)
 
     return {
         "ok": True,
+        "status": "success",
         "input_bytes": input_bytes,
         "output_bytes": output_bytes,
         "reduction_bytes": reduction,
@@ -311,17 +493,12 @@ def optimize(
         "peak_rss_kb": peak_rss_kb,
         "peak_total_rss_kb": peak_total_rss_kb,
         "output_path": str(output_path),
-        "binaryen_version": _COMMANDS.run(
-            [wasm_opt, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        ).stdout.strip(),
-        "pipeline": cmd[1:-3],
-        "before": wasm_metrics(input_path),
-        "after": wasm_metrics(output_path),
+        "wasm_opt_path": str(wasm_opt_path),
+        "wasm_opt_sha256": executable_sha256,
+        "binaryen_version": binaryen_version,
+        "pipeline": list(pipeline),
+        "before": before,
+        "after": after,
         "error": "",
     }
 

@@ -44,8 +44,10 @@ def _ensure_pytest_process_scope() -> None:
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if worker:
         os.environ["MOLT_SESSION_ID"] = f"pytest-xdist-{worker}"
-    else:
-        os.environ.setdefault("MOLT_SESSION_ID", f"pytest-{os.getpid()}")
+        os.environ["MOLT_SESSION_ID_GENERATED"] = "1"
+    elif "MOLT_SESSION_ID" not in os.environ:
+        os.environ["MOLT_SESSION_ID"] = f"pytest-{os.getpid()}"
+        os.environ["MOLT_SESSION_ID_GENERATED"] = "1"
 
 
 def _assert_pytest_memory_guard_active() -> None:

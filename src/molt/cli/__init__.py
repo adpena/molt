@@ -256,7 +256,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_build_slot': ('cargo_execution', '_build_slot'),
     '_cargo_build_env': ('cargo_execution', '_cargo_build_env'),
     '_maybe_enable_native_cpu': ('cargo_execution', '_maybe_enable_native_cpu'),
-    '_maybe_enable_sccache': ('cargo_execution', '_maybe_enable_sccache'),
     '_run_cargo_with_sccache_retry': ('cargo_execution', '_run_cargo_with_sccache_retry'),
     # molt.cli.cargo_profiles
     '_CARGO_PROFILE_NAME_RE': ('cargo_profiles', '_CARGO_PROFILE_NAME_RE'),

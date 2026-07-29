@@ -22353,6 +22353,54 @@ def test_browser_deploy_profile_enables_split_runtime_publication(
     assert seen == [True]
 
 
+def test_wasm_optimizer_level_follows_build_intent_and_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen: list[str | None] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen.append(cast(str | None, kwargs.get("wasm_opt_level")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    commands = (
+        [
+            "molt",
+            "build",
+            "--target",
+            "wasm",
+            "--profile",
+            "browser",
+            "--build-profile",
+            "dev",
+            str(entry),
+        ],
+        ["molt", "build", "--target", "wasm", "--profile", "browser", str(entry)],
+        ["molt", "build", "--target", "wasm", "--profile", "wasi", str(entry)],
+        [
+            "molt",
+            "build",
+            "--target",
+            "wasm",
+            "--build-profile",
+            "dev",
+            "--wasm-opt-level",
+            "O4",
+            str(entry),
+        ],
+    )
+    for command in commands:
+        monkeypatch.setattr(sys, "argv", command)
+        assert cli.main() == 0
+
+    assert seen == ["O1", "Oz", "O3", "O4"]
+
+
 def test_build_cli_defaults_to_auto_wasm_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

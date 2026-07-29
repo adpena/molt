@@ -55,6 +55,7 @@ def _resolve(
     toolchain_manifest: identity.RuntimeToolchainContentManifest | None = None,
     extra_env: dict[str, str] | None = None,
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
+    publication_digest: str = "test-publication-authority",
 ) -> identity.RuntimeBuildIdentity:
     archive_root = root / "archives"
     sysroot = root / "wasi-sysroot"
@@ -84,6 +85,11 @@ def _resolve(
         runtime_features=("stdlib_micro",),
         base_rustflags=base_rustflags,
         producer_artifact_selection=artifact_selection,
+        publication_authority={
+            "schema": "molt.runtime-wasm-publication-authority.v1",
+            "digest": publication_digest,
+            "files": [],
+        },
         shared=identity.RuntimePairMemberPlan(
             kind="shared",
             resolved_rustflags=(
@@ -221,6 +227,26 @@ def test_canonical_profile_and_publication_transform_are_identity_inputs(
     assert len({release.digest, dev.digest, unstripped.digest}) == 3
     assert release.pair_digest != dev.pair_digest
     assert release.pair_digest != unstripped.pair_digest
+
+
+def test_publication_authority_content_is_pair_identity_input(
+    identity_root: Path,
+) -> None:
+    before = _resolve(
+        identity_root,
+        kind="reloc",
+        publication="relocatable-runtime-publication-v2",
+        publication_digest="a" * 64,
+    )
+    after = _resolve(
+        identity_root,
+        kind="reloc",
+        publication="relocatable-runtime-publication-v2",
+        publication_digest="b" * 64,
+    )
+
+    assert before.pair_digest != after.pair_digest
+    assert before.digest != after.digest
 
 
 def test_exact_producer_artifact_selection_is_pair_identity_input(
@@ -719,7 +745,9 @@ def test_distro_wasi_layout_identities_only_target_content(tmp_path: Path) -> No
     outside.write_text("changed host-only\n", encoding="utf-8")
     assert identity._tree_identity(roots, require_all=False) == before
     (target_include / "errno.h").write_text("#define WASI_ERRNO 2\n", encoding="utf-8")
-    assert identity._tree_identity(roots, require_all=False)["digest"] != before["digest"]
+    assert (
+        identity._tree_identity(roots, require_all=False)["digest"] != before["digest"]
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")

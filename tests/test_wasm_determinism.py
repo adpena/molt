@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 from molt.wasm_artifact import parse_wasm_section_spans, wasm_section_name
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -67,9 +67,7 @@ def _molt_cli_available() -> bool:
 
 def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
     """Build a Python file to WASM, returning the .wasm path or None."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(SRC_DIR)
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    env = wasm_test_build_env(ROOT)
     try:
         result = _run_wasm_test_process(
             [

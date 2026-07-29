@@ -27,7 +27,6 @@ from molt.cli.build_locks import _build_lock
 from molt.cli.cargo_execution import (
     _build_slot,
     _cargo_build_env,
-    _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
 )
 from molt.cli.command_runtime import (
@@ -269,10 +268,6 @@ def _ensure_wasm_cpython_abi_staticlib(
             env["RUSTFLAGS"] = rustflags
         _configure_wasm_cc_env(env)
         _configure_wasi_sysroot_env(env)
-        if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
-            _maybe_enable_sccache(env)
-        else:
-            env.pop("RUSTC_WRAPPER", None)
         cmd = [
             "cargo",
             "rustc",

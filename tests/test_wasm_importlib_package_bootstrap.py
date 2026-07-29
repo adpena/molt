@@ -8,12 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from molt.process_guard import timeout_from_env
 from tests.wasm_linked_runner import (
-    _read_timeout_seconds,
     _run_wasm_test_process,
     build_wasm_linked,
     require_wasm_toolchain,
     run_wasm_linked,
+    wasm_test_build_env,
 )
 from tests.test_wasm_split_runtime import _run_split_worker_live
 
@@ -25,9 +26,7 @@ def _build_file_wasm(
     *,
     split_runtime: bool,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_BACKEND_DAEMON"] = "0"
+    env = wasm_test_build_env(root)
     target_dir, diff_target_dir = _wasm_importlib_package_bootstrap_target_dirs(
         root, env
     )
@@ -39,10 +38,6 @@ def _build_file_wasm(
         "MOLT_SESSION_ID",
         f"test-wasm-importlib-package-bootstrap-{source_file.parent.name}",
     )
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     tmp_root = root / "tmp"
@@ -72,7 +67,11 @@ def _build_file_wasm(
     else:
         cmd.append("--require-linked")
 
-    build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
+    build_timeout = timeout_from_env(
+        "MOLT_WASM_TEST_BUILD",
+        env,
+        default=900.0,
+    )
     try:
         return _run_wasm_test_process(
             cmd,
@@ -167,8 +166,10 @@ def test_build_file_wasm_uses_wasm_test_memory_guard(
     assert isinstance(cmd, list)
     assert "--split-runtime" in cmd
     assert kwargs["cwd"] == tmp_path
-    assert kwargs["timeout"] == _read_timeout_seconds(
-        "MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0
+    assert kwargs["timeout"] == timeout_from_env(
+        "MOLT_WASM_TEST_BUILD",
+        os.environ,
+        default=900.0,
     )
 
 

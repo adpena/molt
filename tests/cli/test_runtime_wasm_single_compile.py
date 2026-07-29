@@ -68,6 +68,28 @@ def _specs(root: Path):
     return shared, reloc
 
 
+def test_runtime_publication_authority_is_exact_and_content_addressed(
+    tmp_path: Path,
+) -> None:
+    root = _compiler_root()
+    for relative in runtime_wasm_build_spec._RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS:
+        source = root / relative
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    before = runtime_wasm_build_spec._runtime_wasm_publication_authority(tmp_path)
+    assert {
+        entry["path"]
+        for entry in before["files"]  # type: ignore[index]
+    } == set(runtime_wasm_build_spec._RUNTIME_WASM_PUBLICATION_AUTHORITY_PATHS)
+
+    changed = tmp_path / "src/molt/cli/runtime_wasm_build.py"
+    changed.write_bytes(changed.read_bytes() + b"\n# publication mutation\n")
+    after = runtime_wasm_build_spec._runtime_wasm_publication_authority(tmp_path)
+    assert after["digest"] != before["digest"]
+
+
 def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> None:
     root = _compiler_root()
     shared, reloc = _specs(root)
@@ -433,9 +455,7 @@ def _test_pair_context(
         shared_spec=shared,
         reloc_spec=reloc,
         toolchain_manifest_path=tmp_path / "toolchain.json",
-        generation_manifest=canonical_shared.with_name(
-            "molt_runtime.generation.json"
-        ),
+        generation_manifest=canonical_shared.with_name("molt_runtime.generation.json"),
         pre_identity=_test_pair_identity(),
     )
 
@@ -521,9 +541,7 @@ def test_reloc_pair_acceptance_uses_linking_definitions_with_fallback_semantics(
         "wasm_linking_defined_names",
         lambda _path, _expected: frozenset(),
     )
-    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == {
-        "molt_add"
-    }
+    assert ctx.reloc_missing_required_symbols(tmp_path / "reloc-member") == {"molt_add"}
 
 
 def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar(
@@ -535,9 +553,7 @@ def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar
     observed: list[tuple[Path, object, bool]] = []
 
     def reuse(ctx, *, persist_output_fingerprint: bool):  # noqa: ANN001
-        observed.append(
-            (ctx.runtime_wasm, ctx.spec, persist_output_fingerprint)
-        )
+        observed.append((ctx.runtime_wasm, ctx.spec, persist_output_fingerprint))
         return True
 
     monkeypatch.setattr(runtime_wasm_build, "_reuse_target_runtime_wasm", reuse)

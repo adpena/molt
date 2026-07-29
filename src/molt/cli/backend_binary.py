@@ -25,7 +25,6 @@ from molt.cli.cache_fingerprints import _backend_source_paths
 from molt.cli.cargo_execution import (
     _cargo_build_env,
     _maybe_enable_native_cpu,
-    _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
 )
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
@@ -690,7 +689,6 @@ def _ensure_backend_binary(
                 llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_pin.major}"
                 if os.path.isdir(llvm_prefix):
                     build_env[llvm_pin.env_var] = llvm_prefix
-        _maybe_enable_sccache(build_env)
         _maybe_enable_native_cpu(build_env)
         try:
             stage_start = time.perf_counter()

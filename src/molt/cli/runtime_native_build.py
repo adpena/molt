@@ -36,7 +36,6 @@ from molt.cli.cargo_execution import (
     CargoExecutionResult,
     _build_slot,
     _cargo_build_env,
-    _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
     cargo_execution_evidence,
 )
@@ -775,7 +774,6 @@ def _prepare_native_runtime_build(
     )
     build_env = _cargo_build_env()
     build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
-    _maybe_enable_sccache(build_env)
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )

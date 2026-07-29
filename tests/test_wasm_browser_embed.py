@@ -14,24 +14,17 @@ import pytest
 
 from molt._wasm_abi_generated import WASM_RESERVED_RUNTIME_CALLABLES
 from tests.wasm_callable_table_fixtures import attested_empty_callable_table
-from molt.dx import development_artifact_env, session_artifact_component
-from tests.wasm_linked_runner import _run_wasm_test_process
+from molt.dx import session_artifact_component
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
 
 def _browser_wasm_build_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
+    return wasm_test_build_env(
         root,
         session_prefix="test-wasm-browser-embed",
         session_id="test-wasm-browser-embed",
-        create_dirs=True,
     )
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    return env
 
 
 def _browser_embed_forward_package_dir(root: Path, env: dict[str, str]) -> Path:

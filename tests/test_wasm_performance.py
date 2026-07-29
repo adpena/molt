@@ -15,7 +15,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tools import wasm_optimize
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -85,17 +86,11 @@ class TestWasmToolAvailability:
         assert any(os.path.isfile(c) and os.access(c, os.X_OK) for c in candidates)
 
     def test_wasm_opt_available(self) -> None:
-        """wasm-opt should be on PATH for full optimization pipeline."""
-        wasm_opt = shutil.which("wasm-opt")
+        """The canonical optimizer discovery should find a readable binary."""
+        wasm_opt = wasm_optimize.find_wasm_opt()
         if wasm_opt is None:
-            pytest.skip("wasm-opt not found; install via cargo or brew")
-        result = _run_wasm_test_process(
-            [wasm_opt, "--version"],
-            cwd=ROOT,
-            env=os.environ,
-            timeout=10,
-        )
-        assert result.returncode == 0
+            pytest.skip("wasm-opt not found")
+        assert Path(wasm_opt).is_file()
 
     def test_wasm_tools_available(self) -> None:
         """wasm-tools should be on PATH for symbol analysis."""
@@ -123,21 +118,13 @@ def _build_wasm(
     linked: bool = False,
 ) -> Path | None:
     """Build source to WASM. Returns output path or None."""
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
-    )
-    env["MOLT_BACKEND_DAEMON"] = "0"
+    env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
         env["MOLT_WASM_LINK"] = "1"
         wasm_ld_path = wasm_link._find_wasm_ld()
         if wasm_ld_path:
             ld_dir = str(Path(wasm_ld_path).parent)
             env["PATH"] = ld_dir + os.pathsep + env.get("PATH", "")
-    else:
-        env["MOLT_WASM_LINKED"] = "0"
     cmd = _molt_build_cmd() + [
         str(source),
         "--target",
@@ -187,6 +174,47 @@ def test_wasm_performance_build_uses_wasm_test_guard(
     assert captured["kwargs"]["timeout"] == 300
 
 
+def _optimize_wasm_for_size(input_path: Path, output_path: Path) -> dict[str, object]:
+    return wasm_optimize.optimize(
+        input_path,
+        output_path=output_path,
+        level="Oz",
+        extra_passes=("--strip-debug",),
+        required_exports=wasm_optimize._collect_exports(input_path),
+        timeout=120,
+    )
+
+
+def test_wasm_performance_size_optimizer_uses_canonical_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_path = tmp_path / "input.wasm"
+    output_path = tmp_path / "output.wasm"
+    input_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    captured: dict[str, object] = {}
+
+    def fake_optimize(path, **kwargs):  # type: ignore[no-untyped-def]
+        captured["path"] = path
+        captured["kwargs"] = kwargs
+        return {"ok": True, "error": ""}
+
+    monkeypatch.setattr(wasm_optimize, "optimize", fake_optimize)
+
+    result = _optimize_wasm_for_size(input_path, output_path)
+
+    assert result["ok"] is True
+    assert captured == {
+        "path": input_path,
+        "kwargs": {
+            "output_path": output_path,
+            "level": "Oz",
+            "extra_passes": ("--strip-debug",),
+            "required_exports": set(),
+            "timeout": 120,
+        },
+    }
+
+
 class TestWasmSizeThresholds:
     """WASM output size must stay within defined budgets."""
 
@@ -202,8 +230,7 @@ class TestWasmSizeThresholds:
             )
 
     def test_standalone_optimized_size(self) -> None:
-        wasm_opt = shutil.which("wasm-opt")
-        if wasm_opt is None:
+        if wasm_optimize.find_wasm_opt() is None:
             pytest.skip("wasm-opt not available")
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
             tmpdir_path = Path(tmpdir)
@@ -211,24 +238,9 @@ class TestWasmSizeThresholds:
             if output is None:
                 pytest.skip("WASM build failed")
             opt_path = tmpdir_path / "optimized.wasm"
-            result = _run_wasm_test_process(
-                [
-                    wasm_opt,
-                    "-Oz",
-                    "--enable-reference-types",
-                    "--enable-bulk-memory",
-                    "--strip-debug",
-                    "--no-validation",
-                    str(output),
-                    "-o",
-                    str(opt_path),
-                ],
-                cwd=ROOT,
-                env=os.environ,
-                timeout=120,
-            )
-            if result.returncode != 0 or not opt_path.exists():
-                pytest.skip("wasm-opt failed")
+            result = _optimize_wasm_for_size(output, opt_path)
+            assert result["ok"], f"wasm-opt failed: {result['error']}"
+            assert opt_path.exists(), "canonical optimizer published no artifact"
             size = opt_path.stat().st_size
             assert size < STANDALONE_OPT_MAX_BYTES, (
                 f"Optimized WASM {size:,} bytes exceeds threshold "
@@ -251,8 +263,7 @@ class TestWasmSizeThresholds:
     def test_linked_optimized_size(self) -> None:
         if wasm_link._find_wasm_ld() is None:
             pytest.skip("wasm-ld not available")
-        wasm_opt = shutil.which("wasm-opt")
-        if wasm_opt is None:
+        if wasm_optimize.find_wasm_opt() is None:
             pytest.skip("wasm-opt not available")
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
             tmpdir_path = Path(tmpdir)
@@ -260,24 +271,9 @@ class TestWasmSizeThresholds:
             if output is None:
                 pytest.skip("Linked WASM build failed")
             opt_path = tmpdir_path / "linked_optimized.wasm"
-            result = _run_wasm_test_process(
-                [
-                    wasm_opt,
-                    "-Oz",
-                    "--enable-reference-types",
-                    "--enable-bulk-memory",
-                    "--strip-debug",
-                    "--no-validation",
-                    str(output),
-                    "-o",
-                    str(opt_path),
-                ],
-                cwd=ROOT,
-                env=os.environ,
-                timeout=120,
-            )
-            if result.returncode != 0 or not opt_path.exists():
-                pytest.skip("wasm-opt failed on linked output")
+            result = _optimize_wasm_for_size(output, opt_path)
+            assert result["ok"], f"wasm-opt failed on linked output: {result['error']}"
+            assert opt_path.exists(), "canonical optimizer published no artifact"
             size = opt_path.stat().st_size
             assert size < LINKED_OPT_MAX_BYTES, (
                 f"Linked+optimized WASM {size:,} bytes exceeds threshold "

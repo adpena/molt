@@ -32,10 +32,17 @@ Rules:
 For `--target wasm --split-runtime`, the packaging contract is:
 - `output.wasm` is the raw rewritten app module emitted before split packaging.
 - `app.wasm` must be smaller than `output.wasm`; it is expected to go through
-  split-app deforestation (`_post_link_optimize`) plus wasm-opt when enabled.
+  split-app deforestation (`_post_link_optimize`) plus the canonical wasm-opt
+  policy when enabled. Optimizer failure is a build failure, not a cached
+  baseline result.
 - `molt_runtime.wasm` must be tree-shaken against the canonical shared-runtime
   export surface, not the app import subset, so the CDN-cached runtime stays
   byte-identical across apps. Per-app shrinkage belongs in `app.wasm`.
+- Runtime structural cleanup is content-addressed by the runtime and canonical
+  export contract. Cargo/LLVM runtime generation owns current shared-runtime
+  body optimization; app linking never re-runs Binaryen over that
+  app-independent full export graph. Any future Binaryen runtime policy belongs
+  in runtime-generation custody.
 - If any of those assumptions stop holding, treat it as a real regression in
   the split-runtime pipeline rather than “normal wasm variance”.
 

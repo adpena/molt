@@ -69,7 +69,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--emit {bin,obj,wasm}` | Select artifact format. |
 | `--linked / --no-linked` | Emit linked WASM artifact alongside output. |
 | `--split-runtime` | Produce separate runtime and app WASM modules. |
-| `--wasm-opt-level {Oz,O3}` | WASM optimization profile: `Oz` for size, `O3` for speed. |
+| `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev defaults to `O1`; release deployment profiles select their shipping level. |
 | `--precompile` | Produce a precompiled `.cwasm` for faster startup. |
 | `--snapshot` | Generate snapshot header for sub-millisecond cold starts. |
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
@@ -686,12 +686,13 @@ molt build app.py --target wasm --precompile  # Precompiled .cwasm
 ```
 
 **Size optimization:**
-- `--split-runtime` splits into `app.wasm` + `molt_runtime.wasm`; both artifacts are tree-shaken and post-optimized independently.
+- `--split-runtime` emits an independently optimized `app.wasm` plus one app-independent, CDN-cacheable `molt_runtime.wasm`; the shared runtime retains its canonical ABI and receives deterministic structural reachability cleanup.
 - `--stdlib-profile micro` includes the core import surface, non-network scheduling, logging, collections, and tempfile/filesystem intrinsics.
-- `--wasm-opt-level Oz` (default) optimizes for size; `O3` optimizes for speed.
-- Post-link optimization needs Binaryen's `wasm-opt`; without it the build
-  still succeeds but skips dead-code elimination and the `Oz`/`O3` pass
-  pipelines (artifacts stay larger and slower). Resolution order:
+- Dev builds default to `--wasm-opt-level O1` without fixed-point convergence;
+  release browser/edge profiles retain their `Oz` or `O3` shipping policy.
+- Post-link optimization needs Binaryen's `wasm-opt`. An optimized build fails
+  closed if the optimizer is missing, times out, or produces an invalid artifact;
+  it never publishes a baseline artifact as optimized. Resolution order:
   `MOLT_WASM_OPT=<path>`, then `PATH`, then a `binaryen-*` release unpacked
   under `MOLT_TARGET_ROOT/toolchains/` (the same managed root as the WASI
   sysroot).

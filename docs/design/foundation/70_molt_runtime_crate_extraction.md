@@ -152,8 +152,8 @@ passed `cargo check -p molt-runtime --target wasm32-wasip1
 --no-default-features`. The first VFS/browser rerun,
 `20260708T011731-c1-vfs-split-wasm-adapter-rerun-20260708a-670bf6e3a9e244d3`,
 then moved the blocker to DX wall clock: the build fixture timed out at its
-inner 900s guard after the split-runtime harness forced `CARGO_BUILD_JOBS=1`
-and `MOLT_WASM_DISABLE_SCCACHE=1`. Removing those harness defaults and
+inner 900s guard after the split-runtime harness forced serial Cargo execution
+and a duplicate WASM-only cache bypass. Removing those harness defaults and
 delegating cargo parallelism/cache policy back to the DX/cargo authorities made
 `20260708T014407-c1-vfs-split-wasm-adapter-rerun-20260708b-c67411edb0ca4105`
 pass the selected split-runtime VFS/browser assertions in 717.62s
