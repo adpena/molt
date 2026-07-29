@@ -1011,6 +1011,40 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     assert overlap_detected is False
 
 
+def test_python_toolchain_fingerprint_accepts_explicit_execution_interpreter(
+    monkeypatch,
+) -> None:
+    observed: list[tuple[str, str | None]] = []
+
+    def fake_fingerprint(
+        policy: proof_plan.ToolchainPolicy,
+        *,
+        executable_override: str | None = None,
+    ) -> dict[str, str]:
+        observed.append((policy.name, executable_override))
+        return {
+            "path": str(executable_override),
+            "launcher_path": str(executable_override),
+            "launcher_sha256": "0" * 64,
+            "content_path": str(executable_override),
+            "version": "Python 3.12.13",
+            "version_pattern": str(policy.data["version_pattern"]),
+            "probe_cwd": str(policy.data.get("probe_cwd", ".")),
+            "executable_sha256": "0" * 64,
+            "identity_sha256": "0" * 64,
+        }
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
+    fingerprints = proof_plan.toolchain_fingerprints(
+        PLAN,
+        ("python",),
+        executable_overrides={"python": "/project/.venv/bin/python"},
+    )
+
+    assert observed == [("python", "/project/.venv/bin/python")]
+    assert fingerprints["python"]["version"] == "Python 3.12.13"
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
     cell = proof_plan.MatrixCell(
@@ -1436,7 +1470,7 @@ def test_executor_rejects_source_mutation_during_partition(
 def test_heavy_queue_projects_the_same_receipt_schema(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "dirty")
+    del monkeypatch
     summary = tmp_path / "summary.json"
     summary.write_text(json.dumps({"peak_total": {"rss_kb": 64}}), encoding="utf-8")
     receipt: Any = proof_queue_evidence._queue_proof_receipt(
@@ -1450,6 +1484,24 @@ def test_heavy_queue_projects_the_same_receipt_schema(
             "started_at": "2026-07-18T00:00:00+00:00",
             "elapsed_s": 1.25,
             "summary_json": str(summary),
+            "receipt_context_json": json.dumps(
+                {
+                    "schema": PLAN.receipt_schema,
+                    "authority_sha256": proof_plan._authority_sha256(PLAN),
+                    "source_commit": proof_plan._source_commit(),
+                    "source_tree_state": "dirty",
+                    "environment": {
+                        "os": "windows",
+                        "arch": "x86_64",
+                        "python": "3.12",
+                    },
+                    "toolchains": {"python": {}},
+                    "python_interpreters": {
+                        "queue_control_plane": {"version": "3.14.3"},
+                        "proof_command": {"version": "3.12.13"},
+                    },
+                }
+            ),
         }
     )
     assert receipt["schema"] == PLAN.receipt_schema
@@ -1459,21 +1511,22 @@ def test_heavy_queue_projects_the_same_receipt_schema(
     assert receipt["commands"][0]["peak_rss_bytes"] == 64 * 1024  # type: ignore[index]
 
 
-def test_heavy_queue_reuses_receipt_context_across_rows(monkeypatch) -> None:
-    calls: list[tuple[str, ...]] = []
-
-    def fake_context(toolchains: tuple[str, ...]) -> dict[str, object]:
-        calls.append(toolchains)
-        return {
-            "schema": PLAN.receipt_schema,
-            "authority_sha256": "a" * 64,
-            "source_commit": "b" * 40,
-            "source_tree_state": "clean",
-            "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
-            "toolchains": {name: {} for name in toolchains},
-        }
-
-    monkeypatch.setattr(proof_queue_evidence, "_queue_receipt_context", fake_context)
+def test_heavy_queue_reuses_persisted_execution_receipt_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        proof_queue_evidence,
+        "_queue_receipt_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("evidence projection must not re-probe an interpreter")
+        ),
+    )
+    context = {
+        "schema": PLAN.receipt_schema,
+        "authority_sha256": "a" * 64,
+        "source_commit": "b" * 40,
+        "source_tree_state": "clean",
+        "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
+        "toolchains": {"python": {}, "cargo": {}, "rustc": {}},
+    }
     row = {
         "logical_id": "heavy-native",
         "status": "passed",
@@ -1484,11 +1537,12 @@ def test_heavy_queue_reuses_receipt_context_across_rows(monkeypatch) -> None:
         "started_at": "2026-07-18T00:00:00+00:00",
         "elapsed_s": 1.25,
         "summary_json": None,
+        "receipt_context_json": json.dumps(context),
     }
-    contexts: dict[tuple[str, ...], dict[str, object]] = {}
-    proof_queue_evidence._queue_proof_receipt(row, contexts=contexts)
-    proof_queue_evidence._queue_proof_receipt(row, contexts=contexts)
-    assert calls == [("python", "cargo", "rustc")]
+    first = proof_queue_evidence._queue_proof_receipt(row)
+    second = proof_queue_evidence._queue_proof_receipt(row)
+    assert first["toolchains"] == context["toolchains"]
+    assert second["environment"]["python"] == "3.12"
 
 
 def test_formal_is_required_now_that_cross_workflow_receipts_are_aggregated() -> None:

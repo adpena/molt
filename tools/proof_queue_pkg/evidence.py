@@ -11,8 +11,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from tools.proof_queue_pkg import diagnostics, state
-from tools import proof_plan
+from tools.proof_queue_pkg import diagnostics, interpreter, state
 
 _NON_EXECUTED_RECEIPT_STATUSES = frozenset({"queued", "dispatched", "blocked"})
 
@@ -28,10 +27,7 @@ def _notebooks_root(args: argparse.Namespace) -> Path:
 def _run_payload_with_notes(
     conn: sqlite3.Connection, rows: list[sqlite3.Row]
 ) -> list[dict[str, object]]:
-    receipt_contexts: dict[tuple[str, ...], dict[str, object]] = {}
-    payload = [
-        _row_to_payload(row, receipt_contexts=receipt_contexts) for row in rows
-    ]
+    payload = [_row_to_payload(row) for row in rows]
     run_ids = [str(item["run_id"]) for item in payload]
     notes = state._notes_for_run_ids(conn, run_ids)
     edges = state._edges_for_run_ids(conn, run_ids)
@@ -92,6 +88,15 @@ def _(mo, run):
     child_summary = ", ".join(
         f"{{kind}}={{count}}" for kind, count in child_counts.items()
     ) or "none"
+    receipt = run.get("proof_receipt", {{}})
+    receipt_state = run.get("proof_receipt_state", {{}})
+    interpreters = receipt.get("python_interpreters", {{}})
+    control_python = interpreters.get("queue_control_plane", {{}})
+    proof_python = interpreters.get("proof_command", {{}})
+    control_summary = control_python.get("version", "not executed")
+    proof_summary = proof_python.get(
+        "version", receipt_state.get("status", "not executed")
+    )
     mo.md(
         f"""
 # Proof run `{{run["run_id"]}}`
@@ -103,6 +108,8 @@ def _(mo, run):
 - notes: {{note_summary}}
 - parents: {{parent_summary}}
 - children: {{child_summary}}
+- queue control-plane Python: `{{control_summary}}`
+- proof-command Python: `{{proof_summary}}`
 - reason: {{run["reason"]}}
 """
     )
@@ -171,42 +178,54 @@ def _queue_peak_rss_bytes(summary_path: object) -> int:
 
 
 def _queue_receipt_context(
-    requested_toolchains: tuple[str, ...],
+    authority: Mapping[str, object],
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    env: Mapping[str, str],
 ) -> dict[str, object]:
-    plan = proof_plan.ProofPlan.load()
-    return {
-        "schema": plan.receipt_schema,
-        "authority_sha256": proof_plan._authority_sha256(plan),
-        "source_commit": proof_plan._source_commit(),
-        "source_tree_state": proof_plan._source_tree_state(),
-        "environment": {
-            "os": proof_plan._normalized_os(),
-            "arch": proof_plan._normalized_arch(),
-            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        },
-        "toolchains": proof_plan.toolchain_fingerprints(plan, requested_toolchains),
-    }
+    return interpreter.receipt_context(
+        authority,
+        command=command,
+        cwd=cwd,
+        env=env,
+    )
+
+
+def _capture_execution_receipt_context(
+    row: sqlite3.Row | Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+) -> dict[str, object]:
+    authority = json.loads(str(row["python_interpreter_json"]))
+    command = json.loads(str(row["command_json"]))
+    if not isinstance(authority, dict) or not isinstance(command, list):
+        raise ValueError("proof run interpreter or command authority is malformed")
+    return _queue_receipt_context(
+        authority,
+        command=[str(value) for value in command],
+        cwd=Path(str(row["cwd"])),
+        env=env,
+    )
 
 
 def _queue_proof_receipt(
     row: sqlite3.Row | Mapping[str, Any],
-    *,
-    contexts: dict[tuple[str, ...], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     status = str(row["status"])
     returncode = row["returncode"]
     succeeded = status == "passed" and returncode == 0
     command_id = f"queue.{row['logical_id']}"
     argv = json.loads(row["command_json"])
-    requested_toolchains = ["python"]
-    if any(Path(str(part)).name in {"cargo", "cargo.exe"} for part in argv):
-        requested_toolchains.extend(("cargo", "rustc"))
-    toolchain_key = tuple(requested_toolchains)
-    context = None if contexts is None else contexts.get(toolchain_key)
-    if context is None:
-        context = _queue_receipt_context(toolchain_key)
-        if contexts is not None:
-            contexts[toolchain_key] = context
+    context_raw = state._row_value(row, "receipt_context_json")
+    if not isinstance(context_raw, str) or not context_raw:
+        raise ValueError("executed proof run has no persisted receipt context")
+    context = json.loads(context_raw)
+    if not isinstance(context, dict):
+        raise ValueError("proof run receipt context is malformed")
+    environment = context.get("environment")
+    if not isinstance(environment, dict):
+        raise ValueError("proof run receipt environment is malformed")
     return {
         **context,
         "authority_kind": "proof-queue-dynamic-command",
@@ -215,7 +234,7 @@ def _queue_proof_receipt(
             {
                 "id": command_id,
                 "family": "heavy_queue",
-                "cell": f"{proof_plan._normalized_os()}-{proof_plan._normalized_arch()}-dynamic",
+                "cell": f"{environment.get('os')}-{environment.get('arch')}-dynamic",
                 "argv": argv,
                 "cwd": row["cwd"],
                 "dependencies": [],
@@ -237,8 +256,6 @@ def _queue_proof_receipt(
 
 def _row_to_payload(
     row: sqlite3.Row,
-    *,
-    receipt_contexts: dict[tuple[str, ...], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     payload = {
         "run_id": row["run_id"],
@@ -260,14 +277,25 @@ def _row_to_payload(
         "finished_at": row["finished_at"],
         "elapsed_s": row["elapsed_s"],
     }
+    authority_raw = state._row_value(row, "python_interpreter_json")
+    if isinstance(authority_raw, str) and authority_raw:
+        authority = json.loads(authority_raw)
+        if isinstance(authority, dict) and authority:
+            payload["python_interpreter_authority"] = authority
     # A submission projection records intent, not execution evidence. Fingerprinting
     # the submitter here misattributes its toolchains to work that may execute on a
     # different host. Completion/running projections are regenerated by the runner
     # and attach the execution-host receipt then.
-    if str(row["status"]) not in _NON_EXECUTED_RECEIPT_STATUSES:
-        payload["proof_receipt"] = _queue_proof_receipt(
-            row, contexts=receipt_contexts
-        )
+    receipt_context_raw = state._row_value(row, "receipt_context_json")
+    if isinstance(receipt_context_raw, str) and receipt_context_raw:
+        receipt_context = json.loads(receipt_context_raw)
+        if (
+            isinstance(receipt_context, dict)
+            and receipt_context.get("schema") == state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA
+        ):
+            payload["proof_receipt_state"] = receipt_context
+        elif str(row["status"]) not in _NON_EXECUTED_RECEIPT_STATUSES:
+            payload["proof_receipt"] = _queue_proof_receipt(row)
     return payload
 
 
@@ -323,6 +351,11 @@ def _write_queued_submission_log(
         print(f"resource_family={resource_family}", file=log)
         print(f"contention_key={contention_key}", file=log)
         print(f"command={shlex.join(command)}", file=log)
+        print(
+            "python_interpreter_authority="
+            + json.dumps(interpreter.authority_for_command(command), sort_keys=True),
+            file=log,
+        )
         if scopes:
             print(f"scopes={json.dumps(list(scopes), sort_keys=True)}", file=log)
         if env_overrides:
@@ -450,6 +483,14 @@ def _fail_preexecution_run(
         started_at=now,
         finished_at=now,
         elapsed_s=0.0,
+        receipt_context_json=json.dumps(
+            state._unattested_receipt_context(
+                status="not-executed",
+                phase=phase,
+                reason=f"{type(exc).__name__}: {exc}",
+            ),
+            sort_keys=True,
+        ),
     )
     lines = [
         f"proof queue fatal infrastructure failure during {phase}:",
