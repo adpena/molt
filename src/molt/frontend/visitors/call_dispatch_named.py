@@ -530,7 +530,30 @@ class CallNamedDispatchMixin(_MixinBase):
                     )
                 callee = self._emit_builtin_function("vars")
                 res = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="CALL_FUNC", args=[callee, obj], result=res))
+                exact_class = (
+                    self.exact_locals.get(node.args[0].id)
+                    if isinstance(node.args[0], ast.Name)
+                    else None
+                )
+                requirement_bits = (
+                    self._runtime_protected_attribute_requirement_bits(
+                        obj,
+                        "__dict__",
+                        exact_class=exact_class,
+                    )
+                )
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[callee, obj],
+                        result=res,
+                        metadata=(
+                            {"runtime_requirement_bits": requirement_bits}
+                            if requirement_bits
+                            else None
+                        ),
+                    )
+                )
                 return res
             if func_id == "dir":
                 if node.keywords:
@@ -588,6 +611,11 @@ class CallNamedDispatchMixin(_MixinBase):
                     node.args[1].value, str
                 ):
                     name_lit = node.args[1].value
+                receiver_exact_class = (
+                    self.exact_locals.get(node.args[0].id)
+                    if isinstance(node.args[0], ast.Name)
+                    else None
+                )
                 if name_lit and obj.type_hint in self.classes:
                     class_info = self.classes[obj.type_hint]
                     if not class_info.get("dynamic"):
@@ -650,21 +678,23 @@ class CallNamedDispatchMixin(_MixinBase):
                     if default is None:
                         default = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=default))
-                    self.emit(
-                        MoltOp(
-                            kind="GETATTR_NAME_DEFAULT",
-                            args=[obj, name, default],
-                            result=res,
-                        )
+                    self._emit_getattr_name_default(
+                        obj,
+                        name,
+                        default,
+                        res,
+                        literal_name=name_lit,
+                        exact_class=receiver_exact_class,
                     )
                 else:
                     default = self._emit_missing_value()
-                    self.emit(
-                        MoltOp(
-                            kind="GETATTR_NAME_DEFAULT",
-                            args=[obj, name, default],
-                            result=res,
-                        )
+                    self._emit_getattr_name_default(
+                        obj,
+                        name,
+                        default,
+                        res,
+                        literal_name=name_lit,
+                        exact_class=receiver_exact_class,
                     )
                 return res
             if func_id == "setattr":

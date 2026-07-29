@@ -304,6 +304,26 @@ def load_table(table_path: Path = TABLE) -> dict:
             + ", ".join(sorted(unknown_symbols))
         )
 
+    protected_gateways = data.get(
+        "simpleir_runtime_protected_attribute_gateways", []
+    )
+    if (
+        not isinstance(protected_gateways, list)
+        or not protected_gateways
+        or not all(
+        isinstance(name, str)
+        and re.fullmatch(r"__[a-z][a-z0-9_]*__", name) is not None
+        for name in protected_gateways
+        )
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_protected_attribute_gateways must contain canonical dunder names"
+        )
+    if len(set(protected_gateways)) != len(protected_gateways):
+        raise OpKindTableError(
+            "simpleir_runtime_protected_attribute_gateways has duplicate names"
+        )
+
     function_reference_kinds = data.get(
         "simpleir_function_reference_s_value_kinds", []
     )

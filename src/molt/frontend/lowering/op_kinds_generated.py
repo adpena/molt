@@ -833,6 +833,20 @@ SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(
     }
 )
 
+SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS: frozenset[str] = frozenset(
+    {
+        "__dict__",
+        "__getattr__",
+        "__getattribute__",
+        "_getframe",
+        "currentframe",
+        "getprofile",
+        "gettrace",
+        "setprofile",
+        "settrace",
+    }
+)
+
 FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     {
         "ABS",

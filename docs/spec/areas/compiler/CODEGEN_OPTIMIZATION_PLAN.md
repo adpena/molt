@@ -510,7 +510,7 @@ MOLT_PGO_PROFILE=pgo_profile.json python -m molt.cli build --profile release app
 - Stack allocation for non-escaping objects (7.1)
 - Polymorphic inline caches (6.1)
 - PGO-guided inlining decisions (11.3)
-- Multi-value WASM returns (10.2)
+- Internal aggregate scalarization behind the single tagged-`i64` WASM callable ABI (10.2)
 
 ### Phase 4: Advanced (ongoing)
 - Scalar replacement of aggregates (7.2)

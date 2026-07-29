@@ -20,7 +20,7 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS,
+    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
@@ -243,14 +243,55 @@ class AttributeAccessMixin(_MixinBase):
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         res = MoltValue(self.next_var(), type_hint="Any")
+        self._emit_getattr_name_default(
+            module_val,
+            name_val,
+            default_val,
+            res,
+            literal_name=name,
+        )
+        return res
+
+    def _runtime_protected_attribute_requirement_bits(
+        self,
+        obj: MoltValue,
+        attr: str | None,
+        *,
+        exact_class: str | None,
+    ) -> int:
+        if exact_class is not None or obj.type_hint.startswith("super"):
+            return 0
+        if attr is None or attr in SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS:
+            return SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        return 0
+
+    def _emit_getattr_name_default(
+        self,
+        obj: MoltValue,
+        name: MoltValue,
+        default: MoltValue,
+        result: MoltValue,
+        *,
+        literal_name: str | None,
+        exact_class: str | None = None,
+    ) -> None:
+        requirement_bits = self._runtime_protected_attribute_requirement_bits(
+            obj,
+            literal_name,
+            exact_class=exact_class,
+        )
         self.emit(
             MoltOp(
                 kind="GETATTR_NAME_DEFAULT",
-                args=[module_val, name_val, default_val],
-                result=res,
+                args=[obj, name, default],
+                result=result,
+                metadata=(
+                    {"runtime_requirement_bits": requirement_bits}
+                    if requirement_bits
+                    else None
+                ),
             )
         )
-        return res
 
     def _emit_guarded_setattr(
         self,
@@ -858,11 +899,14 @@ class AttributeAccessMixin(_MixinBase):
                 )
             )
             return result
-        if runtime_requirement_bits or (
-            node.attr in SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS
-            and exact_class is None
-            and not obj.type_hint.startswith("super")
-        ):
+        protected_requirement_bits = (
+            self._runtime_protected_attribute_requirement_bits(
+                obj,
+                node.attr,
+                exact_class=exact_class,
+            )
+        )
+        if runtime_requirement_bits or protected_requirement_bits:
             # Protected runtime callable acquisition is a value capability,
             # not a lexical-import spelling. Unknown receivers may carry a
             # sys/inspect module through conditionals, containers, calls, heap
@@ -877,8 +921,7 @@ class AttributeAccessMixin(_MixinBase):
                     result=result,
                     metadata={
                         "runtime_requirement_bits": (
-                            runtime_requirement_bits
-                            | SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+                            runtime_requirement_bits | protected_requirement_bits
                         )
                     },
                 )

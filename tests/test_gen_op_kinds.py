@@ -5373,6 +5373,33 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     ]:
         assert f'        "{attr}",' in rendered
 
+    assert "SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS" in rendered
+    for gateway in ["__dict__", "__getattr__", "__getattribute__"]:
+        assert f'        "{gateway}",' in rendered
+
+
+def test_runtime_protected_attribute_gateways_reject_invalid_authority(
+    tmp_path: Path,
+) -> None:
+    generator = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    canonical = '    "__dict__", "__getattr__", "__getattribute__",'
+    for label, replacement in {
+        "empty": "",
+        "duplicate": '    "__dict__", "__dict__",',
+        "not-dunder": '    "not_dunder",',
+        "non-string": "    1,",
+    }.items():
+        mutated = source.replace(canonical, replacement, 1)
+        assert mutated != source
+        path = tmp_path / f"{label}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(
+            generator.OpKindTableError,
+            match="protected_attribute_gateways",
+        ):
+            generator.load_table(path)
+
 
 def test_result_validity_rejects_bad_rows() -> None:
     gen = _gen()

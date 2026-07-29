@@ -491,12 +491,12 @@ class PatternMatchMixin(_MixinBase):
             )
             missing = self._emit_missing_value()
             match_args = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_NAME_DEFAULT",
-                    args=[cls_val, match_args_key, missing],
-                    result=match_args,
-                )
+            self._emit_getattr_name_default(
+                cls_val,
+                match_args_key,
+                missing,
+                match_args,
+                literal_name="__match_args__",
             )
             is_missing = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS", args=[match_args, missing], result=is_missing))
@@ -604,12 +604,12 @@ class PatternMatchMixin(_MixinBase):
             )
             missing = self._emit_missing_value()
             attr_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_NAME_DEFAULT",
-                    args=[subject, attr_name, missing],
-                    result=attr_val,
-                )
+            self._emit_getattr_name_default(
+                subject,
+                attr_name,
+                missing,
+                attr_val,
+                literal_name=None,
             )
             is_missing = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS", args=[attr_val, missing], result=is_missing))
@@ -664,12 +664,12 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             missing = self._emit_missing_value()
             attr_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_NAME_DEFAULT",
-                    args=[subject, key_val, missing],
-                    result=attr_val,
-                )
+            self._emit_getattr_name_default(
+                subject,
+                key_val,
+                missing,
+                attr_val,
+                literal_name=attr_name,
             )
             is_missing = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS", args=[attr_val, missing], result=is_missing))

@@ -407,6 +407,12 @@ simpleir_runtime_qualified_callable = [
     { qualified = "sys.setprofile", symbol = "molt_sys_setprofile" },
     { qualified = "sys.settrace", symbol = "molt_sys_settrace" },
 ]
+# Python reflection gateways that can acquire any protected callable without
+# spelling its qualified name at the access site. These share the generated
+# protected-acquisition authority with the qualified callable rows.
+simpleir_runtime_protected_attribute_gateways = [
+    "__dict__", "__getattr__", "__getattribute__",
+]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the
 # kind appears in the metadata set. `var` defaults to a source read; the sets
