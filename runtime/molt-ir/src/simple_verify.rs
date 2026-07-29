@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
+use crate::ir::{FunctionIR, OpIR, SimpleIR};
+#[cfg(test)]
+use crate::ir::ExecutionContextPolicy;
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, simpleir_call_target_role,
     simpleir_kind_is_repoll, simpleir_kind_is_return_terminator, simpleir_kind_is_suspend,

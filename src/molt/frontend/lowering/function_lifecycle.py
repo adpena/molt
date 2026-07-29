@@ -26,7 +26,7 @@ class FunctionLifecycleMixin(_MixinBase):
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
     ) -> int:
-        base = self.async_locals_base + len(self.async_locals) * 8
+        base = self.async_locals_base + len(self.async_frame_slots) * 8
         required = payload_slots * 8
         if include_gen_control:
             required += GEN_CONTROL_SIZE
@@ -164,6 +164,7 @@ class FunctionLifecycleMixin(_MixinBase):
         self,
         name: str,
         params: list[str] | None = None,
+        compiler_params: set[str] | None = None,
         param_types: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
@@ -187,6 +188,8 @@ class FunctionLifecycleMixin(_MixinBase):
             reset_locals_cache=True,
             reset_del_targets=True,
         )
+        for param in compiler_params or ():
+            self.compiler_bindings[param] = MoltValue(param, type_hint="Any")
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
         for param in params or ():
             self._clear_imported_module_binding(param)
@@ -299,7 +302,7 @@ class FunctionLifecycleMixin(_MixinBase):
         if not self.is_async() or self.return_slot is None:
             return
         if self.return_slot_offset is None:
-            self.return_slot_offset = self._async_local_offset("__molt_return_slot")
+            self.return_slot_offset = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",

@@ -721,7 +721,6 @@ class CallAttributeDispatchMixin(_MixinBase):
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     return res
-                res = MoltValue(self.next_var(), type_hint="None")
                 op_kind = {
                     "update": "SET_UPDATE",
                     "intersection_update": "SET_INTERSECTION_UPDATE",
@@ -748,10 +747,21 @@ class CallAttributeDispatchMixin(_MixinBase):
                                 other, probe=(method == "intersection_update")
                             )
                         self.emit(
-                            MoltOp(kind=op_kind, args=[receiver, other], result=res)
+                            MoltOp(
+                                kind=op_kind,
+                                args=[receiver, other],
+                                result=MoltValue("none"),
+                            )
                         )
                     else:
                         self._emit_set_update_from_iter(receiver, other)
+                # The mutation helpers above have no SSA result. Materialize
+                # the method call's Python-level None exactly once after every
+                # iterable has been consumed, so multi-argument update calls
+                # cannot define one result name multiple times and iterable
+                # expansion cannot leave the returned value undefined.
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
             if method == "append" and receiver.type_hint == "list":
                 if len(node.args) != 1:

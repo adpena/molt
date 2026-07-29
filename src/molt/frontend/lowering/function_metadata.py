@@ -99,9 +99,7 @@ class FunctionMetadataMixin(_MixinBase):
                 if expr is not None
             )
             if yield_in_defaults or yield_in_kwdefaults:
-                func_spill = self._spill_async_value(
-                    func_val, f"__func_meta_{len(self.async_locals)}"
-                )
+                func_spill = self._spill_async_value(func_val)
 
         if default_exprs:
             default_vals: list[MoltValue] = []

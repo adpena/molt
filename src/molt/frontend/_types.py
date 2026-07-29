@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -69,6 +70,49 @@ class _InlineSuperFoldRequired(Exception):
 class MoltValue:
     name: str
     type_hint: str = "Unknown"
+
+
+class AsyncFrameSlotRole(StrEnum):
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    SCRATCH = "scratch"
+
+
+@dataclass(frozen=True)
+class AsyncFrameSlot:
+    """One typed slot from the canonical stateful-function frame allocator."""
+
+    offset: int
+    role: AsyncFrameSlotRole
+    public_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, AsyncFrameSlotRole):
+            raise ValueError("async frame slot role is invalid")
+        if self.offset < 0 or self.offset % 8 != 0:
+            raise ValueError("async frame slot offset must be nonnegative and aligned")
+        if (self.role is AsyncFrameSlotRole.PUBLIC) != (self.public_name is not None):
+            raise ValueError("only public async frame slots may carry a name")
+
+
+@dataclass(frozen=True)
+class ScratchCell:
+    """Opaque compiler-temporary storage, never a Python frame binding."""
+
+    value: MoltValue | None
+    async_slot: AsyncFrameSlot | None
+    type_hint: str
+
+    def __post_init__(self) -> None:
+        if (self.value is None) == (self.async_slot is None):
+            raise ValueError(
+                "scratch cell must have exactly one sync value or async slot"
+            )
+        if (
+            self.async_slot is not None
+            and self.async_slot.role is not AsyncFrameSlotRole.SCRATCH
+        ):
+            raise ValueError("async scratch cell requires a scratch-role slot")
 
 
 @dataclass
@@ -538,7 +582,6 @@ BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
 
 _MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
-_MOLT_LOCALS_CACHE = "__molt_locals_cache__"
 _MOLT_GLOBALS_BUILTIN = "__molt_globals_builtin__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
 _MOLT_MODULE_CHUNK_PREFIX = "molt_module_chunk"
@@ -1564,7 +1607,6 @@ __all__ = [
     "BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS",
     "_MOLT_MISSING",
     "_MOLT_CLOSURE_PARAM",
-    "_MOLT_LOCALS_CACHE",
     "_MOLT_GLOBALS_BUILTIN",
     "_MOLT_MODULE_CHUNK_PARAM",
     "_MOLT_MODULE_CHUNK_PREFIX",

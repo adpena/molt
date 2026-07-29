@@ -5,6 +5,7 @@ import ast
 import pytest
 
 from molt.frontend import SimpleTIRGenerator, compile_to_tir
+from tools.check_ir_structure import verify_tir
 
 
 def _function_names(source: str) -> list[str]:
@@ -138,3 +139,26 @@ def test_python_314_module_annotation_execution_state_is_globally_resolvable() -
         for op in main_ops
     )
     assert any(op.get("kind") == "module_get_global" for op in annotate["ops"])
+
+
+def test_python_314_type_parameter_annotations_capture_parent_frame_values() -> None:
+    ir = _compile_for_python_314(
+        """
+class Box[T]:
+    item: T
+"""
+    )
+    annotate = next(
+        function
+        for function in ir["functions"]
+        if "__annotate__" in function["name"]
+    )
+
+    assert annotate["params"] == ["__molt_closure__", "format"]
+    assert any(
+        op.get("kind") == "func_new_closure"
+        and op.get("s_value") == annotate["name"]
+        for function in ir["functions"]
+        for op in function["ops"]
+    )
+    assert verify_tir(ir).ok

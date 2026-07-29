@@ -165,24 +165,25 @@ class ModuleGlobalsMixin(_MixinBase):
         if (
             self.globals_builtin_emitted
             or self.current_func_name != "molt_main"
-            or self.module_obj is None
         ):
             return
-        func_val = self._emit_globals_builtin_obj()
-        self._emit_module_attr_set(_MOLT_GLOBALS_BUILTIN, func_val)
+        self._emit_globals_builtin_obj()
         self.globals_builtin_emitted = True
 
     def _emit_globals_builtin_ref(self) -> MoltValue:
         if not self.globals_builtin_emitted:
             self._ensure_globals_builtin()
-        return self._emit_module_attr_get(_MOLT_GLOBALS_BUILTIN)
+        func_symbol = self._function_symbol(_MOLT_GLOBALS_BUILTIN)
+        func_val = MoltValue(self.next_var(), type_hint=f"Func:{func_symbol}")
+        self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 0], result=func_val))
+        return func_val
 
     def _init_locals_cache(self) -> None:
-        if self.locals_cache_val is not None:
+        if self.locals_cache_cell is not None:
             return
         cache_val = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=cache_val))
-        self.locals_cache_val = cache_val
+        self.locals_cache_cell = self._new_scratch_cell(cache_val, type_hint="dict")
 
     def _init_locals_cache_and_pin(self) -> None:
         """Allocate the locals cache dict and pin it on the frame stack.
@@ -193,8 +194,9 @@ class ModuleGlobalsMixin(_MixinBase):
         unconditionally in ``start_function()``.
         """
         self._init_locals_cache()
-        cache_val = self.locals_cache_val
-        if cache_val is not None:
+        cache_cell = self.locals_cache_cell
+        if cache_cell is not None:
+            cache_val = self._load_scratch_cell(cache_cell)
             self.emit(
                 MoltOp(
                     kind="FRAME_LOCALS_SET",

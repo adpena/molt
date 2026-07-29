@@ -62,9 +62,11 @@ class EmissionCoreMixin(_MixinBase):
             raise_compatibility_error(self.compat, node, rejection)
 
     def next_var(self) -> str:
-        name = f"v{self.var_count}"
-        self.var_count += 1
-        return name
+        while True:
+            name = f"v{self.var_count}"
+            self.var_count += 1
+            if name not in self.reserved_python_identifiers:
+                return name
 
     def next_label(self) -> int:
         self.state_count += 1

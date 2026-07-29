@@ -11,9 +11,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import MoltOp, MoltValue
-from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend._types import MoltOp, MoltValue, ScratchCell
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -65,13 +63,13 @@ class LoopLoweringMixin(_MixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         target = node.target
         item_hint = self._iterable_element_hint(iterable) or "Any"
         if self.is_async():
             iter_obj = self._emit_iter_new(iterable)
-            iter_slot = self._async_local_offset(f"__for_iter_{len(self.async_locals)}")
+            iter_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -170,12 +168,12 @@ class LoopLoweringMixin(_MixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         target = node.target
         item_hint = self._iterable_element_hint(iterable) or "Any"
         if self.is_async():
-            seq_slot = self._async_local_offset(f"__for_seq_{len(self.async_locals)}")
+            seq_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -185,9 +183,7 @@ class LoopLoweringMixin(_MixinBase):
             )
             length_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LEN", args=[iterable], result=length_val))
-            length_slot = self._async_local_offset(
-                f"__for_len_{len(self.async_locals)}"
-            )
+            length_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -197,7 +193,7 @@ class LoopLoweringMixin(_MixinBase):
             )
             zero = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            idx_slot = self._async_local_offset(f"__for_idx_{len(self.async_locals)}")
+            idx_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -409,7 +405,7 @@ class LoopLoweringMixin(_MixinBase):
         start: MoltValue,
         stop: MoltValue,
         step: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         target = node.target
         if self.is_async():
@@ -761,7 +757,7 @@ class LoopLoweringMixin(_MixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         if self._iterable_is_indexable_for_loop(iterable):
             self._emit_index_loop(node, iterable, loop_break_flag=loop_break_flag)
@@ -798,7 +794,7 @@ class LoopLoweringMixin(_MixinBase):
             # just to model loop-carried mutation. That keeps module lowering
             # canonical and avoids ad hoc boxed-local indirection for top-level
             # loops.
-            module_backed = {name for name in names if not name.startswith("__molt_")}
+            module_backed = set(names)
             if module_backed:
                 # Flush any values that were previously assigned (before
                 # this loop) into the module dict.  Without this, a
@@ -838,15 +834,10 @@ class LoopLoweringMixin(_MixinBase):
                 self.globals.pop(name, None)
                 self.locals.pop(name, None)
 
-    def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None:
-        break_val = self._load_local_value(break_name)
-        if break_val is None and break_name in self.module_global_mutations:
-            break_val = self._emit_module_attr_get(break_name)
-        if break_val is None:
-            raise FrontendRejection(
-                Diagnostic.INTERNAL_INVARIANT,
-                "for-else break flag not initialized",
-            )
+    def _emit_loop_orelse(
+        self, break_cell: ScratchCell, orelse: list[ast.stmt]
+    ) -> None:
+        break_val = self._load_scratch_cell(break_cell)
         should_run = self._emit_not(break_val)
         self.emit(MoltOp(kind="IF", args=[should_run], result=MoltValue("none")))
         self._visit_block(orelse)
@@ -1118,7 +1109,7 @@ class LoopLoweringMixin(_MixinBase):
         if branch and not self.is_async():
             assigned = self._collect_assigned_names(branch)
             if self.current_func_name == "molt_main":
-                module_backed = {n for n in assigned if not n.startswith("__molt_")}
+                module_backed = assigned
                 if module_backed:
                     for name in sorted(module_backed):
                         existing = self.globals.get(name)
@@ -1171,7 +1162,7 @@ class LoopLoweringMixin(_MixinBase):
         self,
         body: list[ast.stmt],
         prefill: dict[str, tuple[str, MoltValue]] | None = None,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> bool:
         if not self.is_async() and self._emit_taq_ingest_loop_body(body):
             return True
