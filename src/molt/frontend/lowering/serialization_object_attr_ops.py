@@ -411,14 +411,20 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                 ptr_entry["metadata"] = {"ic_index": op.metadata["ic_index"]}
             ctx.json_ops.append(ptr_entry)
         elif op.kind == "GETATTR_GENERIC_OBJ":
-            ctx.json_ops.append(
-                {
-                    "kind": "get_attr_generic_obj",
-                    "args": [op.args[0].name],
-                    "s_value": op.args[1],
-                    "out": op.result.name,
-                }
-            )
+            entry = {
+                "kind": "get_attr_generic_obj",
+                "args": [op.args[0].name],
+                "s_value": op.args[1],
+                "out": op.result.name,
+            }
+            if op.metadata is not None:
+                runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
+                    entry["runtime_requirement_bits"] = runtime_requirement_bits
+            ctx.json_ops.append(entry)
         elif op.kind == "FUNCTION_DEFAULTS_VERSION":
             # Read a function object's __defaults__/__kwdefaults__ mutation
             # version stamp (one MoltValue operand: the function object).

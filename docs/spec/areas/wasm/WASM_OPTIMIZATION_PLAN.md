@@ -622,7 +622,8 @@ Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT defi
 
 ### Phase 2: Proposal Adoption (P1/P2, 2-4 months)
 
-6. **Multi-value returns** for 2-4 value tuples.
+6. **Scalarized aggregate return optimization** behind the single tagged-`i64`
+   Python-callable ABI; tuples remain owned Python objects at call boundaries.
 7. **WASM exception handling** -- replace `exception_push/pop/pending` with native `try/catch/throw`.
 8. **Tail call emission** for tail-position calls.
 9. **`br_table`** for large state machine dispatch.

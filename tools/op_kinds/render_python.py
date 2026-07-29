@@ -124,7 +124,9 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         row["constant"] for row in data["simpleir_runtime_requirement_roles"]
     ]
     frame_bit = role_constants.index("FRAME_INTROSPECTION")
-    out.append("# Explicit acquisition-provenance requirement bits shared with target admission.\n")
+    out.append(
+        "# Explicit acquisition-provenance requirement bits shared with target admission.\n"
+    )
     out.append(
         f"SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << {frame_bit}\n\n"
     )
@@ -136,6 +138,21 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     ):
         out.append(f'    "{row["qualified"]}": "{row["symbol"]}",\n')
     out.append("}\n\n")
+
+    protected_attrs = sorted(
+        {
+            row["qualified"].rsplit(".", 1)[1]
+            for row in data.get("simpleir_runtime_qualified_callable", [])
+        }
+    )
+    out.append(
+        "SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(\n"
+    )
+    out.append("    {\n")
+    for attr in protected_attrs:
+        out.append(f'        "{attr}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
 
     for effect, const_name in (
         ("pure", "FRONTEND_EFFECT_PURE_KINDS"),

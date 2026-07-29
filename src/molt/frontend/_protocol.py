@@ -946,7 +946,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_function_defaults_version(self, func_obj: MoltValue) -> MoltValue: ...
 
     def _emit_function_exception_handler(
-        self, *, clear_handlers: bool = False
+        self,
+        *,
+        inherited_execution_context: bool = False,
     ) -> None: ...
 
     def _emit_function_kwdefaults_dict(self, func_obj: MoltValue) -> MoltValue: ...
@@ -1297,13 +1299,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_raise_exit(self) -> None: ...
 
-    def _emit_raise_if_pending(
-        self,
-        *,
-        emit_exit: bool = False,
-        clear_handlers: bool = False,
-        force_exit: bool = False,
-    ) -> None: ...
+    def _emit_raise_if_pending(self) -> None: ...
 
     def _emit_range_list(
         self, start: MoltValue, stop: MoltValue, step: MoltValue
@@ -1339,6 +1335,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_return_label(self) -> None: ...
 
     def _emit_return_value(self, value: MoltValue) -> None: ...
+
+    def _emit_normal_return_terminator(self, value: MoltValue) -> None: ...
+
+    def _emit_void_return_terminator(self) -> None: ...
 
     def _emit_runtime_call(
         self, runtime_name: str, args: Sequence[MoltValue], *, type_hint: str = "Any"

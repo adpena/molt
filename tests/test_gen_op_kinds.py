@@ -61,11 +61,11 @@ def test_rust_module_cluster_follows_declared_production_graph(tmp_path: Path) -
         encoding="utf-8",
     )
     (root.parent / "tests.rs").write_text(
-        "compile_error!(\"test authority leaked\");\n",
+        'compile_error!("test authority leaked");\n',
         encoding="utf-8",
     )
     (root.parent / "stale.rs").write_text(
-        "compile_error!(\"undeclared sibling leaked\");\n",
+        'compile_error!("undeclared sibling leaked");\n',
         encoding="utf-8",
     )
 
@@ -360,9 +360,7 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
             assert (f'"{kind}"' in body) == (field in facts)
         assert ('"async_work_poll"' in body) == (field in expected["check_exception"])
 
-    return_body = _rust_fn_body(
-        rendered, "pub fn simpleir_kind_is_return_terminator("
-    )
+    return_body = _rust_fn_body(rendered, "pub fn simpleir_kind_is_return_terminator(")
     assert 'matches!(kind, "ret" | "ret_void")' in return_body
     assert '"return"' not in return_body
     return_shape_body = _rust_fn_body(rendered, "pub fn simpleir_return_shape(")
@@ -5158,7 +5156,9 @@ def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
     assert "ResultValidity::ConditionalValidOnlyOnEdge" in predicate
 
 
-def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sibling() -> None:
+def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sibling() -> (
+    None
+):
     gen = _gen()
     data = gen.load_table()
     rendered_rs = gen.render_rs(data)
@@ -5198,10 +5198,7 @@ def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> N
     assert "simpleir_var_forbidden_kinds" not in data
     rendered = gen.render_rs(data)
     assert "Forbidden" in rendered
-    assert (
-        '"ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden'
-        in rendered
-    )
+    assert '"ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden' in rendered
 
 
 def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
@@ -5358,6 +5355,23 @@ def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_ext
         path.write_text(mutated, encoding="utf-8")
         with pytest.raises(gen.OpKindTableError):
             gen.load_table(path)
+
+
+def test_python_runtime_callable_attribute_authority_is_generated_from_qualified_rows() -> (
+    None
+):
+    generator = _gen()
+    rendered = generator.render_py(generator.load_table())
+    assert "SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS" in rendered
+    for attr in [
+        "_getframe",
+        "currentframe",
+        "getprofile",
+        "gettrace",
+        "setprofile",
+        "settrace",
+    ]:
+        assert f'        "{attr}",' in rendered
 
 
 def test_result_validity_rejects_bad_rows() -> None:

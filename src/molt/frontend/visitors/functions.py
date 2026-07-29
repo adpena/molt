@@ -83,7 +83,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
             self._emit_exception_handler_exit_cleanup()
             if self.return_unwind_depth == 0:
-                self._emit_raise_if_pending(emit_exit=True)
+                self._emit_raise_if_pending()
             if self.return_unwind_depth > 0:
                 self.emit(
                     MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
@@ -120,7 +120,7 @@ class FunctionVisitorMixin(_MixinBase):
         self._emit_exception_handler_exit_cleanup()
         _has_exc_stack = self.exception_stack_prev_baseline is not None
         if _has_exc_stack and self.return_unwind_depth == 0:
-            self._emit_raise_if_pending(emit_exit=True)
+            self._emit_raise_if_pending()
         if _has_exc_stack and self.return_unwind_depth > 0:
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         popped_labels = []
@@ -372,7 +372,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-                self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+                self._emit_normal_return_terminator(pair)
             self._spill_async_temporaries()
             closure_size = self._task_closure_size(
                 frame_plan.payload_slots,
@@ -956,7 +956,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-                self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+                self._emit_normal_return_terminator(pair)
             self._spill_async_temporaries()
             closure_size = self._task_closure_size(
                 frame_plan.payload_slots,
@@ -1189,7 +1189,7 @@ class FunctionVisitorMixin(_MixinBase):
         self._emit_exception_handler_exit_cleanup()
         _has_exc_stack = self.exception_stack_prev_baseline is not None
         if _has_exc_stack:
-            self._emit_raise_if_pending(emit_exit=True)
+            self._emit_raise_if_pending()
             self._emit_restore_exception_stack_depth(exit_baseline=False)
             self._emit_raise_if_pending()
         self._emit_return_value(val)

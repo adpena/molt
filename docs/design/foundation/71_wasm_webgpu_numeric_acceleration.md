@@ -135,8 +135,8 @@ An outcome row is green only when all of the following are true:
 Use these as near-term lowering targets when the target feature manifest proves
 support:
 
-- Multi-value returns for small tuple/error-value pairs and internal ABI
-  results.
+- Multi-value transport only for compiler-internal tuple/error-value facts that
+  never cross the single tagged-`i64` Python-callable ABI.
 - Tail calls for tail-position Python control flow and continuation-shaped
   lowering. The WebAssembly tail-call proposal defines explicit `return_call`
   instructions that unwind the current frame before calling the callee.

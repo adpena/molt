@@ -931,6 +931,73 @@ impl CFG {
             state_resume_edges,
         }
     }
+
+    /// Compute exact operation-level dominators for lifecycle validation.
+    ///
+    /// Exception transfers leave from the operation that observes pending
+    /// state, which may be in the middle of a basic block. Block-level
+    /// dominance cannot distinguish a frame enter before that operation from
+    /// one later in the same block, so lifecycle validation uses this precise
+    /// graph while ordinary pass analysis retains the compact block CFG.
+    pub fn execution_op_dominators(&self, ops: &[OpIR]) -> Vec<Option<usize>> {
+        if ops.is_empty() {
+            return Vec::new();
+        }
+        let mut successors = vec![Vec::new(); ops.len()];
+        let mut predecessors = vec![Vec::new(); ops.len()];
+        for block in &self.blocks {
+            for op_index in block.start_op..block.end_op.saturating_sub(1) {
+                add_edge(&mut successors, &mut predecessors, op_index, op_index + 1);
+            }
+            let Some(tail) = block.end_op.checked_sub(1) else {
+                continue;
+            };
+            for &successor in &self.successors[block.id] {
+                add_edge(
+                    &mut successors,
+                    &mut predecessors,
+                    tail,
+                    self.blocks[successor].start_op,
+                );
+            }
+        }
+
+        let labels = build_label_map(ops);
+        for (op_index, op) in ops.iter().enumerate() {
+            if is_simple_exception_transfer_kind(op.kind.as_str())
+                && let Some(target) = op.value.and_then(|label| labels.get(&label)).copied()
+            {
+                add_edge(&mut successors, &mut predecessors, op_index, target);
+            }
+        }
+        for &(from_block, to_block, _) in &self.state_resume_edges {
+            let source = (self.blocks[from_block].start_op..self.blocks[from_block].end_op)
+                .find(|&index| ops[index].kind == "state_switch")
+                .unwrap_or(self.blocks[from_block].start_op);
+            add_edge(
+                &mut successors,
+                &mut predecessors,
+                source,
+                self.blocks[to_block].start_op,
+            );
+        }
+        for edges in &mut successors {
+            edges.sort_unstable();
+            edges.dedup();
+        }
+        for edges in &mut predecessors {
+            edges.sort_unstable();
+            edges.dedup();
+        }
+        let op_blocks = (0..ops.len())
+            .map(|index| BasicBlock {
+                id: index,
+                start_op: index,
+                end_op: index + 1,
+            })
+            .collect::<Vec<_>>();
+        compute_dominators(&op_blocks, &successors, &predecessors, 0)
+    }
 }
 
 // ---------------------------------------------------------------------------
