@@ -51,6 +51,13 @@ class WindowsJobAccounting:
     active_processes: int
     total_terminated_processes: int
     peak_job_commit_bytes: int
+    total_user_time_100ns: int
+    total_kernel_time_100ns: int
+    total_page_fault_count: int
+
+    @property
+    def total_cpu_seconds(self) -> float:
+        return (self.total_user_time_100ns + self.total_kernel_time_100ns) / 10_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -586,6 +593,9 @@ def job_accounting(job: int | None) -> WindowsJobAccounting:
         active_processes=int(info.ActiveProcesses),
         total_terminated_processes=int(info.TotalTerminatedProcesses),
         peak_job_commit_bytes=peak_job_memory_bytes(job),
+        total_user_time_100ns=int(info.TotalUserTime),
+        total_kernel_time_100ns=int(info.TotalKernelTime),
+        total_page_fault_count=int(info.TotalPageFaultCount),
     )
 
 

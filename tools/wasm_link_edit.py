@@ -112,8 +112,7 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
         if len(candidates) > 1:
             raise ValueError(
                 f"function export {public_name!r} at index {index} has ambiguous "
-                "linker symbol identity: "
-                + ", ".join(candidates)
+                "linker symbol identity: " + ", ".join(candidates)
             )
         if candidates:
             mapping[public_name] = candidates[0]
@@ -151,7 +150,9 @@ def _extend_code_relocations(
             rewritten.append((section_id, payload))
             continue
         if found:
-            raise ValueError("app export adapter input has duplicate reloc.CODE sections")
+            raise ValueError(
+                "app export adapter input has duplicate reloc.CODE sections"
+            )
         found = True
         target_section_index, offset = _read_varuint(custom_payload, 0)
         count, offset = _read_varuint(custom_payload, offset)
@@ -160,9 +161,7 @@ def _extend_code_relocations(
             entry_type = custom_payload[offset]
             offset += 1
             old_offset, after_old_offset = _read_varuint(custom_payload, offset)
-            _symbol_index, entry_end = _read_varuint(
-                custom_payload, after_old_offset
-            )
+            _symbol_index, entry_end = _read_varuint(custom_payload, after_old_offset)
             if entry_type in (4, 5):
                 _addend, entry_end = _read_varuint(custom_payload, entry_end)
             entries.append(entry_type)
@@ -275,9 +274,7 @@ def _inject_app_export_adapters(
     existing_exports = set(export_indices)
     linking_symbols = parse_wasm_linking_symbols(data)
     existing_symbols = {
-        symbol.name
-        for symbol in linking_symbols.function_symbols
-        if symbol.name
+        symbol.name for symbol in linking_symbols.function_symbols if symbol.name
     }
     symbol_indices_by_function_index: dict[int, list[tuple[int, object]]] = {}
     for symbol_index, symbol in enumerate(linking_symbols.symbols):
@@ -364,7 +361,13 @@ def _inject_app_export_adapters(
             count, offset = _read_varuint(payload, 0)
             updated_payload = bytearray(_write_varuint(count + len(specs)))
             updated_payload.extend(payload[offset:])
-            for _public_name, _adapter_symbol, type_idx, _target_idx, _symbol_idx in specs:
+            for (
+                _public_name,
+                _adapter_symbol,
+                type_idx,
+                _target_idx,
+                _symbol_idx,
+            ) in specs:
                 updated_payload.extend(_write_varuint(type_idx))
             new_sections.append((section_id, bytes(updated_payload)))
             continue
@@ -444,7 +447,9 @@ def _inject_app_export_adapters(
             continue
         new_sections.append((section_id, payload))
     if not (saw_function_section and saw_export_section and saw_code_section):
-        raise ValueError("app export adapter input is missing function/export/code sections")
+        raise ValueError(
+            "app export adapter input is missing function/export/code sections"
+        )
 
     updated = _extend_code_relocations(
         _build_sections(new_sections),
@@ -453,7 +458,9 @@ def _inject_app_export_adapters(
     )
     with_symbols = _append_linking_function_symbols(updated, wrapper_symbol_entries)
     if with_symbols is None:
-        raise ValueError("app export adapter symbols were not published to linking metadata")
+        raise ValueError(
+            "app export adapter symbols were not published to linking metadata"
+        )
     adapter_path = Path(temp_dir.name) / "output_app_export_adapters.wasm"
     adapter_path.write_bytes(with_symbols)
     return adapter_path, adapter_symbol_map
@@ -473,24 +480,33 @@ def _function_type_for_index(
             if imported_index == function_index:
                 type_index, end = _read_varuint(desc, 0)
                 if end != len(desc) or type_index >= len(types):
-                    raise ValueError("app export adapter import has invalid function type")
+                    raise ValueError(
+                        "app export adapter import has invalid function type"
+                    )
                 return types[type_index]
             imported_index += 1
-        raise ValueError(f"app export adapter function index is absent: {function_index}")
+        raise ValueError(
+            f"app export adapter function index is absent: {function_index}"
+        )
     _section_index, type_indices = _parse_func_type_indices(sections)
     local_index = function_index - import_count
     if local_index >= len(type_indices):
-        raise ValueError(f"app export adapter function index is absent: {function_index}")
+        raise ValueError(
+            f"app export adapter function index is absent: {function_index}"
+        )
     type_index = type_indices[local_index]
     if type_index >= len(types):
         raise ValueError("app export adapter has invalid function type")
     return types[type_index]
 
 
-def _canonical_retained_result_adapter_calls(
-    data: bytes, function_index: int
-) -> tuple[int, int]:
-    """Return target/retain calls from the canonical owned-result adapter body."""
+def _retained_result_adapter_calls(data: bytes, function_index: int) -> tuple[int, int]:
+    """Return target/retain calls from an exact owned-result adapter body.
+
+    Binaryen may reuse an i64 parameter as the result temporary after that
+    parameter has been forwarded.  Treat local allocation as an optimizer
+    choice while keeping the executable ownership contract exact.
+    """
 
     params, results = _function_type_for_index(data, function_index)
     if any(param != 0x7E for param in params) or results != (0x7E,):
@@ -524,12 +540,18 @@ def _canonical_retained_result_adapter_calls(
 
     offset = 0
     local_group_count, offset = _read_varuint(body, offset)
-    if local_group_count != 1:
-        raise ValueError("app export adapter must declare one result local group")
-    local_count, offset = _read_varuint(body, offset)
-    if local_count != 1 or offset >= len(body) or body[offset] != 0x7E:
-        raise ValueError("app export adapter must declare one i64 result local")
-    offset += 1
+    declared_local_ranges: list[tuple[int, int, int]] = []
+    next_local_index = len(params)
+    for _ in range(local_group_count):
+        local_count, offset = _read_varuint(body, offset)
+        if local_count == 0 or offset >= len(body):
+            raise ValueError("app export adapter has invalid local declarations")
+        local_type = body[offset]
+        offset += 1
+        declared_local_ranges.append(
+            (next_local_index, next_local_index + local_count, local_type)
+        )
+        next_local_index += local_count
     for param_index in range(len(params)):
         if offset >= len(body) or body[offset] != 0x20:
             raise ValueError("app export adapter does not forward every parameter")
@@ -540,11 +562,21 @@ def _canonical_retained_result_adapter_calls(
     if offset >= len(body) or body[offset] != 0x10:
         raise ValueError("app export adapter is missing its target call")
     target_call, offset = _read_varuint(body, offset + 1)
-    result_local = len(params)
     if offset >= len(body) or body[offset] != 0x22:
         raise ValueError("app export adapter does not retain its target result local")
-    actual_local, offset = _read_varuint(body, offset + 1)
-    if actual_local != result_local:
+    result_local, offset = _read_varuint(body, offset + 1)
+    if result_local < len(params):
+        result_local_type = params[result_local]
+    else:
+        result_local_type = next(
+            (
+                local_type
+                for start, end, local_type in declared_local_ranges
+                if start <= result_local < end
+            ),
+            None,
+        )
+    if result_local_type != 0x7E:
         raise ValueError("app export adapter result local is invalid")
     if offset >= len(body) or body[offset] != 0x10:
         raise ValueError("app export adapter is missing its retain call")
@@ -578,8 +610,12 @@ def _validate_app_export_adapters(
     }
     for index, name in _collect_func_names(data).items():
         symbol_indices.setdefault(name, index)
+    for name, index in exports.items():
+        symbol_indices.setdefault(name, index)
     retain_index = (
-        symbol_indices.get(retain_symbol_name) if retain_symbol_name is not None else None
+        symbol_indices.get(retain_symbol_name)
+        if retain_symbol_name is not None
+        else None
     )
     if retain_symbol_name is not None and retain_index is None:
         raise ValueError(
@@ -590,11 +626,13 @@ def _validate_app_export_adapters(
         if public_index is None:
             raise ValueError(f"app export adapter is not public: {public_name}")
         if adapter_symbol_map is None:
-            _canonical_retained_result_adapter_calls(data, public_index)
+            _retained_result_adapter_calls(data, public_index)
             continue
         adapter_symbol = adapter_symbol_map.get(public_name)
         target_symbol = (
-            target_symbol_map.get(public_name) if target_symbol_map is not None else None
+            target_symbol_map.get(public_name)
+            if target_symbol_map is not None
+            else None
         )
         adapter_index = symbol_indices.get(adapter_symbol) if adapter_symbol else None
         target_index = symbol_indices.get(target_symbol) if target_symbol else None
@@ -607,9 +645,7 @@ def _validate_app_export_adapters(
                 f"app export {public_name!r} points to raw target {public_index}, "
                 f"not adapter {adapter_index}"
             )
-        target_call, retain_call = _canonical_retained_result_adapter_calls(
-            data, public_index
-        )
+        target_call, retain_call = _retained_result_adapter_calls(data, public_index)
         if public_index == target_index or target_call != target_index:
             raise ValueError(
                 f"app export {public_name!r} adapter does not call its distinct raw target"

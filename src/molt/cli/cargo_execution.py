@@ -376,6 +376,7 @@ def _cargo_build_env() -> dict[str, str]:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
     _maybe_enable_lld_link(env)
+    _maybe_enable_sccache(env)
     return env
 
 

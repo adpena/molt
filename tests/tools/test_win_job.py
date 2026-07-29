@@ -150,6 +150,8 @@ def test_completion_waits_for_descendant_release_before_returning() -> None:
         assert cleanup.terminated_remaining_processes
         assert cleanup.before.active_processes >= 1
         assert cleanup.after.active_processes == 0
+        assert cleanup.after.total_cpu_seconds > 0
+        assert cleanup.after.total_page_fault_count > 0
         assert cleanup.system_before.process_count is not None
         assert cleanup.system_after.process_count is not None
         assert not _alive(gc_pid)

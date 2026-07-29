@@ -15,7 +15,7 @@ from molt.wasm_artifact import (
     parse_wasm_imports,
     parse_wasm_section_spans,
 )
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
@@ -627,7 +627,7 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
             str(linked),
         ],
         cwd=PROJECT_ROOT,
-        env=os.environ,
+        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
         timeout=180,
     )
     assert result.returncode == 0, (
@@ -661,7 +661,7 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
             str(linked),
         ],
         cwd=PROJECT_ROOT,
-        env=os.environ,
+        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
         timeout=180,
     )
     assert result.returncode == 0, (
@@ -693,7 +693,7 @@ def test_precompile_produces_cwasm(tmp_path):
             "--precompile",
         ],
         cwd=PROJECT_ROOT,
-        env=os.environ,
+        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
         timeout=180,
     )
     assert result.returncode == 0, (

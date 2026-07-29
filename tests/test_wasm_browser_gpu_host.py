@@ -10,8 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import development_artifact_env
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 
 _VECTOR_ADD_GPU_PROGRAM = (
@@ -59,17 +58,12 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     src = tmp_path / "browser_host_gpu.py"
     _write_vector_add_gpu_program(src)
 
-    build_env = development_artifact_env(
+    build_env = wasm_test_build_env(
         root,
-        os.environ,
         session_prefix="browser-gpu-host",
         session_id="test-browser-turboquant-webgpu",
-        create_dirs=True,
+        linked=False,
     )
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
-    build_env["MOLT_SESSION_ID"] = "test-browser-turboquant-webgpu"
-    build_env["MOLT_BACKEND_DAEMON"] = "0"
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -193,17 +187,12 @@ def test_browser_host_split_runtime_compiled_gpu_kernel_uses_webgpu_dispatch(
     src = tmp_path / "browser_host_split_gpu.py"
     _write_vector_add_gpu_program(src)
 
-    build_env = development_artifact_env(
+    build_env = wasm_test_build_env(
         root,
-        os.environ,
         session_prefix="browser-gpu-host",
         session_id="test-browser-split-webgpu",
-        create_dirs=True,
+        linked=False,
     )
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
-    build_env["MOLT_SESSION_ID"] = "test-browser-split-webgpu"
-    build_env["MOLT_BACKEND_DAEMON"] = "0"
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -372,9 +361,7 @@ def test_browser_host_direct_mode_tensor_linear_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -512,9 +499,7 @@ def test_browser_host_direct_mode_tinygrad_linear_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -653,9 +638,7 @@ def test_browser_host_direct_mode_molt_nn_linear_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -792,9 +775,7 @@ def test_browser_host_direct_mode_tensor_linear_without_webgpu_fails_fast(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -905,9 +886,7 @@ def test_browser_host_direct_mode_tensor_linear_split_last_dim_uses_webgpu_dispa
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1045,9 +1024,7 @@ def test_browser_host_direct_mode_tensor_linear_squared_relu_gate_uses_webgpu_di
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1191,9 +1168,7 @@ def test_browser_host_direct_mode_tensor_attention_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1374,9 +1349,7 @@ def test_browser_host_direct_mode_turboquant_attention_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = wasm_test_build_env(root, linked=False)
     build = _run_wasm_test_process(
         [
             sys.executable,

@@ -26,11 +26,11 @@ from pathlib import Path
 import pytest
 import urllib.error
 import urllib.request
-from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
+from molt.dx import cargo_target_dir_for_artifact_root
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
 
@@ -88,20 +88,13 @@ def _split_runtime_build_env(
     session_id: str = "test-wasm-split-runtime",
     hermetic_module_roots: bool = False,
 ) -> dict[str, str]:
-    env = development_artifact_env(
+    env = wasm_test_build_env(
         ROOT,
-        os.environ,
         session_prefix=session_id,
         session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
-        create_dirs=True,
     )
-    env["MOLT_BACKEND_DAEMON"] = "0"
     if hermetic_module_roots:
         env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    # Cargo parallelism and wasm sccache policy are owned by the DX/cargo
-    # authorities. This harness must not silently force the cold serial path.
     return env
 
 
@@ -131,7 +124,7 @@ def test_build_split_uses_wasm_test_memory_guard(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
-    monkeypatch.delenv("MOLT_WASM_DISABLE_SCCACHE", raising=False)
+    monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
     source = tmp_path / "main.py"
     source.write_text("print(42)\n", encoding="utf-8")
     output_dir = tmp_path / "out"
@@ -160,7 +153,6 @@ def test_build_split_uses_wasm_test_memory_guard(
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env.get("CARGO_BUILD_JOBS") != "1"
-    assert "MOLT_WASM_DISABLE_SCCACHE" not in env
     assert "timeout" not in kwargs
 
 

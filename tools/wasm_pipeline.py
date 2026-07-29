@@ -43,6 +43,7 @@ if str(MOLT_ROOT) not in sys.path:
     sys.path.insert(0, str(MOLT_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.wasm_optimize import optimize as optimize_wasm  # noqa: E402
 
 
 def _wasm_runtime_root() -> Path:
@@ -365,52 +366,18 @@ def stage_optimize(
     level: str = "O2",
 ) -> StageResult:
     """Stage 3: Optimize with wasm-opt."""
-    wasm_opt = _find_tool("wasm-opt")
-    if not wasm_opt:
-        return StageResult(
-            name="optimize",
-            ok=False,
-            error="wasm-opt not found (install binaryen: brew install binaryen)",
-        )
-
-    t0 = time.monotonic()
-    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-    proc = harness_memory_guard.guarded_completed_process(
-        [
-            wasm_opt,
-            f"-{level}",
-            # Explicit features — avoid --all-features which enables
-            # --enable-custom-descriptors, causing `exact` heap types
-            # that Cloudflare Workers' V8 rejects.
-            "--enable-bulk-memory",
-            "--enable-mutable-globals",
-            "--enable-sign-ext",
-            "--enable-nontrapping-float-to-int",
-            "--enable-simd",
-            "--enable-multivalue",
-            "--enable-reference-types",
-            "--enable-gc",
-            "--enable-tail-call",
-            "--disable-custom-descriptors",
-            str(input_wasm),
-            "-o",
-            str(output_wasm),
-        ],
-        prefix="MOLT_BENCH",
-        capture_output=True,
-        text=True,
-        timeout=300,
-        limits=limits,
+    result = optimize_wasm(
+        input_wasm,
+        output_path=output_wasm,
+        level=level,
     )
-    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
-
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip()
+    elapsed = float(result.get("elapsed_s", 0.0))
+    if not result.get("ok"):
         return StageResult(
             name="optimize",
             ok=False,
             elapsed_s=elapsed,
-            error=err[:500],
+            error=str(result.get("error", "unknown wasm-opt failure"))[:500],
         )
 
     if not output_wasm.exists():
@@ -421,7 +388,7 @@ def stage_optimize(
             error="wasm-opt produced no output",
         )
 
-    size = output_wasm.stat().st_size
+    size = int(result["output_bytes"])
     return StageResult(
         name="optimize",
         ok=True,

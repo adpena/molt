@@ -11,7 +11,7 @@ from typing import ClassVar
 
 import pytest
 
-from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 
 ARROW_BYTES = b"ARROW1"
@@ -79,16 +79,7 @@ class _DbHostHandler(BaseHTTPRequestHandler):
 
 
 def _browser_wasm_build_env(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_WASM_LINKED"] = "0"
-    # Keep browser wasm test builds deterministic and bounded on laptops.
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    return env
+    return wasm_test_build_env(root, linked=False)
 
 
 def test_browser_host_manifest_module_integrity_is_fail_closed(tmp_path: Path) -> None:
@@ -682,9 +673,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args(
                 payload = manifest_path.read_bytes()
             elif self.path == "/manifest.json?corrupt=linked":
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                manifest["modules"]["linked"]["path"] = (
-                    "output_linked.wasm?corrupt=1"
-                )
+                manifest["modules"]["linked"]["path"] = "output_linked.wasm?corrupt=1"
                 payload = json.dumps(manifest).encode("utf-8")
             else:
                 self.send_response(404)
@@ -1621,9 +1610,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
         "fn = None\ntry:\n    fn()\nexcept Exception:\n    pass\nprint('ok')\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1679,9 +1666,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
     src = tmp_path / "browser_direct_bare_except.py"
     src.write_text("fn = None\ntry:\n    fn()\nexcept:\n    pass\nprint('ok')\n")
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1753,8 +1738,7 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
         "asyncio.run(main())\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
+    build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
         [
             sys.executable,

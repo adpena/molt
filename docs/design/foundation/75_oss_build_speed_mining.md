@@ -68,7 +68,7 @@ generic "Rust is slow" folklore.
 | `backend_prepare` | ~125s | every build | partial |
 | `backend_subprocess_compile` | ~95s | every build (Molt's OWN wasm codegen of app+stdlib) | partial |
 | runtime cargo compile | historical ~150–230s | **only when a runtime `.rs` changes** | **shipping policy is now ThinLTO/cgu=16/debug=0; see runtime codegen authority evidence** |
-| wasm-opt + wasm-ld | untimed-but-real | every app change | 1 (wasm-opt default single-thread; dev default `Oz`) |
+| wasm-opt + wasm-ld | phase-attested and content-addressed | first artifact/policy identity | 1 (dev `O1`, no convergence) |
 | uv provisioning | ~minutes | cold only | n/a |
 | proof-queue | overhead | per proof | n/a |
 
@@ -82,7 +82,7 @@ Effort S/M/L. Risk = correctness/regression risk. "Status" flags whether the
 | **L1** | **Default-on the already-built `dev-fast` runtime profile + config-lattice reuse for the ITERATION runtime.wasm; keep the measured ThinLTO/cgu=16/debug=0 `wasm-release`/`release-output` policy on ship/acceptance** | avoids shipping-profile work in the edit loop while final artifacts retain cross-crate optimization. Pure 74-law-3 reuse: dev wasm is semantically identical, only fatter/slower | **S** | **Low** — ship/acceptance still pins exact identity (74 non-negotiable) | **Mechanism LANDED** (`dev-fast`, V2/V3); gap = it's OPT-IN. Default resolves to `wasm-release` | Cargo profiles + `runtime_build.py` precedence; 74 law 3 | None. cgu parallelism helps on multi-core hosts |
 | **L2** | **Extend resident-daemon warm state to the FRONTEND module-graph + analysis** (backend daemon already warm); fine-grained per-top-level-def invalidation, NOT whole-module | `module_graph` **~99s → sub-5s** warm; large slice of `backend_prepare` warmed. Biggest structural win across ALL iterations | **L** | **Med** — stale warm cache = silent-wrong-answer class (M34) | **Partial:** backend daemon exists; FRONTEND phases still cold per-process | mypy `dmypy` fine-grained deps + `astdiff`/`aststrip` [3]; salsa red/green early-cutoff (rust-analyzer, Ruff Red-Knot) [4][5]; esbuild immutable-shared warm AST cache [6]; Zig in-process incremental ~125× / <300ms [7] | file-watch = `ReadDirectoryChangesW`, mtime/size is NTFS-lossy (M35); bind to `MOLT_SESSION_ID` + collision oracle (56 DX-2/3) |
 | **L3** | **Tighten + ATTEST the existing `function_cache_key`** to mypy per-def grain + full-input key + hit-rate gate | `backend_subprocess_compile` **~95s → proportional-to-changed-fns** | **M** | **Med** — key must include ALL true inputs or silent stale codegen (M34/M36) | **Mechanism LANDED** (`function_cache_key` in `backend_process`); gap = grain + attestation | mypy grain = "module top level or top-level fn/method" [3]; salsa early-cutoff [4]; Turborepo/Buck2 action key = hash(cmd+inputs+upstream) [8][9] | None specific |
-| **L4** | **Default the DEV/iteration wasm-opt to `-O1`; keep `Oz`/`O2`/`O3` for ship** | the untimed wasm-opt step drops to "quick & useful" dev level; ship size/perf unchanged | **S** | **Low** — pure config-lattice; dev wasm not shipped | **Knob exists** (`wasm_opt_level`, defaults `Oz` even for dev) — gap = dev default | Binaryen: `-O1` = "quick & useful opts, useful for iteration builds"; `-O3/-O4` "spends potentially a lot of time" [10] | None |
+| **L4 — LANDED** | **Default DEV/iteration wasm-opt to `-O1`; keep explicit bounded ship policies** | removes fixed-point `Oz` from the dev critical path and content-addresses the exact pipeline | **S** | **Low** — config-lattice plus fail-closed publication | `molt.wasm_optimization` is the single level/feature/pass authority | Binaryen: `-O1` = "quick & useful opts, useful for iteration builds"; `-O3/-O4` "spends potentially a lot of time" [10] | None |
 | **L5** | **`cargo-hakari` workspace-hack (feature unification across the ~30 crates)** | fresh-session/first-build dep tail shrinks; up to ~1.7× cumulative on the cargo side; kills "same dep built N ways" | **S/M** | **Low** — generated crate + CI check | **ABSENT** (verified: no hakari/workspace-hack in tree) — genuinely new | cargo-hakari (guppy feature-union, "up to 1.7×") [11] | None. Pure-Cargo, cross-platform |
 | L6 | **Parallel rustc front-end `-Zthreads=8`** for the runtime crate compile | clean/full runtime compile **~-23–30%** at our core count | S | Med | nightly toolchain pin needed | Rust project-goals + blog: 8 threads ≈ -23–30% clean-build wall [12][13] | nightly only; distributed on x86_64 Windows nightly |
 | L7 | **`ccache` as `CC` launcher for the clang→wasm32-wasi C-ext (numpy/scipy) recompiles** | cold C-ext recompiles served from cache across sessions/machines | S | Low | not wired (sccache is off, M09) | ccache supports Clang on Windows; used as compiler-launcher for wasi-sdk [14] | Works on Windows (unlike sccache, §4). Direct-mode preprocessed-source hashing |
@@ -146,12 +146,12 @@ hash `cmd + all inputs + upstream hashes` [8][9] (a missing input = silent stale
 codegen, the M34/M36 class). Add `{key, hit|miss, wall}` lines and a hit-rate
 gate (74 law 4).
 
-### DO-4 (quick win) — dev wasm-opt at `-O1`
-`wasm_opt_level` is already a knob but defaults to `Oz` (size, slow) even for
-dev. Make the iteration/dev layout resolve `-O1` ("quick & useful opts, useful
-for iteration builds" [10]); keep `Oz`/`O2`/`O3` for the shipped 3MB artifact.
-Thread it through the same DX resolver that picks the runtime profile (DO-1) so
-"dev" is one coherent choice. Low risk, no semantics change, no Windows caveat.
+### DO-4 (landed) — dev wasm-opt at `-O1`
+The build-intent resolver now selects non-converging `O1` for dev and the
+deployment profile's shipping policy for release. App and monolithic optimized
+publication fail closed. Shared-runtime body optimization belongs to its Cargo
+generation; the app linker now performs only content-addressed structural
+cleanup and never repeats an invalid whole-runtime Binaryen pass.
 
 ### DO-5 — add `cargo-hakari` workspace-hack (genuinely absent)
 Verified: no hakari/workspace-hack crate in the tree. Across ~30 crates,
@@ -267,10 +267,9 @@ Verified against the worktree tree at `origin/main` HEAD `18ed35b063`:
 - **Backend compiler daemon + function cache — LANDED.** `runtime/molt-backend/
   src/backend_process/{job.rs,protocol.rs}` carry `function_cache_key`;
   `src/main_tests/{daemon_cache.rs,daemon_env.rs}` exercise the daemon.
-- **wasm-opt level — parameterized, dev default `Oz`.** `wasm_opt_level` in
-  `src/molt/cli/{backend_pipeline,backend_output_pipeline,build_output_layout,
-  build_pipeline}.py` defaults `Oz`; `build_output_layout` carries per-layout
-  levels (`Oz`/`O3`). The L4 gap = no `-O1` dev/iteration default.
+- **wasm-opt level — parameterized, dev default `O1`.** The canonical authority
+  supports every Binaryen level, owns cross-engine feature flags and explicit
+  ship pass sets, and keys derived artifacts by the complete pipeline.
 - **cargo-hakari / workspace-hack — ABSENT.** No hakari config or workspace-hack
   crate in the tree (grep, this session). L5 is genuinely new.
 - **Content-addressed `runtime.wasm` cache + frontend per-module lowering cache —

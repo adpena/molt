@@ -17,6 +17,7 @@ from molt.cli.build_output_layout import (
 from molt.cli.config_resolution import STDLIB_PROFILE_CHOICES
 from molt.cli.dx_cli import add_dx_parser
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
+from molt.wasm_optimization import WASM_OPT_LEVELS
 
 
 def _build_entrypoint_parser() -> argparse.ArgumentParser:
@@ -188,12 +189,11 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--wasm-opt-level",
-        choices=["Oz", "O3"],
-        default="Oz",
+        choices=WASM_OPT_LEVELS,
+        default=None,
         help=(
-            "WASM optimization profile: Oz for size-focused (default, "
-            "recommended for browser deployment), O3 for speed-focused "
-            "(recommended for server/edge deployment)."
+            "Binaryen optimization level. Defaults to O1 for dev builds and "
+            "the selected deployment profile's shipping level for release builds."
         ),
     )
     build_parser.add_argument(
@@ -221,9 +221,9 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Produce separate runtime and app WASM modules instead of a single "
-            "linked binary. The runtime is tree-shaken to include only the "
-            "builtins and runtime exports your program uses, then both split "
-            "artifacts are deforested with post-link cleanup and wasm-opt. "
+            "linked binary. The shared runtime retains one app-independent "
+            "canonical ABI and receives deterministic structural reachability "
+            "cleanup; the app is independently deforested and Binaryen-optimized. "
             "Outputs app.wasm + molt_runtime.wasm + worker.js + manifest.json."
         ),
     )

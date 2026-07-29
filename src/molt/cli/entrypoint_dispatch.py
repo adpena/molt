@@ -38,6 +38,7 @@ from molt.cli.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
 from molt.cli.wrapper_build import _build_args_has_python_version_flag
+from molt.wasm_optimization import WASM_OPT_DEV_DEFAULT, WASM_OPT_RELEASE_DEFAULT
 
 
 def _dispatch_entrypoint_command(
@@ -252,9 +253,15 @@ def _dispatch_entrypoint_command(
                 "Use a file path or --module, not both.", args.json, command="build"
             )
 
-        wasm_opt_level_raw = getattr(args, "wasm_opt_level", "Oz")
+        wasm_opt_level_raw = getattr(args, "wasm_opt_level", None)
         wasm_opt_level = (
-            wasm_opt_level_raw if isinstance(wasm_opt_level_raw, str) else "Oz"
+            wasm_opt_level_raw
+            if isinstance(wasm_opt_level_raw, str)
+            else (
+                WASM_OPT_DEV_DEFAULT
+                if build_profile == "dev"
+                else WASM_OPT_RELEASE_DEFAULT
+            )
         )
         precompile = bool(getattr(args, "precompile", False))
         wasm_profile_raw = getattr(args, "wasm_profile", "auto")
@@ -291,16 +298,12 @@ def _dispatch_entrypoint_command(
 
         if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
             defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
-            # Only apply defaults for arguments that weren't explicitly set
-            if args.wasm_opt_level == "Oz" and "wasm_opt_level" not in sys.argv:
-                # wasm_opt_level has argparse default "Oz"; check if user passed it
-                _wasm_opt_explicitly_set = any(
-                    a.startswith("--wasm-opt-level") for a in sys.argv
-                )
-                if not _wasm_opt_explicitly_set:
-                    default_wasm_opt_level = defaults.get("wasm_opt_level")
-                    if isinstance(default_wasm_opt_level, str):
-                        wasm_opt_level = default_wasm_opt_level
+            # Dev is an iteration policy even when a deployment shape is selected.
+            # Release builds inherit the deployment profile's shipping policy.
+            if wasm_opt_level_raw is None and build_profile == "release":
+                default_wasm_opt_level = defaults.get("wasm_opt_level")
+                if isinstance(default_wasm_opt_level, str):
+                    wasm_opt_level = default_wasm_opt_level
             if not any(a == "--precompile" for a in sys.argv):
                 precompile = bool(defaults.get("precompile", precompile))
             if not any(a.startswith("--wasm-profile") for a in sys.argv):
