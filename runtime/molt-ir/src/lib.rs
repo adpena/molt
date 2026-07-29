@@ -19,6 +19,7 @@ pub mod process_diagnostics;
 pub mod python_effects_generated;
 pub mod repr;
 pub mod runtime_callable_symbols;
+pub mod simple_verify;
 pub mod stdlib_module_symbols;
 pub mod tir;
 
@@ -28,6 +29,7 @@ pub use crate::ir::{
     validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
 };
 pub use crate::repr::Repr;
+pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, verify_simple_ir};
 
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment.

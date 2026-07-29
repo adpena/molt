@@ -370,6 +370,17 @@ _SIMPLEIR_FIELD_ROLE_FACT_SETS = (
     "simpleir_var_result_kinds",
     "simpleir_var_metadata_when_args_kinds",
 )
+_SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS = (
+    "verifier_label_definition",
+    "verifier_label_reference",
+    "verifier_loop_scoped",
+    "verifier_phi",
+)
+_SIMPLEIR_CALL_TARGET_ROLES = {
+    "internal_required",
+    "external_or_runtime",
+    "opaque",
+}
 _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_box_opcodes", "box_op"),
     ("pass_delta_unbox_opcodes", "unbox_op"),
@@ -511,6 +522,8 @@ __all__ = (
     "_SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS",
     "_SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS",
     "_SIMPLEIR_FIELD_ROLE_FACT_SETS",
+    "_SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS",
+    "_SIMPLEIR_CALL_TARGET_ROLES",
     "_SROA_CONST_IMMEDIATE_RULES",
     "_SSA_S_VALUE_ATTR_KEYS",
     "_STRENGTH_REDUCTION_RULES",

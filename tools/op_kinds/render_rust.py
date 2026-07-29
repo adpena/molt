@@ -14,6 +14,7 @@ from .schema import (
     _LITERAL_PAYLOAD_KINDS,
     _PASS_DELTA_FACT_FIELDS,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
+    _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
 )
 from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
 from .render_rust_analysis import (
@@ -897,6 +898,18 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
     "wasm_state_resume_at": (
         "Whether this SimpleIR kind maps its label id to the current WASM resume op."
     ),
+    "verifier_label_definition": (
+        "Whether the SimpleIR verifier treats the value field as a label definition."
+    ),
+    "verifier_label_reference": (
+        "Whether the SimpleIR verifier treats the value field as a label reference."
+    ),
+    "verifier_loop_scoped": (
+        "Whether the SimpleIR verifier requires this control kind inside a loop."
+    ),
+    "verifier_phi": (
+        "Whether the SimpleIR verifier treats args as predecessor-edge inputs."
+    ),
 }
 
 
@@ -934,7 +947,10 @@ def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) ->
 
 def _render_simpleir_control_facts(data: dict) -> str:
     out: list[str] = []
-    for field in _SIMPLEIR_CONTROL_FACT_FIELDS:
+    for field in (
+        *_SIMPLEIR_CONTROL_FACT_FIELDS,
+        *_SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
+    ):
         members = _simpleir_control_members(data, field)
         out.append(
             _render_simpleir_kind_bool_fn(
@@ -975,6 +991,7 @@ def _render_simpleir_control_facts(data: dict) -> str:
             "pub const SIMPLEIR_RETURN_KINDS: &[&str] = &[\n",
         ]
     )
+
     for member in return_members:
         out.append(f'    "{member}",\n')
     out.extend(
@@ -999,6 +1016,35 @@ def _render_simpleir_control_facts(data: dict) -> str:
             "}\n\n",
         ]
     )
+    out.append(
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
+        "pub enum SimpleIrVerifierRegionRole {\n"
+        "    Start,\n"
+        "    Alternate,\n"
+        "    End,\n"
+        "}\n\n"
+        "/// Generated structured-region identity and role for SimpleIR verification.\n"
+        "#[inline]\n"
+        "pub fn simpleir_verifier_region_role(\n"
+        "    kind: &str,\n"
+        ") -> Option<(&'static str, SimpleIrVerifierRegionRole)> {\n"
+        "    match kind {\n"
+    )
+    for row in data.get("simpleir_control_kind", []):
+        region = row.get("verifier_region")
+        role = row.get("verifier_region_role")
+        if region is None or role is None:
+            continue
+        rust_role = {
+            "start": "Start",
+            "alternate": "Alternate",
+            "end": "End",
+        }[role]
+        out.append(
+            f'        "{row["kind"]}" => Some(("{region}", '
+            f"SimpleIrVerifierRegionRole::{rust_role})),\n"
+        )
+    out.append("        _ => None,\n    }\n}\n\n")
 
     consumed_fields = ("structural", "pre_ssa_rewritten", "ssa_only")
     consumed: list[str] = []
@@ -1024,6 +1070,29 @@ def _render_simpleir_field_roles(data: dict) -> str:
         ("simpleir_var_metadata_when_args_kinds", "MetadataWhenArgs"),
     )
     lines = [
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrCallTargetRole {\n",
+        "    InternalRequired,\n",
+        "    ExternalOrRuntime,\n",
+        "    Opaque,\n",
+        "}\n\n",
+        "#[inline]\n",
+        "pub fn simpleir_call_target_role(kind: &str) -> Option<SimpleIrCallTargetRole> {\n",
+        "    match kind {\n",
+    ]
+    for row in data.get("kind", []):
+        for target_role in row.get("simpleir_call_target_roles", []):
+            rust_role = {
+                "internal_required": "InternalRequired",
+                "external_or_runtime": "ExternalOrRuntime",
+                "opaque": "Opaque",
+            }[target_role["role"]]
+            lines.append(
+                f'        "{target_role["spelling"]}" => '
+                f"Some(SimpleIrCallTargetRole::{rust_role}),\n"
+            )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    lines.extend([
         "/// Canonical role of the optional SimpleIR `var` field.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
         "pub enum SimpleIrVarFieldRole {\n",
@@ -1036,7 +1105,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
         "#[inline]\n",
         "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
         "    match kind {\n",
-    ]
+    ])
     for key, role in var_roles:
         patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")

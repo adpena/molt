@@ -260,6 +260,41 @@ pub fn simpleir_kind_is_wasm_state_resume_at(kind: &str) -> bool {
     matches!(kind, "label" | "state_label")
 }
 
+/// Whether the SimpleIR verifier treats the value field as a label definition.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_verifier_label_definition(kind: &str) -> bool {
+    matches!(kind, "label" | "state_label")
+}
+
+/// Whether the SimpleIR verifier treats the value field as a label reference.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_verifier_label_reference(kind: &str) -> bool {
+    matches!(kind, "jump" | "check_exception" | "async_work_poll")
+}
+
+/// Whether the SimpleIR verifier requires this control kind inside a loop.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_verifier_loop_scoped(kind: &str) -> bool {
+    matches!(
+        kind,
+        "loop_break" | "loop_continue" | "loop_break_if_true" | "loop_break_if_false"
+    )
+}
+
+/// Whether the SimpleIR verifier treats args as predecessor-edge inputs.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_verifier_phi(kind: &str) -> bool {
+    matches!(kind, "phi")
+}
+
 /// Whether a SimpleIR kind is a normal function-return terminator.
 /// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
@@ -286,6 +321,30 @@ pub fn simpleir_return_shape(kind: &str) -> SimpleIrReturnShape {
         "ret_void" => SimpleIrReturnShape::Void,
         "ret" => SimpleIrReturnShape::Value,
         _ => SimpleIrReturnShape::NotReturn,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrVerifierRegionRole {
+    Start,
+    Alternate,
+    End,
+}
+
+/// Generated structured-region identity and role for SimpleIR verification.
+#[inline]
+pub fn simpleir_verifier_region_role(
+    kind: &str,
+) -> Option<(&'static str, SimpleIrVerifierRegionRole)> {
+    match kind {
+        "if" => Some(("if", SimpleIrVerifierRegionRole::Start)),
+        "else" => Some(("if", SimpleIrVerifierRegionRole::Alternate)),
+        "end_if" => Some(("if", SimpleIrVerifierRegionRole::End)),
+        "loop_start" => Some(("loop", SimpleIrVerifierRegionRole::Start)),
+        "loop_end" => Some(("loop", SimpleIrVerifierRegionRole::End)),
+        "try_start" => Some(("try", SimpleIrVerifierRegionRole::Start)),
+        "try_end" => Some(("try", SimpleIrVerifierRegionRole::End)),
+        _ => None,
     }
 }
 
@@ -319,6 +378,28 @@ pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
             | "loop_index_next"
             | "phi"
     )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrCallTargetRole {
+    InternalRequired,
+    ExternalOrRuntime,
+    Opaque,
+}
+
+#[inline]
+pub fn simpleir_call_target_role(kind: &str) -> Option<SimpleIrCallTargetRole> {
+    match kind {
+        "call" => Some(SimpleIrCallTargetRole::ExternalOrRuntime),
+        "call_func" => Some(SimpleIrCallTargetRole::Opaque),
+        "call_internal" => Some(SimpleIrCallTargetRole::InternalRequired),
+        "call_function" => Some(SimpleIrCallTargetRole::Opaque),
+        "call_indirect" => Some(SimpleIrCallTargetRole::Opaque),
+        "call_bind" => Some(SimpleIrCallTargetRole::Opaque),
+        "call_guarded" => Some(SimpleIrCallTargetRole::Opaque),
+        "invoke_ffi" => Some(SimpleIrCallTargetRole::Opaque),
+        _ => None,
+    }
 }
 
 /// Canonical role of the optional SimpleIR `var` field.

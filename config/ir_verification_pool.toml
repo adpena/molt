@@ -1,0 +1,33 @@
+schema = "molt.ir-verification-pool.v1"
+
+[policy]
+max_workers = 4
+gb_per_worker = 1.0
+max_cases_per_worker = 64
+per_case_timeout_seconds = 60.0
+
+[[calibration]]
+label = "subprocess-baseline"
+selected = 915
+workers = 1
+process_launches = 1603
+duration_seconds = 2125.663034
+peak_tree_rss_bytes = 549117952
+
+[[calibration]]
+label = "supervised-w2-r64"
+selected = 915
+workers = 2
+max_cases_per_worker = 64
+process_launches = 15
+duration_seconds = 206.2520653
+peak_tree_rss_bytes = 487948288
+
+[[calibration]]
+label = "supervised-w4-r64"
+selected = 915
+workers = 4
+max_cases_per_worker = 64
+process_launches = 16
+duration_seconds = 96.2000903
+peak_tree_rss_bytes = 554844160
