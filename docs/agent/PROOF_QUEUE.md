@@ -186,7 +186,10 @@ exact argv, a closed Python, toolchain, or generated-proof-plan kind, the comple
 interpreter-affecting `uv run` prefix, Windows `py` selector, and non-empty
 declared toolchains. The generated command registry covers every proof-plan
 argv; identical matrix argv retain every owning command ID and must agree on
-one toolchain set. There is no untyped or empty-toolchain executable lane:
+one toolchain set. A plan entrypoint with one registered argv is exact-only, so
+changing one selector cannot downgrade its Cargo, Node, Quint, Lean, or other
+declared closure to generic Python custody. Shared entrypoints such as pytest
+remain typed command families. There is no untyped or empty-toolchain executable lane:
 unknown binaries reject before execution. Opaque shells, unmodeled `uv`
 options, ambiguous console scripts, and noncanonical Rust wrappers are also
 rejected before execution. The same recursive parser recognizes
@@ -196,6 +199,16 @@ requested toolchain, and rejects a second delegation layer. `uv --with`,
 `--with-editable`, environment files, indexes, and find-links are forbidden;
 the Pact witness lanes use the checked-in, offline, hash-locked
 `config/proof_requirements/pact_witness.txt` authority instead.
+
+Every envelope also carries one constructional process closure. Exact plan and
+guarded typed-delegation commands may launch only their declared, content-bound
+toolchains. Non-exact Python and Node commands are no-descendant leaves: Python
+audit custody and a queue-owned Node preload hook reject Cargo, Node, shell,
+fork, and other undeclared launch paths before spawn and persist every attempt
+in the receipt. A non-exact native launcher has no pre-spawn authority and fails
+at launch, requiring the guarded typed command family—even a version command
+may be a shim that starts the resolved tool. This is one shared rule for every
+launcher family, not a per-command allowlist.
 
 One queue-owned memory guard contains interpreter/tool identity probes,
 toolchain preflight, the proof command, and both source snapshots. The guarded
@@ -223,6 +236,15 @@ inventory. `--with-requirements` files must contain only exact, SHA-256-locked
 requirements, run offline, resolve inside the admitted source root, and remain
 byte-identical. `--directory` and `--project` may not escape that root.
 
+Endpoint hashes are backed by live kernel mutation custody during the command.
+Windows `ReadDirectoryChangesW` and Linux inotify watch the admitted Git files,
+overlays, runtime roots, package trees, executables, and configuration bytes;
+queue overflow or watcher failure is fail-closed. A write, replacement, rename,
+delete, or metadata change remains an event even if the command restores the
+original bytes before completion, so mutate-execute-restore cannot produce
+eligible evidence. Platforms without a lossless implemented watcher reject
+execution rather than falling back to sampling.
+
 The proof command receives only classified host/runtime, compiler, and Molt
 environment names. Ambient pytest injection, package-index controls,
 unclassified overrides, URL credentials, and secret-bearing names are rejected
@@ -245,6 +267,11 @@ signals, or missing counts cannot become evidence. A dirty, unavailable, or chan
 changed overlay, editable distribution, toolchain, environment, or executable
 is terminal `non-evidence`, even if the command returned zero. Terminal
 projections read the persisted context and never re-probe an ambient host.
+Command argv, cwd, and envelope are immutable admission columns enforced by the
+database. Normal reconnect never derives a new envelope from the current plan;
+queued plan drift fails validation at launch, while terminal rows are never
+rewritten. Export requires the row envelope and its digest to equal the envelope
+inside the terminal receipt before returning evidence.
 Legacy rows are marked `legacy-unattested`; migration derives an admission
 envelope but never fabricates historical execution evidence.
 

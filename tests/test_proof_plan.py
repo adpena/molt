@@ -1502,6 +1502,12 @@ def test_heavy_queue_projects_the_same_receipt_schema(
                             "python": "3.12",
                         },
                         "toolchains": toolchains,
+                        "command_envelope": envelope,
+                        "command_envelope_sha256": hashlib.sha256(
+                            json.dumps(
+                                envelope, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
                         "python_interpreters": {
                             "queue_control_plane": {"version": "3.14.3"},
                             "proof_command": {"version": "3.12.13"},
@@ -1540,6 +1546,10 @@ def test_heavy_queue_reuses_persisted_execution_receipt_context() -> None:
             "source_tree_state": "clean",
             "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
             "toolchains": toolchains,
+            "command_envelope": envelope,
+            "command_envelope_sha256": hashlib.sha256(
+                json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
             "source_custody": {
                 "evidence_eligible": True,
                 "ineligible_reasons": [],

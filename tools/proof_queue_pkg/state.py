@@ -380,7 +380,8 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
         columns.remove("python_interpreter_json")
         columns.add("command_envelope_json")
-    if "command_envelope_json" not in columns:
+    envelope_column_added = "command_envelope_json" not in columns
+    if envelope_column_added:
         conn.execute(
             "ALTER TABLE proof_runs ADD COLUMN command_envelope_json "
             "TEXT NOT NULL DEFAULT '{}'"
@@ -388,29 +389,41 @@ def _connect(db: Path) -> sqlite3.Connection:
     receipt_context_added = "receipt_context_json" not in columns
     if receipt_context_added:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN receipt_context_json TEXT")
-    for run_id, command_json, envelope_json in conn.execute(
-        "SELECT run_id, command_json, command_envelope_json FROM proof_runs"
-    ).fetchall():
-        command = json.loads(str(command_json))
-        if not isinstance(command, list):
-            raise ValueError(f"proof run {run_id!r} command is not a list")
-        authority = command_envelope.admission_envelope(
-            [str(value) for value in command]
-        )
-        serialized = json.dumps(authority, sort_keys=True)
-        if str(envelope_json) != serialized:
+    # Admission is immutable.  Derive it exactly once only while upgrading a
+    # schema that had no command-envelope column; normal connections must never
+    # rewrite queued or terminal rows from today's proof plan.
+    if envelope_column_added or migrated_legacy_envelope:
+        for run_id, command_json in conn.execute(
+            "SELECT run_id, command_json FROM proof_runs"
+        ).fetchall():
+            command = json.loads(str(command_json))
+            if not isinstance(command, list):
+                raise ValueError(f"proof run {run_id!r} command is not a list")
+            authority = command_envelope.admission_envelope(
+                [str(value) for value in command]
+            )
             conn.execute(
                 "UPDATE proof_runs SET command_envelope_json = ? WHERE run_id = ?",
-                (serialized, run_id),
+                (json.dumps(authority, sort_keys=True), run_id),
             )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_runs_admission_immutable
+        BEFORE UPDATE OF command_json, command_envelope_json, cwd ON proof_runs
+        WHEN OLD.command_json != NEW.command_json
+          OR OLD.command_envelope_json != NEW.command_envelope_json
+          OR OLD.cwd != NEW.cwd
+        BEGIN
+            SELECT RAISE(ABORT, 'proof run admission is immutable');
+        END
+        """
+    )
     if receipt_context_added or migrated_legacy_envelope:
         unattested = json.dumps(
             _unattested_receipt_context(
                 status="legacy-unattested",
                 phase="schema-migration",
-                reason=(
-                    "run predates guarded command-envelope receipt custody"
-                ),
+                reason=("run predates guarded command-envelope receipt custody"),
             ),
             sort_keys=True,
         )
