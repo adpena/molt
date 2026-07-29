@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from tools.proof_queue_pkg import custody, state
+from tools.proof_queue_pkg import command_envelope, custody, state
 
 
 def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
@@ -178,6 +178,10 @@ def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
 def _proof_command_policy_error(command: list[str]) -> str | None:
     if not command:
         return None
+    try:
+        command_envelope.envelope_for_command(command)
+    except ValueError as exc:
+        return f"proof queue refuses an untyped command envelope: {exc}"
     basename = _command_basename(command[0])
     if basename in {"cargo", "cargo.exe"}:
         return (

@@ -18,7 +18,7 @@ from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
 )
-from tools.proof_queue_pkg import interpreter
+from tools.proof_queue_pkg import command_envelope
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -202,7 +202,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             status TEXT NOT NULL,
             returncode INTEGER,
             command_json TEXT NOT NULL,
-            python_interpreter_json TEXT NOT NULL DEFAULT '{}',
+            command_envelope_json TEXT NOT NULL DEFAULT '{}',
             receipt_context_json TEXT,
             cwd TEXT NOT NULL,
             resource_family TEXT NOT NULL,
@@ -370,33 +370,46 @@ def _connect(db: Path) -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
         )
-    if "python_interpreter_json" not in columns:
+    migrated_legacy_envelope = (
+        "command_envelope_json" not in columns and "python_interpreter_json" in columns
+    )
+    if migrated_legacy_envelope:
         conn.execute(
-            "ALTER TABLE proof_runs ADD COLUMN python_interpreter_json "
+            "ALTER TABLE proof_runs RENAME COLUMN python_interpreter_json "
+            "TO command_envelope_json"
+        )
+        columns.remove("python_interpreter_json")
+        columns.add("command_envelope_json")
+    if "command_envelope_json" not in columns:
+        conn.execute(
+            "ALTER TABLE proof_runs ADD COLUMN command_envelope_json "
             "TEXT NOT NULL DEFAULT '{}'"
         )
     receipt_context_added = "receipt_context_json" not in columns
     if receipt_context_added:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN receipt_context_json TEXT")
-    for run_id, command_json in conn.execute(
-        "SELECT run_id, command_json FROM proof_runs "
-        "WHERE python_interpreter_json = '{}'"
+    for run_id, command_json, envelope_json in conn.execute(
+        "SELECT run_id, command_json, command_envelope_json FROM proof_runs"
     ).fetchall():
         command = json.loads(str(command_json))
         if not isinstance(command, list):
             raise ValueError(f"proof run {run_id!r} command is not a list")
-        authority = interpreter.authority_for_command([str(value) for value in command])
-        conn.execute(
-            "UPDATE proof_runs SET python_interpreter_json = ? WHERE run_id = ?",
-            (json.dumps(authority, sort_keys=True), run_id),
+        authority = command_envelope.admission_envelope(
+            [str(value) for value in command]
         )
-    if receipt_context_added:
+        serialized = json.dumps(authority, sort_keys=True)
+        if str(envelope_json) != serialized:
+            conn.execute(
+                "UPDATE proof_runs SET command_envelope_json = ? WHERE run_id = ?",
+                (serialized, run_id),
+            )
+    if receipt_context_added or migrated_legacy_envelope:
         unattested = json.dumps(
             _unattested_receipt_context(
                 status="legacy-unattested",
                 phase="schema-migration",
                 reason=(
-                    "run predates execution-host proof interpreter receipt custody"
+                    "run predates guarded command-envelope receipt custody"
                 ),
             ),
             sort_keys=True,
@@ -404,7 +417,8 @@ def _connect(db: Path) -> sqlite3.Connection:
         placeholders = ",".join("?" for _ in RUNNING | {"blocked"})
         conn.execute(
             "UPDATE proof_runs SET receipt_context_json = ? "
-            f"WHERE status NOT IN ({placeholders}) AND receipt_context_json IS NULL",
+            f"WHERE status NOT IN ({placeholders}) "
+            + ("" if migrated_legacy_envelope else "AND receipt_context_json IS NULL"),
             (unattested, *sorted(RUNNING | {"blocked"})),
         )
     for run_id, status in conn.execute(
