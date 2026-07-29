@@ -13,6 +13,7 @@ pub(crate) fn compile_stdlib_cache_object(
     profile: Option<molt_backend::PgoProfileIR>,
     target_triple: Option<&str>,
     log_prefix: &str,
+    module_context: molt_backend::NativeBackendModuleContext,
 ) -> io::Result<()> {
     let stdlib_count = stdlib_funcs.len();
     if stdlib_count == 0 {
@@ -22,13 +23,14 @@ pub(crate) fn compile_stdlib_cache_object(
             Vec::new(),
             profile,
             target_triple,
+            module_context,
         );
     }
 
-    let plan = StdlibBatchPlan::from_functions(stdlib_funcs);
+    let plan = StdlibBatchPlan::from_functions(stdlib_funcs, module_context);
     let stdlib_total_batches = plan.total_batches();
     if stdlib_total_batches == 1 {
-        let batch_funcs = plan.into_only_batch();
+        let (batch_funcs, module_context) = plan.into_only_batch_with_context();
         plan::log_stdlib_batch(
             log_prefix,
             0,
@@ -41,6 +43,7 @@ pub(crate) fn compile_stdlib_cache_object(
             batch_funcs,
             profile,
             target_triple,
+            module_context,
         );
     }
 

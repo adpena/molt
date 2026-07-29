@@ -1,6 +1,62 @@
 use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
+#[test]
+fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
+    let declarations = [
+        FunctionIR {
+            name: "stdlib_void_helper".to_string(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            is_extern: true,
+            ..FunctionIR::default()
+        },
+        FunctionIR {
+            name: "stdlib_value_helper".to_string(),
+            ops: vec![
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some(crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec![crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            is_extern: true,
+            ..FunctionIR::default()
+        },
+    ];
+
+    for declaration in declarations {
+        declaration
+            .extern_signature()
+            .expect("test input must be a canonical extern declaration");
+        let expected = format!(
+            "rust backend cannot compile extern function `{}`: the rust target has no extern provider/linkage ABI",
+            declaration.name
+        );
+        let mut backend = RustBackend::new();
+        let error = backend
+            .compile_checked(&SimpleIR {
+                functions: vec![declaration],
+                profile: None,
+            })
+            .expect_err("Rust must reject externs without a provider/linkage ABI");
+
+        assert_eq!(error, expected);
+        assert!(
+            backend.output.is_empty(),
+            "extern rejection must happen before any Rust source is assembled"
+        );
+        assert!(backend.unsupported_ops.is_empty());
+    }
+}
+
 fn compile_and_run_emitted(source: &str, stem: &str) -> String {
     let temp = std::env::temp_dir().join(format!("molt_rust_{stem}_{}", std::process::id()));
     std::fs::create_dir_all(&temp).expect("create emitted-Rust test directory");

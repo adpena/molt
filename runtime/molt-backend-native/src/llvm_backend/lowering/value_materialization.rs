@@ -579,14 +579,49 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
             }
             Terminator::Return { values } => {
+                let linkage_abi = require_function_linkage_abi(self.func, self.backend);
+                let linkage_return_type = linkage_abi.return_type.as_ref();
                 if values.is_empty() {
-                    // Return void-equivalent (None sentinel for Python functions)
-                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                    let ret_val = self.backend.context.i64_type().const_int(none_bits, false);
-                    self.backend.builder.build_return(Some(&ret_val)).unwrap();
+                    match linkage_return_type {
+                        None => {
+                            self.backend.builder.build_return(None).unwrap();
+                        }
+                        Some(return_type) => {
+                            let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
+                            let ret_val = self
+                                .backend
+                                .context
+                                .i64_type()
+                                .const_int(none_bits, false)
+                                .into();
+                            let current_bb = self
+                                .backend
+                                .builder
+                                .get_insert_block()
+                                .expect("return must be lowered inside a basic block");
+                            let ret_val = self.coerce_to_tir_type(
+                                ret_val,
+                                &TirType::DynBox,
+                                return_type,
+                                current_bb,
+                            );
+                            let ret_val = self.coerce_to_type(
+                                ret_val,
+                                lower_type(self.backend.context, return_type),
+                                current_bb,
+                            );
+                            self.backend.builder.build_return(Some(&ret_val)).unwrap();
+                        }
+                    }
                 } else if values.len() == 1 {
                     let val = self.resolve(values[0]);
-                    let ret_ty = lower_type(self.backend.context, &self.func.return_type);
+                    let return_type = linkage_return_type.unwrap_or_else(|| {
+                        panic!(
+                            "LLVM function `{}` returns a value through a native-void linkage ABI",
+                            self.func.name
+                        )
+                    });
+                    let ret_ty = lower_type(self.backend.context, return_type);
                     let val_ty = self
                         .value_types
                         .get(&values[0])
@@ -597,15 +632,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val =
-                        self.coerce_to_tir_type(val, &val_ty, &self.func.return_type, current_bb);
+                    let ret_val = self.coerce_to_tir_type(val, &val_ty, return_type, current_bb);
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 } else {
                     // Multi-value return: pack into struct.
                     // For now, just return the first value.
                     let val = self.resolve(values[0]);
-                    let ret_ty = lower_type(self.backend.context, &self.func.return_type);
+                    let return_type = linkage_return_type.unwrap_or_else(|| {
+                        panic!(
+                            "LLVM function `{}` returns values through a native-void linkage ABI",
+                            self.func.name
+                        )
+                    });
+                    let ret_ty = lower_type(self.backend.context, return_type);
                     let val_ty = self
                         .value_types
                         .get(&values[0])
@@ -616,8 +656,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val =
-                        self.coerce_to_tir_type(val, &val_ty, &self.func.return_type, current_bb);
+                    let ret_val = self.coerce_to_tir_type(val, &val_ty, return_type, current_bb);
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 }
@@ -718,12 +757,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 && let Some(trampoline_bb) = self.entry_trampoline_bb
             {
                 if let Some(param) = self.llvm_fn.get_nth_param(*arg_index as u32) {
-                    let source_tir_ty = self
-                        .func
+                    let source_tir_ty = require_function_linkage_abi(self.func, self.backend)
                         .param_types
                         .get(*arg_index)
                         .cloned()
-                        .unwrap_or(TirType::DynBox);
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "LLVM definition `{}` linkage ABI omitted resume parameter {}",
+                                self.func.name, arg_index
+                            )
+                        });
                     let coerced =
                         self.coerce_to_tir_type(param, &source_tir_ty, &phi_tir_ty, trampoline_bb);
                     let coerced = self.coerce_to_type(coerced, *phi_ty, trampoline_bb);

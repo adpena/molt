@@ -8,7 +8,11 @@ use super::*;
 #[test]
 fn lower_preserved_passthrough_class_routes_to_runtime() {
     let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    let mut backend = make_backend(&ctx);
+    backend.function_linkage_abis.insert(
+        "gen_fn".to_string(),
+        test_native_linkage_abi(vec![], Some(TirType::DynBox)),
+    );
     // (kind, n_operands, with_result, s_value, expected runtime symbol)
     let cases: &[(&str, usize, bool, Option<&str>, &str)] = &[
         ("abs", 1, true, None, "molt_abs_builtin"),

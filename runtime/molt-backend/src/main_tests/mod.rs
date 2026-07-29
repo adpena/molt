@@ -27,9 +27,9 @@ use super::{
 use super::{
     DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
     NativeApplicationObjectOptions, NativeBatchModuleMetadata, NativeBatchObjectJob,
-    append_referenced_inherited_declarations, batch_external_function_names,
+    append_referenced_external_declarations, batch_external_function_names,
     compile_native_application_object_to_path, compile_stdlib_cache_object,
-    inherited_function_declarations, is_user_owned_symbol, merge_relocatable_objects,
+    external_function_declarations, is_user_owned_symbol, merge_relocatable_objects,
     partition_functions_for_batches, preserve_native_batch_worker_failure_artifacts,
     prune_and_partition_native_stdlib, read_json_artifact, read_stdlib_cache_key,
     read_stdlib_cache_manifest, relocatable_linker_binary, remove_native_batch_temp_dir,

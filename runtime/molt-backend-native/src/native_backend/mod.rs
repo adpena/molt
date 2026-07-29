@@ -101,7 +101,9 @@ mod simple_backend;
 // `lib.rs` can re-export them publicly (`molt_backend::SimpleBackend`, etc.);
 // the remaining crate-internal items stay `pub(crate)`.
 pub(crate) use simple_backend::*;
-pub use simple_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
+pub use simple_backend::{
+    CompileOutput, NativeBackendModuleContext, NativeFunctionLinkageAbi, SimpleBackend,
+};
 
 mod function_compiler;
 

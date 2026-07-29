@@ -54,6 +54,16 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             .unwrap_or_else(|| panic!("{call_kind} function target not found: {target_name}"))
     }
 
+    pub(in crate::wasm) fn function_abi_returns_value(&self, target_name: &str) -> bool {
+        *self
+            .plan
+            .function_abi_returns_value
+            .get(target_name)
+            .unwrap_or_else(|| {
+                panic!("WASM call target has no canonical ABI result fact: {target_name}")
+            })
+    }
+
     pub(in crate::wasm) fn trampoline_target(
         &self,
         target_name: &str,
@@ -136,6 +146,7 @@ mod tests {
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             app_callable_resolver: None,
             closure_functions: BTreeSet::from(["callee".to_string()]),
+            function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),
             trampoline_entries: Vec::new(),
         };
         let escaped_targets = BTreeSet::from(["callee".to_string()]);
@@ -147,6 +158,7 @@ mod tests {
         assert_eq!(table_pair.function.current_table_index, 107);
         assert_eq!(table_pair.trampoline.current_table_index, 109);
         assert_eq!(abi.function_index("callee", "test_call"), 42);
+        assert!(abi.function_abi_returns_value("callee"));
         assert!(abi.is_closure_function("callee"));
         assert!(abi.is_escaped_callable("callee"));
         assert_eq!(abi.call_func_spill_offset(), 4096);
@@ -171,6 +183,7 @@ mod tests {
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             app_callable_resolver: None,
             closure_functions: BTreeSet::new(),
+            function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),
             trampoline_entries: Vec::new(),
         };
         let escaped = BTreeSet::new();

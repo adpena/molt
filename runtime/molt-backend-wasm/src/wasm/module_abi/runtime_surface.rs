@@ -71,6 +71,13 @@ impl WasmRuntimeSurfacePlan {
         defined_function_names: &BTreeSet<&str>,
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
+        if func_ir.is_extern {
+            let signature = func_ir.extern_signature().unwrap_or_else(|error| {
+                panic!("invalid WASM extern function declaration: {error}")
+            });
+            self.max_func_arity = self.max_func_arity.max(signature.arity);
+            return;
+        }
         let is_poll = func_ir.name.ends_with("_poll");
         let const_strings: BTreeMap<&str, &str> = func_ir
             .ops

@@ -41,6 +41,7 @@ impl NumericTargetCapabilities {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeTargetCapabilities {
+    pub extern_function_linkage: bool,
     pub execution_frame_state: bool,
     pub python_frame_introspection: bool,
     pub python_identity: bool,
@@ -60,6 +61,7 @@ pub struct RuntimeTargetCapabilities {
 
 impl RuntimeTargetCapabilities {
     pub const NONE: Self = Self {
+        extern_function_linkage: false,
         execution_frame_state: false,
         python_frame_introspection: false,
         python_identity: false,
@@ -88,6 +90,14 @@ pub fn validate_target_contract(
 ) -> Result<(), String> {
     crate::validate_simple_ir(ir)
         .map_err(|error| format!("{target} SimpleIR validation failed: {error}"))?;
+    if !runtime.extern_function_linkage
+        && let Some(function) = ir.functions.iter().find(|function| function.is_extern)
+    {
+        return Err(format!(
+            "{target} backend cannot compile extern function `{}`: the {target} target has no extern provider/linkage ABI",
+            function.name
+        ));
+    }
     validate_numeric_target_contract(ir, target, numeric)?;
     validate_runtime_target_contract(ir, target, runtime)
 }

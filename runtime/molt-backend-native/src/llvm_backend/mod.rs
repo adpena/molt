@@ -26,16 +26,18 @@ use inkwell::targets::TargetMachine;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
-use crate::representation_plan::LlvmReprFacts;
+use crate::NativeFunctionLinkageAbi;
 #[cfg(feature = "llvm")]
-use crate::tir::types::TirType;
+use crate::representation_plan::LlvmReprFacts;
 #[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
-    pub function_param_types: BTreeMap<String, Vec<TirType>>,
-    pub function_return_types: BTreeMap<String, TirType>,
+    /// One exact signature authority for calls, declarations, and provider
+    /// definitions. Batch workers receive these rows from the whole-program
+    /// module context before bodies are partitioned.
+    pub function_linkage_abis: BTreeMap<String, NativeFunctionLinkageAbi>,
     /// Per-function representation facts derived from the shared
     /// `ScalarRepresentationPlan`, keyed by function name. These drive the
     /// LLVM backend's integer-carrier and container dispatch decisions from the
@@ -66,8 +68,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             context,
             module,
             builder,
-            function_param_types: BTreeMap::new(),
-            function_return_types: BTreeMap::new(),
+            function_linkage_abis: BTreeMap::new(),
             function_repr_facts: BTreeMap::new(),
             runtime_callable_symbols:
                 crate::runtime_callable_symbols::runtime_callable_symbols_from_env()

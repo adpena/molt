@@ -8,14 +8,13 @@ use crate::json_boundary::{
 use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
     SimpleIrRuntimeRequirements, simpleir_kind_has_function_reference_s_value,
-    simpleir_kind_is_call_graph_user_call, simpleir_kind_is_return_terminator,
-    simpleir_runtime_requirements_table,
+    simpleir_kind_is_return_terminator, simpleir_runtime_requirements_table,
 };
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Debug, Default, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -291,15 +290,21 @@ pub struct FunctionIR {
     /// Source file path for traceback formatting.
     #[serde(default)]
     pub source_file: Option<String>,
-    /// When true, this function's body was stripped (already compiled into
-    /// stdlib_shared.o).  The backend emits a declaration (no body) so
-    /// the linker resolves the symbol from the shared object.
+    /// When true, this function's executable body was stripped. `ops` then
+    /// contains only the canonical return-signature metadata validated by
+    /// `extern_signature`; declaration-capable backends resolve the symbol
+    /// from a linked/imported provider instead of emitting a body.
     #[serde(default)]
     pub is_extern: bool,
     /// Target-neutral execution-context ABI policy.
     #[serde(default)]
     pub execution_context: ExecutionContextPolicy,
 }
+
+/// Reserved value carrier used by canonical value-returning extern
+/// declarations. Externs have no executable body; these compact signature ops
+/// preserve the target ABI until every backend has registered the declaration.
+pub const EXTERN_SIGNATURE_RETURN_VALUE: &str = "__molt_extern_signature_return";
 
 /// Stream the complete versioned FunctionIR contract into a cache digest or
 /// artifact writer without materializing a duplicate O(IR) buffer.
@@ -320,7 +325,7 @@ pub fn write_function_ir_contract(
         .map_err(|error| format!("FunctionIR contract serialization failed: {error}"))
 }
 
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, serde::Serialize)]
 #[serde(default)]
 pub struct OpIR {
     pub kind: String,
@@ -430,6 +435,200 @@ pub struct OpIR {
     /// `from_json_value` parser and the serde derive (rmp/cbor path) agree on it.
     #[serde(rename = "class")]
     pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
+pub struct ExternFunctionSignature {
+    pub arity: usize,
+    pub has_closure: bool,
+    pub returns_value: bool,
+    pub execution_context: ExecutionContextPolicy,
+}
+
+fn canonical_extern_signature_ops(returns_value: bool) -> &'static [OpIR] {
+    static VOID: std::sync::OnceLock<Vec<OpIR>> = std::sync::OnceLock::new();
+    static VALUE: std::sync::OnceLock<Vec<OpIR>> = std::sync::OnceLock::new();
+    if returns_value {
+        VALUE.get_or_init(|| {
+            vec![
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some(EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec![EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
+                    ..OpIR::default()
+                },
+            ]
+        })
+    } else {
+        VOID.get_or_init(|| {
+            vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }]
+        })
+    }
+}
+
+impl FunctionIR {
+    fn signature_with_return(&self, returns_value: bool) -> ExternFunctionSignature {
+        ExternFunctionSignature {
+            arity: self.params.len(),
+            has_closure: self
+                .params
+                .first()
+                .is_some_and(|param| param == crate::MOLT_CLOSURE_PARAM_NAME),
+            returns_value,
+            execution_context: self.execution_context,
+        }
+    }
+
+    /// Return the target-neutral call ABI for either a body owner or a
+    /// canonical extern declaration. Backends freeze this projection before
+    /// partitioning and must compare declarations against it at ingest.
+    pub fn function_signature(&self) -> Result<ExternFunctionSignature, String> {
+        if self.is_extern {
+            self.extern_signature()
+        } else {
+            Ok(self.signature_with_return(self.returns_value()?))
+        }
+    }
+
+    pub fn extern_signature(&self) -> Result<ExternFunctionSignature, String> {
+        if !self.is_extern {
+            return Err(format!(
+                "function `{}` is not an extern declaration",
+                self.name
+            ));
+        }
+        let returns_value = if self.ops == canonical_extern_signature_ops(false) {
+            false
+        } else if self.ops == canonical_extern_signature_ops(true) {
+            true
+        } else {
+            return Err(format!(
+                "extern function `{}` must contain only canonical return-signature metadata",
+                self.name
+            ));
+        };
+        Ok(self.signature_with_return(returns_value))
+    }
+
+    pub fn returns_value(&self) -> Result<bool, String> {
+        if self.is_extern {
+            return Ok(self.extern_signature()?.returns_value);
+        }
+        Ok(self.ops.iter().any(|op| {
+            matches!(
+                op.kind.as_str(),
+                "ret"
+                    | "state_switch"
+                    | "state_transition"
+                    | "state_yield"
+                    | "chan_send_yield"
+                    | "chan_recv_yield"
+            )
+        }))
+    }
+
+    pub fn externalize_with_signature(&mut self) -> Result<(), String> {
+        let returns_value = self.returns_value()?;
+        self.is_extern = true;
+        self.ops = canonical_extern_signature_ops(returns_value).to_vec();
+        Ok(())
+    }
+
+    pub fn extern_declaration(&self) -> Result<Self, String> {
+        let returns_value = self.returns_value()?;
+        Ok(Self {
+            name: self.name.clone(),
+            params: self.params.clone(),
+            ops: canonical_extern_signature_ops(returns_value).to_vec(),
+            param_types: self.param_types.clone(),
+            source_file: self.source_file.clone(),
+            is_extern: true,
+            execution_context: self.execution_context,
+        })
+    }
+}
+
+/// Return the statically named user-function target whose ABI is declared by
+/// another `FunctionIR`. Dynamic callable, method, FFI, and string-bearing
+/// operations are deliberately excluded even when they participate in the
+/// broader call graph.
+#[inline]
+pub fn extern_direct_call_target(op: &OpIR) -> Option<&str> {
+    matches!(op.kind.as_str(), "call" | "call_internal" | "call_guarded")
+        .then(|| op.s_value.as_deref())
+        .flatten()
+}
+
+pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
+    let mut function_names = BTreeSet::new();
+    for function in &ir.functions {
+        if !function_names.insert(function.name.as_str()) {
+            return Err(format!(
+                "duplicate FunctionIR name `{}` would merge definition and declaration ownership",
+                function.name
+            ));
+        }
+    }
+
+    let mut declarations = BTreeMap::new();
+    for function in ir.functions.iter().filter(|function| function.is_extern) {
+        let signature = function.extern_signature()?;
+        declarations.insert(function.name.as_str(), signature);
+    }
+
+    for caller in ir.functions.iter().filter(|function| !function.is_extern) {
+        for op in &caller.ops {
+            let Some(target) = extern_direct_call_target(op) else {
+                continue;
+            };
+            let Some(signature) = declarations.get(target) else {
+                continue;
+            };
+            if signature.execution_context == ExecutionContextPolicy::Inherited
+                && !op.passes_execution_context
+            {
+                return Err(format!(
+                    "extern call ABI mismatch: caller `{}` does not thread the inherited execution context required by declaration `{target}`",
+                    caller.name
+                ));
+            }
+            if signature.execution_context != ExecutionContextPolicy::Inherited
+                && op.passes_execution_context
+            {
+                return Err(format!(
+                    "extern call ABI mismatch: caller `{}` threads an execution context to non-inherited declaration `{target}`",
+                    caller.name
+                ));
+            }
+
+            let encoded_arg_count = op.args.as_ref().map_or(0, Vec::len);
+            let explicit_arg_count = if op.kind == "call_guarded" {
+                encoded_arg_count.checked_sub(1).ok_or_else(|| {
+                    format!(
+                        "extern call ABI mismatch: guarded caller `{}` has no callable operand for declaration `{target}`",
+                        caller.name
+                    )
+                })?
+            } else {
+                encoded_arg_count
+            };
+            let caller_arity = explicit_arg_count + usize::from(signature.has_closure);
+            if caller_arity != signature.arity {
+                return Err(format!(
+                    "extern call ABI mismatch: caller `{}` supplies {caller_arity} parameter(s) to declaration `{target}`, which requires {}",
+                    caller.name, signature.arity
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -669,7 +868,7 @@ impl FunctionIR {
                 .get("source_file")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-            is_extern: false,
+            is_extern: optional_bool(obj, "is_extern", ctx)?.unwrap_or(false),
             execution_context: obj
                 .get("execution_context")
                 .and_then(|value| value.as_str())
@@ -798,7 +997,9 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
         // not own a body. Their compact signature ops must never be mistaken
         // for lifecycle ownership; callers are still checked below against
         // the declaration's execution-context policy.
-        if !func.is_extern {
+        if func.is_extern {
+            func.extern_signature()?;
+        } else {
             let frame_ops = func
                 .ops
                 .iter()
@@ -963,8 +1164,7 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                     ));
                 }
             }
-            if simpleir_kind_is_call_graph_user_call(op.kind.as_str())
-                && let Some(target) = op.s_value.as_deref()
+            if let Some(target) = extern_direct_call_target(op)
                 && inherited.contains(target)
                 && !op.passes_execution_context
             {
@@ -982,7 +1182,7 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    validate_extern_call_abis(ir)
 }
 
 fn simple_ir_op_dominates(
@@ -1148,9 +1348,12 @@ mod json_parse_tests {
         };
         let inherited_declaration = FunctionIR {
             name: "sys__molt_module_chunk_1".to_string(),
-            params: vec!["module".to_string()],
-            ops: Vec::new(),
-            param_types: Some(vec!["i64".to_string()]),
+            params: Vec::new(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: Some(Vec::new()),
             source_file: Some("sys.py".to_string()),
             is_extern: true,
             execution_context: super::ExecutionContextPolicy::Inherited,
@@ -1192,6 +1395,63 @@ mod json_parse_tests {
         let mut decoded: SimpleIR = serde_json::from_slice(&encoded)
             .expect("extern declarations preserve ABI policy without owning lifecycle ops");
         assert_eq!(decoded.functions.len(), 3);
+        assert_eq!(
+            decoded.functions[0]
+                .extern_signature()
+                .expect("canonical local extern signature"),
+            super::ExternFunctionSignature {
+                arity: 0,
+                has_closure: false,
+                returns_value: false,
+                execution_context: super::ExecutionContextPolicy::Local,
+            }
+        );
+
+        let mut value_declaration = FunctionIR {
+            name: "value_external".to_string(),
+            params: vec!["arg".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("scratch".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["value".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["i64".to_string()]),
+            source_file: None,
+            is_extern: false,
+            execution_context: super::ExecutionContextPolicy::None,
+        };
+        value_declaration
+            .externalize_with_signature()
+            .expect("externalize value-returning body");
+        assert_eq!(value_declaration.ops.len(), 2);
+        assert_eq!(
+            value_declaration
+                .extern_signature()
+                .expect("canonical value extern signature"),
+            super::ExternFunctionSignature {
+                arity: 1,
+                has_closure: false,
+                returns_value: true,
+                execution_context: super::ExecutionContextPolicy::None,
+            }
+        );
+        let canonical_ops = value_declaration.ops.clone();
+        value_declaration
+            .externalize_with_signature()
+            .expect("externalization is idempotent for canonical declarations");
+        assert_eq!(value_declaration.ops, canonical_ops);
 
         decoded.functions[2].ops[1].passes_execution_context = false;
         let encoded = serde_json::to_vec(&decoded).expect("serialize unthreaded extern call");
@@ -1202,6 +1462,48 @@ mod json_parse_tests {
                 .to_string()
                 .contains("requires direct threaded call metadata")
         );
+
+        let mut noncanonical_declaration = external_local.clone();
+        noncanonical_declaration.ops.insert(
+            0,
+            OpIR {
+                kind: "trace_enter_slot".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+        );
+        let encoded = serde_json::to_vec(&SimpleIR {
+            functions: vec![noncanonical_declaration],
+            profile: None,
+        })
+        .expect("serialize noncanonical extern declaration");
+        let error = serde_json::from_slice::<SimpleIR>(&encoded)
+            .expect_err("extern declarations cannot smuggle executable lifecycle bodies");
+        assert!(error.to_string().contains("canonical return-signature"));
+
+        let duplicate_extern_error = super::validate_extern_call_abis(&SimpleIR {
+            functions: vec![external_local.clone(), external_local.clone()],
+            profile: None,
+        })
+        .expect_err("duplicate extern declarations must fail before backend emission");
+        assert!(duplicate_extern_error.contains("duplicate FunctionIR name"));
+
+        let duplicate_definition_error = super::validate_extern_call_abis(&SimpleIR {
+            functions: vec![
+                external_local.clone(),
+                FunctionIR {
+                    name: external_local.name.clone(),
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    ..FunctionIR::default()
+                },
+            ],
+            profile: None,
+        })
+        .expect_err("extern and body ownership cannot share one function name");
+        assert!(duplicate_definition_error.contains("duplicate FunctionIR name"));
 
         let mut invalid_body = external_local;
         invalid_body.is_extern = false;
@@ -1885,6 +2187,49 @@ mod json_parse_tests {
         assert_eq!(ir.functions[0].name, "molt_main");
         assert_eq!(ir.functions[1].name, "helper");
         assert!(ir.profile.is_none());
+    }
+
+    #[test]
+    fn extern_identity_is_preserved_across_every_json_transport_boundary() {
+        let json = r#"{
+            "functions": [{
+                "name": "external",
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+                "is_extern": true
+            }]
+        }"#;
+        let ndjson = r#"{"kind":"ir_stream_start","profile":null}
+{"kind":"function","name":"external","params":[],"ops":[{"kind":"ret_void"}],"is_extern":true}
+{"kind":"ir_stream_end"}
+"#;
+
+        let simple_manual = SimpleIR::from_json_str(json).expect("manual SimpleIR JSON");
+        let simple_serde =
+            serde_json::from_str::<SimpleIR>(json).expect("serde SimpleIR JSON boundary");
+        let simple_ndjson =
+            SimpleIR::from_ndjson_reader(std::io::BufReader::new(ndjson.as_bytes()))
+                .expect("SimpleIR NDJSON boundary");
+        let document_manual =
+            super::BackendIrDocument::from_json_str(json).expect("manual BackendIrDocument JSON");
+        let document_serde = serde_json::from_str::<super::BackendIrDocument>(json)
+            .expect("serde BackendIrDocument JSON boundary");
+        let document_ndjson = super::BackendIrDocument::from_ndjson_reader(
+            std::io::BufReader::new(ndjson.as_bytes()),
+        )
+        .expect("BackendIrDocument NDJSON boundary");
+
+        for function in [
+            &simple_manual.functions[0],
+            &simple_serde.functions[0],
+            &simple_ndjson.functions[0],
+            &document_manual.ir.functions[0],
+            &document_serde.ir.functions[0],
+            &document_ndjson.ir.functions[0],
+        ] {
+            assert!(function.is_extern);
+            assert!(!function.extern_signature().unwrap().returns_value);
+        }
     }
 
     #[test]

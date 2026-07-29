@@ -253,18 +253,48 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
     let mut changed = func_b.clone();
     changed.ops[0].s_value = Some("3.13".to_string());
 
-    let ordered = shared_stdlib_partition_manifest(&[func_a.clone(), func_b.clone()])
+    let ordered_functions = vec![func_a.clone(), func_b.clone()];
+    let reordered_functions = vec![func_b, func_a.clone()];
+    let changed_functions = vec![func_a, changed];
+    let mut context_changed_functions = ordered_functions.clone();
+    context_changed_functions[0].execution_context =
+        molt_backend::ir::ExecutionContextPolicy::Local;
+    let ordered_context = molt_backend::SimpleBackend::build_module_context(&ordered_functions);
+    let reordered_context = molt_backend::SimpleBackend::build_module_context(&reordered_functions);
+    let changed_context = molt_backend::SimpleBackend::build_module_context(&changed_functions);
+    let context_changed_context =
+        molt_backend::SimpleBackend::build_module_context(&context_changed_functions);
+    let ordered = shared_stdlib_partition_manifest(&ordered_functions, &ordered_context)
         .expect("partition manifest");
-    let reordered =
-        shared_stdlib_partition_manifest(&[func_b, func_a.clone()]).expect("partition manifest");
-    let body_changed =
-        shared_stdlib_partition_manifest(&[func_a, changed]).expect("partition manifest");
+    let reordered = shared_stdlib_partition_manifest(&reordered_functions, &reordered_context)
+        .expect("partition manifest");
+    let body_changed = shared_stdlib_partition_manifest(&changed_functions, &changed_context)
+        .expect("partition manifest");
+    let execution_context_changed =
+        shared_stdlib_partition_manifest(&context_changed_functions, &context_changed_context)
+            .expect("execution-context-mutated partition manifest");
+    let mut altered_context_json =
+        serde_json::to_value(&ordered_context).expect("serialize module context");
+    altered_context_json["function_linkage_abis"]["molt_init_sys"]["return_type"] =
+        serde_json::json!("F64");
+    let altered_context: molt_backend::NativeBackendModuleContext =
+        serde_json::from_value(altered_context_json).expect("deserialize altered linkage context");
+    let linkage_changed = shared_stdlib_partition_manifest(&ordered_functions, &altered_context)
+        .expect("linkage-mutated partition manifest");
 
     assert_eq!(ordered, reordered);
     assert_ne!(ordered, body_changed);
+    assert_ne!(
+        ordered, execution_context_changed,
+        "cache admission manifest must bind the complete FunctionIR contract"
+    );
+    assert_ne!(
+        ordered, linkage_changed,
+        "cache admission manifest must bind exact linkage carriers even when FunctionIR is unchanged"
+    );
     assert!(ordered.contains("\"molt_init_sys\""));
     assert!(ordered.contains("\"sys__version\""));
-    assert!(ordered.contains("\"schema\":\"stdlib-partition-v1\""));
+    assert!(ordered.contains("\"schema\":\"stdlib-partition-v2-exact-linkage-abi\""));
 }
 
 #[test]
@@ -519,7 +549,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     };
 
     let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-    let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
         &mut ir,
         "app",
         Some(&stdlib_modules),
@@ -581,7 +611,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
     };
 
     let stdlib_modules = std::collections::BTreeSet::new();
-    let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
         &mut ir,
         "__main__",
         Some(&stdlib_modules),
@@ -613,8 +643,15 @@ fn compile_stdlib_cache_object_emits_parseable_empty_object() {
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let stdlib = tmp_dir.join("empty-stdlib.o");
 
-    compile_stdlib_cache_object(&stdlib, Vec::new(), None, None, "MOLT_BACKEND(test)")
-        .expect("empty stdlib cache must emit an object");
+    compile_stdlib_cache_object(
+        &stdlib,
+        Vec::new(),
+        None,
+        None,
+        "MOLT_BACKEND(test)",
+        molt_backend::NativeBackendModuleContext::default(),
+    )
+    .expect("empty stdlib cache must emit an object");
 
     let bytes = std::fs::read(&stdlib).expect("read emitted empty stdlib object");
     assert!(

@@ -9337,7 +9337,7 @@ def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
         manifest, encoding="utf-8"
     )
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_obj).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}',
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}',
         encoding="utf-8",
     )
     cli._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
@@ -25594,7 +25594,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         stdlib_manifest + "\n", encoding="utf-8"
     )
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli._stdlib_object_digest_sidecar_path(stdlib_object_path).write_text(
@@ -27862,7 +27862,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         stdlib_manifest + "\n", encoding="utf-8"
     )
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v1"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
@@ -27915,7 +27915,7 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
         (
             '{"body_hash":"test","function_count":1,'
             '"functions":["collections__UserDict_copy"],'
-            '"schema":"stdlib-partition-v1"}\n'
+            '"schema":"stdlib-partition-v2-exact-linkage-abi"}\n'
         ),
         encoding="utf-8",
     )
@@ -27980,7 +27980,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
         stdlib_manifest + "\n", encoding="utf-8"
     )
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v1"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(

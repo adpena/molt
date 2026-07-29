@@ -4,8 +4,16 @@ use wasm_encoder::{Function, Instruction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmFunctionSymbol {
-    Defined { defined_func_index: u32 },
+    Defined {
+        defined_func_index: u32,
+    },
     RuntimeImport(WasmRuntimeImport),
+    /// Stable ordinal among canonical `env` user-function imports. Runtime
+    /// import stripping may change the absolute function index, so relocations
+    /// must resolve these by import class/ordinal rather than a stale index.
+    UserImport {
+        user_import_ordinal: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

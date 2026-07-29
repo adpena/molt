@@ -16,6 +16,7 @@ mod native_callables;
 mod poll_table;
 mod runtime_surface;
 mod type_layout;
+mod user_functions;
 
 pub(in crate::wasm) use callable_table::WasmCallableCallSiteAbi;
 use finalize::WasmModuleFinalizationInput;
@@ -25,7 +26,7 @@ use type_layout::WasmModuleTypeLayout;
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
-        ir: SimpleIR,
+        mut ir: SimpleIR,
         lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
     ) -> WasmCompileOutput {
@@ -34,7 +35,7 @@ impl WasmBackend {
             task_kinds,
             task_closure_sizes,
             default_trampoline_spec,
-            function_has_ret,
+            function_abi_returns_value,
         } = analysis;
 
         emit_static_type_section(&mut self.types);
@@ -49,7 +50,6 @@ impl WasmBackend {
             imports: native_callable_imports,
             next_type_idx,
         } = self.emit_native_callable_import_surface(&ir, next_type_idx_after_runtime);
-        self.func_import_count = self.func_count;
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -74,6 +74,8 @@ impl WasmBackend {
             max_func_arity,
             max_call_arity,
         );
+        let user_function_imports = self.emit_user_function_import_surface(&ir, &type_layout);
+        self.func_import_count = self.func_count;
         let sentinel_func_idx =
             type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
 
@@ -86,7 +88,8 @@ impl WasmBackend {
             &default_trampoline_spec,
             &task_kinds,
             &task_closure_sizes,
-            &function_has_ret,
+            &function_abi_returns_value,
+            &user_function_imports,
             type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
@@ -95,7 +98,10 @@ impl WasmBackend {
         callable_table.validate_ir_call_target_closure(&ir);
 
         let import_ids = self.import_ids.clone();
-        let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
+        let return_alias_summaries = super::compile_pipeline::with_defined_function_bodies(
+            &mut ir.functions,
+            |defined_functions| crate::passes::compute_return_alias_summaries(defined_functions),
+        );
 
         let compile_ctx = CompileFuncContext {
             call_site_abi: callable_table.call_site_abi(
@@ -111,6 +117,9 @@ impl WasmBackend {
             lir_lowering_plans: &lir_lowering_plans,
         };
         for func_ir in &ir.functions {
+            if func_ir.is_extern {
+                continue;
+            }
             let type_idx = type_layout.type_idx_for_function(func_ir);
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }

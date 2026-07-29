@@ -13,6 +13,19 @@ pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
 }
 
 #[cfg(feature = "native-backend")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct NativeFunctionLinkageAbi {
+    /// Target-neutral source ABI frozen from the owning FunctionIR before
+    /// partitioning. Consumer declarations must match it exactly.
+    pub source_signature: crate::ir::ExternFunctionSignature,
+    /// Exact machine-carrier types frozen before the function set is split
+    /// into independently compiled objects.
+    pub param_types: Vec<crate::tir::types::TirType>,
+    /// `None` is a true native-void ABI. `Some` is the exact return carrier.
+    pub return_type: Option<crate::tir::types::TirType>,
+}
+
+#[cfg(feature = "native-backend")]
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct NativeBackendModuleContext {
     pub(in crate::native_backend::simple_backend) function_arities: BTreeMap<String, usize>,
@@ -23,17 +36,116 @@ pub struct NativeBackendModuleContext {
     pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) return_alias_summaries:
         BTreeMap<String, crate::passes::ReturnAliasSummary>,
+    /// Whole-program linkage ABI authority shared by every batch worker.
+    /// Provider definitions and consumer declarations must read the same row;
+    /// neither may reconstruct a machine signature from its local body subset.
+    pub(in crate::native_backend::simple_backend) function_linkage_abis:
+        BTreeMap<String, NativeFunctionLinkageAbi>,
 }
 
 #[cfg(feature = "native-backend")]
 impl NativeBackendModuleContext {
+    pub fn function_linkage_abi(&self, name: &str) -> Option<&NativeFunctionLinkageAbi> {
+        self.function_linkage_abis.get(name)
+    }
+
+    /// Prove that every declaration consumed from this context has exactly the
+    /// target-neutral signature and machine shape frozen by its body owner.
+    /// Local bodies with a row are checked too; local synthetic functions may
+    /// legitimately have no whole-program row and derive one in the compiler.
+    pub fn validate_function_linkage_abis(&self, functions: &[FunctionIR]) -> Result<(), String> {
+        for function in functions {
+            let signature = function.function_signature()?;
+            let Some(linkage_abi) = self.function_linkage_abis.get(&function.name) else {
+                if function.is_extern {
+                    return Err(format!(
+                        "extern function `{}` has no frozen native linkage ABI",
+                        function.name
+                    ));
+                }
+                continue;
+            };
+            if linkage_abi.param_types.len() != linkage_abi.source_signature.arity {
+                return Err(format!(
+                    "native linkage ABI `{}` has {} carriers but source arity {}",
+                    function.name,
+                    linkage_abi.param_types.len(),
+                    linkage_abi.source_signature.arity
+                ));
+            }
+            if linkage_abi.return_type.is_some() != linkage_abi.source_signature.returns_value {
+                return Err(format!(
+                    "native linkage ABI `{}` return carrier disagrees with its frozen source signature",
+                    function.name
+                ));
+            }
+            if signature != linkage_abi.source_signature {
+                return Err(format!(
+                    "function `{}` signature {:?} disagrees with frozen native linkage signature {:?}",
+                    function.name, signature, linkage_abi.source_signature
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(in crate::native_backend::simple_backend) fn from_functions(
         functions: &[FunctionIR],
     ) -> Self {
-        // The module context carries the whole-program leaf set consumed by the
-        // batched codegen path, so compute it here (Tier-0 S4).
-        let analysis = analyze_native_backend_functions(functions, /* compute_leaves */ true);
-        Self {
+        let timing = crate::env_setting("MOLT_BACKEND_TIMING")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let started = timing.then(std::time::Instant::now);
+        let mut unique_names = BTreeSet::new();
+        for function in functions {
+            assert!(
+                unique_names.insert(function.name.as_str()),
+                "duplicate FunctionIR name `{}` cannot own a deterministic native linkage ABI",
+                function.name
+            );
+        }
+        // Lower each owned body exactly once. The same transient TIR snapshot
+        // authors both the call-graph leaf facts and the exact machine ABI;
+        // rebuilding it for each analysis doubled mandatory O(IR) work and
+        // allocations on every native compilation.
+        let tir_functions: Vec<crate::tir::TirFunction> = functions
+            .iter()
+            .filter(|function| !function.is_extern)
+            .map(crate::tir::lower_from_simple::lower_to_tir)
+            .collect();
+        let function_linkage_abis = functions
+            .iter()
+            .filter(|function| !function.is_extern)
+            .zip(&tir_functions)
+            .map(|(function, tir)| {
+                let source_signature = function
+                    .function_signature()
+                    .unwrap_or_else(|error| panic!("invalid linkage ABI source: {error}"));
+                let param_types = crate::representation_plan::native_linkage_param_types(tir);
+                let return_type = source_signature
+                    .returns_value
+                    .then(|| tir.return_type.clone());
+                (
+                    function.name.clone(),
+                    NativeFunctionLinkageAbi {
+                        source_signature,
+                        param_types,
+                        return_type,
+                    },
+                )
+            })
+            .collect();
+        let mut analysis =
+            analyze_native_backend_functions(functions, /* compute_leaves */ false);
+        analysis.leaf_functions = compute_leaf_functions_from_tir(tir_functions);
+        if !analysis.leaf_functions.is_empty() {
+            eprintln!(
+                "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
+                analysis.leaf_functions.len()
+            );
+        }
+        let context = Self {
             function_arities: functions
                 .iter()
                 .map(|func| (func.name.clone(), func.params.len()))
@@ -44,7 +156,23 @@ impl NativeBackendModuleContext {
             task_closure_sizes: analysis.task_closure_sizes,
             leaf_functions: analysis.leaf_functions,
             return_alias_summaries: crate::passes::compute_return_alias_summaries(functions),
+            function_linkage_abis,
+        };
+        if let Some(started) = started {
+            let carrier_count = context
+                .function_linkage_abis
+                .values()
+                .map(|abi| abi.param_types.len() + usize::from(abi.return_type.is_some()))
+                .sum::<usize>();
+            eprintln!(
+                "MOLT_BACKEND_TIMING: froze {} native linkage ABI rows / {} carriers from {} functions in {:.2?}",
+                context.function_linkage_abis.len(),
+                carrier_count,
+                functions.len(),
+                started.elapsed(),
+            );
         }
+        context
     }
 }
 
@@ -256,6 +384,13 @@ pub(in crate::native_backend::simple_backend) fn compute_leaf_functions_via_call
         .filter(|f| !f.is_extern)
         .map(crate::tir::lower_from_simple::lower_to_tir)
         .collect();
+    compute_leaf_functions_from_tir(tir_functions)
+}
+
+#[cfg(feature = "native-backend")]
+fn compute_leaf_functions_from_tir(
+    tir_functions: Vec<crate::tir::TirFunction>,
+) -> BTreeSet<String> {
     let module = crate::tir::TirModule {
         name: "native_leaf_analysis".to_string(),
         functions: tir_functions,

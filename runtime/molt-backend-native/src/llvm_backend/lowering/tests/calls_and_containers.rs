@@ -9,12 +9,10 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
     );
-    backend
-        .function_param_types
-        .insert("guarded_target".to_string(), vec![TirType::DynBox]);
-    backend
-        .function_return_types
-        .insert("guarded_target".to_string(), TirType::DynBox);
+    backend.function_linkage_abis.insert(
+        "guarded_target".to_string(),
+        test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
+    );
 
     let mut func = TirFunction::new("guarded_call_abi".into(), vec![], TirType::DynBox);
     let callable = func.fresh_value();

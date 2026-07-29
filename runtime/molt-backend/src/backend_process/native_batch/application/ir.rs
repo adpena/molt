@@ -37,11 +37,15 @@ pub(crate) fn prepare_native_application_ir(
 }
 
 pub(crate) fn native_application_stats(ir: &SimpleIR) -> NativeApplicationStats {
+    let (function_count, total_ops) = ir
+        .functions
+        .iter()
+        .filter(|func| !func.is_extern)
+        .fold((0usize, 0usize), |(count, ops), func| {
+            (count + 1, ops.saturating_add(func.ops.len()))
+        });
     NativeApplicationStats {
-        function_count: ir.functions.len(),
-        total_ops: ir
-            .functions
-            .iter()
-            .fold(0usize, |ops, func| ops.saturating_add(func.ops.len())),
+        function_count,
+        total_ops,
     }
 }

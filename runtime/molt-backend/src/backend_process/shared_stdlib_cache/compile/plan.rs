@@ -2,30 +2,36 @@ use std::collections::BTreeSet;
 
 use super::super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_STDLIB_BATCH_SIZE};
 use super::super::super::native_batch::{
-    InheritedFunctionDeclarations, inherited_function_declarations,
-    partition_functions_for_batches, resolved_batch_op_budget_limit, resolved_batch_size_limit,
+    ExternalFunctionDeclarations, external_function_declarations, partition_functions_for_batches,
+    resolved_batch_op_budget_limit, resolved_batch_size_limit,
 };
 
 pub(super) struct StdlibBatchPlan {
     pub(super) all_function_names: BTreeSet<String>,
-    pub(super) inherited_function_declarations: InheritedFunctionDeclarations,
+    pub(super) external_function_declarations: ExternalFunctionDeclarations,
     pub(super) module_context: molt_backend::NativeBackendModuleContext,
     pub(super) batches: Vec<Vec<molt_backend::FunctionIR>>,
 }
 
 impl StdlibBatchPlan {
-    pub(super) fn from_functions(stdlib_funcs: Vec<molt_backend::FunctionIR>) -> Self {
+    pub(super) fn from_functions(
+        stdlib_funcs: Vec<molt_backend::FunctionIR>,
+        module_context: molt_backend::NativeBackendModuleContext,
+    ) -> Self {
         let all_function_names = stdlib_funcs.iter().map(|f| f.name.clone()).collect();
-        let inherited_function_declarations = inherited_function_declarations(&stdlib_funcs);
-        let module_context = molt_backend::SimpleBackend::build_module_context(&stdlib_funcs);
+        let external_function_declarations = external_function_declarations(&stdlib_funcs);
+        let body_functions = stdlib_funcs
+            .into_iter()
+            .filter(|func| !func.is_extern)
+            .collect();
         let batches = partition_functions_for_batches(
-            stdlib_funcs,
+            body_functions,
             stdlib_batch_size(),
             stdlib_batch_ops_budget(),
         );
         Self {
             all_function_names,
-            inherited_function_declarations,
+            external_function_declarations,
             module_context,
             batches,
         }
@@ -35,8 +41,13 @@ impl StdlibBatchPlan {
         self.batches.len()
     }
 
-    pub(super) fn into_only_batch(mut self) -> Vec<molt_backend::FunctionIR> {
-        self.batches.pop().unwrap_or_default()
+    pub(super) fn into_only_batch_with_context(
+        mut self,
+    ) -> (
+        Vec<molt_backend::FunctionIR>,
+        molt_backend::NativeBackendModuleContext,
+    ) {
+        (self.batches.pop().unwrap_or_default(), self.module_context)
     }
 }
 

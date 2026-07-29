@@ -16,6 +16,7 @@ pub(crate) fn prepare_native_application_object<'a>(
     ir: &mut SimpleIR,
     request: NativeStdlibCachePrepare<'a>,
 ) -> io::Result<NativeApplicationObjectOptions<'a>> {
+    let mut module_context = None;
     let app_callable_manifest = request
         .stdlib_obj_path
         .map(|_| molt_backend::compute_app_callable_manifest_checked(&ir.functions));
@@ -29,6 +30,7 @@ pub(crate) fn prepare_native_application_object<'a>(
         let stdlib_path = Path::new(stdlib_path_str);
         let mut prepared =
             partition::prepare_stdlib_partition(ir, &request, &module_registry_roots, stdlib_path)?;
+        module_context = Some(prepared.module_context.clone());
         let reused = reuse::try_reuse_existing_stdlib_cache(
             ir,
             stdlib_path,
@@ -46,6 +48,7 @@ pub(crate) fn prepare_native_application_object<'a>(
                 &prepared.current_partition_manifest,
                 &mut prepared.user_remaining,
                 &mut prepared.stdlib_funcs,
+                &prepared.module_context,
             )?;
         }
     }
@@ -56,5 +59,6 @@ pub(crate) fn prepare_native_application_object<'a>(
         app_callable_manifest,
         log_prefix: request.log_prefix,
         module_registry: request.module_registry,
+        module_context,
     })
 }

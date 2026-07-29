@@ -152,7 +152,7 @@ fn daemon_request_with_env_preserves_user_entry_object() {
         profile: None,
     };
     let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-    let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+    let (user_remaining, stdlib_funcs, _module_context) = prune_and_partition_native_stdlib(
         &mut partition_ir,
         "demo",
         Some(&stdlib_modules),

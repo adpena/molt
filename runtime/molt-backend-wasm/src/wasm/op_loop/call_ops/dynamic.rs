@@ -1,3 +1,4 @@
+use super::direct::normalize_direct_call_result;
 use super::site::{
     build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
     emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
@@ -43,6 +44,7 @@ pub(super) fn emit_dynamic_call_op(
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
             let arity = args_names.len().saturating_sub(1);
             let escaped_target = call_site_abi.is_escaped_callable(target_name);
+            let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
             let func_idx = call_site_abi.function_index(target_name, "call_guarded");
             let table_target = call_site_abi.table_target(target_name, "call_guarded");
             if escaped_target {
@@ -205,6 +207,7 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::LocalGet(arg));
             }
             emit_call(func, reloc_enabled, func_idx);
+            normalize_direct_call_result(func, abi_returns_value, true);
             func.instruction(&Instruction::LocalSet(out));
             emit_call(
                 func,
