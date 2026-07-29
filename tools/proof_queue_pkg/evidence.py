@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shlex
@@ -192,9 +193,22 @@ def _queue_proof_receipt(
     context = json.loads(context_raw)
     if not isinstance(context, dict):
         raise ValueError("proof run receipt context is malformed")
+    envelope_raw = state._row_value(row, "command_envelope_json")
+    envelope = json.loads(str(envelope_raw))
+    if not isinstance(envelope, dict):
+        raise ValueError("proof run admission envelope is malformed")
+    context_envelope = context.get("command_envelope")
+    if context.get("terminal_evidence_sha256") is not None:
+        if context_envelope != envelope:
+            raise ValueError(
+                "terminal proof receipt envelope differs from immutable admission"
+            )
+        envelope_digest = hashlib.sha256(
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if context.get("command_envelope_sha256") != envelope_digest:
+            raise ValueError("terminal proof receipt envelope digest mismatch")
     if succeeded:
-        envelope_raw = state._row_value(row, "command_envelope_json")
-        envelope = json.loads(str(envelope_raw))
         requested_toolchains = (
             envelope.get("toolchains") if isinstance(envelope, dict) else None
         )

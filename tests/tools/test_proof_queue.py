@@ -36,6 +36,7 @@ from tools.proof_queue_pkg import (
     cli,
     command_envelope,
     custody,
+    execution_custody,
     pact,
     policy,
     runner,
@@ -93,6 +94,10 @@ def _terminalize_synthetic_run(
                 "postcompletion": toolchains,
                 "identical": True,
             },
+            "command_envelope": envelope,
+            "command_envelope_sha256": hashlib.sha256(
+                json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
             "python_interpreters": {
                 "queue_control_plane": {
                     "executable": sys.executable,
@@ -179,7 +184,22 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
             "identical": True,
         },
         "command_envelope": request["envelope"],
+        "command_envelope_sha256": hashlib.sha256(
+            json.dumps(
+                request["envelope"], sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
         "command_transcript": transcript,
+        "live_input_custody": {
+            "schema": "molt.proof-live-custody.v1",
+            "stable": True,
+        },
+        "child_process_custody": {
+            "policy": {
+                "descendants": request["envelope"]["process_closure"]["descendants"]
+            },
+            "receipt": {"complete": True},
+        },
         "source_custody": {
             "prelaunch": {"available": True, "clean": True, "commit": "b" * 40},
             "postcompletion": {"available": True, "clean": True, "commit": "b" * 40},
@@ -566,6 +586,44 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         assert command.id in envelope["proof_plan_command_ids"]
         assert envelope["toolchains"] == list(command.toolchains)
         assert envelope["toolchains"], command.id
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "tools/check_formal_methods.py",
+        "./tools/check_formal_methods.py",
+        str(state.ROOT / "tools" / "check_formal_methods.py"),
+    ],
+)
+def test_proof_plan_entrypoint_near_match_cannot_downgrade_toolchains(
+    target: str,
+) -> None:
+    plan = proof_plan.ProofPlan.load()
+    command = next(item for item in plan.commands if item.id == "formal.quint.models")
+    with pytest.raises(
+        ValueError, match="near-match would discard toolchain authority"
+    ):
+        command_envelope.envelope_for_command(
+            [command.argv[0], target, *command.argv[2:], "--lean-only"]
+        )
+
+
+def test_non_exact_python_is_a_constructional_no_descendants_leaf() -> None:
+    envelope = command_envelope.envelope_for_command(
+        [sys.executable, "-c", "print('leaf')"]
+    )
+    assert envelope["process_closure"] == {
+        "kind": "leaf",
+        "descendants": "forbidden",
+        "toolchains": ["python"],
+    }
+
+
+def test_non_exact_general_launcher_requires_typed_delegation() -> None:
+    envelope = command_envelope.envelope_for_command(["cargo", "test"])
+    with pytest.raises(ValueError, match="guarded typed command family"):
+        execution_custody.require_enforceable_process_closure(envelope)
 
 
 @pytest.mark.parametrize(
@@ -1725,6 +1783,14 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
             "postcompletion": {"python": {"identity_sha256": "b" * 64}},
             "identical": True,
         },
+        "live_input_custody": {
+            "schema": "molt.proof-live-custody.v1",
+            "stable": True,
+        },
+        "child_process_custody": {
+            "policy": {"descendants": "forbidden"},
+            "receipt": {"complete": True},
+        },
     }
     context["execution_custody_sha256"] = command_envelope.execution_custody_sha256(
         context, run_id="run-one", returncode=0
@@ -1912,6 +1978,93 @@ def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) 
     assert custody_payload["evidence_eligible"] is False
     assert "source-dirty-postcompletion" in custody_payload["ineligible_reasons"]
     assert "source-snapshot-changed" in custody_payload["ineligible_reasons"]
+
+
+def test_live_custody_detects_mutate_execute_restore_transient(tmp_path: Path) -> None:
+    repo = tmp_path / "mutate-restore-repo"
+    _initialize_clean_git_repo(repo)
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "p=Path('tracked.txt'); original=p.read_bytes(); "
+            "p.write_bytes(b'transient\\n'); "
+            "assert p.read_bytes()==b'transient\\n'; p.write_bytes(original)"
+        ),
+    ]
+    rc, record = _execute_request(
+        repo, tmp_path / "mutate-restore-execution.json", command
+    )
+    assert rc == 0
+    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "initial\n"
+    context = record["receipt_context"]
+    assert (
+        context["source_custody"]["prelaunch"]
+        == context["source_custody"]["postcompletion"]
+    )
+    assert context["live_input_custody"]["stable"] is False
+    assert context["live_input_custody"]["events"]
+    assert "transient-input-mutation" in context["source_custody"]["ineligible_reasons"]
+
+
+def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -> None:
+    repo = tmp_path / "rename-restore-repo"
+    _initialize_clean_git_repo(repo)
+    package = repo / "package"
+    package.mkdir()
+    (package / "input.txt").write_text("owned\n", encoding="utf-8")
+    subprocess.run(["git", "add", "package/input.txt"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "add tracked package"], cwd=repo, check=True
+    )
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; source=Path('package'); moved=Path('moved'); "
+            "source.rename(moved); assert (moved/'input.txt').read_text()=='owned\\n'; "
+            "moved.rename(source)"
+        ),
+    ]
+    rc, record = _execute_request(
+        repo, tmp_path / "rename-restore-execution.json", command
+    )
+    assert rc == 0
+    context = record["receipt_context"]
+    assert (
+        context["source_custody"]["prelaunch"]
+        == context["source_custody"]["postcompletion"]
+    )
+    assert context["live_input_custody"]["stable"] is False
+    assert "transient-input-mutation" in context["source_custody"]["ineligible_reasons"]
+
+
+def test_python_leaf_blocks_cargo_and_node_children_before_launch(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "child-closure-repo"
+    _initialize_clean_git_repo(repo)
+    script = (
+        "import subprocess; blocked=[]; "
+        "\nfor command in (['cargo','--version'],['node','--version']):"
+        "\n try: subprocess.run(command,check=False)"
+        "\n except PermissionError: blocked.append(command[0])"
+        "\nassert blocked==['cargo','node'], blocked"
+    )
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "child-closure-execution.json",
+        [sys.executable, "-c", script],
+    )
+    assert rc == 0
+    context = record["receipt_context"]
+    receipt = context["child_process_custody"]["receipt"]
+    assert [event["requested"] for event in receipt["violations"]] == [
+        "cargo",
+        "node",
+    ]
+    assert "undeclared-child-process" in context["source_custody"]["ineligible_reasons"]
 
 
 def test_guarded_identity_timeout_is_terminal_before_command_launch(
@@ -2158,6 +2311,98 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
     assert "audit-legacy-unattested-proof-receipt" in {
         issue["signal_id"] for issue in audit["issues"]
     }
+
+
+def test_connect_never_rewrites_queued_or_terminal_admission_envelopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "immutable-admission.sqlite3"
+    conn = state._connect(db)
+    command = [sys.executable, "-c", "print('admitted')"]
+    for run_id in ("queued-run", "terminal-run"):
+        scheduling._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="immutable admission fixture",
+            command=command,
+            cwd=tmp_path,
+            resource_family="python-tests",
+            contention_key=f"python:{run_id}",
+            scopes=["tests/tools/test_proof_queue.py"],
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.json",
+            git_snapshot=_TEST_GIT_SNAPSHOT,
+        )
+    _terminalize_synthetic_run(conn, "terminal-run", status="passed", returncode=0)
+    before = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT run_id, command_envelope_json FROM proof_runs"
+        ).fetchall()
+    }
+    conn.close()
+
+    calls = 0
+
+    def drifted(_command: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"schema": "drifted-plan"}
+
+    monkeypatch.setattr(command_envelope, "admission_envelope", drifted)
+    reopened = state._connect(db)
+    after = {
+        row[0]: row[1]
+        for row in reopened.execute(
+            "SELECT run_id, command_envelope_json FROM proof_runs"
+        ).fetchall()
+    }
+    assert after == before
+    assert calls == 0
+    with pytest.raises(sqlite3.IntegrityError, match="admission is immutable"):
+        reopened.execute(
+            "UPDATE proof_runs SET command_envelope_json = '{}' "
+            "WHERE run_id = 'terminal-run'"
+        )
+    reopened.close()
+
+
+def test_terminal_export_rejects_row_envelope_drift_from_digested_receipt(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "terminal-envelope-drift.sqlite3"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="terminal-run",
+        logical_id="terminal-run",
+        reason="terminal envelope fixture",
+        command=[sys.executable, "-c", "print('terminal')"],
+        cwd=tmp_path,
+        resource_family="python-tests",
+        contention_key="python:terminal",
+        scopes=["tests/tools/test_proof_queue.py"],
+        log_path=tmp_path / "terminal.log",
+        summary_json=tmp_path / "terminal.json",
+        git_snapshot=_TEST_GIT_SNAPSHOT,
+    )
+    _terminalize_synthetic_run(conn, "terminal-run", status="passed", returncode=0)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = 'terminal-run'"
+    ).fetchone()
+    assert row is not None
+    substituted = dict(row)
+    substituted["command_envelope_json"] = json.dumps(
+        command_envelope.envelope_for_command(
+            [sys.executable, "-c", "print('substituted')"]
+        ),
+        sort_keys=True,
+    )
+    with pytest.raises(ValueError, match="differs from immutable admission"):
+        evidence_module._queue_proof_receipt(substituted)
+    conn.close()
 
 
 def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
@@ -6334,6 +6579,10 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
             },
             "identical": True,
         },
+        "command_envelope": authority,
+        "command_envelope_sha256": hashlib.sha256(
+            json.dumps(authority, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
         "python_interpreters": {
             "queue_control_plane": {
                 "executable": "C:/Python314/python.exe",
@@ -6576,13 +6825,13 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
     )
 
 
-def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> None:
+def test_proof_queue_submit_run_executes_queued_row_in_place(
+    tmp_path: Path, custody_python: Path
+) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     repo = tmp_path / "repo"
     _initialize_clean_git_repo(repo)
-    rustc = shutil.which("rustc")
-    assert rustc is not None
     dsl = tmp_path / "proof.toml"
     dsl.write_text(
         "\n".join(
@@ -6593,7 +6842,7 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
                 'resource_family = "python"',
                 'contention_key = "python:queued"',
                 'env = { MOLT_PROOF_QUEUE_TEST = "queued-ok", RUSTUP_TOOLCHAIN = "1.96.1" }',
-                f'command = [{rustc!r}, "--version"]',
+                f'command = [{str(custody_python)!r}, "-c", "print(\'queued-python-ok\')"]',
             ]
         ),
         encoding="utf-8",
@@ -6645,7 +6894,7 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     assert len(rows) == 1
     assert rows[0]["status"] == "passed"
     terminal_log = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
-    assert "rustc 1.96.1" in terminal_log
+    assert "queued-python-ok" in terminal_log
     assert "queued-ok" not in terminal_log
 
 

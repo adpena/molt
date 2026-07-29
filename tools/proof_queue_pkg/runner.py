@@ -155,6 +155,30 @@ def _validated_execution_context(
         != command_envelope._stable_toolchain_custody(captured_toolchains)
     ):
         raise ValueError("guarded receipt toolchain closure is not stable")
+    live_custody = context.get("live_input_custody")
+    if (
+        not isinstance(live_custody, dict)
+        or live_custody.get("schema") != "molt.proof-live-custody.v1"
+        or live_custody.get("stable") is not True
+    ):
+        raise ValueError("guarded receipt has no stable live input custody")
+    child_custody = context.get("child_process_custody")
+    closure = envelope.get("process_closure")
+    child_policy = (
+        child_custody.get("policy") if isinstance(child_custody, dict) else None
+    )
+    child_receipt = (
+        child_custody.get("receipt") if isinstance(child_custody, dict) else None
+    )
+    if (
+        not isinstance(child_custody, dict)
+        or not isinstance(closure, dict)
+        or not isinstance(child_policy, dict)
+        or child_policy.get("descendants") != closure.get("descendants")
+        or not isinstance(child_receipt, dict)
+        or child_receipt.get("complete") is not True
+    ):
+        raise ValueError("guarded receipt has no complete child-process custody")
     expected_custody = command_envelope.execution_custody_sha256(
         context,
         run_id=run_id,
