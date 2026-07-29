@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 66 |
+| Hashed executable authority inputs | 1 | 72 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -20,6 +20,7 @@ Every selected family expands to stable command IDs. Each command binds an exact
 Proof-family selection parents and GitHub admission edges are distinct authorities. A family may depend on another family only when it consumes that family's data or control result. Independent admissions depend only on the changed-path classifier, so a selected sibling failure cannot mask their execution; the Proof Plan Verdict remains the sole conjunction.
 
 The canonical executor admits dependency-ready commands in manifest order, bounds global fanout at 4, and enforces these per-resource limits:
+Installed Python custody uses 4 bounded hash workers over deterministic coarse file batches; prelaunch and postcompletion both read the complete admitted byte inventory.
 
 | Resource | Max parallel commands |
 |---|---:|

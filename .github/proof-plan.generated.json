@@ -15,6 +15,8 @@
     "config/ci_resource_policy.toml",
     "config/actionlint.toml",
     "config/reproducibility_corpus.toml",
+    "config/scientific_stack_versions.toml",
+    "config/proof_requirements/pact_witness.txt",
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
@@ -31,10 +33,13 @@
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
     "tools/proof_queue_pkg/command_envelope.py",
+    "tools/proof_queue_pkg/commands.py",
     "tools/proof_queue_pkg/evidence.py",
     "tools/proof_queue_pkg/custody.py",
     "tools/proof_queue_pkg/diagnostics.py",
     "tools/proof_queue_pkg/policy.py",
+    "tools/proof_queue_pkg/python_identity_probe.py",
+    "tools/proof_queue_pkg/pact.py",
     "tools/proof_queue_pkg/runner.py",
     "tools/proof_queue_pkg/scheduling.py",
     "tools/proof_queue_pkg/state.py",
@@ -63,12 +68,13 @@
     "tests/test_generator_manifest.py",
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_guarded_exec.py",
+    "tests/tools/test_proof_queue.py",
     "tests/tools/test_memory_guard_spawn_callback.py",
     "tests/tools/test_pytest_truth_plugin.py",
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "c3fdc8f53b8ff7ce401ac4c9e6bd424e01cc04c5f0f5bb515b81762a5421fd41",
+  "authority_sha256": "923904e89c6308ad16caf562b9b805ecd4da4fb8db2da99640778f5672db7bbd",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -2724,6 +2730,7 @@
       "timeout_seconds": 1200,
       "toolchains": [
         "python",
+        "node",
         "quint"
       ]
     },
@@ -2837,6 +2844,7 @@
         }
       }
     },
+    "inventory_hash_workers": 4,
     "max_workers": 4,
     "resource_policies": [
       {
@@ -4117,6 +4125,11 @@
       "version_pattern": "\\bLLD 22\\.1\\.8\\b"
     },
     {
+      "content_path_command": [
+        "elan",
+        "which",
+        "lean"
+      ],
       "executable": "lean",
       "name": "lean",
       "probe_cwd": "formal/lean",
@@ -4134,6 +4147,7 @@
     {
       "executable": "quint",
       "name": "quint",
+      "node_package": "@informalsystems/quint",
       "setup_evidence": [
         ".github/workflows/formal.yml::@informalsystems/quint@0.32.0"
       ],

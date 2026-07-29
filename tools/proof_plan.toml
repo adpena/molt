@@ -23,6 +23,8 @@ authority_inputs = [
   "config/ci_resource_policy.toml",
   "config/actionlint.toml",
   "config/reproducibility_corpus.toml",
+  "config/scientific_stack_versions.toml",
+  "config/proof_requirements/pact_witness.txt",
   "config/llvm_toolchain_releases.toml",
   "formal/lean/lean-toolchain",
   "rust-toolchain.toml",
@@ -39,10 +41,13 @@ authority_inputs = [
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
   "tools/proof_queue_pkg/command_envelope.py",
+  "tools/proof_queue_pkg/commands.py",
   "tools/proof_queue_pkg/evidence.py",
   "tools/proof_queue_pkg/custody.py",
   "tools/proof_queue_pkg/diagnostics.py",
   "tools/proof_queue_pkg/policy.py",
+  "tools/proof_queue_pkg/python_identity_probe.py",
+  "tools/proof_queue_pkg/pact.py",
   "tools/proof_queue_pkg/runner.py",
   "tools/proof_queue_pkg/scheduling.py",
   "tools/proof_queue_pkg/state.py",
@@ -71,6 +76,7 @@ authority_inputs = [
   "tests/test_generator_manifest.py",
   "tests/tools/test_cargo_test_truth.py",
   "tests/tools/test_guarded_exec.py",
+  "tests/tools/test_proof_queue.py",
   "tests/tools/test_memory_guard_spawn_callback.py",
   "tests/tools/test_pytest_truth_plugin.py",
   "tests/tools/test_win_job.py",
@@ -91,6 +97,11 @@ receipt_schema = "molt.proof-receipt.v2"
 # bounds process fanout; each resource policy additionally serializes or limits
 # commands that share mutable toolchain/build state.
 executor_max_workers = 4
+
+# Installed Python custody hashes a deterministic, locality-sorted file
+# worklist in coarse batches. This bounds the I/O fanout independently from
+# proof-command fanout; every pre/post scan still reads every admitted byte.
+inventory_hash_workers = 4
 
 [[resource_policy]]
 name = "compiler-build-resource"
@@ -247,6 +258,7 @@ name = "lean"
 executable = "lean"
 probe_cwd = "formal/lean"
 version_args = ["--version"]
+content_path_command = ["elan", "which", "lean"]
 version_pattern = 'version 4\.28\.0\b'
 setup_value = "4.28.0"
 setup_evidence = [
@@ -259,6 +271,7 @@ setup_evidence = [
 name = "quint"
 executable = "quint"
 version_args = ["--version"]
+node_package = "@informalsystems/quint"
 version_pattern = '^(?:Quint\s+)?0\.32\.0$'
 setup_value = "0.32.0"
 setup_evidence = [".github/workflows/formal.yml::@informalsystems/quint@0.32.0"]
@@ -1555,7 +1568,7 @@ timeout_seconds = 1200
 cache_domain = "quint"
 dependencies = []
 argv = ["python3", "tools/check_formal_methods.py", "--quint-only"]
-toolchains = ["python", "quint"]
+toolchains = ["python", "node", "quint"]
 
 [[command]]
 id = "formal.correspondence"

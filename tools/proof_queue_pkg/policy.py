@@ -10,6 +10,9 @@ from tools.proof_queue_pkg import command_envelope, custody, state
 
 
 def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
+    semantic_error = command_envelope.environment_override_policy_error(env_overrides)
+    if semantic_error is not None:
+        return f"proof queue refuses invalid environment override: {semantic_error}"
     try:
         custody._proof_queue_memory_guard_poll_sec(env_overrides)
     except ValueError as exc:
@@ -17,12 +20,10 @@ def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
     return None
 
 
-
 def _load_wasm_toolchain():
     from molt.cli import wasm_toolchain
 
     return wasm_toolchain
-
 
 
 def _required_rust_targets_for_resource(
@@ -34,7 +35,6 @@ def _required_rust_targets_for_resource(
             repo_root
         ).required_wasm_targets
     return ()
-
 
 
 def _ensure_run_toolchain_preflight(
@@ -75,22 +75,8 @@ def _ensure_run_toolchain_preflight(
     return None
 
 
-
 def _command_basename(command: str) -> str:
     return Path(command).name.lower()
-
-
-
-def _has_option(command: list[str], option: str, value: str | None = None) -> bool:
-    for index, arg in enumerate(command):
-        if arg == option:
-            return value is None or (
-                index + 1 < len(command) and command[index + 1] == value
-            )
-        if value is not None and arg == f"{option}={value}":
-            return True
-    return False
-
 
 
 _CARGO_OPTIONS_WITH_VALUES = frozenset(
@@ -114,7 +100,6 @@ _CARGO_OPTIONS_WITH_VALUES = frozenset(
 )
 
 
-
 def _normalized_cargo_args(cargo_args: list[str]) -> list[str]:
     args = list(cargo_args)
     if args[:1] == ["--"]:
@@ -124,10 +109,8 @@ def _normalized_cargo_args(cargo_args: list[str]) -> list[str]:
     return args
 
 
-
 def _cargo_arg_has_flag(cargo_args: list[str], flag: str) -> bool:
     return any(arg == flag for arg in cargo_args)
-
 
 
 def _cargo_test_filters(cargo_args: list[str]) -> list[str]:
@@ -157,7 +140,6 @@ def _cargo_test_filters(cargo_args: list[str]) -> list[str]:
     return filters
 
 
-
 def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
     args = _normalized_cargo_args(cargo_args)
     if args[:1] != ["test"] or not _cargo_arg_has_flag(args, "--lib"):
@@ -174,12 +156,14 @@ def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
     )
 
 
-
 def _proof_command_policy_error(command: list[str]) -> str | None:
     if not command:
         return None
+    secret_error = command_envelope.command_secret_policy_error(command)
+    if secret_error is not None:
+        return f"proof queue refuses secret-bearing command: {secret_error}"
     try:
-        command_envelope.envelope_for_command(command)
+        envelope = command_envelope.envelope_for_command(command)
     except ValueError as exc:
         return f"proof queue refuses an untyped command envelope: {exc}"
     basename = _command_basename(command[0])
@@ -195,22 +179,32 @@ def _proof_command_policy_error(command: list[str]) -> str | None:
         return None
     if command[1] != "run":
         return None
+    python = envelope.get("python")
+    if not isinstance(python, Mapping):
+        return "proof queue refuses `uv run` without a typed Python authority"
+    prefix = python.get("prefix")
+    if not isinstance(prefix, list):
+        return "proof queue refuses `uv run` without a typed launch prefix"
+    prefix = [str(value) for value in prefix]
     missing = []
-    if not _has_option(command, "--active"):
+    if "--active" not in prefix:
         missing.append("--active")
-    if not _has_option(command, "--project", "."):
+    if command_envelope._uv_option_values(prefix, "--project") != ["."]:
         missing.append("--project .")
-    if not _has_option(command, "--python", "3.12"):
+    if command_envelope._uv_option_values(prefix, "--python") != ["3.12"]:
         missing.append("--python 3.12")
+    if "--no-sync" not in prefix:
+        missing.append("--no-sync")
+    if "--no-config" not in prefix:
+        missing.append("--no-config")
     if not missing:
         return None
     return (
         "proof queue refuses `uv run` commands without the active project "
         "interpreter contract; missing "
         + ", ".join(missing)
-        + ". Use `uv run --active --project . --python 3.12 ...`."
+        + ". Use `uv run --active --project . --python 3.12 --no-sync --no-config ...`."
     )
-
 
 
 def _parse_env_pair(pair: str) -> tuple[str, str]:
@@ -222,14 +216,20 @@ def _parse_env_pair(pair: str) -> tuple[str, str]:
     return name, value
 
 
-
 def _env_overrides_from_pairs(pairs: list[str]) -> dict[str, str]:
     env: dict[str, str] = {}
+    seen: dict[str, str] = {}
     for pair in pairs:
         name, value = _parse_env_pair(pair)
+        folded = name.casefold()
+        if folded in seen:
+            raise SystemExit(
+                "duplicate environment override names are forbidden: "
+                f"{seen[folded]!r}, {name!r}"
+            )
+        seen[folded] = name
         env[name] = value
     return env
-
 
 
 def _env_overrides_from_spec(raw: object) -> dict[str, str]:
@@ -249,7 +249,6 @@ def _env_overrides_from_spec(raw: object) -> dict[str, str]:
     raise SystemExit(
         "proof env must be a table of strings or a list of NAME=VALUE strings"
     )
-
 
 
 def _named_spec_user_env_overrides(
@@ -280,11 +279,9 @@ def _named_spec_user_env_overrides(
     if conflicts:
         raise SystemExit(
             f"named proof {logical_id!r} rejects --env overrides for locked "
-            "environment custody: "
-            + ", ".join(conflicts)
+            "environment custody: " + ", ".join(conflicts)
         )
     return user_overrides
-
 
 
 def _named_spec_env_overrides(
@@ -317,24 +314,32 @@ def _named_spec_env_overrides(
             "canonical launch values: " + ", ".join(missing_locked)
         )
     env_overrides.update(user_overrides)
+    policy_error = _proof_env_policy_error(env_overrides)
+    if policy_error is not None:
+        raise SystemExit(f"named proof {logical_id!r} {policy_error}")
     return env_overrides
-
 
 
 def _uv_active_python_command(
     *args: str,
-    with_packages: list[str] | None = None,
-    no_sync: bool = False,
+    with_requirements: str | None = None,
 ) -> list[str]:
-    command = ["uv", "run", "--active", "--project", ".", "--python", "3.12"]
-    if no_sync:
-        command.append("--no-sync")
-    for package in with_packages or []:
-        command.extend(["--with", package])
+    command = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+    ]
+    if with_requirements is not None:
+        command.extend(["--offline", "--with-requirements", with_requirements])
     command.append("python")
     command.extend(args)
     return command
-
 
 
 def _cargo_package_for_contention(cargo_args: list[str]) -> str:
@@ -344,7 +349,6 @@ def _cargo_package_for_contention(cargo_args: list[str]) -> str:
         if arg.startswith("--package="):
             return state._slug(arg.split("=", 1)[1])
     return "workspace"
-
 
 
 def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
@@ -358,9 +362,7 @@ def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
         "--",
         "cargo",
         *args,
-        no_sync=True,
     )
-
 
 
 def _load_json_mapping(path: Path) -> Mapping[str, object] | None:

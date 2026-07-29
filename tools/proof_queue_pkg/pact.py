@@ -1032,6 +1032,8 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
 
 _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
 
+_PACT_WITNESS_REQUIREMENTS = "config/proof_requirements/pact_witness.txt"
+
 _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
     "MOLT_MODULE_ROOTS",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
@@ -1083,7 +1085,6 @@ def _pact_witness_acceptance_spec(
 ) -> dict[str, object]:
     canonical_inputs = _pact_canonical_input_environment(repo_root)
     with _temporary_environment(canonical_inputs):
-        stack = resolve_scientific_stack()
         git_snapshot = state._git_snapshot(repo_root)
         expected_head = git_snapshot.get("head")
         if not isinstance(expected_head, str) or not expected_head:
@@ -1108,7 +1109,7 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
-            with_packages=[stack.numpy_requirement, stack.scipy_requirement],
+            with_requirements=_PACT_WITNESS_REQUIREMENTS,
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
@@ -1119,6 +1120,7 @@ def _pact_witness_acceptance_spec(
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
             "config/scientific_stack_versions.toml",
+            _PACT_WITNESS_REQUIREMENTS,
             *wasm_loader_asset_scope_paths(),
         ],
         "env_overrides": env_overrides,
@@ -1136,7 +1138,6 @@ def _pact_witness_acceptance_spec(
 
 
 def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]:
-    stack = resolve_scientific_stack()
     return {
         "logical_id": "pact-witness-oracle-parity",
         "reason": (
@@ -1145,7 +1146,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
         ),
         "command": policy._uv_active_python_command(
             "tools/pact_witness_oracle.py",
-            with_packages=[stack.numpy_requirement, stack.scipy_requirement],
+            with_requirements=_PACT_WITNESS_REQUIREMENTS,
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
@@ -1154,6 +1155,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "tools/pact_witness_oracle.py",
+            _PACT_WITNESS_REQUIREMENTS,
         ],
         "env_overrides": {},
         "timeout": timeout if timeout is not None else 900.0,
@@ -1304,7 +1306,6 @@ def _native_molt_run_spec(
             "run",
             entry_scope,
             *arg_list,
-            no_sync=True,
         ),
         "resource_family": "python-native",
         "contention_key": f"python:native-molt-run:{entry_slug}",

@@ -14,11 +14,38 @@ import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
+from tools.proof_queue_pkg import command_envelope as proof_command_envelope
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 
 
 PLAN = proof_plan.ProofPlan.load()
+
+
+def _sealed_terminal_context(
+    run_id: str, context: dict[str, object]
+) -> dict[str, object]:
+    toolchains = context.get("toolchains")
+    if isinstance(toolchains, dict):
+        context["toolchain_custody"] = {
+            "prelaunch": toolchains,
+            "postcompletion": toolchains,
+            "identical": True,
+        }
+    context.update(
+        {
+            "run_id": run_id,
+            "execution_nonce_sha256": "9" * 64,
+        }
+    )
+    context["terminal_evidence_sha256"] = (
+        proof_command_envelope.terminal_evidence_sha256(
+            context,
+            run_id=run_id,
+            returncode=0,
+        )
+    )
+    return context
 
 
 def _classes(*paths: str) -> dict[str, bool]:
@@ -34,6 +61,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.toolchain_policies) >= 15
     assert "src/molt/cargo_execution_policy.py" in PLAN.authority_inputs
     assert PLAN.executor_max_workers == 4
+    assert PLAN.inventory_hash_workers == 4
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
         "compiler-build-resource": 1,
         "formal-tools": 2,
@@ -98,6 +126,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "incident_command": "cargo metadata --locked --format-version 1",
     }
     assert projection["executor"]["max_workers"] == 4
+    assert projection["executor"]["inventory_hash_workers"] == 4
     assert projection["executor"]["resource_policies"] == [
         {"name": policy.name, "max_parallel": policy.max_parallel}
         for policy in PLAN.resource_policies
@@ -1439,58 +1468,92 @@ def test_heavy_queue_projects_the_same_receipt_schema(
     del monkeypatch
     summary = tmp_path / "summary.json"
     summary.write_text(json.dumps({"peak_total": {"rss_kb": 64}}), encoding="utf-8")
+    command = ["cargo", "test"]
+    envelope = proof_command_envelope.envelope_for_command(command)
+    toolchains = {
+        name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
+        for name in envelope["toolchains"]
+    }
     receipt: Any = proof_queue_evidence._queue_proof_receipt(
         {
+            "run_id": "heavy-native-run",
             "logical_id": "heavy-native",
             "status": "passed",
             "returncode": 0,
-            "command_json": json.dumps(["cargo", "test"]),
+            "command_json": json.dumps(command),
+            "command_envelope_json": json.dumps(envelope),
             "cwd": str(tmp_path),
             "resource_family": "native-build",
             "started_at": "2026-07-18T00:00:00+00:00",
             "elapsed_s": 1.25,
             "summary_json": str(summary),
             "receipt_context_json": json.dumps(
-                {
-                    "schema": PLAN.receipt_schema,
-                    "authority_sha256": proof_plan._authority_sha256(PLAN),
-                    "source_commit": proof_plan._source_commit(),
-                    "source_tree_state": "dirty",
-                    "environment": {
-                        "os": "windows",
-                        "arch": "x86_64",
-                        "python": "3.12",
+                _sealed_terminal_context(
+                    "heavy-native-run",
+                    {
+                        "schema": PLAN.receipt_schema,
+                        "authority_sha256": proof_plan._authority_sha256(PLAN),
+                        "source_commit": proof_plan._source_commit(),
+                        "source_tree": "d" * 40,
+                        "source_tree_state": "clean",
+                        "environment": {
+                            "os": "windows",
+                            "arch": "x86_64",
+                            "python": "3.12",
+                        },
+                        "toolchains": toolchains,
+                        "python_interpreters": {
+                            "queue_control_plane": {"version": "3.14.3"},
+                            "proof_command": {"version": "3.12.13"},
+                        },
+                        "source_custody": {
+                            "evidence_eligible": True,
+                            "ineligible_reasons": [],
+                        },
+                        "guard_receipt": {"sha256": "e" * 64},
                     },
-                    "toolchains": {"python": {}},
-                    "python_interpreters": {
-                        "queue_control_plane": {"version": "3.14.3"},
-                        "proof_command": {"version": "3.12.13"},
-                    },
-                }
+                )
             ),
         }
     )
     assert receipt["schema"] == PLAN.receipt_schema
     assert receipt["authority_kind"] == "proof-queue-dynamic-command"
-    assert receipt["source_tree_state"] == "dirty"
+    assert receipt["source_tree_state"] == "clean"
     assert receipt["executed_partitions"] == ["queue.heavy-native"]
     assert receipt["commands"][0]["peak_rss_bytes"] == 64 * 1024  # type: ignore[index]
 
 
 def test_heavy_queue_reuses_persisted_execution_receipt_context() -> None:
-    context = {
-        "schema": PLAN.receipt_schema,
-        "authority_sha256": "a" * 64,
-        "source_commit": "b" * 40,
-        "source_tree_state": "clean",
-        "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
-        "toolchains": {"python": {}, "cargo": {}, "rustc": {}},
+    command = ["cargo", "test"]
+    envelope = proof_command_envelope.envelope_for_command(command)
+    toolchains = {
+        name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
+        for name in envelope["toolchains"]
     }
+    context = _sealed_terminal_context(
+        "heavy-native-run",
+        {
+            "schema": PLAN.receipt_schema,
+            "authority_sha256": "a" * 64,
+            "source_commit": "b" * 40,
+            "source_tree": "d" * 40,
+            "source_tree_state": "clean",
+            "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
+            "toolchains": toolchains,
+            "source_custody": {
+                "evidence_eligible": True,
+                "ineligible_reasons": [],
+            },
+            "guard_receipt": {"sha256": "e" * 64},
+        },
+    )
     row = {
+        "run_id": "heavy-native-run",
         "logical_id": "heavy-native",
         "status": "passed",
         "returncode": 0,
-        "command_json": json.dumps(["cargo", "test"]),
+        "command_json": json.dumps(command),
+        "command_envelope_json": json.dumps(envelope),
         "cwd": ".",
         "resource_family": "native-build",
         "started_at": "2026-07-18T00:00:00+00:00",

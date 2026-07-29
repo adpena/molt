@@ -156,6 +156,7 @@ class ProofPlan:
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
     executor_max_workers: int
+    inventory_hash_workers: int
     resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
@@ -312,6 +313,7 @@ class ProofPlan:
                 for entry in data.get("toolchain_policy", [])
             ),
             executor_max_workers=int(data.get("executor_max_workers", 0)),
+            inventory_hash_workers=int(data.get("inventory_hash_workers", 0)),
             resource_policies=tuple(
                 ResourcePolicy(
                     str(entry.get("name", "")), int(entry.get("max_parallel", 0))
@@ -332,6 +334,8 @@ class ProofPlan:
             errors.append(f"receipt_schema must be {RECEIPT_SCHEMA!r}")
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
+        if not 1 <= self.inventory_hash_workers <= 32:
+            errors.append("inventory_hash_workers must be between 1 and 32")
         resource_names = [policy.name for policy in self.resource_policies]
         if not resource_names or any(not name for name in resource_names):
             errors.append("resource policies must have non-empty names")
