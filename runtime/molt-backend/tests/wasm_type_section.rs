@@ -1,7 +1,7 @@
 #![cfg(feature = "wasm-backend")]
 
 //! Tests for the WASM type section: correct static type count,
-//! dynamic type generation for user functions, and multi-value return types.
+//! dynamic type generation for user functions, and the single-result ABI.
 
 use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
@@ -45,8 +45,8 @@ fn count_types(wasm: &[u8]) -> usize {
 // -----------------------------------------------------------------------
 
 #[test]
-fn type_section_has_at_least_51_static_types() {
-    // The WASM backend defines 51 static types (STATIC_TYPE_COUNT = 51).
+fn type_section_has_at_least_49_static_types() {
+    // The WASM backend defines 49 static types (STATIC_TYPE_COUNT = 49).
     // The exact static signatures are pinned by index in the in-crate guard
     // `wasm_abi::tests::static_type_section_signatures_are_pinned_to_static_type_count`
     // (which can see the private STATIC_TYPE_COUNT const). This integration
@@ -66,8 +66,8 @@ fn type_section_has_at_least_51_static_types() {
 
     let type_count = count_types(&wasm);
     assert!(
-        type_count >= 51,
-        "should have at least 51 static types, found {type_count}"
+        type_count >= 49,
+        "should have at least 49 static types, found {type_count}"
     );
 }
 
@@ -132,102 +132,6 @@ fn type_8_is_void_to_void() {
     assert!(sigs.len() > 8);
     // Type 8: () -> ()
     assert_eq!(sigs[8], (0, 0), "type 8 should be () -> ()");
-}
-
-// -----------------------------------------------------------------------
-// Multi-value return type tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn multi_return_type_31_is_2_to_2() {
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let sigs = extract_type_signatures(&wasm);
-    assert!(sigs.len() > 31);
-    // Type 31: (i64, i64) -> (i64, i64)
-    assert_eq!(
-        sigs[31],
-        (2, 2),
-        "type 31 should be (i64, i64) -> (i64, i64)"
-    );
-}
-
-#[test]
-fn multi_return_type_32_is_3_to_3() {
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let sigs = extract_type_signatures(&wasm);
-    assert!(sigs.len() > 32);
-    // Type 32: (i64, i64, i64) -> (i64, i64, i64)
-    assert_eq!(
-        sigs[32],
-        (3, 3),
-        "type 32 should be (i64, i64, i64) -> (i64, i64, i64)"
-    );
-}
-
-#[test]
-fn multi_return_type_33_is_1_to_2() {
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let sigs = extract_type_signatures(&wasm);
-    assert!(sigs.len() > 33);
-    // Type 33: (i64) -> (i64, i64)
-    assert_eq!(sigs[33], (1, 2), "type 33 should be (i64) -> (i64, i64)");
-}
-
-#[test]
-fn multi_return_type_34_is_0_to_2() {
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let sigs = extract_type_signatures(&wasm);
-    assert!(sigs.len() > 34);
-    // Type 34: () -> (i64, i64)
-    assert_eq!(sigs[34], (0, 2), "type 34 should be () -> (i64, i64)");
 }
 
 // -----------------------------------------------------------------------
@@ -386,8 +290,10 @@ fn type_section_contains_expected_arity_signatures() {
     assert!(has_sig(4, 1), "should have (4) -> (1)"); // Type 7
     assert!(has_sig(0, 0), "should have (0) -> (0)"); // Type 8
     assert!(has_sig(2, 0), "should have (2) -> (0)"); // Type 6
-    assert!(has_sig(2, 2), "should have (2) -> (2)"); // Multi-return type 31
-    assert!(has_sig(3, 3), "should have (3) -> (3)"); // Multi-return type 32
+    assert!(
+        sigs.iter().all(|(_, results)| *results <= 1),
+        "compiled Python-callable type table must have one result authority: {sigs:?}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -410,10 +316,11 @@ fn high_arity_static_types_exist() {
     });
 
     let sigs = extract_type_signatures(&wasm);
-    // Types 35-38: high-arity (9, 10, 11, 12 params) -> i64
-    assert!(sigs.len() >= 51);
-    assert_eq!(sigs[35], (9, 1), "type 35 should be (i64*9) -> i64");
-    assert_eq!(sigs[36], (10, 1), "type 36 should be (i64*10) -> i64");
-    assert_eq!(sigs[37], (11, 1), "type 37 should be (i64*11) -> i64");
-    assert_eq!(sigs[38], (12, 1), "type 38 should be (i64*12) -> i64");
+    // Types 31-34: high-arity (9, 10, 11, 12 params) -> i64.
+    // No unused multi-result reservations may separate ordinary arities.
+    assert!(sigs.len() >= 49);
+    assert_eq!(sigs[31], (9, 1), "type 31 should be (i64*9) -> i64");
+    assert_eq!(sigs[32], (10, 1), "type 32 should be (i64*10) -> i64");
+    assert_eq!(sigs[33], (11, 1), "type 33 should be (i64*11) -> i64");
+    assert_eq!(sigs[34], (12, 1), "type 34 should be (i64*12) -> i64");
 }

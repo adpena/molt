@@ -23,7 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v6-poison-epoch-authority";
+const BACKEND_CACHE_NAMESPACE_VERSION: &str =
+    "molt-backend-tir-cache-v7-semantic-transaction-authority";
 const CACHE_INDEX_HEADER: &str =
     "# molt-cache-index-v4 hash|last_access_unix_secs|envelope_bytes|state";
 const CACHE_ARTIFACT_MAGIC: &[u8] = b"MOLT:CACHE-ARTIFACT:v1\0";
@@ -42,7 +43,7 @@ const DEFAULT_MEMORY_CACHE_TOTAL_DIVISOR: usize = 512;
 const DEFAULT_PERSISTENT_CACHE_MAX_ENTRIES: usize = 65_536;
 const DEFAULT_PERSISTENT_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const CACHE_NAMESPACE_LOCK_FILE: &str = ".namespace.lock";
-const CACHE_NAMESPACE_EPOCH_FILE: &str = ".poison.epoch";
+const CACHE_NAMESPACE_EPOCH_FILE: &str = ".namespace.epoch";
 const CACHE_NAMESPACE_EPOCH_SLOT_BYTES: usize = 8;
 const CACHE_NAMESPACE_EPOCH_SLOTS: usize = 2;
 const CACHE_NAMESPACE_EPOCH_LIVE_OFFSET: usize = 0;
@@ -70,7 +71,7 @@ pub struct CompilationCache {
     namespace_lock: Option<File>,
     namespace_lock_error: Option<String>,
 
-    /// Double-buffered, crash-consistent poison generation. Resident hits read
+    /// Double-buffered, crash-consistent semantic namespace generation. Resident hits read
     /// this permanently open handle positionally before consulting memory.
     /// Even generations are quiescent; odd generations make every reader take
     /// the locked reconciliation path until the poison transition completes.
@@ -358,7 +359,7 @@ impl CompilationCache {
             Err(error) => (
                 None,
                 Some(format!(
-                    "persistent compilation cache cannot open poison epoch {}: {error}",
+                    "persistent compilation cache cannot open namespace epoch {}: {error}",
                     cache_dir.display()
                 )),
             ),
@@ -392,10 +393,12 @@ impl CompilationCache {
             if let Err(error) = cache.map_namespace_epoch() {
                 eprintln!("MOLT_CACHE: {error}; using allocation-free positioned epoch reads");
             }
+            cache.reconcile_namespace_epoch_locked()?;
             cache.load_index_locked();
+            let transition = cache.begin_namespace_mutation_locked()?;
             cache.reconcile_persistent_artifacts();
             cache.enforce_cache_limits();
-            cache.reconcile_namespace_epoch_locked()
+            cache.finish_namespace_mutation_locked(transition)
         });
         match startup {
             Ok(Ok(epoch)) => {
@@ -447,22 +450,24 @@ impl CompilationCache {
     fn initialize_namespace_epoch_locked(&self) -> Result<(), String> {
         let file = self.namespace_epoch.as_ref().ok_or_else(|| {
             self.namespace_epoch_error.clone().unwrap_or_else(|| {
-                "persistent compilation cache poison epoch is unavailable".to_string()
+                "persistent compilation cache namespace epoch is unavailable".to_string()
             })
         })?;
         let length = file
             .metadata()
-            .map_err(|error| format!("cannot stat persistent cache poison epoch: {error}"))?
+            .map_err(|error| format!("cannot stat persistent cache namespace epoch: {error}"))?
             .len();
         if length == 0 {
             file.set_len(CACHE_NAMESPACE_EPOCH_BYTES as u64)
-                .map_err(|error| format!("cannot size persistent cache poison epoch: {error}"))?;
+                .map_err(|error| {
+                    format!("cannot size persistent cache namespace epoch: {error}")
+                })?;
             initialize_namespace_epoch(file)?;
             return Ok(());
         }
         if length != CACHE_NAMESPACE_EPOCH_BYTES as u64 {
             return Err(format!(
-                "persistent cache poison epoch has invalid length {length}, expected {CACHE_NAMESPACE_EPOCH_BYTES}"
+                "persistent cache namespace epoch has invalid length {length}, expected {CACHE_NAMESPACE_EPOCH_BYTES}"
             ));
         }
         Ok(())
@@ -470,7 +475,7 @@ impl CompilationCache {
 
     fn read_namespace_epoch(&self) -> Result<u64, String> {
         decode_namespace_epoch_word(self.read_namespace_epoch_word()?)
-            .ok_or_else(|| "persistent cache live poison epoch is torn".to_string())
+            .ok_or_else(|| "persistent cache live namespace epoch is torn".to_string())
     }
 
     fn read_namespace_epoch_word(&self) -> Result<u64, String> {
@@ -483,7 +488,7 @@ impl CompilationCache {
         }
         let file = self.namespace_epoch.as_ref().ok_or_else(|| {
             self.namespace_epoch_error.clone().unwrap_or_else(|| {
-                "persistent compilation cache poison epoch is unavailable".to_string()
+                "persistent compilation cache namespace epoch is unavailable".to_string()
             })
         })?;
         read_live_namespace_epoch_word(file)
@@ -500,7 +505,7 @@ impl CompilationCache {
         }
         let file = self.namespace_epoch.as_ref().ok_or_else(|| {
             self.namespace_epoch_error.clone().unwrap_or_else(|| {
-                "persistent compilation cache poison epoch is unavailable".to_string()
+                "persistent compilation cache namespace epoch is unavailable".to_string()
             })
         })?;
         read_namespace_epoch_slots(file)
@@ -508,20 +513,20 @@ impl CompilationCache {
 
     fn write_namespace_epoch_locked(&self, epoch: u64) -> Result<(), String> {
         if epoch > CACHE_NAMESPACE_EPOCH_VALUE_MASK {
-            return Err("persistent cache poison epoch exhausted".to_string());
+            return Err("persistent cache namespace epoch exhausted".to_string());
         }
         #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
         if let Some(map) = self.namespace_epoch_map.as_ref() {
             return write_mapped_namespace_epoch(
                 map,
                 self.namespace_epoch.as_ref().ok_or_else(|| {
-                    "persistent compilation cache poison epoch is unavailable".to_string()
+                    "persistent compilation cache namespace epoch is unavailable".to_string()
                 })?,
                 epoch,
             );
         }
         let file = self.namespace_epoch.as_ref().ok_or_else(|| {
-            "persistent compilation cache poison epoch is unavailable".to_string()
+            "persistent compilation cache namespace epoch is unavailable".to_string()
         })?;
         write_namespace_epoch(file, epoch)
     }
@@ -530,7 +535,7 @@ impl CompilationCache {
         #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
         {
             let file = self.namespace_epoch.as_ref().ok_or_else(|| {
-                "persistent compilation cache poison epoch is unavailable".to_string()
+                "persistent compilation cache namespace epoch is unavailable".to_string()
             })?;
             // SAFETY: the epoch file is held open for the cache lifetime, is
             // sized once under the namespace lock, and is never truncated.
@@ -541,7 +546,7 @@ impl CompilationCache {
                     .len(CACHE_NAMESPACE_EPOCH_BYTES)
                     .map_mut(file)
             }
-            .map_err(|error| format!("cannot map persistent cache poison epoch: {error}"))?;
+            .map_err(|error| format!("cannot map persistent cache namespace epoch: {error}"))?;
             self.namespace_epoch_map = Some(map);
         }
         Ok(())
@@ -551,27 +556,44 @@ impl CompilationCache {
         let live = self.read_namespace_epoch();
         let durable = self.read_durable_namespace_epoch();
         let epoch = match (live, durable) {
-            (Ok(live), Ok(durable)) if live == durable && live & 1 == 0 => live,
+            (Ok(live), Ok(durable)) if live == durable && live & 1 == 0 => {
+                let word = encode_namespace_epoch_word(live);
+                if word != self.observed_epoch_word {
+                    // Another process committed a semantic namespace mutation.
+                    // The entire local view predates that transaction. Drop it
+                    // without mutating the durable namespace while its epoch is
+                    // quiescent; callers that intend to write perform their own
+                    // odd-epoch reconciliation transaction. The advisory index
+                    // is safe to reload read-only, and canonical artifacts absent
+                    // from it are still discovered by `get_locked` on demand.
+                    self.discard_local_namespace_view();
+                    self.load_index_locked();
+                }
+                live
+            }
             (Ok(live), Ok(durable)) if live == durable && live & 1 != 0 => {
-                self.reconcile_persistent_artifacts();
+                self.reset_interrupted_namespace_locked()?;
                 let complete = next_namespace_epoch(live)?;
                 self.write_namespace_epoch_locked(complete)?;
                 complete
             }
             (Ok(live), Ok(durable)) if live & 1 != 0 && live.checked_sub(1) == Some(durable) => {
-                // The live odd publication reached readers before its durable
-                // slot. Materialize that transition before completing it so a
-                // crash during recovery cannot leave the slots divergent.
-                self.reconcile_persistent_artifacts();
+                // A writer published an odd live generation but did not durably
+                // complete its mutation intent. The affected key set is unknown,
+                // so preserving any prior artifact could resurrect a detected
+                // same-key divergence. Fail closed by retiring the namespace.
+                self.reset_interrupted_namespace_locked()?;
                 self.write_namespace_epoch_locked(live)?;
                 let complete = next_namespace_epoch(live)?;
                 self.write_namespace_epoch_locked(complete)?;
                 complete
             }
             (Ok(live), Ok(durable)) if live & 1 != 0 && live.checked_add(1) == Some(durable) => {
-                // The durable even completion reached storage before the live
-                // publication. Reconcile conservatively, then republish it.
-                self.reconcile_persistent_artifacts();
+                // The mutation is durably complete but the live publication did
+                // not reach every reader. Invalidate all pre-transaction leases
+                // before publishing the completed generation.
+                self.discard_local_namespace_view();
+                self.load_index_locked();
                 self.write_namespace_epoch_locked(durable)?;
                 durable
             }
@@ -584,9 +606,9 @@ impl CompilationCache {
                     .chain(durable.ok())
                     .max()
                     .ok_or_else(|| {
-                        "persistent cache poison epoch has no recoverable slot".to_string()
+                        "persistent cache namespace epoch has no recoverable slot".to_string()
                     })?;
-                self.reconcile_persistent_artifacts();
+                self.reset_interrupted_namespace_locked()?;
                 if recovered & 1 == 0 {
                     recovered = next_namespace_epoch(recovered)?;
                 }
@@ -602,11 +624,85 @@ impl CompilationCache {
         Ok(epoch)
     }
 
-    fn begin_poison_epoch_locked(&mut self) -> Result<u64, String> {
+    fn discard_resident_data(&mut self) {
+        for entry in self.index.values_mut() {
+            entry.data = None;
+            entry.memory_stamp = 0;
+            entry.memory_lru_index = None;
+        }
+        self.memory_bytes = 0;
+        self.memory_clock = 0;
+        self.memory_lru.clear();
+    }
+
+    fn discard_local_namespace_view(&mut self) {
+        self.index.clear();
+        self.metadata_lru.clear();
+        self.persistent_bytes = 0;
+        self.discard_resident_data();
+    }
+
+    /// Recover an interrupted semantic mutation without guessing its key set.
+    ///
+    /// An odd or incoherent epoch proves that a writer may have observed
+    /// same-key divergence before its durable poison sidecar became visible.
+    /// The only sound key-independent recovery is to retire every canonical
+    /// artifact and poison tombstone. Failure leaves the epoch non-quiescent,
+    /// so every reader remains fail-closed.
+    fn reset_interrupted_namespace_locked(&mut self) -> Result<(), String> {
+        let functions_dir = self.cache_dir.join("functions");
+        if let Ok(entries) = std::fs::read_dir(&functions_dir) {
+            for entry in entries {
+                let entry = entry.map_err(|error| {
+                    format!(
+                        "cannot enumerate interrupted cache namespace {}: {error}",
+                        functions_dir.display()
+                    )
+                })?;
+                let file_type = entry.file_type().map_err(|error| {
+                    format!(
+                        "cannot classify interrupted cache namespace entry {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+                if !file_type.is_file() && !file_type.is_symlink() {
+                    continue;
+                }
+                std::fs::remove_file(entry.path()).map_err(|error| {
+                    format!(
+                        "cannot retire interrupted cache namespace entry {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+            }
+            sync_cache_directory(&functions_dir)?;
+        }
+        self.discard_local_namespace_view();
+        Ok(())
+    }
+
+    fn retire_namespace_after_quarantine_failure(
+        &mut self,
+        reason: String,
+    ) -> CompilationCacheWriteError {
+        match self.reset_interrupted_namespace_locked() {
+            Ok(()) => CompilationCacheWriteError::Integrity(format!(
+                "{reason}; the semantic cache namespace was retired fail-closed"
+            )),
+            Err(reset_error) => {
+                self.namespace_epoch_error = Some(reset_error.clone());
+                CompilationCacheWriteError::Unavailable(format!(
+                    "{reason}; cache namespace retirement failed and the epoch remains non-quiescent: {reset_error}"
+                ))
+            }
+        }
+    }
+
+    fn begin_namespace_mutation_locked(&mut self) -> Result<u64, String> {
         let current = self.read_durable_namespace_epoch()?;
         if current & 1 != 0 {
             return Err(format!(
-                "persistent cache poison epoch {current} is already in transition"
+                "persistent cache namespace epoch {current} is already in transition"
             ));
         }
         let transition = next_namespace_epoch(current)?;
@@ -614,7 +710,7 @@ impl CompilationCache {
         Ok(transition)
     }
 
-    fn finish_poison_epoch_locked(&mut self, transition: u64) -> Result<u64, String> {
+    fn finish_namespace_mutation_locked(&mut self, transition: u64) -> Result<u64, String> {
         debug_assert_eq!(transition & 1, 1);
         let complete = next_namespace_epoch(transition)?;
         self.write_namespace_epoch_locked(complete)?;
@@ -633,7 +729,6 @@ impl CompilationCache {
         right: &[u8],
         max_persistent_bytes: u64,
     ) -> Result<u64, String> {
-        let transition = self.begin_poison_epoch_locked()?;
         #[cfg(test)]
         if let Some(barrier) = self.poison_epoch_barrier.as_ref() {
             barrier.wait();
@@ -648,7 +743,6 @@ impl CompilationCache {
             right,
             max_persistent_bytes,
         )?;
-        self.finish_poison_epoch_locked(transition)?;
         Ok(bytes)
     }
 
@@ -708,19 +802,18 @@ impl CompilationCache {
                 return Some(bytes);
             }
         }
-        let result = if resident {
-            self.with_namespace_lock(true, |cache| {
-                if let Err(error) = cache.reconcile_namespace_epoch_locked() {
-                    eprintln!("MOLT_CACHE: {error}; resident hit stays on locked poison authority");
-                }
-                cache.get_locked(content_hash)
-            })
-        } else {
-            self.with_namespace_lock(false, |cache| cache.get_locked(content_hash))
-        };
+        // Disk misses are already I/O-bound, so the slow path takes the
+        // exclusive lock and repairs or rejects epoch state before reading.
+        // This keeps one fail-closed authority for resident and nonresident
+        // reads and permits no log-and-serve fallback after reconciliation
+        // failure.
+        let result = self.with_namespace_lock(true, |cache| {
+            cache.reconcile_namespace_epoch_locked()?;
+            Ok::<_, String>(cache.get_locked(content_hash))
+        });
         match result {
-            Ok(result) => result,
-            Err(error) => {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) | Err(error) => {
                 self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                 eprintln!("MOLT_CACHE: {error}");
                 None
@@ -846,7 +939,18 @@ impl CompilationCache {
             cache
                 .reconcile_namespace_epoch_locked()
                 .map_err(CompilationCacheWriteError::Unavailable)?;
-            cache.put_locked(content_hash, artifact)
+            let transition = cache
+                .begin_namespace_mutation_locked()
+                .map_err(CompilationCacheWriteError::Unavailable)?;
+            cache.load_index_locked();
+            let result = cache.put_locked(content_hash, artifact);
+            if cache.namespace_epoch_error.is_some() {
+                return result;
+            }
+            cache
+                .finish_namespace_mutation_locked(transition)
+                .map_err(CompilationCacheWriteError::Unavailable)?;
+            result
         }) {
             Ok(result) => result,
             Err(error) => Err(CompilationCacheWriteError::Unavailable(error)),
@@ -937,8 +1041,7 @@ impl CompilationCache {
                 if poison_required > 0
                     && !self.reserve_persistent_capacity(content_hash, poison_required)
                 {
-                    self.upsert_metadata_entry(content_hash, quarantine_time, 0, true);
-                    return Err(CompilationCacheWriteError::Integrity(format!(
+                    return Err(self.retire_namespace_after_quarantine_failure(format!(
                         "same cache key {content_hash} produced different resident payloads and durable quarantine cannot fit within namespace limits"
                     )));
                 }
@@ -948,7 +1051,7 @@ impl CompilationCache {
                     indexed_persistent_bytes,
                     true,
                 );
-                let poison_bytes = self.persist_poison_transition_locked(
+                let poison_bytes = match self.persist_poison_transition_locked(
                     &funcs_dir,
                     &artifact_path,
                     &poison_path,
@@ -956,12 +1059,14 @@ impl CompilationCache {
                     existing,
                     artifact,
                     self.max_persistent_bytes,
-                )
-                .map_err(|error| {
-                    CompilationCacheWriteError::Integrity(format!(
-                        "same cache key {content_hash} produced different resident payloads and durable quarantine was unavailable: {error}"
-                    ))
-                })?;
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return Err(self.retire_namespace_after_quarantine_failure(format!(
+                            "same cache key {content_hash} produced different resident payloads and durable quarantine was unavailable: {error}"
+                        )));
+                    }
+                };
                 self.upsert_metadata_entry(content_hash, quarantine_time, poison_bytes, true);
                 self.enforce_cache_limits();
                 return Err(CompilationCacheWriteError::Integrity(format!(
@@ -997,22 +1102,28 @@ impl CompilationCache {
                         if poison_required > 0
                             && !self.reserve_persistent_capacity(content_hash, poison_required)
                         {
-                            self.upsert_metadata_entry(content_hash, unix_now(), 0, true);
-                            return Err(CompilationCacheWriteError::Integrity(format!(
+                            return Err(self.retire_namespace_after_quarantine_failure(format!(
                                 "same cache key {content_hash} produced different disk payloads and durable quarantine cannot fit within namespace limits"
                             )));
                         }
-                        let poison_bytes = self
-                            .persist_poison_transition_locked(
-                                &funcs_dir,
-                                &artifact_path,
-                                &poison_path,
-                                content_hash,
-                                existing,
-                                artifact,
-                                self.max_persistent_bytes,
-                            )
-                            .map_err(CompilationCacheWriteError::Integrity)?;
+                        let poison_bytes = match self.persist_poison_transition_locked(
+                            &funcs_dir,
+                            &artifact_path,
+                            &poison_path,
+                            content_hash,
+                            existing,
+                            artifact,
+                            self.max_persistent_bytes,
+                        ) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                return Err(self.retire_namespace_after_quarantine_failure(
+                                        format!(
+                                            "same cache key {content_hash} produced different disk payloads and durable quarantine was unavailable: {error}"
+                                        ),
+                                    ));
+                            }
+                        };
                         self.upsert_metadata_entry(content_hash, unix_now(), poison_bytes, true);
                         self.enforce_cache_limits();
                         return Err(CompilationCacheWriteError::Integrity(format!(
@@ -1087,14 +1198,21 @@ impl CompilationCache {
     pub fn save_index(&mut self) -> Result<(), String> {
         self.with_namespace_lock(true, |cache| {
             cache.reconcile_namespace_epoch_locked()?;
-            cache.save_index_locked()
+            let transition = cache.begin_namespace_mutation_locked()?;
+            let result = cache.save_index_locked();
+            cache.finish_namespace_mutation_locked(transition)?;
+            result
         })?
     }
 
     fn save_index_locked(&mut self) -> Result<(), String> {
+        // Merge the latest persisted recency while the namespace lock is held.
+        // A process may never overwrite another process's newer touches with
+        // its stale local snapshot.
+        self.project_resident_metadata_recency();
+        self.load_index_locked();
         self.reconcile_persistent_artifacts();
         self.enforce_cache_limits();
-        self.project_resident_metadata_recency();
         std::fs::create_dir_all(&self.cache_dir).map_err(|error| {
             format!(
                 "persistent compilation cache cannot create {}: {error}",
@@ -1105,7 +1223,7 @@ impl CompilationCache {
 
         let mut lines = format!("{CACHE_INDEX_HEADER}\n");
         let mut entries = self.index.iter().collect::<Vec<_>>();
-        entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        entries.sort_unstable_by_key(|(content_hash, _)| *content_hash);
         for (content_hash, entry) in entries {
             if entry.persistent_bytes == 0 {
                 continue;
@@ -1226,6 +1344,16 @@ impl CompilationCache {
             }
         }
         for ((last_access, content_hash), (persistent_bytes, poisoned)) in selected {
+            let (last_access, persistent_bytes, poisoned) = self
+                .index
+                .get(content_hash.as_str())
+                .map_or((last_access, persistent_bytes, poisoned), |entry| {
+                    (
+                        last_access.max(entry.last_access),
+                        persistent_bytes.max(entry.persistent_bytes),
+                        poisoned || entry.poisoned,
+                    )
+                });
             self.upsert_metadata_entry(&content_hash, last_access, persistent_bytes, poisoned);
         }
     }
@@ -1468,7 +1596,12 @@ impl CompilationCache {
         resident_entries.sort_unstable_by(|left, right| {
             (left.2, left.0.as_ref()).cmp(&(right.2, right.0.as_ref()))
         });
-        let mut discovered_hashes = self.index.keys().cloned().collect::<BTreeSet<_>>();
+        // Select bounded persistent survivors by global recency, never by hash
+        // or directory iteration order. Persisted index timestamps were merged
+        // under the namespace lock before this reconciliation; orphan files use
+        // their durable modification time as the only available recency fact.
+        let mut selected_lru = BTreeSet::<(u64, Arc<str>)>::new();
+        let mut selected_recency = HashMap::<Arc<str>, u64>::new();
         if let Ok(entries) = std::fs::read_dir(&functions_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -1507,35 +1640,51 @@ impl CompilationCache {
                     let _ = std::fs::remove_file(entry.path());
                     continue;
                 }
-                if !discovered_hashes.contains(content_hash) {
-                    if !self.index.contains_key(content_hash) {
-                        self.telemetry.orphan_artifacts_discovered =
-                            self.telemetry.orphan_artifacts_discovered.saturating_add(1);
+                let content_hash: Arc<str> = Arc::from(content_hash);
+                let modified = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .map_or(0, |duration| {
+                        duration.as_nanos().min(u128::from(u64::MAX)) as u64
+                    });
+                let recency = self
+                    .index
+                    .get(content_hash.as_ref())
+                    .map_or(modified, |indexed| indexed.last_access.max(modified));
+                if let Some(previous) = selected_recency.get_mut(content_hash.as_ref()) {
+                    if recency > *previous {
+                        selected_lru.remove(&(*previous, Arc::clone(&content_hash)));
+                        *previous = recency;
+                        selected_lru.insert((recency, Arc::clone(&content_hash)));
                     }
-                    if discovered_hashes.len() < self.max_entries {
-                        discovered_hashes.insert(Arc::from(content_hash));
-                    } else if let Some(largest) = discovered_hashes.last().cloned()
-                        && content_hash < largest.as_ref()
-                    {
-                        discovered_hashes.remove(&largest);
-                        for suffix in ["bin", "poison"] {
-                            let _ = std::fs::remove_file(
-                                functions_dir.join(format!("{largest}.{suffix}")),
-                            );
-                        }
-                        discovered_hashes.insert(Arc::from(content_hash));
-                    } else {
-                        let _ = std::fs::remove_file(entry.path());
+                    continue;
+                }
+                if !self.index.contains_key(content_hash.as_ref()) {
+                    self.telemetry.orphan_artifacts_discovered =
+                        self.telemetry.orphan_artifacts_discovered.saturating_add(1);
+                }
+                selected_recency.insert(Arc::clone(&content_hash), recency);
+                selected_lru.insert((recency, Arc::clone(&content_hash)));
+                if selected_lru.len() > self.max_entries
+                    && let Some((_, victim)) = selected_lru.pop_first()
+                {
+                    selected_recency.remove(victim.as_ref());
+                    for suffix in ["bin", "poison"] {
+                        let _ =
+                            std::fs::remove_file(functions_dir.join(format!("{victim}.{suffix}")));
                     }
                 }
             }
         }
+        let discovered_hashes = selected_lru.into_iter().collect::<Vec<_>>();
         self.persistent_bytes = 0;
         self.metadata_lru.clear();
         self.memory_bytes = 0;
         self.memory_lru.clear();
         let previous = std::mem::take(&mut self.index);
-        for content_hash in discovered_hashes {
+        for (discovered_recency, content_hash) in discovered_hashes {
             let Some(path) = self.artifact_path(&content_hash) else {
                 continue;
             };
@@ -1570,7 +1719,9 @@ impl CompilationCache {
             let previous_entry = previous.get(&content_hash);
             self.upsert_metadata_entry(
                 &content_hash,
-                previous_entry.map_or(0, |entry| entry.last_access),
+                previous_entry.map_or(discovered_recency, |entry| {
+                    entry.last_access.max(discovered_recency)
+                }),
                 persistent_bytes,
                 poison_path.is_file(),
             );
@@ -1613,9 +1764,7 @@ impl CompilationCache {
     fn touch_memory_entry(&mut self, content_hash: &str) {
         self.memory_clock = self.memory_clock.wrapping_add(1);
         let Some(lru_index) = self.index.get_mut(content_hash).and_then(|entry| {
-            if entry.data.is_none() {
-                return None;
-            }
+            entry.data.as_ref()?;
             entry.memory_stamp = self.memory_clock;
             entry.memory_lru_index
         }) else {
@@ -1858,7 +2007,7 @@ fn read_exact_positioned(file: &File, bytes: &mut [u8], offset: u64) -> std::io:
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "persistent cache poison epoch is truncated",
+                "persistent cache namespace epoch is truncated",
             ));
         }
         read += count;
@@ -1873,7 +2022,7 @@ fn write_all_positioned(file: &File, bytes: &[u8], offset: u64) -> std::io::Resu
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,
-                "persistent cache poison epoch write made no progress",
+                "persistent cache namespace epoch write made no progress",
             ));
         }
         written += count;
@@ -1900,16 +2049,16 @@ fn next_namespace_epoch(epoch: u64) -> Result<u64, String> {
     epoch
         .checked_add(1)
         .filter(|next| *next <= CACHE_NAMESPACE_EPOCH_VALUE_MASK)
-        .ok_or_else(|| "persistent cache poison epoch exhausted".to_string())
+        .ok_or_else(|| "persistent cache namespace epoch exhausted".to_string())
 }
 
 fn validate_namespace_epoch_slots(slots: [Option<u64>; 2]) -> Result<u64, String> {
     let [Some(left), Some(right)] = slots else {
-        return Err("persistent cache poison epoch has a torn durable slot".to_string());
+        return Err("persistent cache namespace epoch has a torn durable slot".to_string());
     };
     if left.abs_diff(right) > 1 {
         return Err(format!(
-            "persistent cache poison epoch slots diverge: {left} vs {right}"
+            "persistent cache namespace epoch slots diverge: {left} vs {right}"
         ));
     }
     Ok(left.max(right))
@@ -1918,7 +2067,7 @@ fn validate_namespace_epoch_slots(slots: [Option<u64>; 2]) -> Result<u64, String
 fn read_namespace_epoch_slots(file: &File) -> Result<[Option<u64>; 2], String> {
     let mut bytes = [0; CACHE_NAMESPACE_EPOCH_BYTES];
     read_exact_positioned(file, &mut bytes, 0)
-        .map_err(|error| format!("cannot read persistent cache poison epoch: {error}"))?;
+        .map_err(|error| format!("cannot read persistent cache namespace epoch: {error}"))?;
     Ok(std::array::from_fn(|slot_index| {
         let start =
             CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET + slot_index * CACHE_NAMESPACE_EPOCH_SLOT_BYTES;
@@ -1933,7 +2082,7 @@ fn read_namespace_epoch_slots(file: &File) -> Result<[Option<u64>; 2], String> {
 fn read_live_namespace_epoch_word(file: &File) -> Result<u64, String> {
     let mut bytes = [0; CACHE_NAMESPACE_EPOCH_SLOT_BYTES];
     read_exact_positioned(file, &mut bytes, CACHE_NAMESPACE_EPOCH_LIVE_OFFSET as u64)
-        .map_err(|error| format!("cannot read persistent cache live poison epoch: {error}"))?;
+        .map_err(|error| format!("cannot read persistent cache live namespace epoch: {error}"))?;
     Ok(u64::from_le_bytes(bytes))
 }
 
@@ -1950,7 +2099,7 @@ fn initialize_namespace_epoch(file: &File) -> Result<(), String> {
     }
     write_all_positioned(file, &bytes, 0)
         .and_then(|()| file.sync_data())
-        .map_err(|error| format!("cannot initialize persistent cache poison epoch: {error}"))
+        .map_err(|error| format!("cannot initialize persistent cache namespace epoch: {error}"))
 }
 
 fn write_namespace_epoch(file: &File, epoch: u64) -> Result<(), String> {
@@ -1969,7 +2118,7 @@ fn write_namespace_epoch(file: &File, epoch: u64) -> Result<(), String> {
                 write_all_positioned(file, &word, CACHE_NAMESPACE_EPOCH_LIVE_OFFSET as u64)
             })
     };
-    result.map_err(|error| format!("cannot persist cache poison epoch {epoch}: {error}"))
+    result.map_err(|error| format!("cannot persist cache namespace epoch {epoch}: {error}"))
 }
 
 #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
@@ -2017,7 +2166,7 @@ fn write_mapped_namespace_epoch(
     };
     map.flush_range(flush_offset, flush_len)
         .and_then(|()| file.sync_data())
-        .map_err(|error| format!("cannot persist mapped cache poison epoch {epoch}: {error}"))?;
+        .map_err(|error| format!("cannot persist mapped cache namespace epoch {epoch}: {error}"))?;
     if epoch & 1 == 0 {
         mapped_namespace_epoch_word(map, CACHE_NAMESPACE_EPOCH_LIVE_OFFSET)
             .store(word, Ordering::Release);
@@ -2240,7 +2389,24 @@ fn sync_cache_directory(directory: &std::path::Path) -> Result<(), String> {
                 )
             })?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(directory)
+            .and_then(|handle| handle.sync_all())
+            .map_err(|error| {
+                format!(
+                    "cannot flush cache namespace directory {}: {error}",
+                    directory.display()
+                )
+            })?;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = directory;
     Ok(())
 }
@@ -2454,12 +2620,13 @@ fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
     (b"windows-u16le", bytes)
 }
 
-/// Return the current time as seconds since the Unix epoch.
+/// Return a cross-process-comparable, high-resolution Unix recency stamp.
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn default_memory_cache_limit_bytes() -> usize {
@@ -3139,6 +3306,52 @@ mod tests {
     }
 
     #[test]
+    fn stale_writer_merges_global_recency_before_selecting_capacity_survivors() {
+        let dir = tmp_cache_dir();
+        let h1 = fixture_hash("global-hot", b"body");
+        let h2 = fixture_hash("global-cold", b"body");
+        let h3 = fixture_hash("global-new", b"body");
+        let mut seed = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
+        seed.put(&h1, b"hot").unwrap();
+        seed.put(&h2, b"cold").unwrap();
+        seed.save_index().unwrap();
+
+        let mut hot_writer = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
+        let mut stale_writer =
+            CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
+        hot_writer.touch_metadata_entry(&h1, unix_now().saturating_add(100));
+        hot_writer.save_index().unwrap();
+        stale_writer.touch_metadata_entry(&h2, 1);
+        stale_writer.put(&h3, b"new").unwrap();
+        stale_writer.save_index().unwrap();
+
+        let mut recovered = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
+        assert_eq!(recovered.get(&h1).as_deref(), Some(b"hot".as_slice()));
+        assert_eq!(recovered.get(&h3).as_deref(), Some(b"new".as_slice()));
+        assert!(recovered.get(&h2).is_none());
+    }
+
+    #[test]
+    fn observing_a_committed_epoch_never_mutates_the_quiescent_namespace() {
+        let dir = tmp_cache_dir();
+        let h1 = fixture_hash("read-only-reconcile-a", b"body");
+        let h2 = fixture_hash("read-only-reconcile-b", b"body");
+        let mut reader = CompilationCache::open_with_limits(dir.clone(), 1024, 1, 1024 * 1024);
+        let mut writer = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
+        writer.put(&h1, b"one").unwrap();
+        writer.put(&h2, b"two").unwrap();
+        writer.save_index().unwrap();
+
+        // Reconciling another process's completed generation is a read path,
+        // not a capacity-enforcement transaction. In particular, this reader's
+        // smaller local bound must not silently delete the writer's second
+        // canonical artifact while the namespace epoch is even.
+        assert_eq!(reader.get(&h1).as_deref(), Some(b"one".as_slice()));
+        assert!(reader.artifact_path(&h1).unwrap().is_file());
+        assert!(reader.artifact_path(&h2).unwrap().is_file());
+    }
+
+    #[test]
     fn same_process_concurrent_writers_use_collision_free_temp_files() {
         let dir = tmp_cache_dir();
         let h1 = fixture_hash("thread-a", b"artifact-a");
@@ -3193,6 +3406,31 @@ mod tests {
     }
 
     #[test]
+    fn poison_pruning_advances_epoch_and_cannot_resurrect_remote_resident_bytes() {
+        let dir = tmp_cache_dir();
+        let h1 = fixture_hash("poison-prune-h1", b"semantic-contract");
+        let h2 = fixture_hash("poison-prune-h2", b"semantic-contract");
+        let mut resident = CompilationCache::open_with_limits(dir.clone(), 1024, 1, 1024 * 1024);
+        let mut writer = CompilationCache::open_with_limits(dir, 1024, 1, 1024 * 1024);
+
+        resident.put(&h1, b"first").unwrap();
+        assert_eq!(resident.get(&h1).as_deref(), Some(b"first".as_slice()));
+        assert!(matches!(
+            writer.put(&h1, b"second"),
+            Err(CompilationCacheWriteError::Integrity(_))
+        ));
+
+        // Capacity retirement removes both the poisoned artifact and its
+        // tombstone in a later semantic transaction. A process retaining the
+        // pre-poison bytes must invalidate them on that later generation; the
+        // absence of a sidecar is never evidence that the old bytes are sound.
+        writer.put(&h2, b"replacement").unwrap();
+        assert!(!writer.poison_path(&h1).unwrap().exists());
+        assert!(resident.get(&h1).is_none());
+        assert!(!resident.index.contains_key(h1.as_str()));
+    }
+
+    #[test]
     fn resident_seqlock_rejects_poison_transition_between_epoch_samples() {
         let dir = tmp_cache_dir();
         let hash = fixture_hash("resident-seqlock", b"semantic-contract");
@@ -3240,7 +3478,7 @@ mod tests {
     }
 
     #[test]
-    fn odd_epoch_without_poison_recovers_to_quiescent_resident_hit() {
+    fn interrupted_epoch_without_poison_retires_the_entire_namespace() {
         let dir = tmp_cache_dir();
         let hash = fixture_hash("epoch-before-poison", b"semantic-contract");
         let mut resident = CompilationCache::open(dir.clone());
@@ -3249,20 +3487,54 @@ mod tests {
 
         let mut crashed_writer = CompilationCache::open(dir);
         let transition = crashed_writer
-            .with_namespace_lock(true, |cache| cache.begin_poison_epoch_locked())
+            .with_namespace_lock(true, |cache| cache.begin_namespace_mutation_locked())
             .unwrap()
             .unwrap();
         assert_eq!(transition & 1, 1);
         drop(crashed_writer);
 
-        assert_eq!(resident.get(&hash).as_deref(), Some(b"first".as_slice()));
+        assert!(resident.get(&hash).is_none());
+        assert!(!resident.index.contains_key(hash.as_str()));
+        assert!(!resident.artifact_path(&hash).unwrap().exists());
+        assert!(!resident.poison_path(&hash).unwrap().exists());
         let live = resident.read_namespace_epoch().unwrap();
         assert_eq!(live & 1, 0);
         assert_eq!(resident.read_durable_namespace_epoch().unwrap(), live);
     }
 
     #[test]
-    fn torn_durable_odd_slot_forces_locked_poison_recovery() {
+    fn nonresident_read_with_unrecoverable_epoch_fails_closed() {
+        let dir = tmp_cache_dir();
+        let hash = fixture_hash("nonresident-torn-epoch", b"semantic-contract");
+        let mut writer = CompilationCache::open(dir.clone());
+        writer.put(&hash, b"artifact").unwrap();
+        let mut reader = CompilationCache::open_with_memory_limit(dir, 0);
+        assert!(reader.index[hash.as_str()].data.is_none());
+
+        let invalid = [0_u8; CACHE_NAMESPACE_EPOCH_BYTES];
+        write_all_positioned(reader.namespace_epoch.as_ref().unwrap(), &invalid, 0).unwrap();
+        reader
+            .namespace_epoch
+            .as_ref()
+            .unwrap()
+            .sync_data()
+            .unwrap();
+        #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
+        for offset in [
+            CACHE_NAMESPACE_EPOCH_LIVE_OFFSET,
+            CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET,
+            CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET + CACHE_NAMESPACE_EPOCH_SLOT_BYTES,
+        ] {
+            mapped_namespace_epoch_word(reader.namespace_epoch_map.as_ref().unwrap(), offset)
+                .store(0, Ordering::Release);
+        }
+
+        assert!(reader.get(&hash).is_none());
+        assert!(reader.get(&hash).is_none());
+    }
+
+    #[test]
+    fn torn_durable_odd_slot_forces_locked_namespace_retirement() {
         assert!(validate_namespace_epoch_slots([Some(0), None]).is_err());
 
         let dir = tmp_cache_dir();
@@ -3303,17 +3575,14 @@ mod tests {
 
         assert!(resident.get(&hash).is_none());
         assert!(!artifact.exists());
-        assert!(matches!(
-            decode_cache_envelope(&hash, &std::fs::read(&poison).unwrap()),
-            Ok((CacheEnvelopeKind::Poison, _))
-        ));
+        assert!(!poison.exists());
         let live = resident.read_namespace_epoch().unwrap();
         assert_eq!(live & 1, 0);
         assert_eq!(resident.read_durable_namespace_epoch().unwrap(), live);
     }
 
     #[test]
-    fn fresh_open_repairs_torn_durable_epoch_before_serving_cache() {
+    fn fresh_open_retires_namespace_after_torn_epoch_before_serving_cache() {
         let dir = tmp_cache_dir();
         let hash = fixture_hash("fresh-open-torn-epoch", b"semantic-contract");
         let mut crashed_writer = CompilationCache::open(dir.clone());
@@ -3346,10 +3615,7 @@ mod tests {
         );
         assert!(recovered.get(&hash).is_none());
         assert!(!artifact.exists());
-        assert!(matches!(
-            decode_cache_envelope(&hash, &std::fs::read(&poison).unwrap()),
-            Ok((CacheEnvelopeKind::Poison, _))
-        ));
+        assert!(!poison.exists());
         let live = recovered.read_namespace_epoch().unwrap();
         assert_eq!(live & 1, 0);
         assert_eq!(recovered.read_durable_namespace_epoch().unwrap(), live);
@@ -3574,7 +3840,7 @@ mod tests {
     }
 
     #[test]
-    fn impossible_durable_poison_still_quarantines_and_drops_resident_payload() {
+    fn impossible_durable_poison_retires_namespace_and_drops_resident_payload() {
         let dir = tmp_cache_dir();
         let hash = fixture_hash("memory-only-zero-cap", b"same-contract");
         let mut cache = CompilationCache::open_with_limits(dir.clone(), 4096, 8, 0);
@@ -3586,8 +3852,7 @@ mod tests {
             .expect_err("known divergence must fail closed even without durable capacity");
         assert!(matches!(error, CompilationCacheWriteError::Integrity(_)));
         assert!(cache.get(&hash).is_none());
-        assert!(cache.index[hash.as_str()].poisoned);
-        assert!(cache.index[hash.as_str()].data.is_none());
+        assert!(!cache.index.contains_key(hash.as_str()));
         assert!(!cache.artifact_path(&hash).unwrap().exists());
         assert!(!cache.poison_path(&hash).unwrap().exists());
     }

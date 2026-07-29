@@ -36,10 +36,6 @@ static_type = [
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64"], results = [] },
-  { params = ["i64", "i64"], results = ["i64", "i64"] },
-  { params = ["i64", "i64", "i64"], results = ["i64", "i64", "i64"] },
-  { params = ["i64"], results = ["i64", "i64"] },
-  { params = [], results = ["i64", "i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
@@ -495,7 +491,7 @@ callable_arity = 1
 
 [[import]]
 name = "arena_new"
-type = 52
+type = 48
 
 [[import]]
 name = "arena_alloc_object"
@@ -1008,43 +1004,43 @@ type = 5
 
 [[import]]
 name = "call_method_ic0"
-type = 41
+type = 37
 
 [[import]]
 name = "call_method_ic1"
-type = 42
+type = 38
 
 [[import]]
 name = "call_method_ic2"
-type = 43
+type = 39
 
 [[import]]
 name = "call_method_ic3"
-type = 44
+type = 40
 
 [[import]]
 name = "call_method_ic4"
-type = 45
+type = 41
 
 [[import]]
 name = "call_super_method_ic0"
-type = 46
+type = 42
 
 [[import]]
 name = "call_super_method_ic1"
-type = 47
+type = 43
 
 [[import]]
 name = "call_super_method_ic2"
-type = 48
+type = 44
 
 [[import]]
 name = "call_super_method_ic3"
-type = 49
+type = 45
 
 [[import]]
 name = "call_super_method_ic4"
-type = 50
+type = 46
 
 # Method inline-cache arity selector. Extra arguments are capped at the highest
 # generated helper arity; `call_method_ic4` and `call_super_method_ic4` own the
@@ -1454,7 +1450,7 @@ type = 3
 
 [[import]]
 name = "code_new"
-type = 35
+type = 31
 runtime_name = "molt_code_new"
 callable_arity = 9
 
@@ -2902,7 +2898,7 @@ type = 19
 
 [[import]]
 name = "bytes_as_ptr"
-type = 51
+type = 47
 
 [[import]]
 name = "bytes_from_obj"

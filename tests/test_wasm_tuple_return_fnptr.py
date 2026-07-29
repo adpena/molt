@@ -10,7 +10,7 @@ from tests.wasm_linked_runner import (
 )
 
 
-MULTI_RETURN_FN_PTR_SRC = textwrap.dedent(
+TUPLE_RETURN_FN_PTR_SRC = textwrap.dedent(
     """\
     def pair(x):
         return x, x + 1
@@ -95,12 +95,12 @@ def test_wasm_unpack_sequence_function_local(tmp_path: Path) -> None:
     assert run.stdout.splitlines() == ["5", "6", "11"]
 
 
-def test_wasm_multi_return_function_object_call(tmp_path: Path) -> None:
+def test_wasm_tuple_return_function_object_call(tmp_path: Path) -> None:
     require_wasm_toolchain()
 
     root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "multi_return_fnptr.py"
-    src.write_text(MULTI_RETURN_FN_PTR_SRC)
+    src = tmp_path / "tuple_return_fnptr.py"
+    src.write_text(TUPLE_RETURN_FN_PTR_SRC)
 
     output_wasm = build_wasm_linked(
         root,
