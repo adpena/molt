@@ -1096,21 +1096,22 @@ class MidendCFGMixin(_MixinBase):
                 f"{self._active_midend_function_name}: {message}"
             )
 
-        def append_synthetic_close(open_kind: str) -> None:
+        def synthetic_close(open_kind: str) -> MoltOp:
             nonlocal rewrites
             close_kind = close_for_open[open_kind]
-            rewritten.append(
-                MoltOp(
-                    kind=close_kind,
-                    args=[],
-                    result=MoltValue("none"),
-                    metadata={
-                        "synthetic": "cfg_structural_canonicalizer",
-                        "stage": stage,
-                    },
-                )
-            )
             rewrites += 1
+            return MoltOp(
+                kind=close_kind,
+                args=[],
+                result=MoltValue("none"),
+                metadata={
+                    "synthetic": "cfg_structural_canonicalizer",
+                    "stage": stage,
+                },
+            )
+
+        def append_synthetic_close(open_kind: str) -> None:
+            rewritten.append(synthetic_close(open_kind))
 
         for idx, op in enumerate(ops):
             kind = op.kind
@@ -1230,9 +1231,23 @@ class MidendCFGMixin(_MixinBase):
 
             rewritten.append(op)
 
+        trailing_closes: list[MoltOp] = []
         while control_stack:
             dangling_kind, _ = control_stack.pop()
-            append_synthetic_close(dangling_kind)
+            trailing_closes.append(synthetic_close(dangling_kind))
+        if trailing_closes:
+            # A synthetic structured-region close is never a function
+            # terminator. Keep the canonical execution-frame exit immediately
+            # adjacent to the return and insert repairs before that terminal
+            # tail. Appending closes after a return made the serialized function
+            # appear unterminated and, more importantly, placed executable
+            # control markers on no reachable function-exit path.
+            terminal_start = len(rewritten)
+            if rewritten and rewritten[-1].kind in {"ret", "ret_void", "RETURN"}:
+                terminal_start -= 1
+                if terminal_start > 0 and rewritten[terminal_start - 1].kind == "TRACE_EXIT":
+                    terminal_start -= 1
+            rewritten[terminal_start:terminal_start] = trailing_closes
 
         labels: dict[str, int] = {}
         for idx, op in enumerate(rewritten):

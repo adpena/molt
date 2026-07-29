@@ -33,6 +33,8 @@ from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs
 
 from molt.frontend._types import (
     ActiveException,
+    AsyncFrameSlot,
+    AsyncFrameSlotRole,
     CFGGraph,
     CanonicalizationState,
     ClassInfo,
@@ -51,6 +53,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     SCCPResult,
+    ScratchCell,
     TryScope,
     _ClassNsScope,
     _TrackedOpsList,
@@ -68,6 +71,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -84,9 +88,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     local_imported_names: set[str]
     local_intrinsic_wrappers: set[str]
     locals: dict[str, MoltValue]
-    locals_cache_val: MoltValue | None
-    loop_break_counter: Any
-    loop_break_flags: list[int | str | None]
+    locals_cache_cell: ScratchCell | None
+    loop_break_flags: list[int | ScratchCell | None]
     loop_guard_assumptions: list[dict[str, tuple[str, bool]]]
     loop_layout_guards: list[dict[str, tuple[str, MoltValue]]]
     loop_static_class_counter: Any
@@ -142,11 +145,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     native_support_function_roots: set[str]
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
+    parameter_bindings: dict[str, str]
     parse_codec: Any
     qualname_stack: list[tuple[str, bool]]
     range_loop_stack: list[tuple[MoltValue, MoltValue]]
     reserved_external_func_symbols: set[str]
     reserved_func_symbols: dict[str, str]
+    reserved_python_identifiers: set[str]
     return_label: int | None
     return_slot: MoltValue | None
     return_slot_index: MoltValue | None
@@ -215,6 +220,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, ops: list[MoltOp], cfg: CFGGraph
     ) -> tuple[list[MoltOp], int]: ...
 
+    def _allocate_async_frame_slot(
+        self, role: AsyncFrameSlotRole, *, public_name: str | None = None
+    ) -> AsyncFrameSlot: ...
+
     def _analyze_affine_loop_compare_truth(
         self, ops: list[MoltOp], cfg: CFGGraph
     ) -> dict[int, bool]: ...
@@ -282,9 +291,15 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _apply_type_facts(self, func_name: str) -> None: ...
 
+    def _async_binding_hint(self, name: str) -> str: ...
+
+    def _async_binding_slot(self, name: str) -> AsyncFrameSlot: ...
+
     def _async_local_offset(self, name: str) -> int: ...
 
     def _async_locals_public_entries(self) -> list[tuple[str, int]]: ...
+
+    def _async_spill_slot(self, value_name: str) -> AsyncFrameSlot: ...
 
     def _augassign_op_kind(self, op: ast.operator) -> str: ...
 
@@ -491,7 +506,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_scope: bool = False,
     ) -> list[str]: ...
 
-    def _collect_comp_walrus_shared_names(
+    def _collect_comp_walrus_cell_names(
         self, body: Sequence[ast.stmt]
     ) -> list[str]: ...
 
@@ -920,7 +935,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None: ...
 
     def _emit_format_spec_value(self, node: ast.expr) -> MoltValue: ...
@@ -1101,7 +1116,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None: ...
 
     def _emit_initial_module_object(self) -> None: ...
@@ -1140,7 +1155,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None: ...
 
     def _emit_iter_new(self, iterable: MoltValue) -> MoltValue: ...
@@ -1180,7 +1195,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_locals_dict(self) -> MoltValue: ...
 
-    def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None: ...
+    def _emit_loop_orelse(
+        self, break_cell: ScratchCell, orelse: list[ast.stmt]
+    ) -> None: ...
 
     def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None: ...
 
@@ -1196,7 +1213,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         value: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_cell(self, initial: bool) -> tuple[MoltValue, MoltValue]: ...
@@ -1207,7 +1224,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_load(self, cell: MoltValue, idx: MoltValue) -> MoltValue: ...
@@ -1218,7 +1235,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_or(
@@ -1227,7 +1244,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_pattern(
@@ -1236,7 +1253,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_sequence(
@@ -1245,7 +1262,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
     def _emit_match_store(
@@ -1338,7 +1355,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         start: MoltValue,
         stop: MoltValue,
         step: MoltValue,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> None: ...
 
     def _emit_range_obj_from_args(
@@ -1610,6 +1627,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _function_symbol_for_reference(self, name: str) -> str: ...
 
+    def _function_transport_params(
+        self, params: list[str], *, has_closure: bool
+    ) -> tuple[list[str], dict[str, str]]: ...
+
     @staticmethod
     def _fuse_string_split_field_consumers_json(
         json_ops: list[dict[str, Any]],
@@ -1775,6 +1796,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
 
+    def _is_public_frame_binding(self, name: str) -> bool: ...
+
     def _is_pure_op_for_global_cse(self, op_kind: str) -> bool: ...
 
     def _is_read_key_invalidated_by_alias_classes(
@@ -1833,6 +1856,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _load_return_slot(self) -> MoltValue | None: ...
 
     def _load_return_slot_index(self) -> MoltValue: ...
+
+    def _load_scratch_cell(self, cell: ScratchCell) -> MoltValue: ...
 
     def _local_name_shadows_import_binding(self, name: str) -> bool: ...
 
@@ -2023,7 +2048,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _native_support_function_roots(self) -> frozenset[str]: ...
 
+    def _new_async_internal_slot(self) -> int: ...
+
     def _new_module_chunk_symbol(self) -> str: ...
+
+    def _new_scratch_cell(
+        self, initial: MoltValue | None = None, *, type_hint: str = "Any"
+    ) -> ScratchCell: ...
 
     def _new_tracked_ops(
         self, initial: list[MoltOp] | None = None, *, count_function: bool = False
@@ -2062,6 +2093,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> bool: ...
 
     def _op_may_raise_for_sccp(self, op_kind: str) -> bool: ...
+
+    def _parameter_value(self, public_name: str, *, type_hint: str) -> MoltValue: ...
 
     def _parse_container_hint(self, hint: str) -> tuple[str, str | None]: ...
 
@@ -2446,7 +2479,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _spill_async_temporaries(self) -> None: ...
 
-    def _spill_async_value(self, value: MoltValue, name: str) -> int: ...
+    def _spill_async_value(self, value: MoltValue) -> int: ...
 
     def _split_format_field_name(
         self, field_name: str
@@ -2466,6 +2499,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _store_return_slot_for_stateful(self) -> None: ...
+
+    def _store_scratch_cell(self, cell: ScratchCell, value: MoltValue) -> None: ...
 
     def _subscript_matches(
         self, node: ast.expr, seq_name: str, idx_name: str
@@ -2649,7 +2684,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         body: list[ast.stmt],
         prefill: dict[str, tuple[str, MoltValue]] | None = None,
-        loop_break_flag: int | str | None = None,
+        loop_break_flag: int | ScratchCell | None = None,
     ) -> bool: ...
 
     def emit(self, op: MoltOp) -> None: ...
@@ -2681,6 +2716,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         name: str,
         params: list[str] | None = None,
+        compiler_params: set[str] | None = None,
         param_types: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,

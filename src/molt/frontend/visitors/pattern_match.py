@@ -17,6 +17,7 @@ from typing import (
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
+    ScratchCell,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -74,14 +75,14 @@ class PatternMatchMixin(_MixinBase):
         value: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
         if not name or name == "_":
             return
-        temp_name = capture_map[name]
+        temp_cell = capture_map[name]
         current = self._emit_match_load(match_cell, match_idx)
         self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
-        self._store_local_value(temp_name, value)
+        self._store_scratch_cell(temp_cell, value)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _match_irrefutable_reason(
@@ -161,7 +162,7 @@ class PatternMatchMixin(_MixinBase):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
         capture_names = list(capture_map)
         current = self._emit_match_load(match_cell, match_idx)
@@ -172,12 +173,7 @@ class PatternMatchMixin(_MixinBase):
             not_current = self._emit_not(or_current)
             self.emit(MoltOp(kind="IF", args=[not_current], result=MoltValue("none")))
             alt_cell, alt_idx = self._emit_match_cell(True)
-            alt_capture_map = {
-                name: f"__molt_match_alt_{name}_{self.next_label()}"
-                for name in capture_names
-            }
-            for temp_name in alt_capture_map.values():
-                self._box_local(temp_name)
+            alt_capture_map = {name: self._new_scratch_cell() for name in capture_names}
             self._emit_match_pattern(sub, subject, alt_cell, alt_idx, alt_capture_map)
             alt_result = self._emit_match_load(alt_cell, alt_idx)
             self._emit_match_store(or_cell, or_idx, alt_result)
@@ -186,10 +182,8 @@ class PatternMatchMixin(_MixinBase):
                     MoltOp(kind="IF", args=[alt_result], result=MoltValue("none"))
                 )
                 for name in capture_names:
-                    alt_val = self._load_local_value_unchecked(alt_capture_map[name])
-                    if alt_val is None:
-                        alt_val = self._emit_missing_value()
-                    self._store_local_value(capture_map[name], alt_val)
+                    alt_val = self._load_scratch_cell(alt_capture_map[name])
+                    self._store_scratch_cell(capture_map[name], alt_val)
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         or_result = self._emit_match_load(or_cell, or_idx)
@@ -202,7 +196,7 @@ class PatternMatchMixin(_MixinBase):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
         patterns = list(pattern.patterns)
         star_index = next(
@@ -225,13 +219,12 @@ class PatternMatchMixin(_MixinBase):
 
         self._emit_match_and(match_cell, match_idx, compute_is_seq)
 
-        len_name = f"__molt_match_len_{self.next_label()}"
-        self._box_local(len_name)
+        len_cell = self._new_scratch_cell(type_hint="int")
 
         def compute_len_cond() -> MoltValue:
             length = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LEN", args=[subject], result=length))
-            self._store_local_value(len_name, length)
+            self._store_scratch_cell(len_cell, length)
             expected = len(patterns) if star_index is None else len(patterns) - 1
             expected_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[expected], result=expected_val))
@@ -253,9 +246,7 @@ class PatternMatchMixin(_MixinBase):
                     continue
                 current = self._emit_match_load(match_cell, match_idx)
                 self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
-                len_val = self._load_local_value(len_name)
-                if len_val is None:
-                    len_val = self._emit_missing_value()
+                len_val = self._load_scratch_cell(len_cell)
                 start_val = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[prefix_len], result=start_val))
                 if suffix_len == 0:
@@ -278,14 +269,13 @@ class PatternMatchMixin(_MixinBase):
                     )
                 )
                 rest_list = self._emit_list_from_iter(slice_val)
-                self._store_local_value(capture_map[subpattern.name], rest_list)
+                self._store_scratch_cell(capture_map[subpattern.name], rest_list)
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 continue
 
-            item_name = f"__molt_match_item_{self.next_label()}"
-            # Pre-box the temporary outside the guarded block so false branches keep a
-            # deterministic initialized cell instead of reading an uninitialized backend var.
-            self._box_local(item_name)
+            # Allocate outside the guarded block so false branches retain a
+            # deterministic initialized compiler-only cell.
+            item_cell = self._new_scratch_cell()
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             len_val = None
@@ -294,9 +284,7 @@ class PatternMatchMixin(_MixinBase):
                 index_val = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[idx], result=index_val))
             else:
-                len_val = self._load_local_value(len_name)
-                if len_val is None:
-                    len_val = self._emit_missing_value()
+                len_val = self._load_scratch_cell(len_cell)
                 base_val = len_val
                 if suffix_len:
                     suffix_val = MoltValue(self.next_var(), type_hint="int")
@@ -321,11 +309,9 @@ class PatternMatchMixin(_MixinBase):
                     index_val = base_val
             item_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="INDEX", args=[subject, index_val], result=item_val))
-            self._store_local_value(item_name, item_val)
+            self._store_scratch_cell(item_cell, item_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            item_loaded = self._load_local_value_unchecked(item_name)
-            if item_loaded is None:
-                item_loaded = self._emit_missing_value()
+            item_loaded = self._load_scratch_cell(item_cell)
             self._emit_match_pattern(
                 subpattern, item_loaded, match_cell, match_idx, capture_map
             )
@@ -336,7 +322,7 @@ class PatternMatchMixin(_MixinBase):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
         def compute_is_dict() -> MoltValue:
             dict_type = self._emit_builtin_type_value("dict")
@@ -346,13 +332,11 @@ class PatternMatchMixin(_MixinBase):
 
         self._emit_match_and(match_cell, match_idx, compute_is_dict)
 
-        key_names: list[str] = []
+        key_cells: list[ScratchCell] = []
         for key_expr, subpattern in zip(pattern.keys, pattern.patterns):
-            key_name = f"__molt_match_key_{self.next_label()}"
-            val_name = f"__molt_match_val_{self.next_label()}"
-            self._box_local(key_name)
-            self._box_local(val_name)
-            key_names.append(key_name)
+            key_cell = self._new_scratch_cell()
+            value_cell = self._new_scratch_cell()
+            key_cells.append(key_cell)
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             key_val = self.visit(key_expr)
@@ -360,7 +344,7 @@ class PatternMatchMixin(_MixinBase):
                 raise FrontendRejection(
                     Diagnostic.SYNTAX_FORM, "Unsupported mapping pattern key"
                 )
-            self._store_local_value(key_name, key_val)
+            self._store_scratch_cell(key_cell, key_val)
             missing = self._emit_missing_value()
             item_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(
@@ -374,11 +358,9 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IS", args=[item_val, missing], result=is_missing))
             ok_val = self._emit_not(is_missing)
             self._emit_match_store(match_cell, match_idx, ok_val)
-            self._store_local_value(val_name, item_val)
+            self._store_scratch_cell(value_cell, item_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            item_loaded = self._load_local_value_unchecked(val_name)
-            if item_loaded is None:
-                item_loaded = self._emit_missing_value()
+            item_loaded = self._load_scratch_cell(value_cell)
             self._emit_match_pattern(
                 subpattern, item_loaded, match_cell, match_idx, capture_map
             )
@@ -388,10 +370,8 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             rest_dict = MoltValue(self.next_var(), type_hint="dict")
             self.emit(MoltOp(kind="DICT_COPY", args=[subject], result=rest_dict))
-            for key_name in key_names:
-                key_val = self._load_local_value_unchecked(key_name)
-                if key_val is None:
-                    key_val = self._emit_missing_value()
+            for key_cell in key_cells:
+                key_val = self._load_scratch_cell(key_cell)
                 missing = self._emit_missing_value()
                 has_default = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[1], result=has_default))
@@ -403,7 +383,7 @@ class PatternMatchMixin(_MixinBase):
                         result=_,
                     )
                 )
-            self._store_local_value(capture_map[pattern.rest], rest_dict)
+            self._store_scratch_cell(capture_map[pattern.rest], rest_dict)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_match_class(
@@ -412,10 +392,9 @@ class PatternMatchMixin(_MixinBase):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
-        class_name = f"__molt_match_cls_{self.next_label()}"
-        self._box_local(class_name)
+        class_cell = self._new_scratch_cell(type_hint="type")
 
         def compute_isinstance() -> MoltValue:
             cls_val = self.visit(pattern.cls)
@@ -423,7 +402,7 @@ class PatternMatchMixin(_MixinBase):
                 raise FrontendRejection(
                     Diagnostic.SYNTAX_FORM, "Unsupported class pattern type"
                 )
-            self._store_local_value(class_name, cls_val)
+            self._store_scratch_cell(class_cell, cls_val)
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISINSTANCE", args=[subject, cls_val], result=res))
             return res
@@ -476,15 +455,12 @@ class PatternMatchMixin(_MixinBase):
         pos_count = len(pattern.patterns)
         pos_attr_list = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=pos_attr_list))
-        match_args_name = f"__molt_match_args_{self.next_label()}"
-        self._box_local(match_args_name)
+        match_args_cell = self._new_scratch_cell(type_hint="tuple")
 
         if pos_count:
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
-            cls_val = self._load_local_value_unchecked(class_name)
-            if cls_val is None:
-                cls_val = self._emit_missing_value()
+            cls_val = self._load_scratch_cell(class_cell)
             match_args_key = MoltValue(self.next_var(), type_hint="str")
             self.emit(
                 MoltOp(kind="CONST_STR", args=["__match_args__"], result=match_args_key)
@@ -550,7 +526,7 @@ class PatternMatchMixin(_MixinBase):
             self.emit(
                 MoltOp(kind="INDEX", args=[args_cell, idx], result=match_args_val)
             )
-            self._store_local_value(match_args_name, match_args_val)
+            self._store_scratch_cell(match_args_cell, match_args_val)
             length = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LEN", args=[match_args_val], result=length))
             count_val = MoltValue(self.next_var(), type_hint="int")
@@ -576,13 +552,10 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         for idx, subpattern in enumerate(pattern.patterns):
-            attr_value_key = f"__molt_match_attr_val_{self.next_label()}"
-            self._box_local(attr_value_key)
+            attr_value_cell = self._new_scratch_cell()
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
-            match_args_val = self._load_local_value_unchecked(match_args_name)
-            if match_args_val is None:
-                match_args_val = self._emit_missing_value()
+            match_args_val = self._load_scratch_cell(match_args_cell)
             idx_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[idx], result=idx_val))
             attr_name = MoltValue(self.next_var(), type_hint="Any")
@@ -615,7 +588,7 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IS", args=[attr_val, missing], result=is_missing))
             ok_val = self._emit_not(is_missing)
             self._emit_match_store(match_cell, match_idx, ok_val)
-            self._store_local_value(attr_value_key, attr_val)
+            self._store_scratch_cell(attr_value_cell, attr_val)
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             type_name = self._emit_type_name(attr_name)
             msg = self._emit_string_join(
@@ -630,25 +603,20 @@ class PatternMatchMixin(_MixinBase):
             self._emit_type_error(msg)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            attr_loaded = self._load_local_value_unchecked(attr_value_key)
-            if attr_loaded is None:
-                attr_loaded = self._emit_missing_value()
+            attr_loaded = self._load_scratch_cell(attr_value_cell)
             self._emit_match_pattern(
                 subpattern, attr_loaded, match_cell, match_idx, capture_map
             )
 
         for attr_name, subpattern in zip(pattern.kwd_attrs, pattern.kwd_patterns):
-            attr_value_key = f"__molt_match_kw_attr_{self.next_label()}"
-            self._box_local(attr_value_key)
+            attr_value_cell = self._new_scratch_cell()
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=key_val))
             has_dup = self._emit_contains(pos_attr_list, key_val)
             self.emit(MoltOp(kind="IF", args=[has_dup], result=MoltValue("none")))
-            cls_val = self._load_local_value_unchecked(class_name)
-            if cls_val is None:
-                cls_val = self._emit_missing_value()
+            cls_val = self._load_scratch_cell(class_cell)
             cls_name_val = self._emit_name_from_obj(cls_val)
             msg = self._emit_string_join(
                 [
@@ -675,11 +643,9 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IS", args=[attr_val, missing], result=is_missing))
             ok_val = self._emit_not(is_missing)
             self._emit_match_store(match_cell, match_idx, ok_val)
-            self._store_local_value(attr_value_key, attr_val)
+            self._store_scratch_cell(attr_value_cell, attr_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            attr_loaded = self._load_local_value_unchecked(attr_value_key)
-            if attr_loaded is None:
-                attr_loaded = self._emit_missing_value()
+            attr_loaded = self._load_scratch_cell(attr_value_cell)
             self._emit_match_pattern(
                 subpattern, attr_loaded, match_cell, match_idx, capture_map
             )
@@ -690,7 +656,7 @@ class PatternMatchMixin(_MixinBase):
         subject: MoltValue,
         match_cell: MoltValue,
         match_idx: MoltValue,
-        capture_map: dict[str, str],
+        capture_map: dict[str, ScratchCell],
     ) -> None:
         if isinstance(pattern, ast.MatchValue):
 
@@ -774,9 +740,7 @@ class PatternMatchMixin(_MixinBase):
         subject = self.visit(node.subject)
         if subject is None:
             raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported match subject")
-        subject_name = f"__molt_match_subject_{self.next_label()}"
-        self._store_local_value(subject_name, subject)
-        subject_val = self._load_local_value_unchecked(subject_name) or subject
+        subject_val = subject
         if not self.is_async() and self.current_func_name != "molt_main":
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
@@ -789,9 +753,6 @@ class PatternMatchMixin(_MixinBase):
         for case in node.cases:
             self._validate_match_pattern(case.pattern)
         done_cell, done_idx = self._emit_match_cell(False)
-        done_name = f"__molt_match_done_{self.next_label()}"
-        self._store_local_value(done_name, done_cell)
-        done_cell = self._load_local_value_unchecked(done_name) or done_cell
         for idx, case in enumerate(node.cases):
             is_last = idx == len(node.cases) - 1
             if case.guard is None and not is_last:
@@ -810,12 +771,7 @@ class PatternMatchMixin(_MixinBase):
                         )
 
             capture_names = sorted(self._collect_pattern_capture_names(case.pattern))
-            capture_map = {
-                name: f"__molt_match_capture_{name}_{self.next_label()}"
-                for name in capture_names
-            }
-            for temp_name in capture_map.values():
-                self._box_local(temp_name)
+            capture_map = {name: self._new_scratch_cell() for name in capture_names}
             done_val = self._emit_match_load(done_cell, done_idx)
             not_done = self._emit_not(done_val)
             self.emit(MoltOp(kind="IF", args=[not_done], result=MoltValue("none")))
@@ -827,9 +783,7 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IF", args=[matched], result=MoltValue("none")))
 
             for name in capture_names:
-                temp_val = self._load_local_value_unchecked(capture_map[name])
-                if temp_val is None:
-                    temp_val = self._emit_missing_value()
+                temp_val = self._load_scratch_cell(capture_map[name])
                 self._store_local_value(name, temp_val)
 
             if case.guard is not None:

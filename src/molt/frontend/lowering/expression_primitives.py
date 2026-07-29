@@ -59,9 +59,7 @@ class ExpressionPrimitivesMixin(_MixinBase):
                 )
             values.append(val)
             if any(yield_flags[idx + 1 :]):
-                slot = self._spill_async_value(
-                    val, f"__expr_spill_{len(self.async_locals)}"
-                )
+                slot = self._spill_async_value(val)
                 spills.append((idx, slot, val.type_hint))
         for idx, slot, hint in spills:
             values[idx] = self._reload_async_value(slot, hint)

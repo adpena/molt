@@ -769,6 +769,13 @@ class CallNamedDispatchMixin(_MixinBase):
                                         MoltOp(
                                             kind="SETATTR_GENERIC_PTR",
                                             args=[obj, attr_name, val],
+                                            result=MoltValue("none"),
+                                        )
+                                    )
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CONST_NONE",
+                                            args=[],
                                             result=res,
                                         )
                                     )
@@ -798,9 +805,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     MoltOp(
                         kind="SETATTR_NAME",
                         args=[obj, name, val],
-                        result=res,
+                        result=MoltValue("none"),
                     )
                 )
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
             if func_id == "delattr":
                 if len(node.args) != 2 or node.keywords:
@@ -832,7 +840,7 @@ class CallNamedDispatchMixin(_MixinBase):
                             MoltOp(
                                 kind="DELATTR_GENERIC_PTR",
                                 args=[obj, attr_name],
-                                result=res,
+                                result=MoltValue("none"),
                             )
                         )
                     else:
@@ -840,18 +848,20 @@ class CallNamedDispatchMixin(_MixinBase):
                             MoltOp(
                                 kind="DELATTR_GENERIC_OBJ",
                                 args=[obj, attr_name],
-                                result=res,
+                                result=MoltValue("none"),
                             )
                         )
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     return res
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(
                         kind="DELATTR_NAME",
                         args=[obj, name],
-                        result=res,
+                        result=MoltValue("none"),
                     )
                 )
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
             if func_id == "hasattr":
                 if len(node.args) != 2 or node.keywords:
@@ -1490,9 +1500,7 @@ class CallNamedDispatchMixin(_MixinBase):
                 chan_for_send = chan
                 val_for_send = val
                 if self.is_async():
-                    chan_slot = self._async_local_offset(
-                        f"__chan_send_{len(self.async_locals)}"
-                    )
+                    chan_slot = self._new_async_internal_slot()
                     self.emit(
                         MoltOp(
                             kind="STORE_CLOSURE",
@@ -1500,9 +1508,7 @@ class CallNamedDispatchMixin(_MixinBase):
                             result=MoltValue("none"),
                         )
                     )
-                    val_slot = self._async_local_offset(
-                        f"__chan_send_val_{len(self.async_locals)}"
-                    )
+                    val_slot = self._new_async_internal_slot()
                     self.emit(
                         MoltOp(
                             kind="STORE_CLOSURE",
@@ -1583,9 +1589,7 @@ class CallNamedDispatchMixin(_MixinBase):
                 chan_slot = None
                 chan_for_recv = chan
                 if self.is_async():
-                    chan_slot = self._async_local_offset(
-                        f"__chan_recv_{len(self.async_locals)}"
-                    )
+                    chan_slot = self._new_async_internal_slot()
                     self.emit(
                         MoltOp(
                             kind="STORE_CLOSURE",

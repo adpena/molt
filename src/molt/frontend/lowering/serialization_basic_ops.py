@@ -523,9 +523,7 @@ class SerializationBasicOpsMixin(_MixinBase):
             target = op.args[0]
             code_id = self.func_code_ids.get(target, 0)
             entry = {
-                "kind": (
-                    "call_internal" if target in self.module_chunk_symbols else "call"
-                ),
+                "kind": ("call_internal" if target in self.funcs_map else "call"),
                 "s_value": target,
                 "args": [arg.name for arg in op.args[1:]],
                 "value": code_id,

@@ -712,19 +712,31 @@ class TypeAnnotationMixin(_MixinBase):
         free_var_hints: dict[str, str] = {}
         closure_val: MoltValue | None = None
         has_closure = False
-        if free_vars_list and self.current_func_name != "molt_main":
+        if free_vars_list:
             self.unbound_check_names.update(free_vars_list)
+            closure_items: list[MoltValue] = []
             for name in free_vars_list:
+                type_param_value = self.annotation_type_params.get(name)
+                if type_param_value is not None:
+                    cell = MoltValue(self.next_var(), type_hint="list")
+                    self.emit(
+                        MoltOp(kind="LIST_NEW", args=[type_param_value], result=cell)
+                    )
+                    closure_items.append(cell)
+                    free_var_hints[name] = type_param_value.type_hint or "Any"
+                    continue
                 self._box_local(name)
                 self.closure_locals.add(name)
-            for name in free_vars_list:
                 hint = self.boxed_local_hints.get(name)
                 if hint is None:
                     value = self.locals.get(name)
                     if value is not None and value.type_hint:
                         hint = value.type_hint
                 free_var_hints[name] = hint or "Any"
-            closure_items = self._closure_cells_for(free_vars_list)
+                closure_cell = self._load_boxed_cell(name)
+                if closure_cell is None:
+                    closure_cell = self.boxed_locals[name]
+                closure_items.append(closure_cell)
             closure_val = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
             has_closure = True
@@ -760,14 +772,16 @@ class TypeAnnotationMixin(_MixinBase):
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
-        params = ["format"]
-        if has_closure:
-            params = [_MOLT_CLOSURE_PARAM] + params
+        params, parameter_bindings = self._function_transport_params(
+            ["format"],
+            has_closure=has_closure,
+        )
         self.start_function(func_symbol, params=params, type_facts_name="__annotate__")
+        self.parameter_bindings = parameter_bindings
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars_list)}
             self.free_var_hints = free_var_hints
-            self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         self.global_decls = set()
@@ -775,7 +789,7 @@ class TypeAnnotationMixin(_MixinBase):
         self.scope_assigned = set()
         self.del_targets = set()
         self.unbound_check_names = set()
-        format_val = MoltValue("format", type_hint="int")
+        format_val = self._parameter_value("format", type_hint="int")
         self.locals["format"] = format_val
 
         one_val = MoltValue(self.next_var(), type_hint="int")

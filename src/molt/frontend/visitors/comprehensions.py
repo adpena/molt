@@ -186,6 +186,7 @@ class ComprehensionMixin(_MixinBase):
         self.start_function(
             poll_func_name,
             params=["self"],
+            compiler_params={"self"},
             type_facts_name=func_symbol,
             needs_return_slot=False,
         )
@@ -385,9 +386,7 @@ class ComprehensionMixin(_MixinBase):
             )
         res = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
-        res_slot = self._async_local_offset(
-            f"__async_list_comp_res_{len(self.async_locals)}"
-        )
+        res_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -396,9 +395,7 @@ class ComprehensionMixin(_MixinBase):
             )
         )
         iter_obj = self._emit_aiter(iterable)
-        iter_slot = self._async_local_offset(
-            f"__async_list_comp_iter_{len(self.async_locals)}"
-        )
+        iter_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -408,9 +405,7 @@ class ComprehensionMixin(_MixinBase):
         )
         sentinel = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=sentinel))
-        sentinel_slot = self._async_local_offset(
-            f"__async_list_comp_sentinel_{len(self.async_locals)}"
-        )
+        sentinel_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -518,9 +513,7 @@ class ComprehensionMixin(_MixinBase):
             )
         res = MoltValue(self.next_var(), type_hint="set")
         self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
-        res_slot = self._async_local_offset(
-            f"__async_set_comp_res_{len(self.async_locals)}"
-        )
+        res_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -529,9 +522,7 @@ class ComprehensionMixin(_MixinBase):
             )
         )
         iter_obj = self._emit_aiter(iterable)
-        iter_slot = self._async_local_offset(
-            f"__async_set_comp_iter_{len(self.async_locals)}"
-        )
+        iter_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -541,9 +532,7 @@ class ComprehensionMixin(_MixinBase):
         )
         sentinel = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=sentinel))
-        sentinel_slot = self._async_local_offset(
-            f"__async_set_comp_sentinel_{len(self.async_locals)}"
-        )
+        sentinel_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -670,9 +659,7 @@ class ComprehensionMixin(_MixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "async dict comprehension outside async context",
             )
-        target_slot = self._async_local_offset(
-            f"__async_dict_comp_target_{len(self.async_locals)}"
-        )
+        target_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -681,9 +668,7 @@ class ComprehensionMixin(_MixinBase):
             )
         )
         iter_obj = self._emit_aiter(iterable)
-        iter_slot = self._async_local_offset(
-            f"__async_dict_comp_iter_{len(self.async_locals)}"
-        )
+        iter_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",
@@ -693,9 +678,7 @@ class ComprehensionMixin(_MixinBase):
         )
         sentinel = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=sentinel))
-        sentinel_slot = self._async_local_offset(
-            f"__async_dict_comp_sentinel_{len(self.async_locals)}"
-        )
+        sentinel_slot = self._new_async_internal_slot()
         self.emit(
             MoltOp(
                 kind="STORE_CLOSURE",

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from molt.frontend._types import (
     _ClassNsScope,
+    AsyncFrameSlot,
     ClassInfo,
     CompatibilityReporter,
     FallbackPolicy,
@@ -22,6 +23,7 @@ from molt.frontend._types import (
     MidendProfile,
     MoltOp,
     MoltValue,
+    ScratchCell,
 )
 from molt.frontend.sema import FunctionKind, SemaResult
 
@@ -38,7 +40,9 @@ else:
 
 FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "locals",
-    "locals_cache_val",
+    "locals_cache_cell",
+    "compiler_bindings",
+    "parameter_bindings",
     "boxed_locals",
     "closure_locals",
     "comp_shadow_locals",
@@ -67,11 +71,14 @@ FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS = (
 
 FUNCTION_ASYNC_SCOPE_STATE_ATTRS = (
     "async_locals",
-    "async_internal_locals",
-    "async_public_locals",
+    "async_frame_slots",
+    "async_internal_bindings",
+    "async_spill_slots",
     "async_locals_base",
     "async_closure_offset",
-    "async_local_hints",
+    "async_public_hints",
+    "async_internal_hints",
+    "async_spill_hints",
 )
 
 FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS = (
@@ -109,7 +116,6 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
     "async_index_loop_stack",
     "loop_break_flags",
     "loop_try_depths",
-    "loop_break_counter",
     "loop_layout_guards",
     "loop_guard_assumptions",
     "loop_static_class_refs",
@@ -180,7 +186,9 @@ class GeneratorStateMixin(_MixinBase):
         if reset_locals_cache:
             # Backing store for the current frame's `locals()` snapshot semantics.
             # Stored outside `self.locals` to avoid accidental shadowing/rewrites.
-            self.locals_cache_val = None
+            self.locals_cache_cell: ScratchCell | None = None
+        self.compiler_bindings: dict[str, MoltValue] = {}
+        self.parameter_bindings: dict[str, str] = {}
         self.boxed_locals = {}
         self.closure_locals = set()
         self.comp_shadow_locals = set()
@@ -214,12 +222,15 @@ class GeneratorStateMixin(_MixinBase):
             )
 
     def _reset_async_scope_state(self) -> None:
-        self.async_locals = {}
-        self.async_internal_locals = set()
-        self.async_public_locals = set()
+        self.async_locals: dict[str, AsyncFrameSlot] = {}
+        self.async_frame_slots: list[AsyncFrameSlot] = []
+        self.async_internal_bindings: dict[str, AsyncFrameSlot] = {}
+        self.async_spill_slots: dict[str, AsyncFrameSlot] = {}
         self.async_locals_base = 0
         self.async_closure_offset = None
-        self.async_local_hints = {}
+        self.async_public_hints: dict[str, str] = {}
+        self.async_internal_hints: dict[str, str] = {}
+        self.async_spill_hints: dict[str, str] = {}
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None:
         self.explicit_type_hints = {}
@@ -266,9 +277,8 @@ class GeneratorStateMixin(_MixinBase):
         self.block_terminated = False
         self.range_loop_stack = []
         self.async_index_loop_stack = []
-        self.loop_break_flags = []
+        self.loop_break_flags: list[int | ScratchCell | None] = []
         self.loop_try_depths = []
-        self.loop_break_counter = 0
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
         self.loop_static_class_refs = []
@@ -323,6 +333,7 @@ class GeneratorStateMixin(_MixinBase):
         self.code_id_counter = 0
         self.code_slots_emitted = False
         self.var_count: int = 0
+        self.reserved_python_identifiers: set[str] = set()
         self.state_count: int = 0
         self.known_classes: dict[str, ClassInfo] = dict(known_classes or {})
         self.classes: dict[str, ClassInfo] = dict(self.known_classes)

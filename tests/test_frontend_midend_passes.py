@@ -1287,6 +1287,30 @@ def test_structural_cfg_validator_canonicalizes_unbalanced_regions() -> None:
     assert kinds.count("LOOP_START") == kinds.count("LOOP_END")
 
 
+def test_structural_cfg_validator_repairs_before_function_terminal_tail() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(
+            kind="TRY_START",
+            args=[],
+            result=MoltValue("none"),
+            metadata={"try_region_id": 7},
+        ),
+        MoltOp(kind="CONST_NONE", args=[], result=MoltValue("value")),
+        MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")),
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
+    ]
+
+    rewritten, rewrites = gen._ensure_structural_cfg_validity(ops, stage="unit_test")
+
+    assert rewrites == 1
+    assert [op.kind for op in rewritten[-3:]] == ["TRY_END", "TRACE_EXIT", "ret_void"]
+    assert rewritten[-3].metadata == {
+        "synthetic": "cfg_structural_canonicalizer",
+        "stage": "unit_test",
+    }
+
+
 def test_structural_cfg_validator_rejects_missing_check_exception_target() -> None:
     gen = SimpleTIRGenerator()
     ops = [

@@ -9,8 +9,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    _MOLT_CLOSURE_PARAM,
-    _MOLT_LOCALS_CACHE,
     BUILTIN_TYPE_TAGS,
     FormatParseState,
     MoltOp,
@@ -175,14 +173,14 @@ class CallRuntimeHelperMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="dict")
             self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
         else:
-            res = self._load_local_value_unchecked(_MOLT_LOCALS_CACHE)
-            if res is None:
-                res = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                self._store_local_value(_MOLT_LOCALS_CACHE, res)
-        for name in sorted(self.locals):
-            if name == _MOLT_CLOSURE_PARAM or name.startswith("__molt_"):
-                continue
+            self._init_locals_cache()
+            if self.locals_cache_cell is None:
+                raise AssertionError("locals cache scratch cell was not initialized")
+            res = self._load_scratch_cell(self.locals_cache_cell)
+        public_names = set(self.scope_assigned)
+        public_names.update(self.async_locals)
+        public_names.update(self.parameter_bindings)
+        for name in sorted(public_names):
             value = self._load_local_value_unchecked(name)
             if value is None:
                 continue
@@ -199,9 +197,7 @@ class CallRuntimeHelperMixin(_MixinBase):
                 )
             )
         for name in sorted(self.free_vars):
-            if name in self.locals:
-                continue
-            if name == _MOLT_CLOSURE_PARAM or name.startswith("__molt_"):
+            if name in public_names:
                 continue
             cell = self._load_free_var_cell(name)
             if cell is None:
@@ -292,9 +288,7 @@ class CallRuntimeHelperMixin(_MixinBase):
         # store_index(None, ...) crashes (see _emit_guarded_field_get for the
         # full rationale).
         if self.is_async():
-            slot = self._async_local_offset(
-                f"__stop_iter_args_{len(self.async_locals)}"
-            )
+            slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -374,8 +368,8 @@ class CallRuntimeHelperMixin(_MixinBase):
                 return "None"
         if not isinstance(expr, ast.Name):
             return None
-        if self.is_async() and expr.id in self.async_local_hints:
-            return self.async_local_hints[expr.id]
+        if self.is_async() and expr.id in self.async_public_hints:
+            return self.async_public_hints[expr.id]
         boxed_hint = self.boxed_local_hints.get(expr.id)
         if boxed_hint is not None:
             return boxed_hint
@@ -440,9 +434,7 @@ class CallRuntimeHelperMixin(_MixinBase):
                         )
                     values.append(val)
                     if any(yield_flags[idx + 1 :]):
-                        slot = self._spill_async_value(
-                            val, f"__arg_spill_{len(self.async_locals)}"
-                        )
+                        slot = self._spill_async_value(val)
                         spills.append((idx, slot, val.type_hint))
                 for idx, slot, hint in spills:
                     values[idx] = self._reload_async_value(slot, hint)
@@ -586,9 +578,7 @@ class CallRuntimeHelperMixin(_MixinBase):
                             )
                     values.append(val)
                     if any(yield_flags[idx + 1 :]):
-                        slot = self._spill_async_value(
-                            val, f"__arg_spill_{len(self.async_locals)}"
-                        )
+                        slot = self._spill_async_value(val)
                         spills.append((idx, slot, val.type_hint))
                 for idx, slot, hint in spills:
                     values[idx] = self._reload_async_value(slot, hint)

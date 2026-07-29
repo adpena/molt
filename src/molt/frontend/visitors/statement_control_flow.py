@@ -16,6 +16,7 @@ from molt.frontend._types import (
     ActiveException,
     MoltOp,
     MoltValue,
+    ScratchCell,
     TryScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -58,7 +59,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             if self.current_func_name == "molt_main":
                 # Module-scope if-branch bindings use the module dict as their
                 # mutable store instead of synthesising boxed-local cells.
-                module_backed = {n for n in assigned if not n.startswith("__molt_")}
+                module_backed = assigned
                 if module_backed:
                     # Flush any values that were previously assigned (before
                     # this if-block) into the module dict.  Without this,
@@ -169,14 +170,12 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             return None
 
-        ctx_name = f"__molt_with_ctx_{self.next_label()}"
-        self._store_local_value(ctx_name, ctx_val)
+        ctx_cell = self._new_scratch_cell(ctx_val, type_hint=ctx_val.type_hint)
         ctx_mark = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
         ctx_mark_offset = None
         if self.is_async():
-            ctx_mark_name = f"__ctx_mark_{len(self.async_locals)}"
-            ctx_mark_offset = self._async_local_offset(ctx_mark_name)
+            ctx_mark_offset = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -191,7 +190,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             try_start_has_handler_value=False,
         )
         self.try_scopes.append(scope)
-        ctx_ref = self._load_local_value(ctx_name) or ctx_val
+        ctx_ref = self._load_scratch_cell(ctx_cell)
         enter_hint = (
             ctx_val.type_hint
             if ctx_val.type_hint in {"file_text", "file_bytes"}
@@ -243,7 +242,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         none_exit = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exit))
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_local_value(ctx_name) or ctx_val
+        ctx_ref = self._load_scratch_cell(ctx_cell)
         self.emit(
             MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_exit], result=exit_ok)
         )
@@ -282,7 +281,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
         )
         exit_res = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_local_value(ctx_name) or ctx_val
+        ctx_ref = self._load_scratch_cell(ctx_cell)
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, exc_val], result=exit_res))
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
@@ -299,7 +298,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
 
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_local_value(ctx_name) or ctx_val
+        ctx_ref = self._load_scratch_cell(ctx_cell)
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_val], result=exit_ok))
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
@@ -315,23 +314,11 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_For(self, node: ast.For) -> None:
         if self._emit_split_dict_increment_for_loop(node):
             return None
-        break_name = None
+        break_name: ScratchCell | None = None
         if node.orelse:
-            while True:
-                candidate = f"__molt_for_break_{self.loop_break_counter}"
-                self.loop_break_counter += 1
-                if (
-                    candidate not in self.locals
-                    and candidate not in self.globals
-                    and candidate not in self.boxed_locals
-                ):
-                    break_name = candidate
-                    break
             break_init = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=break_init))
-            self._store_local_value(break_name, break_init)
-            if not self.is_async():
-                self._box_local(break_name)
+            break_name = self._new_scratch_cell(break_init, type_hint="bool")
         matmul_match = (
             self._match_matmul_loop(node) if isinstance(node.target, ast.Name) else None
         )
@@ -697,38 +684,11 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
 
     @_with_module_provenance_loop_flow
     def visit_While(self, node: ast.While) -> None:
-        break_name = None
+        break_name: ScratchCell | None = None
         if node.orelse:
-            while True:
-                candidate = f"__molt_while_break_{self.loop_break_counter}"
-                self.loop_break_counter += 1
-                if (
-                    candidate not in self.locals
-                    and candidate not in self.globals
-                    and candidate not in self.boxed_locals
-                ):
-                    break_name = candidate
-                    break
             break_init = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=break_init))
-            if (
-                self.current_func_name == "molt_main"
-                and hasattr(self, "module_obj")
-                and self.module_obj is not None
-            ):
-                # At module scope, store the break flag in the module dict
-                # instead of a boxed local.  Boxed locals (list cells)
-                # suffer from SSA phi corruption in sequential while-else
-                # blocks because Cranelift resolves the cell pointer to the
-                # entry-block 0-init instead of the actual list_new output.
-                # The module dict is on the heap and immune to SSA issues.
-                self._emit_module_attr_set_on(self.module_obj, break_name, break_init)
-                self.module_global_mutations.add(break_name)
-                self.locals.pop(break_name, None)
-            else:
-                self._store_local_value(break_name, break_init)
-                if not self.is_async():
-                    self._box_local(break_name)
+            break_name = self._new_scratch_cell(break_init, type_hint="bool")
         counted = (
             None
             if break_name is not None
@@ -942,8 +902,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             ctx_mark = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
         if needs_context_unwind and self.is_async():
-            ctx_name = f"__ctx_mark_{len(self.async_locals)}"
-            ctx_mark_offset = self._async_local_offset(ctx_name)
+            ctx_mark_offset = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -1052,8 +1011,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
             exc_slot_offset = None
             if self.is_async():
-                exc_slot_name = f"__exc_handler_{len(self.async_locals)}"
-                exc_slot_offset = self._async_local_offset(exc_slot_name)
+                exc_slot_offset = self._new_async_internal_slot()
                 self.emit(
                     MoltOp(
                         kind="STORE_CLOSURE",
@@ -1112,9 +1070,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 final_exc = exc_val
             final_slot = None
             if self.is_async():
-                final_slot = self._async_local_offset(
-                    f"__final_exc_{len(self.async_locals)}"
-                )
+                final_slot = self._new_async_internal_slot()
                 self.emit(
                     MoltOp(
                         kind="STORE_CLOSURE",
@@ -1213,9 +1169,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             else_final_slot = None
             if self.is_async():
-                else_final_slot = self._async_local_offset(
-                    f"__final_else_exc_{len(self.async_locals)}"
-                )
+                else_final_slot = self._new_async_internal_slot()
                 self.emit(
                     MoltOp(
                         kind="STORE_CLOSURE",
@@ -1357,8 +1311,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             ctx_mark = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
         if needs_context_unwind and self.is_async():
-            ctx_name = f"__ctx_star_{len(self.async_locals)}"
-            ctx_mark_offset = self._async_local_offset(ctx_name)
+            ctx_mark_offset = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -1433,9 +1386,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         rest_slot = None
         raised_slot = None
         if self.is_async():
-            rest_slot = self._async_local_offset(
-                f"__try_star_rest_{len(self.async_locals)}"
-            )
+            rest_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -1443,9 +1394,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-            raised_slot = self._async_local_offset(
-                f"__try_star_raised_{len(self.async_locals)}"
-            )
+            raised_slot = self._new_async_internal_slot()
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -1532,8 +1481,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="IF", args=[has_match], result=MoltValue("none")))
                 exc_slot_offset = None
                 if self.is_async():
-                    exc_slot_name = f"__exc_star_{len(self.async_locals)}"
-                    exc_slot_offset = self._async_local_offset(exc_slot_name)
+                    exc_slot_offset = self._new_async_internal_slot()
                     self.emit(
                         MoltOp(
                             kind="STORE_CLOSURE",
@@ -1696,9 +1644,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             final_slot = None
             if self.is_async():
-                final_slot = self._async_local_offset(
-                    f"__final_star_{len(self.async_locals)}"
-                )
+                final_slot = self._new_async_internal_slot()
                 self.emit(
                     MoltOp(
                         kind="STORE_CLOSURE",
@@ -1797,9 +1743,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             else_final_slot = None
             if self.is_async():
-                else_final_slot = self._async_local_offset(
-                    f"__final_star_else_exc_{len(self.async_locals)}"
-                )
+                else_final_slot = self._new_async_internal_slot()
                 self.emit(
                     MoltOp(
                         kind="STORE_CLOSURE",
@@ -2095,7 +2039,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         )
                     )
                 else:
-                    self._store_local_value(break_slot, break_val)
+                    self._store_scratch_cell(break_slot, break_val)
         self._emit_exception_handler_exit_cleanup()
         popped_labels = self._emit_loop_unwind()
         try:
