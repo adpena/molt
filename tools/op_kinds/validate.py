@@ -49,11 +49,13 @@ from .schema import (
     _SCCP_CONSTANT_EVAL_RULES,
     _SCCP_CONSTANT_SEED_RULES,
     _SCEV_EXPR_RULES,
+    _SIMPLEIR_CALL_TARGET_ROLES,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
-    _SIMPLEIR_RETURN_SHAPES,
     _SIMPLEIR_FIELD_ROLE_FACT_SETS,
     _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS,
+    _SIMPLEIR_RETURN_SHAPES,
     _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS,
+    _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
     _SROA_CONST_IMMEDIATE_RULES,
     _SSA_S_VALUE_ATTR_KEYS,
     _STRENGTH_REDUCTION_RULES,
@@ -605,6 +607,38 @@ def load_table(table_path: Path = TABLE) -> dict:
             isinstance(a, str) for a in aliases
         ):
             raise OpKindTableError(f"kind {canon}: 'aliases' must be a list of strings")
+        target_roles = row.get("simpleir_call_target_roles", [])
+        if not isinstance(target_roles, list) or not all(
+            isinstance(target_role, dict) for target_role in target_roles
+        ):
+            raise OpKindTableError(
+                f"kind {canon}: simpleir_call_target_roles must be an array of tables"
+            )
+        target_spellings: set[str] = set()
+        for target_role in target_roles:
+            if set(target_role) != {"spelling", "role"}:
+                raise OpKindTableError(
+                    f"kind {canon}: call target roles require spelling and role"
+                )
+            spelling = target_role["spelling"]
+            role = target_role["role"]
+            if spelling not in {canon, *aliases}:
+                raise OpKindTableError(
+                    f"kind {canon}: call target spelling {spelling!r} is not owned by the row"
+                )
+            if spelling in target_spellings:
+                raise OpKindTableError(
+                    f"kind {canon}: duplicate call target spelling {spelling!r}"
+                )
+            target_spellings.add(spelling)
+            if role not in _SIMPLEIR_CALL_TARGET_ROLES:
+                raise OpKindTableError(
+                    f"kind {canon}: invalid call target role {role!r}"
+                )
+        if target_roles and target_spellings != {canon, *aliases}:
+            raise OpKindTableError(
+                f"kind {canon}: call target roles must classify every row spelling"
+            )
         mapper = row.get("mapper_opcode")
         if not isinstance(mapper, str) or mapper not in seen_opcodes:
             raise OpKindTableError(
@@ -1702,6 +1736,9 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
         for alias in row.get("aliases", [])
     }
     seen: set[str] = set()
+    region_roles: dict[str, dict[str, str]] = {}
+    label_definitions: set[str] = set()
+    label_references: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise OpKindTableError(f"simpleir_control_kind row must be a table: {row}")
@@ -1723,13 +1760,53 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
                 raise OpKindTableError(
                     f"simpleir_control_kind {kind}: {field!r} must be a bool"
                 )
+        for field in _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS:
+            if field in row and not isinstance(row[field], bool):
+                raise OpKindTableError(
+                    f"simpleir_control_kind {kind}: {field!r} must be a bool"
+                )
+        region = row.get("verifier_region")
+        region_role = row.get("verifier_region_role")
+        if (region is None) != (region_role is None):
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: verifier_region and "
+                "verifier_region_role must be declared together"
+            )
+        if region is not None:
+            if not isinstance(region, str) or not region:
+                raise OpKindTableError(
+                    f"simpleir_control_kind {kind}: verifier_region must be non-empty"
+                )
+            if region_role not in {"start", "end", "alternate"}:
+                raise OpKindTableError(
+                    f"simpleir_control_kind {kind}: invalid verifier_region_role "
+                    f"{region_role!r}"
+                )
+            owners = region_roles.setdefault(region, {})
+            if region_role in owners:
+                raise OpKindTableError(
+                    f"SimpleIR verifier region {region!r} has duplicate "
+                    f"{region_role!r} owners"
+                )
+            owners[region_role] = kind
+        if row.get("verifier_label_definition", False):
+            label_definitions.add(kind)
+        if row.get("verifier_label_reference", False):
+            label_references.add(kind)
         return_shape = row.get("return_shape")
         if return_shape is not None and return_shape not in _SIMPLEIR_RETURN_SHAPES:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: return_shape must be one of "
                 f"{sorted(_SIMPLEIR_RETURN_SHAPES)}, got {return_shape!r}"
             )
-        unknown = set(row) - {"kind", "return_shape", *_SIMPLEIR_CONTROL_FACT_FIELDS}
+        unknown = set(row) - {
+            "kind",
+            "return_shape",
+            *_SIMPLEIR_CONTROL_FACT_FIELDS,
+            *_SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
+            "verifier_region",
+            "verifier_region_role",
+        }
         if unknown:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: unknown fields {sorted(unknown)}"
@@ -1785,6 +1862,16 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
         ):
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: at least one fact must be true"
+            )
+    if overlap := label_definitions & label_references:
+        raise OpKindTableError(
+            "SimpleIR label kinds cannot both define and reference labels: "
+            f"{sorted(overlap)}"
+        )
+    for region, roles in region_roles.items():
+        if "start" not in roles or "end" not in roles:
+            raise OpKindTableError(
+                f"SimpleIR verifier region {region!r} must own start and end roles"
             )
 
 

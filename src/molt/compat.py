@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 import sys
 from typing import Literal
 
@@ -18,6 +19,18 @@ DEFAULT_SUBSET_WORKAROUND = (
     "run this path with CPython or rewrite it within Molt's verified subset"
 )
 
+_NON_ALLOWLISTED_CALL_RE = re.compile(
+    r"^call to non-allowlisted function ['\"](?P<callee>[^'\"]+)['\"]$"
+)
+
+
+def compatibility_feature_category(feature: str) -> str:
+    """Return the stable burndown category for a compatibility feature."""
+    match = _NON_ALLOWLISTED_CALL_RE.fullmatch(feature)
+    if match is not None:
+        return match.group("callee")
+    return feature
+
 
 @dataclass(frozen=True)
 class CompatibilityIssue:
@@ -27,6 +40,12 @@ class CompatibilityIssue:
     location: str
     alternative: str | None = None
     detail: str | None = None
+    diagnostic_code: str | None = None
+    diagnostic_category: str | None = None
+
+    @property
+    def feature_category(self) -> str:
+        return self.diagnostic_category or compatibility_feature_category(self.feature)
 
     def format_warning(self) -> str:
         lines = [
@@ -102,6 +121,8 @@ class CompatibilityReporter:
         impact: Impact = "high",
         alternative: str | None = None,
         detail: str | None = None,
+        diagnostic_code: str | None = None,
+        diagnostic_category: str | None = None,
     ) -> CompatibilityError:
         location = self._location(node)
         issue = CompatibilityIssue(
@@ -111,6 +132,8 @@ class CompatibilityReporter:
             location=location,
             alternative=alternative,
             detail=detail,
+            diagnostic_code=diagnostic_code,
+            diagnostic_category=diagnostic_category,
         )
         if tier in {"bridge", "guarded"}:
             self.warn(issue)

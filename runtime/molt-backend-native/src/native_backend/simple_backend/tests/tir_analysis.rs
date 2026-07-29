@@ -92,7 +92,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
     // A module context that knows ONLY a stdlib closure / task / leaf.
     let stdlib_funcs = vec![FunctionIR {
         name: "contextlib___inner".to_string(),
-        params: vec!["__molt_closure__".to_string()],
+        params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
         ops: vec![OpIR {
             kind: "func_new_closure".to_string(),
             s_value: Some("contextlib___inner".to_string()),
