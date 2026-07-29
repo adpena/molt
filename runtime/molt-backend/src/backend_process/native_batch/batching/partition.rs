@@ -1,57 +1,68 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use molt_backend::FunctionIR;
-use molt_backend::ir::ExecutionContextPolicy;
 
-pub(crate) type InheritedFunctionDeclarations = BTreeMap<String, FunctionIR>;
+pub(crate) struct ExternalFunctionDeclarations(Vec<FunctionIR>);
 
-pub(crate) fn inherited_function_declarations(
-    functions: &[FunctionIR],
-) -> InheritedFunctionDeclarations {
-    functions
-        .iter()
-        .filter(|func| func.execution_context == ExecutionContextPolicy::Inherited)
-        .map(|func| {
-            (
-                func.name.clone(),
-                FunctionIR {
-                    name: func.name.clone(),
-                    params: func.params.clone(),
-                    ops: Vec::new(),
-                    param_types: func.param_types.clone(),
-                    source_file: func.source_file.clone(),
-                    is_extern: true,
-                    execution_context: func.execution_context,
-                },
-            )
-        })
-        .collect()
+impl ExternalFunctionDeclarations {
+    fn get(&self, name: &str) -> Option<&FunctionIR> {
+        self.0
+            .binary_search_by(|declaration| declaration.name.as_str().cmp(name))
+            .ok()
+            .map(|index| &self.0[index])
+    }
 }
 
-pub(crate) fn append_referenced_inherited_declarations(
-    batch_functions: &mut Vec<FunctionIR>,
-    declarations: &InheritedFunctionDeclarations,
-) {
-    let local_names = batch_functions
+pub(crate) fn external_function_declarations(
+    functions: &[FunctionIR],
+) -> ExternalFunctionDeclarations {
+    let mut declarations = functions
         .iter()
-        .map(|func| func.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let referenced = batch_functions
-        .iter()
-        .flat_map(|func| func.ops.iter())
-        .filter(|op| op.passes_execution_context)
-        .filter_map(|op| op.s_value.as_deref())
-        .filter(|target| !local_names.contains(*target) && declarations.contains_key(*target))
-        .collect::<BTreeSet<_>>();
-    let external_declarations = referenced
-        .into_iter()
-        .map(|name| {
-            declarations
-                .get(name)
-                .expect("referenced inherited declaration was checked above")
-                .clone()
+        .map(|func| {
+            func.extern_declaration()
+                .unwrap_or_else(|error| panic!("invalid batch declaration source: {error}"))
         })
         .collect::<Vec<_>>();
+    declarations.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    if let Some(duplicate) = declarations
+        .windows(2)
+        .find(|pair| pair[0].name == pair[1].name)
+    {
+        panic!("duplicate batch declaration for {}", duplicate[0].name);
+    }
+    ExternalFunctionDeclarations(declarations)
+}
+
+pub(crate) fn append_referenced_external_declarations(
+    batch_functions: &mut Vec<FunctionIR>,
+    declarations: &ExternalFunctionDeclarations,
+) {
+    let external_declarations = {
+        let mut local_names = batch_functions
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect::<Vec<_>>();
+        local_names.sort_unstable();
+
+        let mut referenced = batch_functions
+            .iter()
+            .flat_map(|func| func.ops.iter())
+            .filter_map(molt_backend::ir::extern_direct_call_target)
+            .filter(|target| local_names.binary_search(target).is_err())
+            .filter(|target| declarations.get(target).is_some())
+            .collect::<Vec<_>>();
+        referenced.sort_unstable();
+        referenced.dedup();
+        referenced
+            .into_iter()
+            .map(|name| {
+                declarations
+                    .get(name)
+                    .expect("referenced external declaration was checked above")
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+    };
     batch_functions.extend(external_declarations);
 }
 

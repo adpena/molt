@@ -758,10 +758,10 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                             m += 1;
                             continue;
                         }
-                        if mk == "ret" {
-                            if ops[m].args.as_ref().and_then(|args| args.first()) == Some(out) {
-                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
-                            }
+                        if mk == "ret"
+                            && ops[m].args.as_ref().and_then(|args| args.first()) == Some(out)
+                        {
+                            return_labels.insert(label_id, (slot.clone(), args[1].clone()));
                         }
                         break;
                     }

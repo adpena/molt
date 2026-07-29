@@ -27,7 +27,7 @@ def _write_complete_stdlib_contract(stdlib_obj: Path, cache_key: str) -> str:
         manifest + "\n", encoding="utf-8"
     )
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_obj).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(

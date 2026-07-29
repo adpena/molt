@@ -15,7 +15,7 @@ impl LuauBackend {
             param_types: func.param_types.clone(),
             source_file: func.source_file.clone(),
             is_extern: func.is_extern,
-            execution_context: func.execution_context.clone(),
+            execution_context: func.execution_context,
         };
         self.scalar_plan = ScalarRepresentationPlan::for_function_ir(&scalar_func);
 

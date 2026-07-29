@@ -16,6 +16,7 @@ pub(crate) fn materialize_missing_stdlib_cache(
     current_partition_manifest: &str,
     user_remaining: &mut Vec<molt_backend::FunctionIR>,
     stdlib_funcs: &mut Vec<molt_backend::FunctionIR>,
+    module_context: &molt_backend::NativeBackendModuleContext,
 ) -> io::Result<()> {
     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|err| {
         eprintln!(
@@ -38,6 +39,7 @@ pub(crate) fn materialize_missing_stdlib_cache(
         ir.profile.clone(),
         request.target_triple,
         request.log_prefix,
+        module_context.clone(),
     ) {
         let _ = std::fs::remove_file(&temp_stdlib_path);
         return Err(io::Error::new(

@@ -19,6 +19,42 @@ pub use molt_passes::representation_facts::{
     native_projectable_scalar_reprs_for, repr_by_value_for, value_range_for,
 };
 
+/// Freeze the exact target-neutral parameter carriers used at independently
+/// compiled native-object boundaries.
+///
+/// This is deliberately outside the LLVM feature: batch planning runs in every
+/// native build, and all consumers must serialize the same carrier decision
+/// before provider bodies are partitioned away.
+pub fn native_linkage_param_types(tir_func: &TirFunction) -> Vec<TirType> {
+    let value_range = value_range_for(tir_func);
+    let repr_by_value = repr_by_value_for(tir_func, Some(&value_range));
+    effective_param_types_from_repr(tir_func, &repr_by_value)
+}
+
+fn effective_param_types_from_repr(
+    tir_func: &TirFunction,
+    repr_by_value: &HashMap<ValueId, Repr>,
+) -> Vec<TirType> {
+    let entry_args = &tir_func.blocks[&tir_func.entry_block].args;
+    tir_func
+        .param_types
+        .iter()
+        .enumerate()
+        .map(|(index, declared)| {
+            let proven_safe = entry_args.get(index).is_some_and(|argument| {
+                repr_by_value
+                    .get(&argument.id)
+                    .is_some_and(|repr| repr.is_raw_i64_safe())
+            });
+            if matches!(declared, TirType::I64) && !proven_safe {
+                TirType::DynBox
+            } else {
+                declared.clone()
+            }
+        })
+        .collect()
+}
+
 mod indexed_facts;
 
 use indexed_facts::{
@@ -185,22 +221,7 @@ impl LlvmReprFacts {
     /// both, so the caller's coercion target and the callee's entry-param carrier
     /// can never disagree. Non-`I64` declared types pass through unchanged.
     pub fn effective_param_types(&self, tir_func: &TirFunction) -> Vec<TirType> {
-        let entry_args = &tir_func.blocks[&tir_func.entry_block].args;
-        tir_func
-            .param_types
-            .iter()
-            .enumerate()
-            .map(|(i, declared)| {
-                let proven_safe = entry_args
-                    .get(i)
-                    .is_some_and(|arg| self.is_inline_safe_int(arg.id));
-                if matches!(declared, TirType::I64) && !proven_safe {
-                    TirType::DynBox
-                } else {
-                    declared.clone()
-                }
-            })
-            .collect()
+        effective_param_types_from_repr(tir_func, &self.repr_by_value)
     }
 }
 

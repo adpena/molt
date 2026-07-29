@@ -7,24 +7,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            if let Some(param_types) = self.backend.function_param_types.get(name) {
-                param_types
-                    .iter()
-                    .map(|ty| lower_type(self.backend.context, ty).into())
-                    .collect()
-            } else {
-                let param_count = arity + usize::from(has_closure);
-                (0..param_count).map(|_| i64_ty.into()).collect()
-            };
-        let return_ty = self
+        let requested_arity = arity + usize::from(has_closure);
+        let linkage_abi = self
             .backend
-            .function_return_types
+            .function_linkage_abis
             .get(name)
-            .map(|ty| lower_type(self.backend.context, ty))
-            .unwrap_or_else(|| i64_ty.into());
-        let fn_ty = return_ty.fn_type(&params, false);
+            .unwrap_or_else(|| {
+                panic!(
+                    "LLVM function symbol `{name}` has no exact native linkage ABI; refusing to invent one"
+                )
+            });
+        assert_eq!(
+            requested_arity,
+            linkage_abi.param_types.len(),
+            "LLVM caller/linkage arity mismatch for `{name}`"
+        );
+        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
+            .param_types
+            .iter()
+            .map(|ty| lower_type(self.backend.context, ty).into())
+            .collect();
+        let fn_ty = match linkage_abi.return_type.as_ref() {
+            Some(return_type) => {
+                lower_type(self.backend.context, return_type).fn_type(&params, false)
+            }
+            None => self.backend.context.void_type().fn_type(&params, false),
+        };
         if let Some(func) = self.backend.module.get_function(name) {
             return require_llvm_function_type(name, func, fn_ty);
         }
@@ -41,16 +49,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> FunctionValue<'ctx> {
         let callable_arity = self
             .backend
-            .function_param_types
+            .function_linkage_abis
             .get(name)
-            .map(|tys| tys.len().saturating_sub(usize::from(has_closure)))
+            .map(|abi| {
+                abi.param_types
+                    .len()
+                    .saturating_sub(usize::from(has_closure))
+            })
             .unwrap_or(arity);
         let target_fn = self.ensure_function_symbol(name, callable_arity, has_closure);
         let target_return_tir_ty = self
             .backend
-            .function_return_types
+            .function_linkage_abis
             .get(name)
-            .cloned()
+            .and_then(|abi| abi.return_type.clone())
             .unwrap_or(TirType::DynBox);
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let trampoline_name =
@@ -101,7 +113,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // trusted-unbox truncation bug-class for a heap-BigInt argument. This is
         // the dynamic-dispatch dual of the direct-call arg coercion
         // (`coerce_to_tir_type`).
-        let param_tir_types = self.backend.function_param_types.get(name);
+        let param_tir_types = self
+            .backend
+            .function_linkage_abis
+            .get(name)
+            .map(|abi| abi.param_types.as_slice());
         let coerce_trampoline_arg = |bits: inkwell::values::IntValue<'ctx>,
                                      target_ty: inkwell::types::BasicTypeEnum<'ctx>,
                                      name: &str|
@@ -445,12 +461,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
 
         if let Some(ref target_name) = direct_target {
-            if let Some(target_fn) = self.backend.module.get_function(target_name) {
+            let target_fn = self
+                .backend
+                .function_linkage_abis
+                .get(target_name.as_str())
+                .map(|abi| abi.param_types.len())
+                .map(|arity| self.ensure_function_symbol(target_name, arity, false));
+            if let Some(target_fn) = target_fn {
                 let target_return_tir_ty = self
                     .backend
-                    .function_return_types
+                    .function_linkage_abis
                     .get(target_name.as_str())
-                    .cloned()
+                    .and_then(|abi| abi.return_type.clone())
                     .unwrap_or(TirType::DynBox);
                 let expected_params = target_fn.count_params() as usize;
                 if expected_params != direct_operands.len()
@@ -493,9 +515,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .unwrap_or(TirType::DynBox);
                         let target_tir_ty = self
                             .backend
-                            .function_param_types
+                            .function_linkage_abis
                             .get(target_name.as_str())
-                            .and_then(|tys| tys.get(idx))
+                            .and_then(|abi| abi.param_types.get(idx))
                             .cloned()
                             .unwrap_or(TirType::DynBox);
                         let v =
@@ -545,62 +567,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     return;
                 }
-                // Target not yet in module — forward-declare it and call.
-                let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-                    direct_operands.iter().map(|_| i64_ty.into()).collect();
-                let fn_ty = i64_ty.fn_type(&param_types, false);
-                let target_fn = self.backend.module.add_function(
-                    target_name,
-                    fn_ty,
-                    Some(inkwell::module::Linkage::External),
-                );
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("direct call must be emitted inside a basic block");
-                // Forward-declared target: the callee's TIR param
-                // types are unknown, so the boxed molt ABI (DynBox) is
-                // the contract — box every non-DynBox source (see the
-                // resolved-target path above for the raw-bits-as-float
-                // miscompile this prevents).
-                let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = direct_operands
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, &id)| {
-                        let v = self.resolve(id);
-                        let source_tir_ty = self
-                            .value_types
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or(TirType::DynBox);
-                        let v = self.coerce_to_tir_type(
-                            v,
-                            &source_tir_ty,
-                            &TirType::DynBox,
-                            current_bb,
-                        );
-                        let target_ty = target_fn
-                            .get_nth_param(idx as u32)
-                            .map(|param| param.get_type())
-                            .unwrap_or_else(|| self.backend.context.i64_type().into());
-                        self.coerce_to_type(v, target_ty, current_bb).into()
-                    })
-                    .collect();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(target_fn, &args, "direct_call")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap_or_else(|| {
+                self.record_fatal(format!(
+                    "direct call target `{target_name}` has no exact native linkage ABI; refusing to invent an i64 signature"
+                ));
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(
+                        result_id,
                         i64_ty
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                            .into()
-                    });
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
+                            .into(),
+                    );
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
             }

@@ -246,6 +246,9 @@ impl WasmBackend {
 fn native_callable_requests(ir: &SimpleIR) -> BTreeMap<String, NativeCallableRequest> {
     let mut requests = BTreeMap::new();
     for func in &ir.functions {
+        if func.is_extern {
+            continue;
+        }
         for op in &func.ops {
             let Some(request) = NativeCallableRequest::from_op(op) else {
                 continue;

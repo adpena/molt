@@ -6,7 +6,7 @@ use molt_backend::SimpleIR;
 use super::super::super::io_limits::write_json_artifact;
 use super::super::super::native_batch::{
     NativeBatchJobSpec, NativeBatchModuleMetadata, NativeBatchObjectJob,
-    append_referenced_inherited_declarations, batch_external_function_names,
+    append_referenced_external_declarations, batch_external_function_names,
     finish_native_batch_temp_dir, merge_relocatable_objects,
     release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
@@ -47,9 +47,9 @@ pub(super) fn compile_batched_stdlib_cache_object(
             };
             let external_function_names =
                 batch_external_function_names(&plan.all_function_names, &batch_ir.functions);
-            append_referenced_inherited_declarations(
+            append_referenced_external_declarations(
                 &mut batch_ir.functions,
-                &plan.inherited_function_declarations,
+                &plan.external_function_declarations,
             );
             let job_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.json"));
             let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));

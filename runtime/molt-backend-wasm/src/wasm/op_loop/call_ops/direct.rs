@@ -9,6 +9,7 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
 use crate::wasm_binary::{emit_call, emit_return_call};
+use crate::wasm_values::emit_boxed_none;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_direct_call_op(
@@ -90,12 +91,14 @@ fn emit_plain_call(
     let rel_idx = call_ctx.rel_idx;
 
     let target_name = op.s_value.as_ref().unwrap();
-    let args_names = op.args.as_ref().unwrap();
-    let out = locals[op.out.as_ref().unwrap()];
+    let args_names = op.args.as_deref().unwrap_or(&[]);
+    let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
+    let out = direct_call_result_local(locals, op);
     let live_object_locals =
         collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param = call_site_abi.returns_alias_param(target_name, args_names);
+    let returns_alias_param =
+        abi_returns_value && call_site_abi.returns_alias_param(target_name, args_names);
     if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
         eprintln!(
             "[molt wasm return-alias] kind=call caller={} callee={}",
@@ -108,13 +111,18 @@ fn emit_plain_call(
     if bootstrap_call {
         push_call_args(func, locals, args_names);
         emit_call(func, reloc_enabled, func_idx);
-        func.instruction(&Instruction::LocalSet(out));
+        func.instruction(&Instruction::LocalSet(
+            out.expect("runtime bootstrap calls must return a value"),
+        ));
         return CallOpEmission::Handled;
     }
 
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
-    store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+    normalize_direct_call_result(func, abi_returns_value, out.is_some());
+    if let Some(out) = out {
+        store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+    }
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
 }
@@ -135,13 +143,14 @@ fn emit_internal_call(
     let rel_idx = call_ctx.rel_idx;
 
     let target_name = op.s_value.as_ref().unwrap();
-    let args_names = op.args.as_ref().unwrap();
-    let out_name = op.out.as_ref().unwrap();
-    let out = locals[out_name];
+    let args_names = op.args.as_deref().unwrap_or(&[]);
+    let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
+    let out = direct_call_result_local(locals, op);
     let live_object_locals =
         collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param = call_site_abi.returns_alias_param(target_name, args_names);
+    let returns_alias_param =
+        abi_returns_value && call_site_abi.returns_alias_param(target_name, args_names);
     if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
         eprintln!(
             "[molt wasm return-alias] kind=call_internal caller={} callee={}",
@@ -149,7 +158,10 @@ fn emit_internal_call(
         );
     }
     let func_idx = call_site_abi.function_index(target_name, "call_internal");
-    let is_tail_call = is_tail_call_candidate(call_ctx, target_name, args_names, out_name);
+    let is_tail_call = abi_returns_value
+        && op.out.as_deref().is_some_and(|out_name| {
+            is_tail_call_candidate(call_ctx, target_name, args_names, out_name)
+        });
 
     if is_tail_call && let Some(arena_idx) = arena_local {
         func.instruction(&Instruction::LocalGet(arena_idx));
@@ -169,9 +181,32 @@ fn emit_internal_call(
     }
 
     emit_call(func, reloc_enabled, func_idx);
-    store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+    normalize_direct_call_result(func, abi_returns_value, out.is_some());
+    if let Some(out) = out {
+        store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+    }
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
+}
+
+fn direct_call_result_local(locals: &crate::wasm::WasmFrameLocals, op: &OpIR) -> Option<u32> {
+    op.out.as_ref().map(|out_name| locals[out_name])
+}
+
+pub(super) fn normalize_direct_call_result(
+    func: &mut Function,
+    abi_returns_value: bool,
+    binds_output: bool,
+) {
+    match (abi_returns_value, binds_output) {
+        (true, false) => {
+            func.instruction(&Instruction::Drop);
+        }
+        (false, true) => {
+            emit_boxed_none(func);
+        }
+        _ => {}
+    }
 }
 
 fn is_tail_call_candidate(

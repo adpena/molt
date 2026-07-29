@@ -18,6 +18,9 @@ pub(crate) fn compile_single_native_application_object_to_path(
     }
     backend.app_callable_manifest = options.app_callable_manifest.take();
     backend.module_registry = options.module_registry.take();
+    if let Some(module_context) = options.module_context.take() {
+        backend.set_module_context(module_context);
+    }
     let obj_output = backend.compile(ir);
     write_output_path(output_path, &obj_output.bytes)?;
     eprintln!(

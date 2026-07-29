@@ -11,6 +11,171 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
+fn provider_function(name: &str, params: &[&str], returns_value: bool) -> FunctionIR {
+    FunctionIR {
+        name: name.to_string(),
+        params: params.iter().map(|param| (*param).to_string()).collect(),
+        ops: if returns_value {
+            let mut missing = op("missing");
+            missing.out = Some("value".to_string());
+            let mut ret = op("ret");
+            ret.args = Some(vec!["value".to_string()]);
+            vec![missing, ret]
+        } else {
+            vec![op("ret_void")]
+        },
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    }
+}
+
+fn externalized_function(name: &str, params: &[&str], returns_value: bool) -> FunctionIR {
+    let mut function = provider_function(name, params, returns_value);
+    molt_backend::externalize_function_with_signature(&mut function);
+    function
+}
+
+fn mixed_void_and_value_extern_ir() -> SimpleIR {
+    mixed_void_and_value_extern_fixture().0
+}
+
+fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBackendModuleContext) {
+    let mut call_void = op("call");
+    call_void.s_value = Some("stdlib_void_helper".to_string());
+    call_void.args = Some(Vec::new());
+
+    let mut call_value = op("call");
+    call_value.s_value = Some("stdlib_value_helper".to_string());
+    call_value.out = Some("result".to_string());
+    call_value.args = Some(Vec::new());
+
+    let mut ret_result = op("ret");
+    ret_result.args = Some(vec!["result".to_string()]);
+
+    let main = FunctionIR {
+        name: "molt_main".to_string(),
+        params: Vec::new(),
+        ops: vec![call_void, call_value, ret_result],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let void_provider = provider_function("stdlib_void_helper", &[], false);
+    let value_provider = provider_function("stdlib_value_helper", &[], true);
+    let module_context = SimpleBackend::build_module_context(&[
+        main.clone(),
+        void_provider.clone(),
+        value_provider.clone(),
+    ]);
+    (
+        SimpleIR {
+            functions: vec![
+                main,
+                externalized_function("stdlib_void_helper", &[], false),
+                externalized_function("stdlib_value_helper", &[], true),
+            ],
+            profile: None,
+        },
+        module_context,
+    )
+}
+
+fn assert_mixed_extern_linkage(bytes: &[u8], backend: &str) {
+    let file = object::File::parse(bytes).expect("parse native object");
+    let symbols: Vec<String> = file
+        .symbols()
+        .filter_map(|symbol| symbol.name().ok().map(str::to_string))
+        .collect();
+    for name in ["stdlib_void_helper", "stdlib_value_helper"] {
+        assert!(
+            file.symbols()
+                .any(|symbol| object_symbol_matches(&symbol, name) && symbol.is_undefined()),
+            "{backend} must emit `{name}` as an undefined declaration with no body; symbols: {symbols:?}"
+        );
+    }
+    assert!(
+        file.symbols().any(|symbol| {
+            object_symbol_matches(&symbol, "molt_main") && !symbol.is_undefined()
+        }),
+        "{backend} must define molt_main; symbols: {symbols:?}"
+    );
+}
+
+fn assert_extern_helper_linkage(bytes: &[u8], backend: &str) {
+    let file = object::File::parse(bytes).expect("parse native object");
+    assert!(
+        file.symbols().any(|symbol| {
+            object_symbol_matches(&symbol, "extern_helper") && symbol.is_undefined()
+        }),
+        "{backend} must retain extern_helper as an undefined declaration"
+    );
+    assert!(
+        file.symbols().any(|symbol| {
+            object_symbol_matches(&symbol, "molt_main") && !symbol.is_undefined()
+        }),
+        "{backend} must define molt_main"
+    );
+}
+
+fn extern_call_mismatch_ir(
+    declaration_params: &[&str],
+    declaration_returns_value: bool,
+    caller_args: &[&str],
+    caller_expects_result: bool,
+) -> SimpleIR {
+    extern_call_mismatch_fixture(
+        declaration_params,
+        declaration_returns_value,
+        caller_args,
+        caller_expects_result,
+    )
+    .0
+}
+
+fn extern_call_mismatch_fixture(
+    declaration_params: &[&str],
+    declaration_returns_value: bool,
+    caller_args: &[&str],
+    caller_expects_result: bool,
+) -> (SimpleIR, molt_backend::NativeBackendModuleContext) {
+    let mut call = op("call");
+    call.s_value = Some("extern_helper".to_string());
+    call.args = Some(caller_args.iter().map(|arg| (*arg).to_string()).collect());
+    call.out = caller_expects_result.then(|| "result".to_string());
+    let caller = FunctionIR {
+        name: "molt_main".to_string(),
+        params: caller_args.iter().map(|arg| (*arg).to_string()).collect(),
+        ops: vec![call, op("ret_void")],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let provider = provider_function(
+        "extern_helper",
+        declaration_params,
+        declaration_returns_value,
+    );
+    let module_context = SimpleBackend::build_module_context(&[caller.clone(), provider]);
+    (
+        SimpleIR {
+            functions: vec![
+                caller,
+                externalized_function(
+                    "extern_helper",
+                    declaration_params,
+                    declaration_returns_value,
+                ),
+            ],
+            profile: None,
+        },
+        module_context,
+    )
+}
+
 #[test]
 fn native_object_retains_exact_generated_object_abi_import() {
     let ir = SimpleIR {
@@ -153,7 +318,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
             FunctionIR {
                 name: "molt_init_sys".to_string(),
                 params: Vec::new(),
-                ops: Vec::new(),
+                ops: vec![op("ret_void")],
                 param_types: None,
                 source_file: None,
                 is_extern: true,
@@ -185,67 +350,101 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
 }
 
 #[test]
-fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
-    let mut call_helper = op("call");
-    call_helper.s_value = Some("stdlib_value_helper".to_string());
-    call_helper.out = Some("result".to_string());
-    call_helper.args = Some(Vec::new());
+fn cranelift_declares_mixed_void_and_value_externs_without_bodies() {
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    let output = backend.compile(mixed_void_and_value_extern_ir());
+    assert!(!output.bytes.is_empty());
+    assert_mixed_extern_linkage(&output.bytes, "Cranelift");
+}
 
-    let mut ret_result = op("ret");
-    ret_result.args = Some(vec!["result".to_string()]);
+#[test]
+#[should_panic(
+    expected = "native extern call ABI mismatch: caller `molt_main` supplies 0 parameter(s) to declaration `extern_helper`, which requires 1"
+)]
+fn cranelift_rejects_exact_extern_arity_mismatch() {
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    let _ = backend.compile(extern_call_mismatch_ir(&["arg"], true, &[], true));
+}
 
-    let mut helper_missing = op("missing");
-    helper_missing.out = Some("value".to_string());
-    let mut helper_ret = op("ret");
-    helper_ret.args = Some(vec!["value".to_string()]);
+#[test]
+fn cranelift_void_extern_call_may_bind_boxed_none() {
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    let output = backend.compile(extern_call_mismatch_ir(&[], false, &[], true));
+    assert!(!output.bytes.is_empty());
+    assert_extern_helper_linkage(&output.bytes, "Cranelift void-to-None");
+}
 
-    let caller = FunctionIR {
-        name: "molt_main".to_string(),
-        params: Vec::new(),
-        ops: vec![call_helper, ret_result],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        execution_context: Default::default(),
-    };
-    let mut helper = FunctionIR {
-        name: "stdlib_value_helper".to_string(),
-        params: Vec::new(),
-        ops: vec![helper_missing, helper_ret],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        execution_context: Default::default(),
-    };
-    molt_backend::externalize_function_with_signature(&mut helper);
-    let module_context = SimpleBackend::build_module_context(&[caller.clone(), helper.clone()]);
+#[test]
+fn native_module_context_rejects_corrupt_logical_and_machine_linkage_contracts() {
+    let (ir, module_context) = mixed_void_and_value_extern_fixture();
+    let encoded = serde_json::to_value(module_context).expect("serialize native module context");
 
-    let ir = SimpleIR {
-        functions: vec![caller, helper],
-        profile: None,
-    };
+    let mut return_mismatch = encoded.clone();
+    return_mismatch["function_linkage_abis"]["stdlib_value_helper"]["source_signature"]["returns_value"] =
+        serde_json::json!(false);
+    let context: molt_backend::NativeBackendModuleContext =
+        serde_json::from_value(return_mismatch).expect("decode return-mismatched context");
+    let error = context
+        .validate_function_linkage_abis(&ir.functions)
+        .expect_err("return mismatch must fail closed");
+    assert!(error.contains("return carrier disagrees"), "{error}");
 
+    let mut closure_mismatch = encoded.clone();
+    closure_mismatch["function_linkage_abis"]["stdlib_void_helper"]["source_signature"]["has_closure"] =
+        serde_json::json!(true);
+    let context: molt_backend::NativeBackendModuleContext =
+        serde_json::from_value(closure_mismatch).expect("decode closure-mismatched context");
+    let error = context
+        .validate_function_linkage_abis(&ir.functions)
+        .expect_err("closure mismatch must fail closed");
+    assert!(error.contains("signature"), "{error}");
+
+    let mut execution_context_mismatch = encoded;
+    execution_context_mismatch["function_linkage_abis"]["stdlib_void_helper"]["source_signature"]
+        ["execution_context"] = serde_json::json!("local");
+    let context: molt_backend::NativeBackendModuleContext =
+        serde_json::from_value(execution_context_mismatch)
+            .expect("decode execution-context-mismatched context");
+    let error = context
+        .validate_function_linkage_abis(&ir.functions)
+        .expect_err("execution-context mismatch must fail closed");
+    assert!(error.contains("signature"), "{error}");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn llvm_declares_mixed_void_and_value_externs_without_bodies() {
+    let (ir, module_context) = mixed_void_and_value_extern_fixture();
     let mut backend = SimpleBackend::new();
     backend.emit_app_callable_resolver = false;
     backend.set_module_context(module_context);
-    let output = backend.compile(ir);
-
+    let output = backend.compile_llvm(ir);
     assert!(!output.bytes.is_empty());
-    let file = object::File::parse(&*output.bytes).expect("parse object");
-    let symbols: Vec<String> = file
-        .symbols()
-        .filter_map(|symbol| symbol.name().ok().map(str::to_string))
-        .collect();
-    assert!(
-        file.symbols().any(|symbol| {
-            object_symbol_matches(&symbol, "stdlib_value_helper") && symbol.is_undefined()
-        }),
-        "stdlib_value_helper must remain an undefined import resolved by the shared stdlib object; symbols: {symbols:?}"
-    );
-    assert!(
-        file.symbols().any(|symbol| {
-            object_symbol_matches(&symbol, "molt_main") && !symbol.is_undefined()
-        }),
-        "molt_main must be defined by the application object; symbols: {symbols:?}"
-    );
+    assert_mixed_extern_linkage(&output.bytes, "LLVM");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+#[should_panic(
+    expected = "native extern call ABI mismatch: caller `molt_main` supplies 0 parameter(s) to declaration `extern_helper`, which requires 1"
+)]
+fn llvm_rejects_exact_extern_arity_mismatch() {
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    let _ = backend.compile_llvm(extern_call_mismatch_ir(&["arg"], true, &[], true));
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn llvm_void_extern_call_may_bind_boxed_none() {
+    let (ir, module_context) = extern_call_mismatch_fixture(&[], false, &[], true);
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    backend.set_module_context(module_context);
+    let output = backend.compile_llvm(ir);
+    assert!(!output.bytes.is_empty());
+    assert_extern_helper_linkage(&output.bytes, "LLVM void-to-None");
 }

@@ -37,8 +37,16 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
 - `lower_to_simple_ir(&TirFunction) -> Vec<OpIR>` (`lower_to_simple.rs:159`) is PURE
   per-function (thread-local name bridge, no inter-fn state) — safe on inlined callers.
 - `lower_to_tir(&FunctionIR) -> TirFunction` (`lower_from_simple.rs:24`) pure per-function.
-  Externs: `is_extern` empty-ops; `compute_leaf_functions_via_call_graph` filters them with
-  `.filter(|f| !f.is_extern)` (`simple_backend.rs:350-352`) — the helper must do the same.
+  Externs carry canonical target-neutral signature ops validated by
+  `FunctionIR::extern_signature`; body analyses and batch planners filter them with
+  `.filter(|f| !f.is_extern)`. Native body owners additionally mint one exact
+  `NativeFunctionLinkageAbi` before stdlib/batch partitioning. Every LLVM
+  definition, declaration, call, trampoline, entry, and return consumes that row;
+  the shared-stdlib v2 SHA-256 partition manifest binds the complete versioned
+  `FunctionIR` contract plus its frozen source and machine ABI for cold/warm
+  reuse. One transient TIR snapshot supplies both exact carrier rows and leaf
+  call-graph facts; batch ingest rejects any arity, closure, return, or execution-
+  context disagreement before either native backend registers a symbol.
 - Repr/bigint safety preserved by construction: `repr_by_value_for` floors every value to
   `Repr::default_for(TirType)` (`int`→`MaybeBigInt`) from the POST-inline `value_types`,
   promoting to `RawI64Safe` only via a fresh `value_range_for` on the merged body

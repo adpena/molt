@@ -15,6 +15,7 @@ pub(crate) struct PreparedStdlibPartition {
     pub(crate) user_remaining: Vec<molt_backend::FunctionIR>,
     pub(crate) stdlib_funcs: Vec<molt_backend::FunctionIR>,
     pub(crate) current_partition_manifest: String,
+    pub(crate) module_context: molt_backend::NativeBackendModuleContext,
 }
 
 pub(crate) fn prepare_stdlib_partition(
@@ -23,7 +24,7 @@ pub(crate) fn prepare_stdlib_partition(
     module_registry_roots: &std::collections::BTreeSet<String>,
     stdlib_path: &Path,
 ) -> io::Result<PreparedStdlibPartition> {
-    let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+    let (user_remaining, stdlib_funcs, module_context) = prune_and_partition_native_stdlib(
         ir,
         request.entry_module,
         request.explicit_stdlib_module_symbols,
@@ -37,7 +38,7 @@ pub(crate) fn prepare_stdlib_partition(
     });
 
     let current_partition_manifest =
-        shared_stdlib_partition_manifest(&stdlib_funcs).map_err(|err| {
+        shared_stdlib_partition_manifest(&stdlib_funcs, &module_context).map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!("failed to compute shared stdlib partition manifest: {err}"),
@@ -56,5 +57,6 @@ pub(crate) fn prepare_stdlib_partition(
         user_remaining,
         stdlib_funcs,
         current_partition_manifest,
+        module_context,
     })
 }

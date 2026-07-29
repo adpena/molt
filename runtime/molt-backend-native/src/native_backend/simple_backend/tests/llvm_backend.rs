@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
-    let _guard = acquire_backend_env_lock();
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-llvm-stdlib-extern-{}-{}",
         std::process::id(),
@@ -12,59 +11,51 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
-    let stdlib_obj = tmp_dir.join("stdlib.o");
-    std::fs::write(&stdlib_obj, b"placeholder").expect("write stdlib marker");
-
-    let prev_backend = std::env::var("MOLT_BACKEND").ok();
-    let prev_stdlib_obj = std::env::var("MOLT_STDLIB_OBJ").ok();
-    let prev_entry_module = std::env::var("MOLT_ENTRY_MODULE").ok();
-    let prev_stdlib_symbols = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok();
-    unsafe {
-        std::env::set_var("MOLT_BACKEND", "llvm");
-        std::env::set_var("MOLT_STDLIB_OBJ", &stdlib_obj);
-        std::env::set_var("MOLT_ENTRY_MODULE", "app");
-        std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
-    }
-
-    let ir = SimpleIR {
-        functions: vec![
-            FunctionIR {
-                name: "molt_main".to_string(),
-                params: vec![],
-                ops: vec![
-                    OpIR {
-                        kind: "call".to_string(),
-                        s_value: Some("molt_init_sys".to_string()),
-                        value: Some(0),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
-                ],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
+    let caller = FunctionIR {
+        name: "molt_main".to_string(),
+        params: vec![],
+        ops: vec![
+            OpIR {
+                kind: "call".to_string(),
+                s_value: Some("molt_init_sys".to_string()),
+                value: Some(0),
+                ..OpIR::default()
             },
-            FunctionIR {
-                name: "molt_init_sys".to_string(),
-                params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                execution_context: Default::default(),
+            OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
             },
         ],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let provider = FunctionIR {
+        name: "molt_init_sys".to_string(),
+        params: vec![],
+        ops: vec![OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        }],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let module_context = SimpleBackend::build_module_context(&[caller.clone(), provider.clone()]);
+    let mut declaration = provider;
+    declaration
+        .externalize_with_signature()
+        .expect("externalize shared stdlib provider");
+    let ir = SimpleIR {
+        functions: vec![caller, declaration],
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir).bytes;
+    let mut backend = SimpleBackend::new();
+    backend.set_module_context(module_context);
+    let bytes = backend.compile_llvm(ir).bytes;
     let output = tmp_dir.join("out.o");
     std::fs::write(&output, &bytes).expect("write llvm object");
     let nm = std::process::Command::new("nm")
@@ -91,21 +82,5 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         "LLVM output object must not define shared stdlib symbol, got:\n{symbols}"
     );
 
-    match prev_backend {
-        Some(value) => unsafe { std::env::set_var("MOLT_BACKEND", value) },
-        None => unsafe { std::env::remove_var("MOLT_BACKEND") },
-    }
-    match prev_stdlib_obj {
-        Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_OBJ", value) },
-        None => unsafe { std::env::remove_var("MOLT_STDLIB_OBJ") },
-    }
-    match prev_entry_module {
-        Some(value) => unsafe { std::env::set_var("MOLT_ENTRY_MODULE", value) },
-        None => unsafe { std::env::remove_var("MOLT_ENTRY_MODULE") },
-    }
-    match prev_stdlib_symbols {
-        Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", value) },
-        None => unsafe { std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS") },
-    }
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

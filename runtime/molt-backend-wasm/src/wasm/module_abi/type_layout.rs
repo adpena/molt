@@ -8,6 +8,8 @@ use crate::wasm_binary::emit_call_indirect;
 use crate::{FunctionIR, SimpleIR};
 
 pub(super) struct WasmModuleTypeLayout {
+    /// Canonical boxed user ABI types used by every locally defined function
+    /// and value-returning extern declaration.
     user_type_map: BTreeMap<usize, u32>,
     function_type_map: BTreeMap<String, u32>,
 }
@@ -22,7 +24,7 @@ impl WasmModuleTypeLayout {
     ) -> Self {
         let mut user_type_map = BTreeMap::new();
         for func_ir in &ir.functions {
-            if func_ir.name.ends_with("_poll") {
+            if !func_ir.is_extern && func_ir.name.ends_with("_poll") {
                 continue;
             }
             let arity = func_ir.params.len();
@@ -30,6 +32,26 @@ impl WasmModuleTypeLayout {
                 backend.types.function(
                     std::iter::repeat_n(ValType::I64, arity),
                     std::iter::once(ValType::I64),
+                );
+                entry.insert(next_type_idx);
+                next_type_idx += 1;
+            }
+        }
+
+        let mut void_extern_type_map = BTreeMap::new();
+        for func_ir in ir.functions.iter().filter(|function| function.is_extern) {
+            let signature = func_ir.extern_signature().unwrap_or_else(|error| {
+                panic!("invalid WASM extern function declaration: {error}")
+            });
+            if signature.returns_value {
+                continue;
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                void_extern_type_map.entry(signature.arity)
+            {
+                backend.types.function(
+                    std::iter::repeat_n(ValType::I64, signature.arity),
+                    std::iter::empty(),
                 );
                 entry.insert(next_type_idx);
                 next_type_idx += 1;
@@ -50,7 +72,8 @@ impl WasmModuleTypeLayout {
             }
         }
 
-        let function_type_map = Self::assign_function_type_indices(ir, &user_type_map);
+        let function_type_map =
+            Self::assign_function_type_indices(ir, &user_type_map, &void_extern_type_map);
 
         Self {
             user_type_map,
@@ -72,10 +95,11 @@ impl WasmModuleTypeLayout {
     fn assign_function_type_indices(
         ir: &SimpleIR,
         user_type_map: &BTreeMap<usize, u32>,
+        void_extern_type_map: &BTreeMap<usize, u32>,
     ) -> BTreeMap<String, u32> {
         let mut function_type_map = BTreeMap::new();
         for func_ir in &ir.functions {
-            let type_idx = Self::function_type_idx(func_ir, user_type_map);
+            let type_idx = Self::function_type_idx(func_ir, user_type_map, void_extern_type_map);
             if function_type_map
                 .insert(func_ir.name.clone(), type_idx)
                 .is_some()
@@ -89,7 +113,32 @@ impl WasmModuleTypeLayout {
         function_type_map
     }
 
-    fn function_type_idx(func_ir: &FunctionIR, user_type_map: &BTreeMap<usize, u32>) -> u32 {
+    fn function_type_idx(
+        func_ir: &FunctionIR,
+        user_type_map: &BTreeMap<usize, u32>,
+        void_extern_type_map: &BTreeMap<usize, u32>,
+    ) -> u32 {
+        if func_ir.is_extern {
+            let signature = func_ir.extern_signature().unwrap_or_else(|error| {
+                panic!("invalid WASM extern function declaration: {error}")
+            });
+            let map = if signature.returns_value {
+                user_type_map
+            } else {
+                void_extern_type_map
+            };
+            return *map.get(&signature.arity).unwrap_or_else(|| {
+                panic!(
+                    "missing {} WASM extern signature for arity {}",
+                    if signature.returns_value {
+                        "value"
+                    } else {
+                        "void"
+                    },
+                    signature.arity
+                )
+            });
+        }
         if func_ir.name.ends_with("_poll") {
             return 2;
         }

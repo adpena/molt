@@ -6,6 +6,7 @@ use super::super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{WasmCallableTableEntry, WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
+use crate::wasm::module_abi::user_functions::WasmUserFunctionImports;
 use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     ReservedRuntimeCallableDispatch, runtime_callable_import, wasm_runtime_import,
@@ -47,6 +48,7 @@ impl CallableTableRegionLayout {
         compact_builtin_trampoline_count: u32,
         app_callable_resolver_name_count: u64,
         user_func_count: u64,
+        defined_user_func_count: u64,
         reserved_runtime_trampoline_count: u64,
     ) -> Result<Self, String> {
         let compact_builtin_count = checked_u32_count(
@@ -58,6 +60,8 @@ impl CallableTableRegionLayout {
             app_callable_resolver_name_count,
         )?;
         let user_func_count = checked_u32_count("user function count", user_func_count)?;
+        let defined_user_func_count =
+            checked_u32_count("defined user function count", defined_user_func_count)?;
         let reserved_runtime_trampoline_count = checked_u32_count(
             "reserved runtime trampoline count",
             reserved_runtime_trampoline_count,
@@ -151,7 +155,7 @@ impl CallableTableRegionLayout {
         let user_func_end = checked_add(
             "user function-index region end",
             user_func_start,
-            user_func_count,
+            defined_user_func_count,
         )?;
         let app_callable_resolver_func_index =
             (app_callable_resolver_name_count != 0).then_some(user_func_end);
@@ -230,7 +234,8 @@ impl WasmBackend {
         default_trampoline_spec: &BTreeMap<String, (usize, bool)>,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
-        function_has_ret: &BTreeMap<String, bool>,
+        function_abi_returns_value: &BTreeMap<String, bool>,
+        user_function_imports: &WasmUserFunctionImports,
         user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
         sentinel_func_idx: u32,
@@ -292,6 +297,13 @@ impl WasmBackend {
                 app_callable_resolver_names.len(),
             ),
             usize_count("user function count", ir.functions.len()),
+            usize_count(
+                "defined user function count",
+                ir.functions
+                    .iter()
+                    .filter(|function| !function.is_extern)
+                    .count(),
+            ),
             usize_count(
                 "reserved runtime trampoline count",
                 reserved_runtime_trampoline_count,
@@ -462,6 +474,7 @@ impl WasmBackend {
                         target_func_index: import_idx,
                         target: callable_target(
                             self,
+                            user_function_imports,
                             table_base,
                             fixed_shared_runtime_abi_base,
                             split_runtime_shared_abi_slot_end,
@@ -505,6 +518,7 @@ impl WasmBackend {
                     name: runtime_name.clone(),
                     target: callable_target(
                         self,
+                        user_function_imports,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -518,6 +532,7 @@ impl WasmBackend {
                 resolver_func_index,
                 resolver_target: callable_target(
                     self,
+                    user_function_imports,
                     table_base,
                     fixed_shared_runtime_abi_base,
                     split_runtime_shared_abi_slot_end,
@@ -572,6 +587,7 @@ impl WasmBackend {
                     target_func_index,
                     target: callable_target(
                         self,
+                        user_function_imports,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -589,10 +605,27 @@ impl WasmBackend {
                 },
             );
         }
+        let mut defined_user_function_offset = 0u32;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let offset = usize_index("user function offset", i);
+            let offset = usize_index("user callable offset", i);
             let idx = region_index("user function-table slot", user_func_table_start, offset);
-            let func_index = region_index("user function index", user_func_start, offset);
+            let func_index = if func_ir.is_extern {
+                user_function_imports
+                    .function_index(&func_ir.name)
+                    .unwrap_or_else(|| {
+                        panic!("missing WASM extern import index for {}", func_ir.name)
+                    })
+            } else {
+                let func_index = region_index(
+                    "defined user function index",
+                    user_func_start,
+                    defined_user_function_offset,
+                );
+                defined_user_function_offset = defined_user_function_offset
+                    .checked_add(1)
+                    .expect("defined WASM user function offset overflow");
+                func_index
+            };
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), func_index);
             slots.set(idx, func_index, &func_ir.name);
@@ -647,6 +680,7 @@ impl WasmBackend {
                     target_func_index,
                     target: callable_target(
                         self,
+                        user_function_imports,
                         table_base,
                         fixed_shared_runtime_abi_base,
                         split_runtime_shared_abi_slot_end,
@@ -659,7 +693,9 @@ impl WasmBackend {
                         has_closure,
                         kind,
                         closure_size,
-                        target_has_ret: *function_has_ret.get(target_name).unwrap_or(&true),
+                        target_has_ret: *function_abi_returns_value
+                            .get(target_name)
+                            .unwrap_or(&true),
                     },
                 },
             );
@@ -670,7 +706,7 @@ impl WasmBackend {
             .into_iter()
             .map(|func_index| WasmCallableTableEntry {
                 func_index,
-                symbol: function_symbol(self, func_index),
+                symbol: function_symbol(self, user_function_imports, func_index),
             })
             .collect();
 
@@ -709,6 +745,15 @@ impl WasmBackend {
                 }
             })
             .collect();
+        let mut call_target_abi_returns_value = func_to_index
+            .keys()
+            .map(|name| (name.clone(), true))
+            .collect::<BTreeMap<_, _>>();
+        call_target_abi_returns_value.extend(
+            function_abi_returns_value
+                .iter()
+                .map(|(name, returns_value)| (name.clone(), *returns_value)),
+        );
 
         WasmCallableTablePlan {
             table_base,
@@ -720,22 +765,29 @@ impl WasmBackend {
             func_to_trampoline_idx,
             app_callable_resolver,
             closure_functions,
+            function_abi_returns_value: call_target_abi_returns_value,
             trampoline_entries,
         }
     }
 }
 
-fn function_symbol(backend: &WasmBackend, func_index: u32) -> WasmFunctionSymbol {
+fn function_symbol(
+    backend: &WasmBackend,
+    user_function_imports: &WasmUserFunctionImports,
+    func_index: u32,
+) -> WasmFunctionSymbol {
     if func_index < backend.func_import_count {
-        let import = backend
-            .import_ids
-            .import_for_index(func_index)
-            .unwrap_or_else(|| {
-                panic!(
-                    "callable table target import index {func_index} has no runtime import identity"
-                )
-            });
-        return WasmFunctionSymbol::RuntimeImport(import);
+        if let Some(import) = backend.import_ids.import_for_index(func_index) {
+            return WasmFunctionSymbol::RuntimeImport(import);
+        }
+        if let Some(user_import_ordinal) = user_function_imports.import_ordinal(func_index) {
+            return WasmFunctionSymbol::UserImport {
+                user_import_ordinal,
+            };
+        }
+        panic!(
+            "callable table target import index {func_index} has neither runtime nor user-function import identity"
+        );
     }
     WasmFunctionSymbol::Defined {
         defined_func_index: func_index - backend.func_import_count,
@@ -744,6 +796,7 @@ fn function_symbol(backend: &WasmBackend, func_index: u32) -> WasmFunctionSymbol
 
 fn callable_target(
     backend: &WasmBackend,
+    user_function_imports: &WasmUserFunctionImports,
     table_base: u32,
     fixed_shared_runtime_abi_base: Option<u32>,
     shared_runtime_abi_slot_end: usize,
@@ -768,7 +821,11 @@ fn callable_target(
             table_base
                 .checked_add(slot - fixed_prefix_len)
                 .expect("relocatable callable-table address overflow"),
-            WasmCallableTableAddress::Relocatable(function_symbol(backend, func_index)),
+            WasmCallableTableAddress::Relocatable(function_symbol(
+                backend,
+                user_function_imports,
+                func_index,
+            )),
         )
     };
     WasmCallableTableTarget {
@@ -878,8 +935,21 @@ mod tests {
             5,
             app_resolver_names,
             user_functions,
+            user_functions,
             2,
         )
+    }
+
+    #[test]
+    fn extern_user_functions_consume_table_slots_but_not_defined_function_indices() {
+        let layout = CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2)
+            .expect("five definitions plus two extern declarations");
+
+        assert_eq!(layout.user_trampoline_table_start, 31);
+        assert_eq!(layout.table_len, 38);
+        assert_eq!(layout.app_callable_resolver_func_index, Some(105));
+        assert_eq!(layout.reserved_runtime_trampoline_func_start, 106);
+        assert_eq!(layout.user_trampoline_start, 113);
     }
 
     #[test]

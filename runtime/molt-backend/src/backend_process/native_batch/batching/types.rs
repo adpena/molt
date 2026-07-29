@@ -11,6 +11,9 @@ pub(crate) struct NativeApplicationObjectOptions<'a> {
     /// symbols are dead-function-elimination roots and the main application
     /// object emits its blob (`molt_module_registry_blob`).
     pub(crate) module_registry: Option<ModuleRegistryIR>,
+    /// Whole-program ABI authority captured before stdlib extraction or batch
+    /// partitioning removes provider bodies.
+    pub(crate) module_context: Option<NativeBackendModuleContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

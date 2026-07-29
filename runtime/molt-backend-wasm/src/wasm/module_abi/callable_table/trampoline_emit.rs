@@ -7,6 +7,7 @@ use task::{emit_task_trampoline, task_trampoline_local_types};
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::emit_call;
 use crate::wasm_table::WasmCallableTableTarget;
+use crate::wasm_values::emit_boxed_none;
 use crate::{TrampolineBehavior, TrampolineSpec};
 
 impl WasmBackend {
@@ -22,7 +23,7 @@ impl WasmBackend {
             has_closure,
             kind,
             closure_size,
-            target_has_ret: _,
+            target_has_ret,
         } = spec;
         let behavior = kind.behavior();
         let func_index = self.func_count;
@@ -40,6 +41,9 @@ impl WasmBackend {
                 func.instruction(&Instruction::LocalGet(1));
                 func.instruction(&Instruction::LocalGet(2));
                 emit_call(&mut func, reloc_enabled, target_func_index);
+                if !target_has_ret {
+                    emit_boxed_none(&mut func);
+                }
             }
             TrampolineBehavior::Task(task_kind) => emit_task_trampoline(
                 self,
@@ -66,6 +70,9 @@ impl WasmBackend {
                     }));
                 }
                 emit_call(&mut func, reloc_enabled, target_func_index);
+                if !target_has_ret {
+                    emit_boxed_none(&mut func);
+                }
             }
         }
         func.instruction(&Instruction::End);
