@@ -198,8 +198,11 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     {
       "name": "molt_init_sys",
       "params": [],
+      "execution_context": "local",
       "ops": [
-        {"kind": "call", "s_value": "sys__helper", "value": 0},
+        {"kind": "trace_enter_slot", "value": 1},
+        {"kind": "call_internal", "s_value": "sys__helper", "passes_execution_context": true},
+        {"kind": "trace_exit"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -209,6 +212,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     {
       "name": "sys__helper",
       "params": [],
+      "execution_context": "inherited",
       "ops": [
         {"kind": "ret_void"}
       ],
@@ -223,24 +227,27 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     )
     .expect("write stdlib split native batch worker test IR");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
-        .arg("--ir-file")
-        .arg(&ir_path)
-        .arg("--output")
-        .arg(&output_path)
-        .env("MOLT_ENTRY_MODULE", "demo")
-        .env("MOLT_STDLIB_OBJ", &stdlib_path)
-        .env("MOLT_STDLIB_CACHE_KEY", "stdlib-batch-key")
-        .env(
-            "MOLT_STDLIB_CACHE_MANIFEST",
-            "{\"cache_key\":\"stdlib-batch-key\"}",
-        )
-        .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
-        .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
-        .env("MOLT_BACKEND_BATCH_SIZE", "1")
-        .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
-        .output()
-        .expect("spawn production molt-backend binary");
+    let run_backend = |destination: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+            .arg("--ir-file")
+            .arg(&ir_path)
+            .arg("--output")
+            .arg(destination)
+            .env("MOLT_ENTRY_MODULE", "demo")
+            .env("MOLT_STDLIB_OBJ", &stdlib_path)
+            .env("MOLT_STDLIB_CACHE_KEY", "stdlib-batch-key")
+            .env(
+                "MOLT_STDLIB_CACHE_MANIFEST",
+                "{\"cache_key\":\"stdlib-batch-key\"}",
+            )
+            .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
+            .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
+            .env("MOLT_BACKEND_BATCH_SIZE", "1")
+            .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
+            .output()
+            .expect("spawn production molt-backend binary")
+    };
+    let output = run_backend(&output_path);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -306,6 +313,31 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     assert!(
         !cached_digest.trim().is_empty(),
         "shared stdlib object digest sidecar must be populated"
+    );
+
+    let warm_output_path = tmp.path.join("out-warm.o");
+    let warm_output = run_backend(&warm_output_path);
+    let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
+    assert!(
+        warm_output.status.success(),
+        "warm shared-stdlib reuse failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        warm_output.status,
+        String::from_utf8_lossy(&warm_output.stdout),
+        warm_stderr
+    );
+    assert!(
+        warm_stderr.contains("incremental -- compiling")
+            && warm_stderr.contains("2 stdlib extern from")
+            && warm_stderr.contains("compiling materialized batch"),
+        "warm forced-batch run must reuse the cache and compile external declarations; stderr:\n{warm_stderr}"
+    );
+    assert!(
+        warm_output_path
+            .metadata()
+            .expect("warm native batch output object")
+            .len()
+            > 0,
+        "warm native batch worker path must write a non-empty application object"
     );
 
     std::fs::remove_dir_all(&tmp.path).expect("remove native batch worker temp dir");

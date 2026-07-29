@@ -515,6 +515,28 @@ fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
     let declarations = inherited_function_declarations(&[local.clone(), inherited.clone()]);
+
+    let mut string_only_reference = vec![FunctionIR {
+        name: "string_collision".to_string(),
+        params: Vec::new(),
+        ops: vec![OpIR {
+            kind: "const_str".to_string(),
+            s_value: Some(inherited.name.clone()),
+            out: Some("text".to_string()),
+            ..OpIR::default()
+        }],
+        param_types: None,
+        source_file: Some("demo.py".to_string()),
+        is_extern: false,
+        execution_context: Default::default(),
+    }];
+    append_referenced_inherited_declarations(&mut string_only_reference, &declarations);
+    assert_eq!(
+        string_only_reference.len(),
+        1,
+        "only typed context-threading edges may pull inherited declarations into a batch"
+    );
+
     let mut batch_functions = vec![local];
 
     append_referenced_inherited_declarations(&mut batch_functions, &declarations);

@@ -794,67 +794,74 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             &func.params,
             func.param_types.as_deref(),
         )?;
-        let frame_ops = func
-            .ops
-            .iter()
-            .filter(|op| {
-                simpleir_runtime_requirements_table(op.kind.as_str()).is_some_and(|requirements| {
-                    requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                })
-            })
-            .collect::<Vec<_>>();
-        let trace_enters = frame_ops
-            .iter()
-            .filter(|op| op.kind == "trace_enter_slot")
-            .count();
-        match func.execution_context {
-            ExecutionContextPolicy::Local if trace_enters != 1 => {
-                return Err(format!(
-                    "function `{}` with local execution context requires exactly one trace_enter_slot",
-                    func.name
-                ));
-            }
-            ExecutionContextPolicy::Inherited if trace_enters != 0 => {
-                return Err(format!(
-                    "function `{}` cannot both inherit and create an execution context",
-                    func.name
-                ));
-            }
-            ExecutionContextPolicy::None if trace_enters != 0 => {
-                return Err(format!(
-                    "function `{}` with trace_enter_slot must declare local execution context",
-                    func.name
-                ));
-            }
-            _ => {}
-        }
-        match func.execution_context {
-            ExecutionContextPolicy::Local => {
-                let enter_index = func
-                    .ops
-                    .iter()
-                    .position(|op| op.kind == "trace_enter_slot")
-                    .expect("Local trace-enter count was validated above");
-                let cfg = CFG::build(&func.ops);
-                let execution_dominators = cfg.execution_op_dominators(&func.ops);
-                for (op_index, op) in func.ops.iter().enumerate() {
-                    let requires_active_frame = simpleir_runtime_requirements_table(
-                        op.kind.as_str(),
+        // Externs retain signature and execution-context ABI metadata but do
+        // not own a body. Their compact signature ops must never be mistaken
+        // for lifecycle ownership; callers are still checked below against
+        // the declaration's execution-context policy.
+        if !func.is_extern {
+            let frame_ops = func
+                .ops
+                .iter()
+                .filter(|op| {
+                    simpleir_runtime_requirements_table(op.kind.as_str()).is_some_and(
+                        |requirements| {
+                            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+                        },
                     )
-                    .is_some_and(|requirements| {
-                        requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                    });
-                    if requires_active_frame
-                        && op.kind != "trace_enter_slot"
-                        && simple_ir_op_is_reachable(&execution_dominators, op_index)
-                        && !simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
-                    {
-                        let handler_label = func.ops[..=op_index]
-                            .iter()
-                            .rev()
-                            .find(|candidate| candidate.kind == "label")
-                            .and_then(|candidate| candidate.value);
-                        let transfer_sources = handler_label.map_or_else(Vec::new, |label| {
+                })
+                .collect::<Vec<_>>();
+            let trace_enters = frame_ops
+                .iter()
+                .filter(|op| op.kind == "trace_enter_slot")
+                .count();
+            match func.execution_context {
+                ExecutionContextPolicy::Local if trace_enters != 1 => {
+                    return Err(format!(
+                        "function `{}` with local execution context requires exactly one trace_enter_slot",
+                        func.name
+                    ));
+                }
+                ExecutionContextPolicy::Inherited if trace_enters != 0 => {
+                    return Err(format!(
+                        "function `{}` cannot both inherit and create an execution context",
+                        func.name
+                    ));
+                }
+                ExecutionContextPolicy::None if trace_enters != 0 => {
+                    return Err(format!(
+                        "function `{}` with trace_enter_slot must declare local execution context",
+                        func.name
+                    ));
+                }
+                _ => {}
+            }
+            match func.execution_context {
+                ExecutionContextPolicy::Local => {
+                    let enter_index = func
+                        .ops
+                        .iter()
+                        .position(|op| op.kind == "trace_enter_slot")
+                        .expect("Local trace-enter count was validated above");
+                    let cfg = CFG::build(&func.ops);
+                    let execution_dominators = cfg.execution_op_dominators(&func.ops);
+                    for (op_index, op) in func.ops.iter().enumerate() {
+                        let requires_active_frame = simpleir_runtime_requirements_table(
+                            op.kind.as_str(),
+                        )
+                        .is_some_and(|requirements| {
+                            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+                        });
+                        if requires_active_frame
+                            && op.kind != "trace_enter_slot"
+                            && simple_ir_op_is_reachable(&execution_dominators, op_index)
+                            && !simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
+                        {
+                            let handler_label = func.ops[..=op_index]
+                                .iter()
+                                .rev()
+                                .find(|candidate| candidate.kind == "label")
+                                .and_then(|candidate| candidate.value);
+                            let transfer_sources = handler_label.map_or_else(Vec::new, |label| {
                             func.ops
                                 .iter()
                                 .enumerate()
@@ -875,58 +882,59 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                                 })
                                 .collect::<Vec<_>>()
                         });
-                        return Err(format!(
-                            "function `{}` frame op#{op_index} `{}` is reachable before trace_enter_slot op#{enter_index}; target immediate dominator is {:?}, handler label is {:?}, transfer source dominators are {:?}",
-                            func.name,
-                            op.kind,
-                            execution_dominators.get(op_index).copied().flatten(),
-                            handler_label,
-                            transfer_sources,
-                        ));
+                            return Err(format!(
+                                "function `{}` frame op#{op_index} `{}` is reachable before trace_enter_slot op#{enter_index}; target immediate dominator is {:?}, handler label is {:?}, transfer source dominators are {:?}",
+                                func.name,
+                                op.kind,
+                                execution_dominators.get(op_index).copied().flatten(),
+                                handler_label,
+                                transfer_sources,
+                            ));
+                        }
+                        if op.kind == "trace_exit"
+                            && func
+                                .ops
+                                .get(op_index + 1)
+                                .is_none_or(|next| !simpleir_kind_is_return_terminator(&next.kind))
+                        {
+                            return Err(format!(
+                                "function `{}` has stray trace_exit at op#{op_index}; lifecycle exits must occur exactly once immediately before normal return terminators",
+                                func.name
+                            ));
+                        }
+                        if simpleir_kind_is_return_terminator(&op.kind)
+                            && simple_ir_op_is_reachable(&execution_dominators, op_index)
+                            && simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
+                            && func
+                                .ops
+                                .get(op_index.wrapping_sub(1))
+                                .is_none_or(|previous| previous.kind != "trace_exit")
+                        {
+                            return Err(format!(
+                                "function `{}` normal return op#{op_index} `{}` requires exactly one immediately preceding trace_exit",
+                                func.name, op.kind
+                            ));
+                        }
                     }
-                    if op.kind == "trace_exit"
-                        && func
-                            .ops
-                            .get(op_index + 1)
-                            .is_none_or(|next| !simpleir_kind_is_return_terminator(&next.kind))
+                }
+                ExecutionContextPolicy::Inherited => {
+                    if let Some(lifecycle) = frame_ops
+                        .iter()
+                        .find(|op| matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
                     {
                         return Err(format!(
-                            "function `{}` has stray trace_exit at op#{op_index}; lifecycle exits must occur exactly once immediately before normal return terminators",
-                            func.name
-                        ));
-                    }
-                    if simpleir_kind_is_return_terminator(&op.kind)
-                        && simple_ir_op_is_reachable(&execution_dominators, op_index)
-                        && simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
-                        && func
-                            .ops
-                            .get(op_index.wrapping_sub(1))
-                            .is_none_or(|previous| previous.kind != "trace_exit")
-                    {
-                        return Err(format!(
-                            "function `{}` normal return op#{op_index} `{}` requires exactly one immediately preceding trace_exit",
-                            func.name, op.kind
+                            "function `{}` with inherited execution context cannot own lifecycle op `{}`",
+                            func.name, lifecycle.kind
                         ));
                     }
                 }
-            }
-            ExecutionContextPolicy::Inherited => {
-                if let Some(lifecycle) = frame_ops
-                    .iter()
-                    .find(|op| matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
-                {
-                    return Err(format!(
-                        "function `{}` with inherited execution context cannot own lifecycle op `{}`",
-                        func.name, lifecycle.kind
-                    ));
-                }
-            }
-            ExecutionContextPolicy::None => {
-                if let Some(frame_op) = frame_ops.first() {
-                    return Err(format!(
-                        "function `{}` without an execution context cannot contain generated frame op `{}`",
-                        func.name, frame_op.kind
-                    ));
+                ExecutionContextPolicy::None => {
+                    if let Some(frame_op) = frame_ops.first() {
+                        return Err(format!(
+                            "function `{}` without an execution context cannot contain generated frame op `{}`",
+                            func.name, frame_op.kind
+                        ));
+                    }
                 }
             }
         }
@@ -1122,6 +1130,89 @@ mod json_parse_tests {
 
         assert_eq!(ir.functions.len(), 2);
         assert!(ir.functions[1].ops[1].passes_execution_context);
+    }
+
+    #[test]
+    fn extern_execution_context_policy_is_abi_metadata_not_body_ownership() {
+        let external_local = FunctionIR {
+            name: "molt_init_sys".to_string(),
+            params: Vec::new(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: Some("sys.py".to_string()),
+            is_extern: true,
+            execution_context: super::ExecutionContextPolicy::Local,
+        };
+        let inherited_declaration = FunctionIR {
+            name: "sys__molt_module_chunk_1".to_string(),
+            params: vec!["module".to_string()],
+            ops: Vec::new(),
+            param_types: Some(vec!["i64".to_string()]),
+            source_file: Some("sys.py".to_string()),
+            is_extern: true,
+            execution_context: super::ExecutionContextPolicy::Inherited,
+        };
+        let local_caller = FunctionIR {
+            name: "molt_init_app".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "trace_enter_slot".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_internal".to_string(),
+                    s_value: Some(inherited_declaration.name.clone()),
+                    passes_execution_context: true,
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_exit".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: Some("app.py".to_string()),
+            is_extern: false,
+            execution_context: super::ExecutionContextPolicy::Local,
+        };
+        let ir = SimpleIR {
+            functions: vec![external_local.clone(), inherited_declaration, local_caller],
+            profile: None,
+        };
+        let encoded = serde_json::to_vec(&ir).expect("serialize internal extern declarations");
+        let mut decoded: SimpleIR = serde_json::from_slice(&encoded)
+            .expect("extern declarations preserve ABI policy without owning lifecycle ops");
+        assert_eq!(decoded.functions.len(), 3);
+
+        decoded.functions[2].ops[1].passes_execution_context = false;
+        let encoded = serde_json::to_vec(&decoded).expect("serialize unthreaded extern call");
+        let error = serde_json::from_slice::<SimpleIR>(&encoded)
+            .expect_err("inherited extern declarations still require caller threading metadata");
+        assert!(
+            error
+                .to_string()
+                .contains("requires direct threaded call metadata")
+        );
+
+        let mut invalid_body = external_local;
+        invalid_body.is_extern = false;
+        let encoded = serde_json::to_vec(&SimpleIR {
+            functions: vec![invalid_body],
+            profile: None,
+        })
+        .expect("serialize invalid local body");
+        let error = serde_json::from_slice::<SimpleIR>(&encoded)
+            .expect_err("a body-owning Local function still requires lifecycle ownership");
+        assert!(error.to_string().contains("exactly one trace_enter_slot"));
     }
 
     #[test]
