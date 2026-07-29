@@ -534,9 +534,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             args=item.args,
             returns=item.returns,
         ):
-            func_spill = self._spill_async_value(
-                func_val, f"__func_meta_{len(self.async_locals)}"
-            )
+            func_spill = self._spill_async_value(func_val)
         varnames = self._collect_varnames_for_body(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -574,6 +572,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.start_function(
             poll_symbol,
             params=["self"],
+            compiler_params={"self"},
             type_facts_name=f"{class_node.name}.{method_name}",
             needs_return_slot=has_return,
         )
@@ -583,10 +582,6 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.del_targets = self._collect_deleted_names(item.body)
         self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
         self.unbound_check_names = set(self.scope_assigned)
-        self.async_public_locals = set(self.scope_assigned) | {
-            arg.arg for arg in arg_nodes
-        }
-        self.async_internal_locals = set()
         self.in_generator = True
         self.async_locals_base = frame_plan.async_locals_base
         if has_closure:
@@ -594,7 +589,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
-            self.async_locals[arg.arg] = self.async_locals_base + i * 8
+            self._async_local_offset(arg.arg)
             hint = None
             if i == 0 and descriptor == "classmethod":
                 hint = class_node.name
@@ -609,7 +604,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 if explicit is not None:
                     hint = explicit
             if hint is not None:
-                self.async_local_hints[arg.arg] = hint
+                self.async_public_hints[arg.arg] = hint
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
@@ -817,9 +812,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             args=item.args,
             returns=item.returns,
         ):
-            func_spill = self._spill_async_value(
-                func_val, f"__func_meta_{len(self.async_locals)}"
-            )
+            func_spill = self._spill_async_value(func_val)
         varnames = self._collect_varnames_for_body(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -853,9 +846,10 @@ class ClassMethodCompilationMixin(_MixinBase):
         prev_first_param = self.current_method_first_param
         self.current_class = class_node.name
         self.current_method_first_param = params[0] if params else None
-        method_params = params
-        if has_closure:
-            method_params = [_MOLT_CLOSURE_PARAM] + params
+        method_params, parameter_bindings = self._function_transport_params(
+            params,
+            has_closure=has_closure,
+        )
         self.start_function(
             method_symbol,
             params=method_params,
@@ -863,10 +857,11 @@ class ClassMethodCompilationMixin(_MixinBase):
             needs_return_slot=False,
             has_exception_handlers=self._body_has_exception_handlers(item.body),
         )
+        self.parameter_bindings = parameter_bindings
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
-            self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         arg_nodes: list[ast.arg] = posonly + pos_or_kw
@@ -897,7 +892,10 @@ class ClassMethodCompilationMixin(_MixinBase):
                     hint = explicit
                 elif hint is None:
                     hint = "Any"
-            value = MoltValue(arg.arg, type_hint=hint or "Unknown")
+            value = self._parameter_value(
+                arg.arg,
+                type_hint=hint or "Unknown",
+            )
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
             self.locals[arg.arg] = value
@@ -1136,6 +1134,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.start_function(
                 poll_symbol,
                 params=["self"],
+                compiler_params={"self"},
                 type_facts_name=f"{class_node.name}.{method_name}",
                 needs_return_slot=has_return,
             )
@@ -1146,10 +1145,6 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.del_targets = self._collect_deleted_names(item.body)
             self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
             self.unbound_check_names = set(self.scope_assigned)
-            self.async_public_locals = set(self.scope_assigned) | {
-                arg.arg for arg in arg_nodes
-            }
-            self.async_internal_locals = set()
             self.in_generator = True
             self.async_locals_base = frame_plan.async_locals_base
             if has_closure:
@@ -1157,7 +1152,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
-                self.async_locals[arg.arg] = self.async_locals_base + i * 8
+                self._async_local_offset(arg.arg)
                 hint = None
                 if i == 0 and descriptor == "classmethod":
                     hint = class_node.name
@@ -1172,7 +1167,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                     if explicit is not None:
                         hint = explicit
                 if hint is not None:
-                    self.async_local_hints[arg.arg] = hint
+                    self.async_public_hints[arg.arg] = hint
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
@@ -1264,9 +1259,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 args=item.args,
                 returns=item.returns,
             ):
-                func_spill = self._spill_async_value(
-                    func_val, f"__func_meta_{len(self.async_locals)}"
-                )
+                func_spill = self._spill_async_value(func_val)
             varnames = self._collect_varnames_for_body(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -1329,16 +1322,18 @@ class ClassMethodCompilationMixin(_MixinBase):
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
-            wrapper_params = params
-            if has_closure:
-                wrapper_params = [_MOLT_CLOSURE_PARAM] + params
+            wrapper_params, parameter_bindings = self._function_transport_params(
+                params,
+                has_closure=has_closure,
+            )
             self.start_function(
                 wrapper_symbol,
                 params=wrapper_params,
                 type_facts_name=f"{class_node.name}.{method_name}",
             )
+            self.parameter_bindings = parameter_bindings
             if has_closure:
-                self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                     _MOLT_CLOSURE_PARAM, type_hint="tuple"
                 )
             self.global_decls = set()
@@ -1361,7 +1356,10 @@ class ClassMethodCompilationMixin(_MixinBase):
                         hint = explicit
                     elif hint is None:
                         hint = "Any"
-                value = MoltValue(arg.arg, type_hint=hint or "Unknown")
+                value = self._parameter_value(
+                    arg.arg,
+                    type_hint=hint or "Unknown",
+                )
                 if hint is not None:
                     self._apply_hint_to_value(arg.arg, value, hint)
                 self.locals[arg.arg] = value
@@ -1372,7 +1370,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                         self._emit_guard_type(self.locals[arg.arg], hint)
             args = [self.locals[arg.arg] for arg in arg_nodes]
             if has_closure:
-                args = [self.locals[_MOLT_CLOSURE_PARAM]] + args
+                args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
             gen_val = MoltValue(
                 self.next_var(),
                 type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
@@ -1454,6 +1452,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.start_function(
             poll_symbol,
             params=["self"],
+            compiler_params={"self"},
             type_facts_name=f"{class_node.name}.{method_name}",
             needs_return_slot=has_return,
         )
@@ -1470,7 +1469,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
-            self.async_locals[arg.arg] = self.async_locals_base + i * 8
+            self._async_local_offset(arg.arg)
             hint = None
             if i == 0 and descriptor == "classmethod":
                 hint = class_node.name
@@ -1485,7 +1484,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                 if explicit is not None:
                     hint = explicit
             if hint is not None:
-                self.async_local_hints[arg.arg] = hint
+                self.async_public_hints[arg.arg] = hint
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
@@ -1546,9 +1545,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             args=item.args,
             returns=item.returns,
         ):
-            func_spill = self._spill_async_value(
-                func_val, f"__func_meta_{len(self.async_locals)}"
-            )
+            func_spill = self._spill_async_value(func_val)
         varnames = self._collect_varnames_for_body(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -1588,16 +1585,18 @@ class ClassMethodCompilationMixin(_MixinBase):
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
-        wrapper_params = params
-        if has_closure:
-            wrapper_params = [_MOLT_CLOSURE_PARAM] + params
+        wrapper_params, parameter_bindings = self._function_transport_params(
+            params,
+            has_closure=has_closure,
+        )
         self.start_function(
             wrapper_symbol,
             params=wrapper_params,
             type_facts_name=f"{class_node.name}.{method_name}",
         )
+        self.parameter_bindings = parameter_bindings
         if has_closure:
-            self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         self.global_decls = set()
@@ -1620,7 +1619,10 @@ class ClassMethodCompilationMixin(_MixinBase):
                     hint = explicit
                 elif hint is None:
                     hint = "Any"
-            value = MoltValue(arg.arg, type_hint=hint or "Unknown")
+            value = self._parameter_value(
+                arg.arg,
+                type_hint=hint or "Unknown",
+            )
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
             self.locals[arg.arg] = value
@@ -1631,7 +1633,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                     self._emit_guard_type(self.locals[arg.arg], hint)
         args = [self.locals[arg.arg] for arg in arg_nodes]
         if has_closure:
-            args = [self.locals[_MOLT_CLOSURE_PARAM]] + args
+            args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
         res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
         self.emit(
             MoltOp(

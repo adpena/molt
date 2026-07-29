@@ -13,10 +13,11 @@ from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
-    _MOLT_LOCALS_CACHE,
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
+    AsyncFrameSlotRole,
     MoltOp,
     MoltValue,
+    ScratchCell,
     _ClassNsScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -32,6 +33,30 @@ else:
 
 
 class LocalBindingMixin(_MixinBase):
+    def _function_transport_params(
+        self,
+        params: list[str],
+        *,
+        has_closure: bool,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Separate public parameter identity from compiler-only ABI params."""
+        bindings: dict[str, str] = {}
+        for public_name in params:
+            transport_name = public_name
+            if has_closure and public_name == _MOLT_CLOSURE_PARAM:
+                transport_name = self.next_var()
+            bindings[public_name] = transport_name
+        transport_params = [bindings[name] for name in params]
+        if has_closure:
+            transport_params.insert(0, _MOLT_CLOSURE_PARAM)
+        if len(transport_params) != len(set(transport_params)):
+            raise AssertionError("function transport parameters must be unique")
+        return transport_params, bindings
+
+    def _parameter_value(self, public_name: str, *, type_hint: str) -> MoltValue:
+        transport_name = self.parameter_bindings.get(public_name, public_name)
+        return MoltValue(transport_name, type_hint=type_hint)
+
     def _emit_name_from_obj(self, obj: MoltValue) -> MoltValue:
         name_key = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["__name__"], result=name_key))
@@ -52,7 +77,7 @@ class LocalBindingMixin(_MixinBase):
         # value can be merged with the entry-block default (None) on the
         # first iteration, producing store_index(None, ...) crashes.
         if self.is_async():
-            slot = self._async_local_offset(f"__name_from_obj_{len(self.async_locals)}")
+            slot = self._new_async_internal_slot()
             placeholder = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
             self.emit(
@@ -120,15 +145,16 @@ class LocalBindingMixin(_MixinBase):
         init: MoltValue
         if self.is_async() and name in self.async_locals:
             init = MoltValue(
-                self.next_var(), type_hint=self.async_local_hints.get(name, "Any")
+                self.next_var(), type_hint=self.async_public_hints.get(name, "Any")
             )
             self.emit(
                 MoltOp(
                     kind="LOAD_CLOSURE",
-                    args=["self", self.async_locals[name]],
+                    args=["self", self.async_locals[name].offset],
                     result=init,
                 )
             )
+
         elif name in self.locals:
             init = self.locals[name]
         else:
@@ -155,6 +181,74 @@ class LocalBindingMixin(_MixinBase):
                 )
             )
 
+    def _new_scratch_cell(
+        self,
+        initial: MoltValue | None = None,
+        *,
+        type_hint: str = "Any",
+    ) -> ScratchCell:
+        """Allocate opaque mutable storage outside every Python name map."""
+        if initial is None:
+            initial = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=initial))
+        if self.is_async():
+            slot = self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot.offset, initial],
+                    result=MoltValue("none"),
+                )
+            )
+            return ScratchCell(
+                value=None,
+                async_slot=slot,
+                type_hint=type_hint,
+            )
+        cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[initial], result=cell))
+        return ScratchCell(value=cell, async_slot=None, type_hint=type_hint)
+
+    def _load_scratch_cell(self, cell: ScratchCell) -> MoltValue:
+        result = MoltValue(self.next_var(), type_hint=cell.type_hint)
+        if cell.async_slot is not None:
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", cell.async_slot.offset],
+                    result=result,
+                )
+            )
+            return result
+        if cell.value is None:
+            raise AssertionError("synchronous scratch cell has no storage value")
+        index = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=index))
+        self.emit(MoltOp(kind="INDEX", args=[cell.value, index], result=result))
+        return result
+
+    def _store_scratch_cell(self, cell: ScratchCell, value: MoltValue) -> None:
+        if cell.async_slot is not None:
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", cell.async_slot.offset, value],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        if cell.value is None:
+            raise AssertionError("synchronous scratch cell has no storage value")
+        index = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=index))
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[cell.value, index, value],
+                result=MoltValue("none"),
+            )
+        )
+
     def _load_boxed_cell(self, name: str) -> MoltValue | None:
         cell = self.boxed_locals.get(name)
         if cell is None:
@@ -167,7 +261,7 @@ class LocalBindingMixin(_MixinBase):
         self.emit(
             MoltOp(
                 kind="LOAD_CLOSURE",
-                args=["self", self.async_locals[name]],
+                args=["self", self.async_locals[name].offset],
                 result=slot_val,
             )
         )
@@ -213,10 +307,9 @@ class LocalBindingMixin(_MixinBase):
         for name in sorted(self._collect_scope_cell_vars(body, local_candidates)):
             self._box_local(name)
             self.closure_locals.add(name)
-        # Unify storage for names bound by both a comprehension walrus and a
-        # non-comprehension assignment: box them so the inline-comprehension
-        # cell and the SSA-local writer share one cell across loop back-edges.
-        for name in self._collect_comp_walrus_shared_names(body):
+        # Every comprehension-walrus binding leaks into this function scope,
+        # so its cell must dominate zero-trip loops and untaken branches too.
+        for name in self._collect_comp_walrus_cell_names(body):
             self._box_local(name)
 
     def _emit_free_var_load(
@@ -250,7 +343,7 @@ class LocalBindingMixin(_MixinBase):
         return True
 
     def _load_free_var_cell(self, name: str) -> MoltValue | None:
-        closure = self.locals.get(_MOLT_CLOSURE_PARAM)
+        closure = self.compiler_bindings.get(_MOLT_CLOSURE_PARAM)
         if (
             closure is None
             and self.is_async()
@@ -426,16 +519,25 @@ class LocalBindingMixin(_MixinBase):
 
     @staticmethod
     def _is_class_body_managed_name(name: str) -> bool:
-        # Internal lowering scaffolding (loop break flags, the locals cache, any
-        # ``__molt_*`` temp) is NOT a Python-visible class-body name and must
-        # never be threaded through the namespace mapping — it is pure SSA
-        # plumbing.  Everything else (including dunders the body assigns) routes
-        # through the class namespace.
-        return not (
-            name == _MOLT_LOCALS_CACHE
-            or name == _MOLT_CLOSURE_PARAM
-            or name.startswith("__molt_")
-        )
+        # Calls into name-binding storage now carry only Python source bindings;
+        # compiler-only bindings live in ``compiler_bindings`` or typed scratch
+        # storage and never enter the class namespace path.
+        return True
+
+    def _async_binding_hint(self, name: str) -> str:
+        slot = self._async_binding_slot(name)
+        if slot.role is AsyncFrameSlotRole.PUBLIC:
+            return self.async_public_hints.get(name, "Any")
+        return self.async_internal_hints.get(name, "Any")
+
+    def _is_public_frame_binding(self, name: str) -> bool:
+        if (
+            name in self.scope_assigned
+            or name in self.async_locals
+            or name in self.parameter_bindings
+        ):
+            return True
+        return False
 
     def _active_class_ns_scope(self, name: str) -> "_ClassNsScope | None":
         # The innermost class-body scope manages ``name`` when the body is being
@@ -541,10 +643,12 @@ class LocalBindingMixin(_MixinBase):
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
-        if self.is_async() and name in self.async_locals:
-            offset = self.async_locals[name]
+        if self.is_async() and (
+            name in self.async_locals or name in self.async_internal_bindings
+        ):
+            offset = self._async_binding_slot(name).offset
             res = MoltValue(
-                self.next_var(), type_hint=self.async_local_hints.get(name, "Any")
+                self.next_var(), type_hint=self._async_binding_hint(name)
             )
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             if guard_unbound and name in self.unbound_check_names:
@@ -672,9 +776,7 @@ class LocalBindingMixin(_MixinBase):
         bindings: list[tuple[str, MoltValue]] = []
         for name in candidate_names:
             if (
-                name == _MOLT_CLOSURE_PARAM
-                or name == _MOLT_LOCALS_CACHE
-                or name.startswith("__molt_")
+                not self._is_public_frame_binding(name)
                 or name in self.closure_locals
                 or name in self.boxed_locals
                 or name in self.global_decls
@@ -761,7 +863,6 @@ class LocalBindingMixin(_MixinBase):
             and self.control_flow_depth > 0
             and hasattr(self, "module_obj")
             and self.module_obj is not None
-            and not name.startswith("__molt_")
             and name in self.scope_assigned
         ):
             self._emit_module_attr_set_on(self.module_obj, name, value)
@@ -805,18 +906,19 @@ class LocalBindingMixin(_MixinBase):
             update_locals_cache()
             return
         if self.is_async():
-            if name not in self.async_locals:
-                self._async_local_offset(name)
-            offset = self.async_locals[name]
+            slot = self._async_binding_slot(name)
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
-                    args=["self", offset, value],
+                    args=["self", slot.offset, value],
                     result=MoltValue("none"),
                 )
             )
             if value.type_hint:
-                self.async_local_hints[name] = value.type_hint
+                if slot.role is AsyncFrameSlotRole.PUBLIC:
+                    self.async_public_hints[name] = value.type_hint
+                else:
+                    self.async_internal_hints[name] = value.type_hint
             update_locals_cache()
             return
         # Do NOT cache in self.locals when the variable is module-backed
@@ -886,22 +988,14 @@ class LocalBindingMixin(_MixinBase):
         update_locals_cache()
 
     def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None:
-        # Never include internal Molt scaffolding in `locals()`.
-        if (
-            name == _MOLT_LOCALS_CACHE
-            or name == _MOLT_CLOSURE_PARAM
-            or name.startswith("__molt_")
-        ):
+        # Compiler bindings have a separate typed origin and never enter
+        # Python-visible frame locals, independent of their spelling.
+        if not self._is_public_frame_binding(name):
             return
-        # Only include Python-visible locals (params + assigned names). The compiler
-        # may introduce additional locals/temps for lowering; those must never leak
-        # into `locals()` (CPython parity).
-        params = self.funcs_map.get(self.current_func_name, {}).get("params", [])
-        if name not in self.scope_assigned and name not in params:
+        cache_cell = self.locals_cache_cell
+        if cache_cell is None:
             return
-        cache = self.locals_cache_val
-        if cache is None:
-            return
+        cache = self._load_scratch_cell(cache_cell)
         key = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
         if value.type_hint == "missing":

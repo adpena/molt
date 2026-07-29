@@ -25,6 +25,7 @@ from typing import (
 
 from molt.frontend._types import (
     ActiveException,
+    AsyncFrameSlot,
     ClassInfo,
     FormatToken,
     FuncInfo,
@@ -68,12 +69,15 @@ class _GeneratorProtocolAttrs(Protocol):
     app_callable_bindings: dict[str, dict[str, Any]]
     async_closure_offset: int | None
     async_context: Any
+    async_frame_slots: list[AsyncFrameSlot]
     async_index_loop_stack: list[int]
-    async_internal_locals: set[str]
-    async_local_hints: dict[str, str]
-    async_locals: dict[str, int]
+    async_internal_bindings: dict[str, AsyncFrameSlot]
+    async_internal_hints: dict[str, str]
+    async_locals: dict[str, AsyncFrameSlot]
     async_locals_base: int
-    async_public_locals: set[str]
+    async_public_hints: dict[str, str]
+    async_spill_hints: dict[str, str]
+    async_spill_slots: dict[str, AsyncFrameSlot]
     block_terminated: Any
     boxed_local_hints: dict[str, str]
     boxed_locals: dict[str, MoltValue]
@@ -89,6 +93,7 @@ class _GeneratorProtocolAttrs(Protocol):
     code_slots_emitted: Any
     comp_shadow_locals: set[str]
     compat: Any
+    compiler_bindings: dict[str, MoltValue]
     const_ints: dict[str, int]
     container_elem_hints: dict[str, str]
     context_depth: Any
@@ -140,4 +145,3 @@ class _GeneratorProtocolAttrs(Protocol):
     globals_builtin_val: MoltValue | None
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: set[tuple[str, str]]

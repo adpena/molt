@@ -106,10 +106,12 @@ class CallMethodDispatchMixin(_MixinBase):
             self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
             self._copy_container_hints_for_name_load(name, res.name)
             return res
-        if self.is_async() and name in self.async_locals:
-            offset = self.async_locals[name]
+        if self.is_async() and (
+            name in self.async_locals or name in self.async_internal_bindings
+        ):
+            offset = self._async_binding_slot(name).offset
             res = MoltValue(
-                self.next_var(), type_hint=self.async_local_hints.get(name, "Any")
+                self.next_var(), type_hint=self._async_binding_hint(name)
             )
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             return res
@@ -144,9 +146,7 @@ class CallMethodDispatchMixin(_MixinBase):
             return receiver, None
         if not any(self._expr_may_yield(arg) for arg in args):
             return receiver, None
-        slot = self._spill_async_value(
-            receiver, f"__recv_spill_{len(self.async_locals)}"
-        )
+        slot = self._spill_async_value(receiver)
         return receiver, slot
 
     def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]:
@@ -183,9 +183,7 @@ class CallMethodDispatchMixin(_MixinBase):
                 )
             values.append(arg)
             if any(yield_flags[idx + 1 :]):
-                slot = self._spill_async_value(
-                    arg, f"__arg_spill_{len(self.async_locals)}"
-                )
+                slot = self._spill_async_value(arg)
                 spills.append((idx, slot, arg.type_hint))
         for idx, slot, hint in spills:
             values[idx] = self._reload_async_value(slot, hint)

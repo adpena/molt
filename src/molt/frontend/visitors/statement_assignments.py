@@ -446,12 +446,8 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 exact_class = self.exact_locals.get(obj_name)
             current = self._emit_attribute_load(node.target, obj, obj_name, exact_class)
             if self.is_async() and may_yield:
-                obj_slot = self._spill_async_value(
-                    obj, f"__augattr_obj_{len(self.async_locals)}"
-                )
-                current_slot = self._spill_async_value(
-                    current, f"__augattr_cur_{len(self.async_locals)}"
-                )
+                obj_slot = self._spill_async_value(obj)
+                current_slot = self._spill_async_value(current)
                 value_node = self.visit(node.value)
                 obj = self._reload_async_value(obj_slot, obj.type_hint)
                 current = self._reload_async_value(current_slot, current.type_hint)
@@ -545,26 +541,14 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                         )
                     )
                 if self.is_async() and may_yield:
-                    obj_slot = self._spill_async_value(
-                        target_obj, f"__augsub_obj_{len(self.async_locals)}"
-                    )
-                    start_slot = self._spill_async_value(
-                        start, f"__augsub_start_{len(self.async_locals)}"
-                    )
-                    end_slot = self._spill_async_value(
-                        end, f"__augsub_end_{len(self.async_locals)}"
-                    )
-                    step_slot = self._spill_async_value(
-                        step, f"__augsub_step_{len(self.async_locals)}"
-                    )
-                    cur_slot = self._spill_async_value(
-                        current, f"__augsub_cur_{len(self.async_locals)}"
-                    )
+                    obj_slot = self._spill_async_value(target_obj)
+                    start_slot = self._spill_async_value(start)
+                    end_slot = self._spill_async_value(end)
+                    step_slot = self._spill_async_value(step)
+                    cur_slot = self._spill_async_value(current)
                     slice_slot = None
                     if slice_obj is not None:
-                        slice_slot = self._spill_async_value(
-                            slice_obj, f"__augsub_slice_{len(self.async_locals)}"
-                        )
+                        slice_slot = self._spill_async_value(slice_obj)
                     value_node = self.visit(node.value)
                     target_obj = self._reload_async_value(
                         obj_slot, target_obj.type_hint
@@ -616,15 +600,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 )
             )
             if self.is_async() and may_yield:
-                obj_slot = self._spill_async_value(
-                    target_obj, f"__augsub_obj_{len(self.async_locals)}"
-                )
-                idx_slot = self._spill_async_value(
-                    index_val, f"__augsub_idx_{len(self.async_locals)}"
-                )
-                cur_slot = self._spill_async_value(
-                    current, f"__augsub_cur_{len(self.async_locals)}"
-                )
+                obj_slot = self._spill_async_value(target_obj)
+                idx_slot = self._spill_async_value(index_val)
+                cur_slot = self._spill_async_value(current)
                 value_node = self.visit(node.value)
                 target_obj = self._reload_async_value(obj_slot, target_obj.type_hint)
                 index_val = self._reload_async_value(idx_slot, index_val.type_hint)

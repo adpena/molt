@@ -42,8 +42,6 @@ else:
 class ExpressionVisitorMixin(_MixinBase):
     def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
-            if self.in_annotation and node.id in self.annotation_type_params:
-                return self.annotation_type_params[node.id]
             if node.id == "__molt_missing__":
                 res = MoltValue(self.next_var(), type_hint="missing")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
@@ -62,6 +60,8 @@ class ExpressionVisitorMixin(_MixinBase):
                 free_val = self._emit_free_var_load(node.id)
                 if free_val is not None:
                     return free_val
+            if self.in_annotation and node.id in self.annotation_type_params:
+                return self.annotation_type_params[node.id]
             # Check locals BEFORE module_global_mutations: inline
             # comprehensions bind their iterator variable in self.locals,
             # which must shadow the module-level name (CPython scoping).
@@ -222,9 +222,7 @@ class ExpressionVisitorMixin(_MixinBase):
             )
         left_slot: int | None = None
         if self.is_async() and self._expr_may_yield(node.right):
-            left_slot = self._spill_async_value(
-                left, f"__binop_left_{len(self.async_locals)}"
-            )
+            left_slot = self._spill_async_value(left)
         right = self.visit(node.right)
         if right is None:
             raise FrontendRejection(
@@ -859,9 +857,7 @@ class ExpressionVisitorMixin(_MixinBase):
         comp_yields = [self._expr_may_yield(comp) for comp in node.comparators]
         left_slot: int | None = None
         if self.is_async() and comp_yields[0]:
-            left_slot = self._spill_async_value(
-                left, f"__cmp_left_{len(self.async_locals)}"
-            )
+            left_slot = self._spill_async_value(left)
         right = self.visit(node.comparators[0])
         if right is None:
             raise FrontendRejection(
@@ -882,15 +878,9 @@ class ExpressionVisitorMixin(_MixinBase):
         prev_slot: int | None = None
         idx_slot: int | None = None
         if self.is_async() and any(comp_yields[1:]):
-            res_slot = self._spill_async_value(
-                result_cell, f"__cmp_res_{len(self.async_locals)}"
-            )
-            prev_slot = self._spill_async_value(
-                prev_cell, f"__cmp_prev_{len(self.async_locals)}"
-            )
-            idx_slot = self._spill_async_value(
-                idx, f"__cmp_idx_{len(self.async_locals)}"
-            )
+            res_slot = self._spill_async_value(result_cell)
+            prev_slot = self._spill_async_value(prev_cell)
+            idx_slot = self._spill_async_value(idx)
         for op, comparator in zip(node.ops[1:], node.comparators[1:]):
             may_yield = self._expr_may_yield(comparator)
             current = MoltValue(self.next_var(), type_hint="bool")
@@ -1023,7 +1013,7 @@ class ExpressionVisitorMixin(_MixinBase):
         # Cranelift's loop-header phi resolver (which can merge the cell SSA
         # value with the entry-block default and crash on store_index).
         if self.is_async():
-            slot = self._async_local_offset(f"__ifexp_result_{len(self.async_locals)}")
+            slot = self._new_async_internal_slot()
             none_init = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
             self.emit(
@@ -1146,9 +1136,7 @@ class ExpressionVisitorMixin(_MixinBase):
                     # merge with the entry-block default (None) on the first
                     # iteration, producing store_index(None, ...) crashes.
                     if self.is_async():
-                        slot = self._async_local_offset(
-                            f"__boolop_and_{len(self.async_locals)}"
-                        )
+                        slot = self._new_async_internal_slot()
                         none_init = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
                         self.emit(
@@ -1295,12 +1283,8 @@ class ExpressionVisitorMixin(_MixinBase):
                         cell_slot = None
                         idx_slot = None
                         if self._expr_may_yield(value):
-                            cell_slot = self._spill_async_value(
-                                cell, f"__boolop_or_cell_{len(self.async_locals)}"
-                            )
-                            idx_slot = self._spill_async_value(
-                                idx, f"__boolop_or_idx_{len(self.async_locals)}"
-                            )
+                            cell_slot = self._spill_async_value(cell)
+                            idx_slot = self._spill_async_value(idx)
                         self.emit(
                             MoltOp(kind="IF", args=[result], result=MoltValue("none"))
                         )

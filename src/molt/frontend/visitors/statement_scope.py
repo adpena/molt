@@ -289,6 +289,27 @@ class StatementScopeVisitorMixin(_MixinBase):
 
     def visit_Module(self, node: ast.Module) -> None:
         node = self._prune_native_support_module_functions(node)
+        # Generated SSA values and source bindings share a serialized string
+        # field, so reserve every source-level identifier before emitting the
+        # first value. This keeps their origins disjoint for legal names such as
+        # ``v0`` and ``v123``.
+        identifiers: set[str] = set()
+        for item in ast.walk(node):
+            if isinstance(item, ast.Name):
+                identifiers.add(item.id)
+            elif isinstance(item, ast.arg):
+                identifiers.add(item.arg)
+            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                identifiers.add(item.name)
+            elif isinstance(item, ast.alias):
+                identifiers.add(item.asname or item.name.partition(".")[0])
+            elif isinstance(item, ast.ExceptHandler) and item.name is not None:
+                identifiers.add(item.name)
+            elif isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None:
+                identifiers.add(item.name)
+            elif isinstance(item, ast.MatchMapping) and item.rest is not None:
+                identifiers.add(item.rest)
+        self.reserved_python_identifiers.update(identifiers)
         prev_module_import_flow = self.module_import_flow
         self.module_import_flow = analyze_module_import_flow(
             node,

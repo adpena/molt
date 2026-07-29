@@ -241,9 +241,7 @@ class FunctionVisitorMixin(_MixinBase):
                 args=node.args,
                 returns=node.returns,
             ):
-                func_spill = self._spill_async_value(
-                    func_val, f"__func_meta_{len(self.async_locals)}"
-                )
+                func_spill = self._spill_async_value(func_val)
             varnames = self._collect_varnames_for_body(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -289,6 +287,7 @@ class FunctionVisitorMixin(_MixinBase):
             self.start_function(
                 poll_func_name,
                 params=["self"],
+                compiler_params={"self"},
                 type_facts_name=func_name,
                 needs_return_slot=has_return,
             )
@@ -299,10 +298,6 @@ class FunctionVisitorMixin(_MixinBase):
             self.del_targets = self._collect_deleted_names(node.body)
             self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
             self.unbound_check_names = set(self.scope_assigned)
-            self.async_public_locals = set(self.scope_assigned) | {
-                arg.arg for arg in arg_nodes
-            }
-            self.async_internal_locals = set()
             self.in_generator = True
             self.async_locals_base = frame_plan.async_locals_base
             if has_closure:
@@ -310,7 +305,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
-                self.async_locals[arg.arg] = self.async_locals_base + i * 8
+                self._async_local_offset(arg.arg)
                 if self._hints_enabled():
                     hint = self.explicit_type_hints.get(arg.arg)
                     if hint is None:
@@ -532,9 +527,7 @@ class FunctionVisitorMixin(_MixinBase):
             args=node.args,
             returns=node.returns,
         ):
-            func_spill = self._spill_async_value(
-                func_val, f"__func_meta_{len(self.async_locals)}"
-            )
+            func_spill = self._spill_async_value(func_val)
         varnames = self._collect_varnames_for_body(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -587,9 +580,10 @@ class FunctionVisitorMixin(_MixinBase):
             self._store_local_value(func_name, func_val)
         self._emit_module_attr_set(func_name, func_val)
 
-        func_params = params
-        if has_closure:
-            func_params = [_MOLT_CLOSURE_PARAM] + params
+        func_params, parameter_bindings = self._function_transport_params(
+            params,
+            has_closure=has_closure,
+        )
         prev_state = self._capture_function_state()
         self.current_class = None
         prev_first_param = self.current_method_first_param
@@ -610,13 +604,14 @@ class FunctionVisitorMixin(_MixinBase):
             has_exception_handlers=self._body_has_exception_handlers(node.body),
         )
         self._inherit_free_var_import_resolution(free_vars, prev_state)
+        self.parameter_bindings = parameter_bindings
         prev_gpu_kernel_context = self.current_gpu_kernel_context
         self.current_gpu_kernel_context = is_gpu_kernel
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
-            self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         self.global_decls = self._collect_global_decls(node.body)
@@ -639,7 +634,10 @@ class FunctionVisitorMixin(_MixinBase):
                         self.explicit_type_hints[arg.arg] = hint
             if hint is None and self._hints_enabled():
                 hint = "Any"
-            value = MoltValue(arg.arg, type_hint=hint or "Unknown")
+            value = self._parameter_value(
+                arg.arg,
+                type_hint=hint or "Unknown",
+            )
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
             self.locals[arg.arg] = value
@@ -844,9 +842,7 @@ class FunctionVisitorMixin(_MixinBase):
                 args=node.args,
                 returns=None,
             ):
-                func_spill = self._spill_async_value(
-                    func_val, f"__func_meta_{len(self.async_locals)}"
-                )
+                func_spill = self._spill_async_value(func_val)
             varnames = self._collect_varnames_for_body(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -885,6 +881,7 @@ class FunctionVisitorMixin(_MixinBase):
             self.start_function(
                 poll_func_name,
                 params=["self"],
+                compiler_params={"self"},
                 type_facts_name=func_symbol,
                 needs_return_slot=False,
             )
@@ -896,10 +893,6 @@ class FunctionVisitorMixin(_MixinBase):
             self.del_targets = set()
             self.scope_assigned = assigned
             self.unbound_check_names = set(self.scope_assigned)
-            self.async_public_locals = set(self.scope_assigned) | {
-                arg.arg for arg in arg_nodes
-            }
-            self.async_internal_locals = set()
             self.in_generator = True
             self.async_locals_base = frame_plan.async_locals_base
             if has_closure:
@@ -907,7 +900,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
-                self.async_locals[arg.arg] = self.async_locals_base + i * 8
+                self._async_local_offset(arg.arg)
                 if self._hints_enabled():
                     hint = self.explicit_type_hints.get(arg.arg)
                     if hint is None:
@@ -1110,9 +1103,10 @@ class FunctionVisitorMixin(_MixinBase):
             ),
         )
 
-        func_params = params
-        if has_closure:
-            func_params = [_MOLT_CLOSURE_PARAM] + params
+        func_params, parameter_bindings = self._function_transport_params(
+            params,
+            has_closure=has_closure,
+        )
         prev_state = self._capture_function_state()
         self.current_class = None
         prev_first_param = self.current_method_first_param
@@ -1127,11 +1121,12 @@ class FunctionVisitorMixin(_MixinBase):
             has_exception_handlers=False,
         )
         self._inherit_free_var_import_resolution(free_vars, prev_state)
+        self.parameter_bindings = parameter_bindings
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
-            self.locals[_MOLT_CLOSURE_PARAM] = MoltValue(
+            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         self.global_decls = set()
@@ -1149,7 +1144,10 @@ class FunctionVisitorMixin(_MixinBase):
                         self.explicit_type_hints[arg.arg] = hint
             if hint is None and self._hints_enabled():
                 hint = "Any"
-            value = MoltValue(arg.arg, type_hint=hint or "Unknown")
+            value = self._parameter_value(
+                arg.arg,
+                type_hint=hint or "Unknown",
+            )
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
             self.locals[arg.arg] = value

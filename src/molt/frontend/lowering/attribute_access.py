@@ -639,7 +639,7 @@ class AttributeAccessMixin(_MixinBase):
         # (None) on the first iteration, producing store_index(None, ...)
         # crashes.
         if self.is_async():
-            slot = self._async_local_offset(f"__guarded_field_{len(self.async_locals)}")
+            slot = self._new_async_internal_slot()
             none_init = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
             self.emit(
@@ -761,9 +761,7 @@ class AttributeAccessMixin(_MixinBase):
         # through a closure slot rather than a LIST_NEW + STORE_INDEX cell,
         # which is unsafe under Cranelift's loop-header phi resolver.
         if self.is_async():
-            slot = self._async_local_offset(
-                f"__guarded_property_{len(self.async_locals)}"
-            )
+            slot = self._new_async_internal_slot()
             none_init = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
             self.emit(

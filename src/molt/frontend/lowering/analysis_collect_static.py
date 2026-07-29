@@ -367,8 +367,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         return mutated
 
     def _collect_annotation_free_vars(self, node: ast.AST) -> list[str]:
-        if self.current_func_name == "molt_main":
-            return []
         used: set[str] = set()
 
         class Collector(ast.NodeVisitor):
@@ -390,10 +388,19 @@ class AnalysisCollectStaticMixin(_MixinBase):
 
         Collector().visit(node)
         used -= self.global_decls
+        # Type parameters are runtime values created in the enclosing frame,
+        # not module-dict names. Every generated annotation/evaluator function
+        # must therefore capture the referenced subset even at module scope;
+        # retaining the parent's MoltValue would create a cross-FunctionIR SSA
+        # use with no child-frame definition.
+        type_param_names = used & self.annotation_type_params.keys()
+        if self.current_func_name == "molt_main":
+            return sorted(type_param_names)
         outer_scope = set(self.locals) | set(self.boxed_locals)
         if self.is_async():
             outer_scope |= set(self.async_locals)
         outer_scope |= set(self.free_vars) | self.scope_assigned
+        outer_scope |= type_param_names
         return sorted(name for name in used if name in outer_scope)
 
     def _collect_module_optional_intrinsic_globals(
@@ -1396,81 +1403,30 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         return captured
 
-    def _collect_comp_walrus_shared_names(self, body: Sequence[ast.stmt]) -> list[str]:
-        """Names that are a comprehension walrus (``:=``) target AND are also
-        bound by a non-comprehension assignment in the same function scope.
+    def _collect_comp_walrus_cell_names(self, body: Sequence[ast.stmt]) -> list[str]:
+        """Names whose comprehension walrus bindings require function cells.
 
         A walrus inside a comprehension leaks its binding to the enclosing
         function scope (PEP 572), but the inline-comprehension lowering stores
-        that target through a boxed cell while a *separate* binding of the same
-        name (a plain assignment, a ``while``/``if`` test walrus, a ``for``
-        target, ...) is lowered as a plain SSA local.  When such a name lives
-        across a loop back-edge the two representations diverge — the comp cell
-        is never updated by the SSA writer and vice-versa — producing a stale
-        post-loop value (e.g. ``while (n := next(it)) is not None: xs = [n := n
-        + 1 for _ in r]`` leaving ``n`` at the last comp value instead of the
-        loop-terminating ``None``).  Returning such names lets the caller box
-        them at function entry so every binding site shares one cell.
-
-        Names bound *only* by a comprehension walrus are excluded: their cell is
-        the single source of truth (the post-comp sync mirrors it into the SSA
-        local) and needs no unification.  Nested functions/classes are separate
+        that target through a boxed cell. The cell must exist at function entry
+        even when the comprehension is nested in a zero-trip loop or untaken
+        branch: the leaked binding remains an unbound local on that path, and
+        later reads/cleanup still need one dominating storage identity. Boxing
+        only names that also have a non-comprehension writer left walrus-only
+        cells conditionally defined. Nested functions/classes remain separate
         scopes and are not traversed.
         """
 
-        outer = self
-
         comp_walrus: set[str] = set()
-        non_comp_assigned: set[str] = set()
 
         class _Scan(ast.NodeVisitor):
             def __init__(self) -> None:
                 self._in_comp_depth = 0
 
-            def _record_assign_targets(self, target: ast.expr) -> None:
-                for name in outer._collect_target_names(target):
-                    non_comp_assigned.add(name)
-
-            def visit_Assign(self, node: ast.Assign) -> None:
-                for target in node.targets:
-                    self._record_assign_targets(target)
-                self.visit(node.value)
-
-            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                self._record_assign_targets(node.target)
-                if node.value is not None:
-                    self.visit(node.value)
-
-            def visit_AugAssign(self, node: ast.AugAssign) -> None:
-                self._record_assign_targets(node.target)
-                self.visit(node.value)
-
-            def visit_For(self, node: ast.For) -> None:
-                self._record_assign_targets(node.target)
-                self.generic_visit(node)
-
-            def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-                self._record_assign_targets(node.target)
-                self.generic_visit(node)
-
-            def visit_With(self, node: ast.With) -> None:
-                for item in node.items:
-                    if item.optional_vars is not None:
-                        self._record_assign_targets(item.optional_vars)
-                self.generic_visit(node)
-
-            def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-                for item in node.items:
-                    if item.optional_vars is not None:
-                        self._record_assign_targets(item.optional_vars)
-                self.generic_visit(node)
-
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
                 if isinstance(node.target, ast.Name):
                     if self._in_comp_depth > 0:
                         comp_walrus.add(node.target.id)
-                    else:
-                        non_comp_assigned.add(node.target.id)
                 self.visit(node.value)
 
             def _visit_comprehension(
@@ -1525,10 +1481,9 @@ class AnalysisCollectStaticMixin(_MixinBase):
         scanner = _Scan()
         for stmt in body:
             scanner.visit(stmt)
-        shared = comp_walrus & non_comp_assigned
-        shared -= self.global_decls
-        shared -= self.nonlocal_decls
-        return sorted(shared)
+        comp_walrus -= self.global_decls
+        comp_walrus -= self.nonlocal_decls
+        return sorted(comp_walrus)
 
     def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[str]:
         outer = self
