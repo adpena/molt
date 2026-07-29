@@ -33,9 +33,10 @@ _PYTHON_IDENTITY_PROBE = (
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
 from tools import proof_plan  # noqa: E402
+from tools.proof_queue_pkg import execution_custody  # noqa: E402
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v2"
-EXECUTION_SCHEMA = "molt.proof-command-execution.v1"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
+EXECUTION_SCHEMA = "molt.proof-command-execution.v2"
 
 _PYTHON_COMMAND = re.compile(r"^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$", re.IGNORECASE)
 _PY_LAUNCHERS = frozenset({"py", "py.exe"})
@@ -1062,6 +1063,63 @@ def _uv_prefix_and_payload(argv: Sequence[str]) -> tuple[list[str], list[str]]:
     return [str(value) for value in argv[:index]], payload
 
 
+def _normalized_entrypoint_target(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    candidate = Path(value)
+    if candidate.is_absolute():
+        try:
+            normalized = (
+                candidate.resolve(strict=False).relative_to(_SOURCE_ROOT).as_posix()
+            )
+        except ValueError:
+            pass
+    return normalized.casefold()
+
+
+def _command_entrypoint(argv: Sequence[str]) -> tuple[str, str] | None:
+    """Return the stable program entrypoint whose plan authority cannot drift.
+
+    Arguments are deliberately excluded.  If an argv is close enough to execute
+    the same Python/Node program as a proof-plan command, it must be an exact plan
+    command; otherwise changing one selector could silently discard that
+    command's declared toolchain closure.
+    """
+    if not argv:
+        return None
+    payload = [str(value) for value in argv]
+    if _basename(payload[0]) in {"uv", "uv.exe"}:
+        _prefix, payload = _uv_prefix_and_payload(payload)
+    first = _basename(payload[0])
+    python_index: int | None = None
+    if _PYTHON_COMMAND.fullmatch(first):
+        python_index = 1
+    elif first in _PY_LAUNCHERS:
+        python_index = (
+            2 if len(payload) > 1 and _PY_SELECTOR.fullmatch(payload[1]) else 1
+        )
+    if python_index is not None:
+        if python_index >= len(payload):
+            return None
+        target = payload[python_index]
+        if target == "-m" and python_index + 1 < len(payload):
+            module = payload[python_index + 1]
+            if module == "tools.guarded_exec":
+                return None
+            return ("python-module", module.casefold())
+        if target.startswith("-"):
+            return None
+        if _basename(target) == "guarded_exec.py":
+            return None
+        return ("python-script", _normalized_entrypoint_target(target))
+    if first in {"node", "node.exe"} and len(payload) > 1:
+        target = payload[1]
+        if not target.startswith("-"):
+            return ("node-script", _normalized_entrypoint_target(target))
+    return None
+
+
 @functools.lru_cache(maxsize=1)
 def _proof_command_registry() -> dict[str, object]:
     """Project the proof plan into the one admitted executable/toolchain registry."""
@@ -1069,6 +1127,8 @@ def _proof_command_registry() -> dict[str, object]:
     exact: dict[tuple[str, ...], dict[str, object]] = {}
     console_tools: dict[str, set[str]] = {}
     policy_executables: dict[str, str] = {}
+    entrypoints: dict[tuple[str, str], list[str]] = {}
+    entrypoint_variants: dict[tuple[str, str], set[tuple[str, ...]]] = {}
     for policy in plan.toolchain_policies:
         executable = str(policy.data.get("executable") or policy.name)
         if executable == "{python}":
@@ -1095,6 +1155,10 @@ def _proof_command_registry() -> dict[str, object]:
             ids = existing["ids"]
             assert isinstance(ids, list)
             ids.append(command.id)
+        entrypoint = _command_entrypoint(argv)
+        if entrypoint is not None:
+            entrypoints.setdefault(entrypoint, []).append(command.id)
+            entrypoint_variants.setdefault(entrypoint, set()).add(argv)
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
             _prefix, payload = _uv_prefix_and_payload(argv)
             payload_name = _basename(payload[0])
@@ -1107,6 +1171,8 @@ def _proof_command_registry() -> dict[str, object]:
             for name, toolchains in sorted(console_tools.items())
         },
         "policy_executables": policy_executables,
+        "entrypoints": entrypoints,
+        "entrypoint_variants": entrypoint_variants,
     }
 
 
@@ -1135,6 +1201,23 @@ def _command_registration(
                 f"proof-plan commands {command_ids!r} have no toolchain authority"
             )
         return "proof-plan", toolchains, [str(command_id) for command_id in command_ids]
+
+    entrypoint = _command_entrypoint(argv)
+    registered_entrypoints = registry["entrypoints"]
+    assert isinstance(registered_entrypoints, dict)
+    near_matches = registered_entrypoints.get(entrypoint)
+    registered_variants = registry["entrypoint_variants"]
+    assert isinstance(registered_variants, dict)
+    variants = registered_variants.get(entrypoint)
+    if (
+        isinstance(near_matches, list)
+        and isinstance(variants, set)
+        and len(variants) == 1
+    ):
+        raise ValueError(
+            "proof-plan entrypoint argv must match its registered command exactly; "
+            f"near-match would discard toolchain authority for {near_matches!r}"
+        )
 
     toolchains: list[str] = []
 
@@ -1418,7 +1501,9 @@ def _nested_command(argv: Sequence[str]) -> list[str] | None:
     return [str(value) for value in nested]
 
 
-def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
+def _envelope_for_command(
+    command: Sequence[str], *, typed_delegation: bool
+) -> dict[str, object]:
     """Derive and validate the sole executable/toolchain authority for ``command``."""
     argv = [str(value) for value in command]
     if not argv or not argv[0]:
@@ -1486,7 +1571,9 @@ def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
         else None
     )
     delegated = (
-        envelope_for_command(nested_command) if nested_command is not None else None
+        _envelope_for_command(nested_command, typed_delegation=True)
+        if nested_command is not None
+        else None
     )
     if delegated is not None:
         if delegated.get("python") is not None:
@@ -1504,6 +1591,24 @@ def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
         for name in delegated["toolchains"]:  # type: ignore[union-attr]
             if name not in toolchains:
                 toolchains.append(str(name))
+    if registration_kind == "proof-plan":
+        process_closure = {
+            "kind": "proof-plan",
+            "descendants": "declared-toolchains",
+            "toolchains": list(toolchains),
+        }
+    elif delegated is not None:
+        process_closure = {
+            "kind": "typed-delegation",
+            "descendants": "declared-toolchains",
+            "toolchains": list(toolchains),
+        }
+    else:
+        process_closure = {
+            "kind": "leaf",
+            "descendants": "forbidden",
+            "toolchains": list(toolchains),
+        }
     return {
         "schema": ENVELOPE_SCHEMA,
         "kind": registration_kind,
@@ -1517,7 +1622,13 @@ def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
             else None
         ),
         "delegated": delegated,
+        "process_closure": process_closure,
     }
+
+
+def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
+    """Derive the sole executable, toolchain, and child-process authority."""
+    return _envelope_for_command(command, typed_delegation=False)
 
 
 def admission_envelope(command: Sequence[str]) -> dict[str, object]:
@@ -1534,6 +1645,7 @@ def admission_envelope(command: Sequence[str]) -> dict[str, object]:
             "proof_plan_command_ids": [],
             "guarded_exec": None,
             "delegated": None,
+            "process_closure": None,
             "error": str(exc),
         }
 
@@ -2337,6 +2449,14 @@ _CANONICAL_EXECUTION_ENV = {
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONNOUSERSITE": "1",
 }
+_QUEUE_CUSTODY_ENV_NAMES = frozenset(
+    {
+        "MOLT_PROOF_CHILD_CUSTODY_JSON",
+        "MOLT_PROOF_CHILD_CUSTODY_JOURNAL",
+        "PYTHONPATH",
+        "PYTHONSAFEPATH",
+    }
+)
 _EXECUTABLE_ENV_NAMES = frozenset(
     {
         "AR",
@@ -2384,6 +2504,8 @@ def command_secret_policy_error(command: Sequence[str]) -> str | None:
 
 def _environment_name_class(name: str) -> str | None:
     upper = name.upper()
+    if upper in _QUEUE_CUSTODY_ENV_NAMES - {"PYTHONPATH"}:
+        return "queue-owned-custody"
     if upper in _NONDETERMINISTIC_ENV_NAMES:
         return "denied-nondeterministic"
     if upper in _ENVIRONMENT_EXACT_NAMES:
@@ -2407,7 +2529,11 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
                 f"{seen[folded]!r}, {name!r}"
             )
         seen[folded] = name
-        if name.upper() in _CANONICAL_EXECUTION_ENV or name.upper() == "NODE_OPTIONS":
+        if (
+            name.upper() in _CANONICAL_EXECUTION_ENV
+            or name.upper() == "NODE_OPTIONS"
+            or name.upper() in _QUEUE_CUSTODY_ENV_NAMES
+        ):
             return f"queue-owned canonical environment override {name!r} is forbidden"
         classification = _environment_name_class(name)
         if classification is None:
@@ -2479,7 +2605,11 @@ def _execution_environment_authority(
     for name in names:
         normalized = str(env[name]).replace("\\", "/")
         values[name] = {
-            "class": _environment_name_class(name),
+            "class": (
+                "queue-owned-custody"
+                if name.upper() == "PYTHONPATH"
+                else _environment_name_class(name)
+            ),
             "fingerprint": hmac.new(
                 fingerprint_key,
                 f"{name.casefold()}\0{normalized}".encode(),
@@ -2724,6 +2854,59 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
     }
 
 
+def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
+    completed = subprocess.run(
+        ["git", "ls-files", "--cached", "--full-name", "-z"],
+        cwd=cwd,
+        env=dict(env),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        raise ValueError("proof source custody cannot enumerate tracked inputs")
+    root_result = _run_captured(
+        ("git", "rev-parse", "--show-toplevel"), cwd=cwd, env=env
+    )
+    if root_result.returncode != 0:
+        raise ValueError("proof source custody cannot resolve its Git root")
+    root = Path(root_result.stdout.strip()).resolve(strict=True)
+    paths: list[Path] = []
+    for raw in completed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = Path(os.fsdecode(raw))
+        candidate = Path(os.path.abspath(root / relative))
+        if candidate.is_file():
+            paths.append(candidate)
+    return paths
+
+
+def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
+    roots: list[Path] = []
+    python = toolchains.get("python")
+    if isinstance(python, Mapping):
+        runtime = python.get("runtime")
+        runtime_roots = (
+            runtime.get("runtime_roots") if isinstance(runtime, Mapping) else None
+        )
+        if isinstance(runtime_roots, Mapping):
+            for raw in runtime_roots.values():
+                if isinstance(raw, str) and Path(raw).is_dir():
+                    roots.append(Path(raw).resolve(strict=True))
+    for identity in toolchains.values():
+        if not isinstance(identity, Mapping):
+            continue
+        node_package = identity.get("node_package")
+        package = (
+            node_package.get("package") if isinstance(node_package, Mapping) else None
+        )
+        raw_root = package.get("root") if isinstance(package, Mapping) else None
+        if isinstance(raw_root, str) and Path(raw_root).is_dir():
+            roots.append(Path(raw_root).resolve(strict=True))
+    return list(dict.fromkeys(roots))
+
+
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
@@ -2800,6 +2983,7 @@ def execute_guarded_request(request_path: Path) -> int:
         )
     command = [str(value) for value in command]
     validate_envelope(envelope, command)
+    execution_custody.require_enforceable_process_closure(envelope)
     result: dict[str, object] = {
         "schema": EXECUTION_SCHEMA,
         "run_id": run_id,
@@ -2817,7 +3001,14 @@ def execute_guarded_request(request_path: Path) -> int:
             )
         canonical_env = dict(_CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
-            canonical_env["NODE_OPTIONS"] = "--no-global-search-paths"
+            node_hook = (
+                Path(execution_custody.__file__)
+                .with_name("node_child_custody.cjs")
+                .resolve(strict=True)
+            )
+            canonical_env["NODE_OPTIONS"] = (
+                f"--no-global-search-paths --require={node_hook}"
+            )
         inherited_env.update(canonical_env)
         execution_env, environment_contract = _deterministic_execution_environment(
             inherited_env,
@@ -2826,6 +3017,36 @@ def execute_guarded_request(request_path: Path) -> int:
                 *sorted(canonical_env),
             ],
         )
+        if envelope.get("python") is not None:
+            custody_site = (
+                Path(execution_custody.__file__)
+                .with_name("custody_site")
+                .resolve(strict=True)
+            )
+            execution_env["PYTHONPATH"] = os.pathsep.join(
+                (str(custody_site), str(cwd.resolve(strict=True)))
+            )
+            execution_env["PYTHONSAFEPATH"] = "1"
+            passed_names = environment_contract["passed_names"]
+            override_names_contract = environment_contract["override_names"]
+            assert isinstance(passed_names, list)
+            assert isinstance(override_names_contract, list)
+            for name in ("PYTHONPATH", "PYTHONSAFEPATH"):
+                if name not in passed_names:
+                    passed_names.append(name)
+                if name not in override_names_contract:
+                    override_names_contract.append(name)
+            passed_names.sort(key=str.casefold)
+            override_names_contract.sort(key=str.casefold)
+        # Provisioning belongs before the custody snapshot.  No tool may change
+        # after its bytes become the authority consumed by the proof command.
+        from tools.proof_queue_pkg import policy
+
+        preflight = policy._ensure_run_toolchain_preflight(
+            repo_root=cwd, resource_family=str(request["resource_family"])
+        )
+        if preflight:
+            raise ValueError("toolchain preflight failed: " + "; ".join(preflight))
         environment_fingerprint_key = secrets.token_bytes(32)
         exact = _exact_command(envelope, cwd=cwd, env=execution_env)
         payload_executable_pre = _payload_executable_identity(envelope, exact)
@@ -2837,9 +3058,6 @@ def execute_guarded_request(request_path: Path) -> int:
             env=execution_env,
         )
         executable_pre = _executable_identity(Path(exact[0]))
-        environment_executables_pre = _execution_environment_executable_identities(
-            execution_env, cwd=cwd
-        )
         overlay_pre = [_file_identity(path) for path in overlay_paths]
         pre_identities = [executable_pre, *overlay_pre]
         if payload_executable_pre is not None:
@@ -2867,6 +3085,55 @@ def execute_guarded_request(request_path: Path) -> int:
         for name, identity in toolchains.items():
             assert isinstance(identity, Mapping)
             _validate_toolchain_identity(plan, name, identity)
+        child_policy = execution_custody.child_policy(envelope, toolchains)
+        child_journal_path = result_path.with_suffix(".child-custody.jsonl")
+        try:
+            child_journal_path.unlink()
+        except FileNotFoundError:
+            pass
+        execution_env[execution_custody.CHILD_POLICY_ENV] = json.dumps(
+            child_policy, sort_keys=True, separators=(",", ":")
+        )
+        execution_env[execution_custody.CHILD_JOURNAL_ENV] = str(child_journal_path)
+        passed_names = environment_contract["passed_names"]
+        override_names_contract = environment_contract["override_names"]
+        assert isinstance(passed_names, list)
+        assert isinstance(override_names_contract, list)
+        for name in (
+            execution_custody.CHILD_POLICY_ENV,
+            execution_custody.CHILD_JOURNAL_ENV,
+        ):
+            if name not in passed_names:
+                passed_names.append(name)
+            if name not in override_names_contract:
+                override_names_contract.append(name)
+        passed_names.sort(key=str.casefold)
+        override_names_contract.sort(key=str.casefold)
+        environment_executables_pre = _execution_environment_executable_identities(
+            execution_env, cwd=cwd
+        )
+        tracked_paths = _git_tracked_paths(effective_cwd, execution_env)
+        source_root_raw = pre_source.get("root")
+        if not isinstance(source_root_raw, str):
+            raise ValueError("proof source custody has no canonical Git root")
+        watch_identities: list[object] = [
+            executable_pre,
+            *overlay_pre,
+            toolchains,
+            environment_executables_pre,
+        ]
+        if payload_executable_pre is not None:
+            watch_identities.append(payload_executable_pre)
+        if guarded_exec_pre is not None:
+            watch_identities.append(guarded_exec_pre)
+        if delegated_pre is not None:
+            watch_identities.append(delegated_pre)
+        live_watch_specs = execution_custody.watch_specs(
+            source_root=Path(source_root_raw),
+            tracked_paths=tracked_paths,
+            identities=watch_identities,
+            broad_roots=_broad_toolchain_roots(toolchains),
+        )
         python_version = "none"
         if proof_python is not None:
             match = re.match(r"(\d+\.\d+)", str(proof_python["version"]))
@@ -2939,6 +3206,14 @@ def execute_guarded_request(request_path: Path) -> int:
                 "prelaunch": pre_source,
                 "overlay_inputs": {"prelaunch": overlay_pre},
             },
+            "child_process_custody": {
+                "policy": child_policy,
+                "journal_path": str(child_journal_path),
+            },
+            "live_input_custody": {
+                "state": "armed",
+                "watch_roots": len(live_watch_specs),
+            },
         }
         result.update(
             {
@@ -2948,15 +3223,6 @@ def execute_guarded_request(request_path: Path) -> int:
             }
         )
         _atomic_json(result_path, result)
-        # Toolchain provisioning/contract checks are descendants of the same
-        # queue guard and therefore appear in its resource and timeout summary.
-        from tools.proof_queue_pkg import policy
-
-        preflight = policy._ensure_run_toolchain_preflight(
-            repo_root=cwd, resource_family=str(request["resource_family"])
-        )
-        if preflight:
-            raise ValueError("toolchain preflight failed: " + "; ".join(preflight))
         result["command_started"] = True
         stdout_path = result_path.with_suffix(".stdout.bin")
         stderr_path = result_path.with_suffix(".stderr.bin")
@@ -2965,22 +3231,32 @@ def execute_guarded_request(request_path: Path) -> int:
                 transcript_path.unlink()
             except FileNotFoundError:
                 pass
-        with (
-            stdout_path.open("xb") as stdout_handle,
-            stderr_path.open("xb") as stderr_handle,
-        ):
-            completed = subprocess.run(
-                exact,
-                cwd=cwd,
-                env=execution_env,
-                check=False,
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-            )
-            stdout_handle.flush()
-            stderr_handle.flush()
-            os.fsync(stdout_handle.fileno())
-            os.fsync(stderr_handle.fileno())
+        monitor = execution_custody.LiveCustodyMonitor(live_watch_specs)
+        with monitor:
+            with (
+                stdout_path.open("xb") as stdout_handle,
+                stderr_path.open("xb") as stderr_handle,
+            ):
+                completed = subprocess.run(
+                    exact,
+                    cwd=cwd,
+                    env=execution_env,
+                    check=False,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                )
+                stdout_handle.flush()
+                stderr_handle.flush()
+                os.fsync(stdout_handle.fileno())
+                os.fsync(stderr_handle.fileno())
+        live_custody_receipt = monitor.receipt()
+        child_custody_receipt = execution_custody.child_journal_receipt(
+            child_journal_path
+        )
+        context["live_input_custody"] = live_custody_receipt
+        child_process_custody = context["child_process_custody"]
+        assert isinstance(child_process_custody, dict)
+        child_process_custody["receipt"] = child_custody_receipt
         _replay_transcript(stdout_path, sys.stdout)
         _replay_transcript(stderr_path, sys.stderr)
         result["command_returncode"] = int(completed.returncode)
@@ -3021,11 +3297,14 @@ def execute_guarded_request(request_path: Path) -> int:
             if delegated_pre is not None
             else None
         )
+        identity_env = dict(execution_env)
+        identity_env.pop(execution_custody.CHILD_POLICY_ENV, None)
+        identity_env.pop(execution_custody.CHILD_JOURNAL_ENV, None)
         proof_python_post, toolchains_post = _capture_toolchains(
             envelope,
             exact,
             cwd=cwd,
-            env=execution_env,
+            env=identity_env,
             source_root=effective_cwd,
             hash_workers=plan.inventory_hash_workers,
         )
@@ -3078,6 +3357,13 @@ def execute_guarded_request(request_path: Path) -> int:
             ineligible_reasons.append("execution-environment-changed")
         if not environment_executables_identical:
             ineligible_reasons.append("execution-environment-executable-changed")
+        if live_custody_receipt.get("stable") is not True:
+            if live_custody_receipt.get("events"):
+                ineligible_reasons.append("transient-input-mutation")
+            if live_custody_receipt.get("errors"):
+                ineligible_reasons.append("live-input-monitor-incomplete")
+        if child_custody_receipt.get("complete") is not True:
+            ineligible_reasons.append("undeclared-child-process")
         ineligible_reasons.extend(
             _python_editable_ineligible_reasons(
                 proof_python,
