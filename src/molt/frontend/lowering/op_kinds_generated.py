@@ -810,6 +810,16 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "YIELD_FROM": "writes_heap",
 }
 
+SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(
+    {
+        "builtins.getattr",
+        "builtins.vars",
+        "inspect.getattr_static",
+        "operator.attrgetter",
+        "operator.methodcaller",
+    }
+)
+
 # Explicit acquisition-provenance requirement bits shared with target admission.
 SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 14
 

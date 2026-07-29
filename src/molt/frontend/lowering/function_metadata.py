@@ -512,7 +512,9 @@ class FunctionMetadataMixin(_MixinBase):
         )
         return frame_plan.function_type_hint(closure_size)
 
-    def _emit_builtin_function(self, func_id: str) -> MoltValue:
+    def _emit_builtin_function(
+        self, func_id: str, *, runtime_requirement_bits: int = 0
+    ) -> MoltValue:
         spec = BUILTIN_FUNC_SPECS[func_id]
         arity = _builtin_func_abi_arity(spec)
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -523,7 +525,14 @@ class FunctionMetadataMixin(_MixinBase):
                 kind="BUILTIN_FUNC",
                 args=[spec.runtime, arity, name_val],
                 result=func_val,
-                metadata={"builtin_name": func_id},
+                metadata={
+                    "builtin_name": func_id,
+                    **(
+                        {"runtime_requirement_bits": runtime_requirement_bits}
+                        if runtime_requirement_bits
+                        else {}
+                    ),
+                },
             )
         )
         self._emit_function_metadata(

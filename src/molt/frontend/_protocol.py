@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_modules: dict[str, str]
     imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
@@ -129,6 +130,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_is_package: Any
     module_name: Any
     module_obj: MoltValue | None
+    module_pre_frame_exception_label: int | None
     module_prefix: Any
     module_spec_name: Any
     module_stmt_offsets: list[int]
@@ -276,6 +278,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _async_locals_public_entries(self) -> list[tuple[str, int]]: ...
 
     def _augassign_op_kind(self, op: ast.operator) -> str: ...
+
+    def _begin_module_provenance_flow(
+        self, *, record_exception_prefixes: bool
+    ) -> list[dict[str, frozenset[str]]]: ...
 
     @staticmethod
     def _block_needs_context_unwind(body: list[ast.stmt]) -> bool: ...
@@ -436,6 +442,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _classify_midend_tier(
         self, function_name: str, ops: list[MoltOp]
     ) -> MidendTierClassification: ...
+
+    def _clear_imported_module_binding(self, binding_name: str) -> None: ...
 
     def _clear_invalidated_guard_signatures(
         self, available: set[tuple[Any, ...]], op: MoltOp
@@ -769,7 +777,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_bridge_unavailable(self, message: str) -> MoltValue: ...
 
-    def _emit_builtin_function(self, func_id: str) -> MoltValue: ...
+    def _emit_builtin_function(
+        self, func_id: str, *, runtime_requirement_bits: int = 0
+    ) -> MoltValue: ...
 
     def _emit_builtin_type_value(self, type_name: str) -> MoltValue: ...
 
@@ -946,9 +956,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_function_defaults_version(self, func_obj: MoltValue) -> MoltValue: ...
 
     def _emit_function_exception_handler(
-        self,
-        *,
-        inherited_execution_context: bool = False,
+        self, *, inherited_execution_context: bool = False
     ) -> None: ...
 
     def _emit_function_kwdefaults_dict(self, func_obj: MoltValue) -> MoltValue: ...
@@ -979,6 +987,18 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         emit_code: bool = True,
         varnames: list[str] | None = None,
         code_names: list[str] | None = None,
+    ) -> None: ...
+
+    def _emit_getattr_name_default(
+        self,
+        obj: MoltValue,
+        name: MoltValue,
+        default: MoltValue,
+        result: MoltValue,
+        *,
+        literal_name: str | None,
+        exact_class: str | None = None,
+        qualified_module_name: str | None = None,
     ) -> None: ...
 
     def _emit_global_get(self, name: str) -> MoltValue: ...
@@ -1025,17 +1045,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         assume_exact: bool = False,
         obj_name: str | None = None,
     ) -> MoltValue: ...
-
-    def _emit_getattr_name_default(
-        self,
-        obj: MoltValue,
-        name: MoltValue,
-        default: MoltValue,
-        result: MoltValue,
-        *,
-        literal_name: str | None,
-        exact_class: str | None = None,
-    ) -> None: ...
 
     def _emit_guarded_property_get(
         self,
@@ -1258,14 +1267,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, module_val: MoltValue, name: str, value: MoltValue
     ) -> None: ...
 
-    def _runtime_protected_attribute_requirement_bits(
-        self,
-        obj: MoltValue,
-        attr: str | None,
-        *,
-        exact_class: str | None,
-    ) -> int: ...
-
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None: ...
 
     def _emit_module_frame_enter(self, node: ast.Module) -> None: ...
@@ -1277,11 +1278,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_module_global_del_safe(self, name: str) -> None: ...
 
     def _emit_module_import_from_value(
-        self,
-        module_val: MoltValue,
-        attr_name: str,
-        *,
-        module_name: str | None = None,
+        self, module_val: MoltValue, attr_name: str, *, module_name: str | None = None
     ) -> MoltValue: ...
 
     def _emit_module_load(self, module_name: str) -> MoltValue: ...
@@ -1291,6 +1288,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_module_metadata(self) -> None: ...
 
     def _emit_name_from_obj(self, obj: MoltValue) -> MoltValue: ...
+
+    def _emit_normal_return_terminator(self, value: MoltValue) -> None: ...
 
     def _emit_not(self, value: MoltValue) -> MoltValue: ...
 
@@ -1353,11 +1352,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_return_label(self) -> None: ...
 
+    def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None: ...
+
     def _emit_return_value(self, value: MoltValue) -> None: ...
-
-    def _emit_normal_return_terminator(self, value: MoltValue) -> None: ...
-
-    def _emit_void_return_terminator(self) -> None: ...
 
     def _emit_runtime_call(
         self, runtime_name: str, args: Sequence[MoltValue], *, type_hint: str = "Any"
@@ -1483,6 +1480,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         source_expr: ast.AST | None = None,
     ) -> None: ...
 
+    def _emit_void_return_terminator(self) -> None: ...
+
     def _emit_widen(
         self, value: MoltValue, *, hint: str | None = None
     ) -> MoltValue: ...
@@ -1541,6 +1540,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         saved_boxed_hints: dict[str, str | None],
         outer_comp_shadow_locals: set[str],
     ) -> MoltValue: ...
+
+    def _finish_module_provenance_flow(
+        self,
+        paths: list[dict[str, frozenset[str]]],
+        *,
+        normal_paths: Sequence[dict[str, frozenset[str]]] = (),
+    ) -> None: ...
 
     def _finish_sum_genexpr_accumulator(
         self,
@@ -1640,43 +1646,21 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _imported_attr_name(self, bind_name: str) -> str: ...
 
-    def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool: ...
-
-    def _imported_module_binding_target(self, binding_name: str) -> str | None: ...
-
-    def _imported_module_alias_target(self, value: ast.AST | None) -> str | None: ...
-
     def _imported_module_alias_provenance(
         self, value: ast.AST | None
     ) -> frozenset[str]: ...
 
-    def _set_imported_module_binding(
-        self,
-        binding_name: str,
-        module_name: str | None,
-        provenance: frozenset[str] | None = None,
-    ) -> None: ...
+    def _imported_module_alias_target(self, value: ast.AST | None) -> str | None: ...
 
-    def _clear_imported_module_binding(self, binding_name: str) -> None: ...
+    def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool: ...
 
-    def _runtime_qualified_callable_provenance_for_binding(
-        self, binding_name: str | None, attr_name: str
-    ) -> tuple[str | None, int]: ...
-
-    def _begin_module_provenance_flow(
-        self, *, record_exception_prefixes: bool
-    ) -> list[dict[str, frozenset[str]]]: ...
-
-    def _record_module_provenance_flow_state(self) -> None: ...
-
-    def _finish_module_provenance_flow(
-        self,
-        paths: list[dict[str, frozenset[str]]],
-        *,
-        normal_paths: Sequence[dict[str, frozenset[str]]] = (),
-    ) -> None: ...
+    def _imported_module_binding_target(self, binding_name: str) -> str | None: ...
 
     def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
+
+    def _inherit_free_var_import_resolution(
+        self, free_vars: list[str], enclosing_state: dict[str, Any]
+    ) -> None: ...
 
     def _init_locals_cache(self) -> None: ...
 
@@ -1800,6 +1784,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool: ...
 
     def _iterable_is_indexable_for_loop(self, iterable: MoltValue | None) -> bool: ...
+
+    @staticmethod
+    def _join_imported_module_provenance(
+        *states: dict[str, frozenset[str]],
+    ) -> dict[str, frozenset[str]]: ...
 
     def _kill_value_in_canonicalization_state(
         self, state: CanonicalizationState, name: str
@@ -2212,6 +2201,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         round_snapshots: list[dict[str, Any]] | None = None,
     ) -> None: ...
 
+    def _record_module_provenance_flow_state(self) -> None: ...
+
     def _reduction_acc_numeric_hint(
         self, name: str, value: MoltValue
     ) -> str | None: ...
@@ -2325,6 +2316,31 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]: ...
 
+    def _runtime_protected_attribute_requirement_bits(
+        self,
+        obj: MoltValue,
+        attr: str | None,
+        *,
+        exact_class: str | None,
+        qualified_module_name: str | None = None,
+    ) -> int: ...
+
+    def _runtime_qualified_callable_metadata(
+        self, module_name: str | None, attr_name: str
+    ) -> dict[str, object] | None: ...
+
+    def _runtime_qualified_callable_provenance_for_binding(
+        self, binding_name: str | None, attr_name: str
+    ) -> tuple[str | None, int]: ...
+
+    def _runtime_qualified_callable_requirement(
+        self, module_name: str | None, attr_name: str
+    ) -> tuple[str | None, int]: ...
+
+    def _runtime_qualified_callable_symbol(
+        self, module_name: str | None, attr_name: str
+    ) -> str | None: ...
+
     @staticmethod
     def _sanitize_module_name(name: str) -> str: ...
 
@@ -2368,6 +2384,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _serialize_object_attr_op(
         self, op: MoltOp, ctx: SerializationContext
     ) -> bool: ...
+
+    def _set_imported_module_binding(
+        self,
+        binding_name: str,
+        module_name: str | None,
+        provenance: frozenset[str] | None = None,
+    ) -> None: ...
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool: ...
 
@@ -2576,6 +2599,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _verify_definite_assignment_in_ops(
         self, ops: list[MoltOp], *, predefined_value_names: set[str] | None = None
     ) -> list[tuple[int, str, str]]: ...
+
+    def _visit_async_for_lowering(self, node: ast.AsyncFor) -> None: ...
 
     def _visit_block(self, body: list[ast.stmt]) -> bool: ...
 

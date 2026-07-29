@@ -5377,6 +5377,16 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     for gateway in ["__dict__", "__getattr__", "__getattribute__"]:
         assert f'        "{gateway}",' in rendered
 
+    assert "SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES" in rendered
+    for qualified in [
+        "builtins.getattr",
+        "builtins.vars",
+        "inspect.getattr_static",
+        "operator.attrgetter",
+        "operator.methodcaller",
+    ]:
+        assert f'        "{qualified}",' in rendered
+
 
 def test_runtime_protected_attribute_gateways_reject_invalid_authority(
     tmp_path: Path,
@@ -5397,6 +5407,37 @@ def test_runtime_protected_attribute_gateways_reject_invalid_authority(
         with pytest.raises(
             generator.OpKindTableError,
             match="protected_attribute_gateways",
+        ):
+            generator.load_table(path)
+
+
+def test_runtime_protected_gateway_callables_reject_invalid_authority(
+    tmp_path: Path,
+) -> None:
+    generator = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    canonical = '    "builtins.getattr", "builtins.vars",'
+    for label, replacement in {
+        "empty": "",
+        "duplicate": '    "builtins.getattr", "builtins.getattr",',
+        "not-qualified": '    "getattr",',
+        "source-alias": '    "Builtins.getattr",',
+        "non-string": "    1,",
+    }.items():
+        mutated = source.replace(canonical, replacement, 1)
+        assert mutated != source, label
+        if label == "empty":
+            mutated = mutated.replace(
+                '    "inspect.getattr_static",\n'
+                '    "operator.attrgetter", "operator.methodcaller",\n',
+                "",
+                1,
+            )
+        path = tmp_path / f"{label}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(
+            generator.OpKindTableError,
+            match="protected_gateway_callables",
         ):
             generator.load_table(path)
 

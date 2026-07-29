@@ -587,7 +587,10 @@ class SerializationBasicOpsMixin(_MixinBase):
             }
             if op.metadata is not None:
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
-                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "INVOKE_FFI":
@@ -691,6 +694,11 @@ class SerializationBasicOpsMixin(_MixinBase):
             builtin_name = (op.metadata or {}).get("builtin_name")
             if isinstance(builtin_name, str):
                 entry["builtin_name"] = builtin_name
+            runtime_requirement_bits = (op.metadata or {}).get(
+                "runtime_requirement_bits"
+            )
+            if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "FUNC_NEW":
             func_name, arity = op.args

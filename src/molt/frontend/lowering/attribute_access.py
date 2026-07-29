@@ -21,7 +21,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS,
-    SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
 
@@ -221,17 +220,13 @@ class AttributeAccessMixin(_MixinBase):
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         res = MoltValue(self.next_var(), type_hint="Any")
-        runtime_symbol = SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
-            f"{module_name}.{name}"
-        )
+        metadata = self._runtime_qualified_callable_metadata(module_name, name)
         self.emit(
             MoltOp(
                 kind="MODULE_GET_ATTR",
                 args=[module_val, name_val],
                 result=res,
-                metadata=(
-                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
-                ),
+                metadata=metadata,
             )
         )
         return res
@@ -249,6 +244,7 @@ class AttributeAccessMixin(_MixinBase):
             default_val,
             res,
             literal_name=name,
+            qualified_module_name=module_name,
         )
         return res
 
@@ -258,9 +254,16 @@ class AttributeAccessMixin(_MixinBase):
         attr: str | None,
         *,
         exact_class: str | None,
+        qualified_module_name: str | None = None,
     ) -> int:
         if exact_class is not None or obj.type_hint.startswith("super"):
             return 0
+        if qualified_module_name is not None and attr is not None:
+            _, gateway_bits = self._runtime_qualified_callable_requirement(
+                qualified_module_name, attr
+            )
+            if gateway_bits:
+                return gateway_bits
         if attr is None or attr in SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS:
             return SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
         return 0
@@ -274,11 +277,13 @@ class AttributeAccessMixin(_MixinBase):
         *,
         literal_name: str | None,
         exact_class: str | None = None,
+        qualified_module_name: str | None = None,
     ) -> None:
         requirement_bits = self._runtime_protected_attribute_requirement_bits(
             obj,
             literal_name,
             exact_class=exact_class,
+            qualified_module_name=qualified_module_name,
         )
         self.emit(
             MoltOp(
@@ -899,12 +904,10 @@ class AttributeAccessMixin(_MixinBase):
                 )
             )
             return result
-        protected_requirement_bits = (
-            self._runtime_protected_attribute_requirement_bits(
-                obj,
-                node.attr,
-                exact_class=exact_class,
-            )
+        protected_requirement_bits = self._runtime_protected_attribute_requirement_bits(
+            obj,
+            node.attr,
+            exact_class=exact_class,
         )
         if runtime_requirement_bits or protected_requirement_bits:
             # Protected runtime callable acquisition is a value capability,
@@ -1054,10 +1057,8 @@ class AttributeAccessMixin(_MixinBase):
                 if obj_name is not None
                 else None
             )
-            runtime_symbol = (
-                SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
-                    f"{module_name}.{node.attr}"
-                )
+            metadata = (
+                self._runtime_qualified_callable_metadata(module_name, node.attr)
                 if module_name is not None
                 else None
             )
@@ -1066,9 +1067,7 @@ class AttributeAccessMixin(_MixinBase):
                     kind="MODULE_GET_ATTR",
                     args=[obj, attr_name],
                     result=res,
-                    metadata=(
-                        {"runtime_symbol": runtime_symbol} if runtime_symbol else None
-                    ),
+                    metadata=metadata,
                 )
             )
             return res

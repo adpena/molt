@@ -19,6 +19,7 @@ from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
 )
@@ -210,24 +211,29 @@ class ImportLoweringMixin(_MixinBase):
         if modules is None:
             exact = self._imported_module_binding_target(binding_name)
             modules = frozenset((exact,)) if exact is not None else frozenset()
-        modules_with_symbols = {
+        protected_modules = {
             module
             for module in modules
             if module != _NON_MODULE_PROVENANCE
-            and self._runtime_qualified_callable_symbol(module, attr_name) is not None
+            and self._runtime_qualified_callable_requirement(module, attr_name)
+            != (None, 0)
         }
         symbols = {
             symbol
-            for module in modules_with_symbols
+            for module in protected_modules
             if (symbol := self._runtime_qualified_callable_symbol(module, attr_name))
             is not None
         }
-        if not symbols:
+        if not protected_modules:
             return None, 0
         if (
             len(symbols) == 1
-            and len(modules_with_symbols) == len(modules)
+            and len(protected_modules) == len(modules)
             and _NON_MODULE_PROVENANCE not in modules
+            and all(
+                self._runtime_qualified_callable_requirement(module, attr_name)[1] == 0
+                for module in modules
+            )
         ):
             return next(iter(symbols)), 0
         return None, SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
@@ -271,6 +277,32 @@ class ImportLoweringMixin(_MixinBase):
         return SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
             f"{normalized}.{attr_name}"
         )
+
+    def _runtime_qualified_callable_requirement(
+        self, module_name: str | None, attr_name: str
+    ) -> tuple[str | None, int]:
+        normalized = self._normalize_allowlist_module(module_name) or module_name
+        if normalized is None:
+            return None, 0
+        qualified = f"{normalized}.{attr_name}"
+        symbol = SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(qualified)
+        if symbol is not None:
+            return symbol, 0
+        if qualified in SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES:
+            return None, SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        return None, 0
+
+    def _runtime_qualified_callable_metadata(
+        self, module_name: str | None, attr_name: str
+    ) -> dict[str, object] | None:
+        symbol, requirement_bits = self._runtime_qualified_callable_requirement(
+            module_name, attr_name
+        )
+        if symbol is not None:
+            return {"runtime_symbol": symbol}
+        if requirement_bits:
+            return {"runtime_requirement_bits": requirement_bits}
+        return None
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool:
         if module_name in self.known_modules:
@@ -450,15 +482,13 @@ class ImportLoweringMixin(_MixinBase):
         # missing attribute raises ImportError ("cannot import name ...") after
         # a sys.modules submodule fallback, NOT the AttributeError that a plain
         # `MODULE.name` (MODULE_GET_ATTR) read raises.
-        runtime_symbol = self._runtime_qualified_callable_symbol(module_name, attr_name)
+        metadata = self._runtime_qualified_callable_metadata(module_name, attr_name)
         self.emit(
             MoltOp(
                 kind="MODULE_IMPORT_FROM",
                 args=[module_val, attr_name_val],
                 result=attr_val,
-                metadata=(
-                    {"runtime_symbol": runtime_symbol} if runtime_symbol else None
-                ),
+                metadata=metadata,
             )
         )
         return attr_val

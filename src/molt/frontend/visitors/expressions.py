@@ -138,7 +138,12 @@ class ExpressionVisitorMixin(_MixinBase):
                     self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=res))
                     return res
                 if node.id in BUILTIN_FUNC_SPECS:
-                    return self._emit_builtin_function(node.id)
+                    _, requirement_bits = self._runtime_qualified_callable_requirement(
+                        "builtins", node.id
+                    )
+                    return self._emit_builtin_function(
+                        node.id, runtime_requirement_bits=requirement_bits
+                    )
                 if node.id in BUILTIN_EXCEPTION_NAMES:
                     return self._emit_exception_class(node.id)
                 if node.id in self.stdlib_allowlist:
