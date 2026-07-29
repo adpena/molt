@@ -140,24 +140,51 @@ class ImportLoweringMixin(_MixinBase):
         bindings; later rebinding removes them through the ordinary assignment
         authority.
         """
-        if not isinstance(value, ast.Name):
-            return None
-        return self._imported_module_binding_target(value.id)
+        provenance = self._imported_module_alias_provenance(value)
+        modules = provenance - {_NON_MODULE_PROVENANCE}
+        if len(modules) == 1 and _NON_MODULE_PROVENANCE not in provenance:
+            return next(iter(modules))
+        return None
 
     def _imported_module_alias_provenance(
         self, value: ast.AST | None
     ) -> frozenset[str]:
-        if not isinstance(value, ast.Name):
-            return frozenset((_NON_MODULE_PROVENANCE,))
-        provenance = self.imported_module_provenance.get(value.id)
-        if provenance is not None:
-            return provenance
-        target = self._imported_module_binding_target(value.id)
-        return (
-            frozenset((target,))
-            if target is not None
-            else frozenset((_NON_MODULE_PROVENANCE,))
-        )
+        """Return every module identity an expression may yield unchanged.
+
+        Python conditionals, boolean expressions, and assignment expressions
+        return one of their operand values. Treating every non-``Name`` syntax
+        as non-module loses exactly the may-provenance needed for target
+        admission (for example ``sys if flag else other``). This authority is
+        deliberately about value-preserving expression families; arithmetic,
+        calls, containers, and attribute access create a different value and
+        therefore contribute only the non-module state.
+        """
+
+        if isinstance(value, ast.Name):
+            provenance = self.imported_module_provenance.get(value.id)
+            if provenance is not None:
+                return provenance
+            target = self._imported_module_binding_target(value.id)
+            return (
+                frozenset((target,))
+                if target is not None
+                else frozenset((_NON_MODULE_PROVENANCE,))
+            )
+        if isinstance(value, ast.IfExp):
+            return frozenset().union(
+                self._imported_module_alias_provenance(value.body),
+                self._imported_module_alias_provenance(value.orelse),
+            )
+        if isinstance(value, ast.BoolOp):
+            return frozenset().union(
+                *(
+                    self._imported_module_alias_provenance(operand)
+                    for operand in value.values
+                )
+            )
+        if isinstance(value, ast.NamedExpr):
+            return self._imported_module_alias_provenance(value.value)
+        return frozenset((_NON_MODULE_PROVENANCE,))
 
     @staticmethod
     def _join_imported_module_provenance(
@@ -209,9 +236,7 @@ class ImportLoweringMixin(_MixinBase):
         self, *, record_exception_prefixes: bool
     ) -> list[dict[str, frozenset[str]]]:
         paths = [dict(self.imported_module_provenance)]
-        self._module_provenance_flow_stack.append(
-            (paths, record_exception_prefixes)
-        )
+        self._module_provenance_flow_stack.append((paths, record_exception_prefixes))
         return paths
 
     def _record_module_provenance_flow_state(self) -> None:
@@ -425,9 +450,7 @@ class ImportLoweringMixin(_MixinBase):
         # missing attribute raises ImportError ("cannot import name ...") after
         # a sys.modules submodule fallback, NOT the AttributeError that a plain
         # `MODULE.name` (MODULE_GET_ATTR) read raises.
-        runtime_symbol = self._runtime_qualified_callable_symbol(
-            module_name, attr_name
-        )
+        runtime_symbol = self._runtime_qualified_callable_symbol(module_name, attr_name)
         self.emit(
             MoltOp(
                 kind="MODULE_IMPORT_FROM",

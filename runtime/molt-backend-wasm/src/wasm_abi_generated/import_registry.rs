@@ -207,7 +207,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaNew,
         name: "arena_new",
-        type_idx: 52,
+        type_idx: 48,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaAllocObject,
@@ -777,52 +777,52 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallMethodIc0,
         name: "call_method_ic0",
-        type_idx: 41,
+        type_idx: 37,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallMethodIc1,
         name: "call_method_ic1",
-        type_idx: 42,
+        type_idx: 38,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallMethodIc2,
         name: "call_method_ic2",
-        type_idx: 43,
+        type_idx: 39,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallMethodIc3,
         name: "call_method_ic3",
-        type_idx: 44,
+        type_idx: 40,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallMethodIc4,
         name: "call_method_ic4",
-        type_idx: 45,
+        type_idx: 41,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallSuperMethodIc0,
         name: "call_super_method_ic0",
-        type_idx: 46,
+        type_idx: 42,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallSuperMethodIc1,
         name: "call_super_method_ic1",
-        type_idx: 47,
+        type_idx: 43,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallSuperMethodIc2,
         name: "call_super_method_ic2",
-        type_idx: 48,
+        type_idx: 44,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallSuperMethodIc3,
         name: "call_super_method_ic3",
-        type_idx: 49,
+        type_idx: 45,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallSuperMethodIc4,
         name: "call_super_method_ic4",
-        type_idx: 50,
+        type_idx: 46,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CallFuncDispatch,
@@ -1257,7 +1257,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeNew,
         name: "code_new",
-        type_idx: 35,
+        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CodeSlotSet,
@@ -2792,7 +2792,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesAsPtr,
         name: "bytes_as_ptr",
-        type_idx: 51,
+        type_idx: 47,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BytesFromObj,
@@ -5077,7 +5077,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuRopeApplyContiguous,
         name: "gpu_rope_apply_contiguous",
-        type_idx: 37,
+        type_idx: 33,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GpuPermuteContiguous,
@@ -5447,7 +5447,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextwrapWrapEx,
         name: "textwrap_wrap_ex",
-        type_idx: 38,
+        type_idx: 34,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextwrapFill,
@@ -5457,7 +5457,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextwrapFillEx,
         name: "textwrap_fill_ex",
-        type_idx: 38,
+        type_idx: 34,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TextwrapIndent,
@@ -6627,7 +6627,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSubprocessStdioNormalize,
         name: "asyncio_subprocess_stdio_normalize",
-        type_idx: 37,
+        type_idx: 33,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioServerAcceptLoopNew,
@@ -9982,7 +9982,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArgparseAddArgument,
         name: "argparse_add_argument",
-        type_idx: 36,
+        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArgparseAddMutuallyExclusive,
@@ -10682,7 +10682,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvRegisterDialect,
         name: "csv_register_dialect",
-        type_idx: 35,
+        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvReaderDrop,
@@ -10747,7 +10747,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatIsodatetime,
         name: "datetime_format_isodatetime",
-        type_idx: 36,
+        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatIsotime,
@@ -10837,7 +10837,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeStrftime,
         name: "datetime_strftime",
-        type_idx: 35,
+        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeStrptime,
@@ -11577,7 +11577,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonDumpsEx,
         name: "json_dumps_ex",
-        type_idx: 36,
+        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonLoads,
@@ -14387,7 +14387,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeTimetuple,
         name: "datetime_timetuple",
-        type_idx: 35,
+        type_idx: 31,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumIsAuto,

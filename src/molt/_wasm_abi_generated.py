@@ -35,10 +35,6 @@ WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i64", "i64"), ()),
-    (("i64", "i64"), ("i64", "i64")),
-    (("i64", "i64", "i64"), ("i64", "i64", "i64")),
-    (("i64",), ("i64", "i64")),
-    ((), ("i64", "i64")),
     (("i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
@@ -86,7 +82,7 @@ WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
     "molt_importlib_import_transaction": "unpack_args",
 }
 
-WASM_STATIC_TYPE_COUNT: int = 53
+WASM_STATIC_TYPE_COUNT: int = 49
 
 WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "types_bootstrap",

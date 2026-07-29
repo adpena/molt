@@ -1909,9 +1909,7 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
     ir = gen.to_json()
 
     chunks = [
-        func
-        for func in ir["functions"]
-        if "__molt_module_chunk_" in func["name"]
+        func for func in ir["functions"] if "__molt_module_chunk_" in func["name"]
     ]
     assert chunks
     for chunk in chunks:
@@ -1974,7 +1972,9 @@ def exceptional():
     assert exceptional_kinds.count("trace_exit") == 1
 
 
-def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance() -> None:
+def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance() -> (
+    None
+):
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
@@ -2160,9 +2160,7 @@ def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acq
         if function["name"].endswith(function_suffix)
         for op in function["ops"]
     ]
-    acquisitions = [
-        op for op in function_ops if op.get("runtime_symbol") == symbol
-    ]
+    acquisitions = [op for op in function_ops if op.get("runtime_symbol") == symbol]
     assert acquisitions, transport
     assert all(
         op["kind"] in {"module_get_attr", "module_get_global", "module_import_from"}
@@ -2187,13 +2185,13 @@ def test_runtime_callable_import_provenance_respects_lexical_shadowing(
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
-            "import sys as system\n"
-            f"def f({signature}):\n"
-            "    return system._getframe\n"
+            f"import sys as system\ndef f({signature}):\n    return system._getframe\n"
         )
     )
     function = next(
-        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
     )
     assert all(
         "runtime_symbol" not in op
@@ -2215,6 +2213,18 @@ def test_runtime_callable_import_provenance_respects_lexical_shadowing(
             None,
         ),
         (
+            "conditional-expression-may-module",
+            "import sys\ndef f(flag, other):\n    s = sys if flag else other\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
+            "boolean-expression-may-module",
+            "import sys\ndef f(flag, other):\n    s = flag and sys or other\n    return s._getframe\n",
+            "__f",
+            None,
+        ),
+        (
             "branch-local-import-with-implicit-nonmodule-path",
             "def f(flag):\n    if flag:\n        import sys as s\n    return s._getframe\n",
             "__f",
@@ -2224,6 +2234,12 @@ def test_runtime_callable_import_provenance_respects_lexical_shadowing(
             "loop-carried-may-module",
             "import sys\ndef f(items, other):\n    s = other\n    for item in items:\n        s = sys\n    return s._getframe\n",
             "__f",
+            None,
+        ),
+        (
+            "async-loop-zero-iteration-may-module",
+            "import sys\nasync def f(items):\n    s = sys\n    async for s in items:\n        pass\n    return s._getframe\n",
+            "__f_poll",
             None,
         ),
         (
@@ -2286,7 +2302,9 @@ def test_runtime_callable_module_alias_provenance_joins_conservatively(
         ), case
 
 
-def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenance() -> None:
+def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenance() -> (
+    None
+):
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
@@ -2301,7 +2319,9 @@ def test_runtime_callable_module_alias_definite_nonmodule_rebind_clears_provenan
         )
     )
     function = next(
-        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
     )
     assert all(
         "runtime_symbol" not in op
@@ -2382,12 +2402,12 @@ def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -
         )
     )
     function = next(
-        function for function in gen.to_json()["functions"] if function["name"].endswith("__f")
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
     )
     producers = [
-        op
-        for op in function["ops"]
-        if op.get("runtime_symbol") == "molt_getframe"
+        op for op in function["ops"] if op.get("runtime_symbol") == "molt_getframe"
     ]
     assert len(producers) == 1
     assert producers[0]["kind"] == "module_import_from"
@@ -2575,9 +2595,10 @@ def f(target, mapping):
     assert sum(op.get("kind") == "loop_start" for op in ops) == 2
     final_join = max(idx for idx, op in enumerate(ops) if op.get("kind") == "end_if")
     for name in ("key", "item"):
-        assert sum(
-            op.get("kind") == "store_var" and op.get("var") == name for op in ops
-        ) >= 3
+        assert (
+            sum(op.get("kind") == "store_var" and op.get("var") == name for op in ops)
+            >= 3
+        )
         boundaries = [
             op
             for idx, op in enumerate(ops)

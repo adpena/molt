@@ -93,12 +93,11 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | Tail call emission (`return_call`) | 49af0f7a | Conservative tail calls for non-stateful functions without EH |
 | Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
 | SIMD stub rewriter support | 0eb06e6c | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
-| Multi-value return groundwork | a7b50199 | Multi-value type signatures (Types 31-34); candidate detection pass |
 | Box/unbox elimination | cd3f98df | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
 
 ### 1.3 Missing Features
 
-- **Multi-return functions**: Currently all functions return a single `i64`. Tuple returns go through memory allocation. Multi-value returns would eliminate heap allocation for small tuples (see Section 3.1).
+- **Aggregate scalarization**: Tuple objects remain the one Python-callable result. Escape-proven internal aggregates can be scalarized without creating a second function ABI (see Section 3.1).
 - **Tail call optimization**: Recursive functions and continuation-passing style compile to regular calls, risking stack overflow. The tail calls proposal (now in WASM 3.0) would fix this (see Section 3.5).
 - **WASM exception handling**: Exceptions currently go through host-imported `exception_push/pop/pending` calls. Native WASM exception handling would reduce host call overhead (see Section 3.6).
 
@@ -155,20 +154,19 @@ Migration path (aligned with spec 0400 Section 13):
 
 ## 3. WASM Proposal-Based Optimizations
 
-### 3.1 Multi-Value Returns
+### 3.1 Aggregate Return Scalarization
 
-**Status**: Standardized in WASM 2.0; universally supported.
+**Status:** Molt's Python-callable ABI has one canonical tagged-`i64` result.
+Tuples remain Python objects across function boundaries; WASM multi-result
+signatures are not a second observable return convention.
 
-**Current gap**: All Molt WASM functions return a single `i64` value. Tuple unpacking, multiple return values, and error-value pairs require heap allocation via `molt_alloc` and subsequent field loads.
-
-**Optimization plan**:
-- For functions returning 2-4 values (common in Python: `divmod`, tuple returns, dict `items()`), emit multi-value return signatures.
-- Estimated impact: eliminates 1 `alloc` + N `field_get` calls per multi-return site.
-- Implementation: extend `WasmBackend` type section to generate multi-return types; modify call-site lowering to consume multi-value results.
-
-**Priority**: P1 -- high impact, low risk, universally supported.
-
-**UPDATE 2026-03-20:** Groundwork complete (a7b50199). Multi-value type signatures (Types 31-34) defined. detect_multi_return_candidates analysis pass identifies safe conversion candidates. Next: modify callee return sequences and call-site destructuring.
+**Optimization direction:** eliminate tuple allocation only when escape and
+representation analysis prove the aggregate is entirely internal. Scalar
+replacement may carry fields independently through TIR/LIR, but must reconstruct
+one tagged Python object at any callable, host, reflection, or deoptimization
+boundary. The unused static multi-result signatures and inferred tuple-storage
+lane were deleted because they duplicated return authority and could not preserve
+CPython tuple identity.
 
 ### 3.2 Reference Types / WasmGC
 

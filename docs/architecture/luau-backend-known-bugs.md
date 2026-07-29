@@ -128,24 +128,9 @@ propagation still requires fresh differential coverage.
 
 ---
 
-## Bug 5: Tuple returns produce nil in callers
-
-**Location:** `runtime/molt-backend-luau/src/luau/op_returns.rs` - multiple
-return value handling
-
-**Symptom:** Python functions returning tuples (e.g., `return x, y, z`) emit
-correct Luau multi-return syntax, but callers that destructure the result
-(`a, b, c = f()`) sometimes receive nil if the function went through the
-module cache path or if the return passes through an intermediate variable.
-
-**Current action:** Add explicit tuple/multi-return differential tests. Checked
-Luau output must fail closed if a tuple path cannot be emitted faithfully.
-
----
-
 ## Impact
 
-Bugs 1–5 prevent list-heavy or control-flow-rich algorithms (KD-tree, A*,
+Bugs 1–4 prevent list-heavy or control-flow-rich algorithms (KD-tree, A*,
 spatial hash, simplex noise) from compiling correctly via `--target luau`.
 Pure scalar arithmetic with simple if/else (Catmull-Rom, spring/verlet)
 compiles cleanly — the Catmull-Rom spline (82 lines) compiled to 540 lines
