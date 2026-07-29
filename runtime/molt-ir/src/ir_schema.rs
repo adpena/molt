@@ -2,8 +2,9 @@ use crate::OpIR;
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::effect_proof::{EffectProof, simple_ir_effect_proof};
 use crate::tir::op_kinds_generated::{
-    SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole, simpleir_return_shape,
-    simpleir_var_field_role_table,
+    SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
+    simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
+    simpleir_return_shape, simpleir_var_field_role_table,
 };
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
@@ -294,12 +295,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if let Some(runtime_symbol) = op.runtime_symbol.as_deref() {
         validate_clean_symbol(runtime_symbol, &format!("op `{}` runtime_symbol", op.kind))?;
-        if !matches!(op.kind.as_str(), "module_get_attr" | "module_import_from") {
+        if !simpleir_kind_may_carry_runtime_symbol(op.kind.as_str()) {
             return Err(format!("op `{}` cannot carry runtime_symbol", op.kind));
         }
     }
     if op.runtime_requirement_bits != 0 {
-        if !matches!(op.kind.as_str(), "module_get_attr" | "module_import_from") {
+        if !simpleir_kind_may_carry_runtime_requirement_bits(op.kind.as_str()) {
             return Err(format!(
                 "op `{}` cannot carry runtime_requirement_bits",
                 op.kind

@@ -1,6 +1,58 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use molt_backend::FunctionIR;
+use molt_backend::ir::ExecutionContextPolicy;
+
+pub(crate) type InheritedFunctionDeclarations = BTreeMap<String, FunctionIR>;
+
+pub(crate) fn inherited_function_declarations(
+    functions: &[FunctionIR],
+) -> InheritedFunctionDeclarations {
+    functions
+        .iter()
+        .filter(|func| func.execution_context == ExecutionContextPolicy::Inherited)
+        .map(|func| {
+            (
+                func.name.clone(),
+                FunctionIR {
+                    name: func.name.clone(),
+                    params: func.params.clone(),
+                    ops: Vec::new(),
+                    param_types: func.param_types.clone(),
+                    source_file: func.source_file.clone(),
+                    is_extern: true,
+                    execution_context: func.execution_context,
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn append_referenced_inherited_declarations(
+    batch_functions: &mut Vec<FunctionIR>,
+    declarations: &InheritedFunctionDeclarations,
+) {
+    let local_names = batch_functions
+        .iter()
+        .map(|func| func.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let referenced = batch_functions
+        .iter()
+        .flat_map(|func| func.ops.iter())
+        .filter_map(|op| op.s_value.as_deref())
+        .filter(|target| !local_names.contains(*target) && declarations.contains_key(*target))
+        .collect::<BTreeSet<_>>();
+    let external_declarations = referenced
+        .into_iter()
+        .map(|name| {
+            declarations
+                .get(name)
+                .expect("referenced inherited declaration was checked above")
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    batch_functions.extend(external_declarations);
+}
 
 pub(crate) fn partition_functions_for_batches(
     functions: Vec<FunctionIR>,

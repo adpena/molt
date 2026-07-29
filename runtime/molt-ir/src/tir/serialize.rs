@@ -93,7 +93,7 @@ struct TirOpArtifactRef<'a> {
 
 fn sorted_entry_refs<K: Ord, V>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
     let mut entries = map.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_unstable_by_key(|(key, _)| *key);
     entries
 }
 

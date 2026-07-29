@@ -51,50 +51,50 @@ pub(super) fn emit_fallback_function_body(
 
     let exception_handler_region_indices = exception_handler_region_indices(&func_ir.ops);
 
-    let mut op_emitter = WasmFunctionEmitContext {
-        backend,
-        func_ir,
-        ctx,
-        call_site_abi,
-        import_ids,
-        exception_handler_region_indices: &exception_handler_region_indices,
-        frame: &frame,
-        func_index,
-        reloc_enabled,
-        native_eh_enabled,
-        tail_call_enabled,
-        tail_call_count: &tail_call_count,
-    };
+    {
+        let mut op_emitter = WasmFunctionEmitContext {
+            backend,
+            func_ir,
+            ctx,
+            call_site_abi,
+            import_ids,
+            exception_handler_region_indices: &exception_handler_region_indices,
+            frame: &frame,
+            func_index,
+            reloc_enabled,
+            native_eh_enabled,
+            tail_call_enabled,
+            tail_call_count: &tail_call_count,
+        };
 
-    match frame.control_mode() {
-        WasmFrameControlMode::Stateful => {
-            let plan = dispatch_plan
-                .as_ref()
-                .expect("dispatch plan missing for stateful wasm");
-            emit_stateful_dispatch(
-                &mut func,
-                &mut op_emitter,
-                plan,
-                dispatch_locals.expect("dispatch locals missing for stateful wasm"),
-            );
-        }
-        WasmFrameControlMode::Jumpful => {
-            let plan = dispatch_plan
-                .as_ref()
-                .expect("dispatch plan missing for jumpful wasm");
-            emit_jumpful_dispatch(
-                &mut func,
-                &mut op_emitter,
-                plan,
-                dispatch_locals.expect("dispatch locals missing for jumpful wasm"),
-            );
-        }
-        WasmFrameControlMode::Plain => {
-            plain::emit_plain_function_body(func_ir, &mut func, &mut op_emitter);
+        match frame.control_mode() {
+            WasmFrameControlMode::Stateful => {
+                let plan = dispatch_plan
+                    .as_ref()
+                    .expect("dispatch plan missing for stateful wasm");
+                emit_stateful_dispatch(
+                    &mut func,
+                    &mut op_emitter,
+                    plan,
+                    dispatch_locals.expect("dispatch locals missing for stateful wasm"),
+                );
+            }
+            WasmFrameControlMode::Jumpful => {
+                let plan = dispatch_plan
+                    .as_ref()
+                    .expect("dispatch plan missing for jumpful wasm");
+                emit_jumpful_dispatch(
+                    &mut func,
+                    &mut op_emitter,
+                    plan,
+                    dispatch_locals.expect("dispatch locals missing for jumpful wasm"),
+                );
+            }
+            WasmFrameControlMode::Plain => {
+                plain::emit_plain_function_body(func_ir, &mut func, &mut op_emitter);
+            }
         }
     }
-
-    drop(op_emitter);
 
     backend.tail_calls_emitted += tail_call_count.get();
     backend.codes.function(&func);

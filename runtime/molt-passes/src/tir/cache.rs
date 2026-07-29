@@ -3883,7 +3883,7 @@ mod tests {
         let first = vec![b'a'; 1024];
         let second = vec![b'b'; 1024];
         cache.put(&hash, &first).unwrap();
-        assert!(cache.artifact_path(&hash).unwrap().exists() == false);
+        assert!(!cache.artifact_path(&hash).unwrap().exists());
         assert!(matches!(
             cache.put(&hash, &second),
             Err(CompilationCacheWriteError::Integrity(_))

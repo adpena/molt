@@ -704,7 +704,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
                             window[1]
                                 .args
                                 .as_ref()
-                                .is_some_and(|args| args == &[out.clone()])
+                                .is_some_and(|args| args == std::slice::from_ref(out))
                         })
                         && window[1].kind == "ret"
                 });

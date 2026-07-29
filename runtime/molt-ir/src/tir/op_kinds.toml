@@ -422,6 +422,17 @@ simpleir_runtime_protected_gateway_callables = [
     "inspect.getattr_static",
     "operator.attrgetter", "operator.methodcaller",
 ]
+# Complete wire-op carrier authority for explicit runtime requirement bits.
+# The frontend may stamp only these producer operations; the Rust parser and
+# target admission consume the generated predicate rather than mirrored lists.
+simpleir_runtime_requirement_carrier_kinds = [
+    "builtin_func", "call_func",
+    "get_attr_generic_obj", "get_attr_name_default",
+    "module_get_attr", "module_get_global", "module_import_from",
+]
+simpleir_runtime_symbol_carrier_kinds = [
+    "module_get_attr", "module_get_global", "module_import_from",
+]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the
 # kind appears in the metadata set. `var` defaults to a source read; the sets

@@ -542,7 +542,6 @@ _MOLT_LOCALS_CACHE = "__molt_locals_cache__"
 _MOLT_GLOBALS_BUILTIN = "__molt_globals_builtin__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
 _MOLT_MODULE_CHUNK_PREFIX = "molt_module_chunk"
-_BOOTSTRAP_TRACE_EXEMPT_MODULES = frozenset({"importlib.machinery"})
 MOLT_BIND_KIND_OPEN = 1
 
 BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
@@ -1569,7 +1568,6 @@ __all__ = [
     "_MOLT_GLOBALS_BUILTIN",
     "_MOLT_MODULE_CHUNK_PARAM",
     "_MOLT_MODULE_CHUNK_PREFIX",
-    "_BOOTSTRAP_TRACE_EXEMPT_MODULES",
     "MOLT_BIND_KIND_OPEN",
     "BUILTIN_FUNC_SPECS",
     "_INTRINSIC_ARITY_CACHE",

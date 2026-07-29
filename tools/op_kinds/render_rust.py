@@ -15,7 +15,7 @@ from .schema import (
     _PASS_DELTA_FACT_FIELDS,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
 )
-from .validate import _opcode_role_members
+from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
 from .render_rust_analysis import (
     _render_counted_loop_comparison_roles,
     _render_lir_verify_rule,
@@ -902,8 +902,7 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
 
 def _simpleir_kind_aliases(data: dict) -> dict[str, tuple[str, ...]]:
     return {
-        row["canonical"]: tuple(row.get("aliases", ()))
-        for row in data.get("kind", [])
+        row["canonical"]: tuple(row.get("aliases", ())) for row in data.get("kind", [])
     }
 
 
@@ -991,7 +990,7 @@ def _render_simpleir_control_facts(data: dict) -> str:
         for row in return_rows:
             if row["return_shape"] == shape:
                 members.extend((row["kind"], *aliases.get(row["kind"], ())))
-        patterns = " | ".join(f'\"{member}\"' for member in members)
+        patterns = " | ".join(f'"{member}"' for member in members)
         out.append(f"        {patterns} => SimpleIrReturnShape::{variant},\n")
     out.extend(
         [
@@ -1039,17 +1038,15 @@ def _render_simpleir_field_roles(data: dict) -> str:
         "    match kind {\n",
     ]
     for key, role in var_roles:
-        patterns = " | ".join(f'\"{member}\"' for member in data.get(key, []))
+        patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
     return_terminators = [
         row["kind"]
         for row in data.get("simpleir_control_kind", [])
         if row.get("return_shape") is not None
     ]
-    return_patterns = " | ".join(f'\"{kind}\"' for kind in return_terminators)
-    lines.append(
-        f"        {return_patterns} => SimpleIrVarFieldRole::Forbidden,\n"
-    )
+    return_patterns = " | ".join(f'"{kind}"' for kind in return_terminators)
+    lines.append(f"        {return_patterns} => SimpleIrVarFieldRole::Forbidden,\n")
     lines.extend(
         [
             "        _ => SimpleIrVarFieldRole::Read,\n",
@@ -1062,7 +1059,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
         ]
     )
     metadata = data.get("simpleir_out_metadata_kinds", [])
-    lines.append(" | ".join(f'        \"{member}\"' for member in metadata))
+    lines.append(" | ".join(f'        "{member}"' for member in metadata))
     lines.extend(["\n    )\n", "}\n\n"])
     lines.extend(
         [
@@ -1073,9 +1070,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
         ]
     )
     for row in data.get("simpleir_trailing_arg_result", []):
-        lines.append(
-            f'        "{row["kind"]}" => Some({row["first_result_arg"]}),\n'
-        )
+        lines.append(f'        "{row["kind"]}" => Some({row["first_result_arg"]}),\n')
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines)
 
@@ -1129,7 +1124,7 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
         ]
     )
     for key, variant in roles:
-        patterns = " | ".join(f'\"{member}\"' for member in data.get(key, []))
+        patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n")
     lines.extend(
         [
@@ -1146,15 +1141,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         (row["table"], row["constant"])
         for row in data["simpleir_runtime_requirement_roles"]
     )
-    registered = set()
-    for row in data.get("kind", []):
-        registered.add(row["canonical"])
-        registered.update(row.get("aliases", []))
-    for table in ("simpleir_control_kind", "frontend_effect_kind"):
-        registered.update(row["kind"] for row in data.get(table, []))
-    for key, _ in roles:
-        registered.update(data.get(key, []))
-    registered.update(data.get("simpleir_runtime_neutral_semantics_kinds", []))
+    registered = _simpleir_registered_runtime_kinds(data)
 
     lines = [
         "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",
@@ -1200,7 +1187,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
     for kind, bits in requirements_by_kind.items():
         grouped.setdefault(bits, []).append(kind)
     for bits, kinds in sorted(grouped.items()):
-        patterns = " | ".join(f'\"{kind}\"' for kind in sorted(kinds))
+        patterns = " | ".join(f'"{kind}"' for kind in sorted(kinds))
         lines.append(
             f"        {patterns} => Some(SimpleIrRuntimeRequirements({bits})),\n"
         )
@@ -1217,7 +1204,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
     )
     frame_symbols = sorted(data.get("simpleir_frame_introspection_runtime_symbols", []))
     if frame_symbols:
-        patterns = " | ".join(f'\"{symbol}\"' for symbol in frame_symbols)
+        patterns = " | ".join(f'"{symbol}"' for symbol in frame_symbols)
         lines.append(
             f"        {patterns} => SimpleIrRuntimeRequirements::FRAME_INTROSPECTION,\n"
         )
@@ -1244,14 +1231,70 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "}\n",
         ]
     )
-    lines.extend([
-        "\n/// Whether s_value is a first-class function reference.\n",
-        "#[inline]\n",
-        "pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {\n",
-        "    matches!(kind, ",
-    ])
+    requirement_carriers = sorted(
+        data.get("simpleir_runtime_requirement_carrier_kinds", [])
+    )
+    lines.extend(
+        [
+            "\n/// Complete generated wire-op carrier authority for explicit runtime requirements.\n",
+            "pub const SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: &[&str] = &[\n",
+        ]
+    )
+    for kind in requirement_carriers:
+        lines.append(f'    "{kind}",\n')
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Whether a wire operation may carry explicit runtime requirement bits.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_may_carry_runtime_requirement_bits(kind: &str) -> bool {\n",
+            "    matches!(kind, ",
+        ]
+    )
+    lines.append(
+        " | ".join(f'"{kind}"' for kind in requirement_carriers)
+        if requirement_carriers
+        else '""'
+    )
+    lines.extend([")\n", "}\n"])
+    runtime_symbol_carriers = sorted(
+        data.get("simpleir_runtime_symbol_carrier_kinds", [])
+    )
+    lines.extend(
+        [
+            "\n/// Complete generated wire-op carrier authority for canonical runtime symbols.\n",
+            "pub const SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: &[&str] = &[\n",
+        ]
+    )
+    for kind in runtime_symbol_carriers:
+        lines.append(f'    "{kind}",\n')
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Whether a wire operation may carry canonical runtime-symbol provenance.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_may_carry_runtime_symbol(kind: &str) -> bool {\n",
+            "    matches!(kind, ",
+        ]
+    )
+    lines.append(
+        " | ".join(f'"{kind}"' for kind in runtime_symbol_carriers)
+        if runtime_symbol_carriers
+        else '""'
+    )
+    lines.extend([")\n", "}\n"])
+    lines.extend(
+        [
+            "\n/// Whether s_value is a first-class function reference.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {\n",
+            "    matches!(kind, ",
+        ]
+    )
     function_refs = sorted(data.get("simpleir_function_reference_s_value_kinds", []))
-    lines.append(" | ".join(f'"{kind}"' for kind in function_refs) if function_refs else "\"\"")
+    lines.append(
+        " | ".join(f'"{kind}"' for kind in function_refs) if function_refs else '""'
+    )
     lines.extend([")\n", "}\n"])
     return "".join(lines)
 
