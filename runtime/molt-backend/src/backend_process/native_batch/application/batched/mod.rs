@@ -19,7 +19,12 @@ pub(crate) fn compile_batched_native_application_object_to_path(
     batch_size: usize,
     batch_ops_budget: usize,
 ) -> io::Result<NativeApplicationObjectResult> {
-    let mut plan = NativeApplicationBatchPlan::from_ir(ir, batch_size, batch_ops_budget);
+    let mut plan = NativeApplicationBatchPlan::from_ir(
+        ir,
+        batch_size,
+        batch_ops_budget,
+        options.module_context.take(),
+    );
     let total_batches = plan.total_batches();
     if options.app_callable_manifest.is_none() {
         options.app_callable_manifest = Some(std::mem::take(&mut plan.app_callable_manifest));

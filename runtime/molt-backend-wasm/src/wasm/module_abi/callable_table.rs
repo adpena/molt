@@ -33,6 +33,7 @@ pub(in crate::wasm) struct WasmCallableTablePlan {
     func_to_trampoline_idx: BTreeMap<String, u32>,
     app_callable_resolver: Option<WasmAppCallableResolverPlan>,
     closure_functions: BTreeSet<String>,
+    function_abi_returns_value: BTreeMap<String, bool>,
     trampoline_entries: Vec<WasmCallableTrampolineEntry>,
 }
 
@@ -133,6 +134,9 @@ impl WasmCallableTablePlan {
     fn ir_call_target_closure_issue(&self, ir: &SimpleIR) -> Option<String> {
         let mut issues: Vec<String> = Vec::new();
         for func_ir in &ir.functions {
+            if func_ir.is_extern {
+                continue;
+            }
             for (op_idx, op) in func_ir.ops.iter().enumerate() {
                 let kind = op.kind.as_str();
                 let requires = match kind {
@@ -490,6 +494,10 @@ mod tests {
         func_to_index: BTreeMap<String, u32>,
         func_to_trampoline_idx: BTreeMap<String, u32>,
     ) -> WasmCallableTablePlan {
+        let function_abi_returns_value = func_to_index
+            .keys()
+            .map(|name| (name.clone(), true))
+            .collect();
         WasmCallableTablePlan {
             table_base: 0,
             fixed_shared_runtime_abi_base: None,
@@ -500,6 +508,7 @@ mod tests {
             func_to_trampoline_idx,
             app_callable_resolver: None,
             closure_functions: BTreeSet::new(),
+            function_abi_returns_value,
             trampoline_entries: Vec::new(),
         }
     }

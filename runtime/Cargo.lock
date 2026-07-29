@@ -2490,6 +2490,7 @@ dependencies = [
  "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
+ "serde_json",
  "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
 ]

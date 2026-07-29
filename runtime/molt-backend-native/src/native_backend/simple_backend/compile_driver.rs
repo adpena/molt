@@ -1,6 +1,26 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
 
+type ExternFunctionSignatures = BTreeMap<String, crate::ir::ExternFunctionSignature>;
+
+fn collect_extern_function_signatures(functions: &[FunctionIR]) -> ExternFunctionSignatures {
+    let mut signatures = BTreeMap::new();
+    for function in functions.iter().filter(|function| function.is_extern) {
+        let signature = function
+            .extern_signature()
+            .unwrap_or_else(|error| panic!("invalid native extern declaration: {error}"));
+        if let Some(previous) = signatures.insert(function.name.clone(), signature)
+            && previous != signature
+        {
+            panic!(
+                "conflicting native extern declarations for `{}`: {:?} vs {:?}",
+                function.name, previous, signature
+            );
+        }
+    }
+    signatures
+}
+
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub fn compile(self, ir: SimpleIR) -> CompileOutput {
@@ -28,11 +48,25 @@ impl SimpleBackend {
             .unwrap_or(false);
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
+        // Validate declarations already present on input before any pass can
+        // rewrite their callers. The post-preparation validation below also
+        // covers declarations created by shared-stdlib externalization.
+        crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
         let emit_resolver_here = prepared.emit_resolver_here;
         let app_callable_manifest = prepared.app_callable_manifest;
         let pre_split_task_kinds = prepared.pre_split_task_kinds;
         let pre_split_task_closure_sizes = prepared.pre_split_task_closure_sizes;
+        // Extern bodies are discarded by both native backends. Capture and
+        // validate their complete target-neutral ABI first so no backend can
+        // reconstruct a declaration from a caller after the authority is gone.
+        let extern_function_signatures = collect_extern_function_signatures(&ir.functions);
+        crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
+        if let Some(module_context) = self.module_context.as_ref() {
+            module_context
+                .validate_function_linkage_abis(&ir.functions)
+                .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
+        }
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is
@@ -144,11 +178,6 @@ impl SimpleBackend {
                     },
                 );
             let tir_funcs = owned_tir_run.tir_functions;
-
-            llvm.function_return_types = tir_funcs
-                .iter()
-                .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
-                .collect();
             // Build LLVM representation facts from the exact post-module-phase
             // TIR the LLVM backend is about to lower. The trusted-unbox gate is
             // pure TIR/value-range authority, so fresh ValueIds introduced by
@@ -168,33 +197,62 @@ impl SimpleBackend {
                 })
                 .collect();
 
-            // Parameter ABI carriers, derived from the SAME repr facts the body
-            // lowers against: an unprovable-range `int` param is carried `DynBox`
-            // (boxed), a value-range-proven one stays raw `I64`. This is the
-            // caller-side coercion target that must agree with the callee's
-            // entry-param carrier (`FunctionLowering::effective_block_arg_type`);
-            // deriving both from `effective_param_types` over the same
-            // `repr_by_value` keeps a heap-BigInt argument boxed end to end
-            // (the trusted-unbox truncation bug-class is un-creatable at the call
-            // boundary). Externs (no repr facts  they are opaque runtime
-            // declarations) keep their declared ABI param types.
-            llvm.function_param_types = tir_funcs
+            // Freeze one exact linkage row per function. Local rows cover
+            // one-shot compilation and post-partition synthetic functions;
+            // whole-program module-context rows then override them so every
+            // provider definition and consumer declaration in separate batch
+            // objects uses byte-identical machine carriers.
+            let function_signatures: BTreeMap<_, _> = ir
+                .functions
                 .iter()
-                .map(|(is_extern, tir_func)| {
-                    let tys = if *is_extern {
-                        tir_func.param_types.clone()
-                    } else {
-                        match llvm.function_repr_facts.get(&tir_func.name) {
-                            Some(facts) => facts.effective_param_types(tir_func),
-                            None => tir_func.param_types.clone(),
-                        }
-                    };
-                    (tir_func.name.clone(), tys)
+                .map(|function| {
+                    (
+                        function.name.clone(),
+                        function.function_signature().unwrap_or_else(|error| {
+                            panic!("invalid LLVM linkage signature: {error}")
+                        }),
+                    )
                 })
                 .collect();
+            llvm.function_linkage_abis = tir_funcs
+                .iter()
+                .filter(|(is_extern, _)| !*is_extern)
+                .map(|(_, tir_func)| {
+                    let source_signature =
+                        *function_signatures.get(&tir_func.name).unwrap_or_else(|| {
+                            panic!(
+                                "LLVM function `{}` lost its target-neutral linkage signature",
+                                tir_func.name
+                            )
+                        });
+                    let param_types = match llvm.function_repr_facts.get(&tir_func.name) {
+                        Some(facts) => facts.effective_param_types(tir_func),
+                        None => tir_func.param_types.clone(),
+                    };
+                    let return_type = source_signature
+                        .returns_value
+                        .then(|| tir_func.return_type.clone());
+                    (
+                        tir_func.name.clone(),
+                        NativeFunctionLinkageAbi {
+                            source_signature,
+                            param_types,
+                            return_type,
+                        },
+                    )
+                })
+                .collect();
+            if let Some(module_context) = self.module_context.as_ref() {
+                llvm.function_linkage_abis
+                    .extend(module_context.function_linkage_abis.clone());
+            }
 
-            for (_, tir_func) in &tir_funcs {
-                crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
+            for (is_extern, tir_func) in &tir_funcs {
+                if *is_extern {
+                    crate::llvm_backend::lowering::declare_extern_tir_function(tir_func, &llvm);
+                } else {
+                    crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
+                }
             }
 
             for (is_extern, tir_func) in &tir_funcs {
@@ -334,11 +392,35 @@ impl SimpleBackend {
         // Compile functions into one module. Backend codegen failures are hard
         // failures: the compiler must not produce partial objects with
         // runtime-aborting placeholders for functions it could not compile.
-        // Register extern functions (bodies in stdlib_shared.o) so the
-        // backend declares them as Import linkage, resolved by the linker.
-        for func in &ir.functions {
-            if func.is_extern {
-                self.external_function_names.insert(func.name.clone());
+        // Register the canonical extern declarations before removing their
+        // signature-only FunctionIR bodies. Call lowering must reuse these
+        // exact declarations; Cranelift rejects any later incompatible reuse.
+        for (name, signature) in &extern_function_signatures {
+            let mut cranelift_signature = self.module.make_signature();
+            cranelift_signature
+                .params
+                .extend((0..signature.arity).map(|_| AbiParam::new(types::I64)));
+            if signature.returns_value {
+                cranelift_signature.returns.push(AbiParam::new(types::I64));
+            }
+            self.module
+                .declare_function(name, Linkage::Import, &cranelift_signature)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Cranelift extern declaration mismatch for `{name}`: expected {} parameter(s), returns_value={}: {error}",
+                        signature.arity, signature.returns_value
+                    )
+                });
+            self.external_function_names.insert(name.clone());
+            if let Some(previous) = self
+                .declared_func_arities
+                .insert(name.clone(), signature.arity)
+                && previous != signature.arity
+            {
+                panic!(
+                    "Cranelift extern arity mismatch for `{name}`: {previous} vs {}",
+                    signature.arity
+                );
             }
         }
         // Filter out extern functions  they have no ops to compile.
@@ -347,11 +429,15 @@ impl SimpleBackend {
         let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
         let codegen_start = std::time::Instant::now();
-        let local_function_arities: BTreeMap<String, usize> = ir
-            .functions
+        let mut local_function_arities: BTreeMap<String, usize> = extern_function_signatures
             .iter()
-            .map(|func| (func.name.clone(), func.params.len()))
+            .map(|(name, signature)| (name.clone(), signature.arity))
             .collect();
+        local_function_arities.extend(
+            ir.functions
+                .iter()
+                .map(|func| (func.name.clone(), func.params.len())),
+        );
         let local_return_alias_summaries =
             crate::passes::compute_return_alias_summaries(&ir.functions);
         let module_context = self.module_context.clone();
@@ -391,7 +477,11 @@ impl SimpleBackend {
             merged.extend(local_return_alias_summaries);
             merged
         };
-        let local_function_has_ret = compute_function_has_ret(&ir.functions);
+        let mut local_function_has_ret: BTreeMap<String, bool> = extern_function_signatures
+            .iter()
+            .map(|(name, signature)| (name.clone(), signature.returns_value))
+            .collect();
+        local_function_has_ret.extend(compute_function_has_ret(&ir.functions));
         let effective_function_has_ret =
             merge_function_has_ret(module_context.as_ref(), local_function_has_ret);
         let mut module_known_functions = ir_analysis.defined_functions.clone();

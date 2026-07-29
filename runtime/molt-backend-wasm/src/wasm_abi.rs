@@ -15,6 +15,12 @@ pub(crate) use molt_codegen_abi::{
 
 pub(crate) const RUNTIME_IMPORT_MODULE: &str = "molt_runtime";
 pub(crate) const NATIVE_CALLABLE_IMPORT_MODULE: &str = "molt_native";
+/// Canonical linker namespace for user-function declarations.
+///
+/// FunctionIR externs are ordinary symbols supplied by another WASM object or
+/// by the standalone host. Keeping them in `env` matches the wasm-ld undefined
+/// symbol convention without conflating them with Molt runtime ABI imports.
+pub(crate) const USER_FUNCTION_IMPORT_MODULE: &str = "env";
 
 // ---------------------------------------------------------------------------
 // WASM Exception Handling (WASM_OPTIMIZATION_PLAN.md Section 3.6)

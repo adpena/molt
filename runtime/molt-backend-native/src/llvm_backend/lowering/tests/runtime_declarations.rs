@@ -144,6 +144,123 @@ fn llvm_symbol_signature_mismatch_rejects_tir_forward_declaration() {
 }
 
 #[test]
+fn user_definitions_and_extern_declarations_never_claim_termination() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let local = TirFunction::new("may_loop_forever".into(), vec![], TirType::I64);
+    let local_fn = declare_tir_function(&local, &backend);
+    let external = TirFunction::new("external_may_loop_forever".into(), vec![], TirType::I64);
+    backend
+        .function_linkage_abis
+        .insert(external.name.clone(), test_native_linkage_abi(vec![], None));
+    let external_fn = declare_extern_tir_function(&external, &backend);
+
+    for function in [local_fn, external_fn] {
+        assert!(has_fn_attr(function, "nounwind"));
+        assert!(
+            lacks_fn_attr(function, "willreturn"),
+            "arbitrary Python/Molt functions and providers may not terminate"
+        );
+    }
+}
+
+#[test]
+fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
+    let typed_provider = crate::ir::FunctionIR {
+        name: "typed_provider".to_string(),
+        params: vec![
+            "value".to_string(),
+            "flag".to_string(),
+            "integer".to_string(),
+        ],
+        ops: vec![crate::ir::OpIR {
+            kind: "ret".to_string(),
+            args: Some(vec!["value".to_string()]),
+            ..crate::ir::OpIR::default()
+        }],
+        param_types: Some(vec![
+            "float".to_string(),
+            "bool".to_string(),
+            "int".to_string(),
+        ]),
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let void_provider = crate::ir::FunctionIR {
+        name: "void_provider".to_string(),
+        params: vec![],
+        ops: vec![crate::ir::OpIR {
+            kind: "ret_void".to_string(),
+            ..crate::ir::OpIR::default()
+        }],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        execution_context: Default::default(),
+    };
+    let context = crate::SimpleBackend::build_module_context(&[
+        typed_provider.clone(),
+        void_provider.clone(),
+    ]);
+    let typed_abi = context
+        .function_linkage_abi("typed_provider")
+        .expect("typed provider linkage ABI")
+        .clone();
+    assert_eq!(
+        typed_abi.param_types,
+        vec![TirType::F64, TirType::Bool, TirType::DynBox],
+        "unproven Python int parameters must freeze as boxed while exact float/bool carriers survive"
+    );
+    assert_eq!(typed_abi.return_type, Some(TirType::F64));
+    let void_abi = context
+        .function_linkage_abi("void_provider")
+        .expect("void provider linkage ABI")
+        .clone();
+    assert_eq!(void_abi.return_type, None);
+
+    let provider_ctx = Context::create();
+    let mut provider_backend = make_backend(&provider_ctx);
+    provider_backend
+        .function_linkage_abis
+        .insert("typed_provider".to_string(), typed_abi.clone());
+    provider_backend
+        .function_linkage_abis
+        .insert("void_provider".to_string(), void_abi.clone());
+    let typed_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&typed_provider);
+    let void_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&void_provider);
+    let typed_definition = declare_tir_function(&typed_provider_tir, &provider_backend);
+    let void_definition = declare_tir_function(&void_provider_tir, &provider_backend);
+    lower_tir_to_llvm(&typed_provider_tir, &provider_backend);
+    lower_tir_to_llvm(&void_provider_tir, &provider_backend);
+    provider_backend
+        .module
+        .verify()
+        .expect("typed and void provider bodies must verify against their frozen linkage rows");
+
+    let consumer_ctx = Context::create();
+    let mut consumer_backend = make_backend(&consumer_ctx);
+    consumer_backend
+        .function_linkage_abis
+        .insert("typed_provider".to_string(), typed_abi);
+    consumer_backend
+        .function_linkage_abis
+        .insert("void_provider".to_string(), void_abi);
+    let typed_declaration = declare_extern_tir_function(&typed_provider_tir, &consumer_backend);
+    let void_declaration = declare_extern_tir_function(&void_provider_tir, &consumer_backend);
+
+    assert_eq!(
+        typed_definition.get_type().print_to_string(),
+        typed_declaration.get_type().print_to_string()
+    );
+    assert_eq!(
+        void_definition.get_type().print_to_string(),
+        void_declaration.get_type().print_to_string()
+    );
+    assert_eq!(void_definition.get_type().get_return_type(), None);
+}
+
+#[test]
 #[should_panic(expected = "LLVM function type mismatch for `molt_trace_exit`")]
 fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
     let ctx = Context::create();
@@ -248,9 +365,10 @@ fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
     );
-    backend
-        .function_param_types
-        .insert("gen_fn".to_string(), vec![TirType::DynBox, TirType::DynBox]);
+    backend.function_linkage_abis.insert(
+        "gen_fn".to_string(),
+        test_native_linkage_abi(vec![], Some(TirType::DynBox)),
+    );
     let dummy = TirFunction::new("dummy_function_symbol".into(), vec![], TirType::DynBox);
     let dummy_fn = backend.module.add_function(
         "dummy_function_symbol",

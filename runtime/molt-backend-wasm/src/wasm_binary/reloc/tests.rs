@@ -170,13 +170,43 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
 }
 
 #[test]
+fn reloc_symbol_table_preserves_user_function_import_symbols() {
+    let mut types = TypeSection::new();
+    types.function([], []);
+
+    let mut imports = ImportSection::new();
+    imports.import("env", "stdlib_external", EntityType::Function(0));
+
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::Call(0));
+    body.instruction(&Instruction::End);
+    let mut codes = CodeSection::new();
+    codes.function(&body);
+
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&funcs);
+    module.section(&codes);
+
+    let relocated = add_reloc_sections(module.finish(), &[], &[], &[]);
+    assert!(
+        bytes_contain_ascii(&relocated, "stdlib_external"),
+        "canonical env user-function import symbol must survive relocatable emission"
+    );
+}
+
+#[test]
 #[should_panic(expected = "unsupported WASM function import module")]
 fn reloc_symbol_table_rejects_unknown_function_import_modules() {
     let mut types = TypeSection::new();
     types.function([], []);
 
     let mut imports = ImportSection::new();
-    imports.import("env", "PyInit__nd_image", EntityType::Function(0));
+    imports.import("unknown_host", "foreign", EntityType::Function(0));
 
     let mut funcs = FunctionSection::new();
     funcs.function(0);

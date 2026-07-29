@@ -1,6 +1,6 @@
 use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE,
-    wasm_runtime_export_name,
+    USER_FUNCTION_IMPORT_MODULE, wasm_runtime_export_name,
 };
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_data::DataSegmentInfo;
@@ -17,6 +17,7 @@ pub(super) struct SymbolMaps {
     pub(super) func_symbol_map: Vec<u32>,
     pub(super) data_symbol_map: Vec<u32>,
     pub(super) runtime_import_symbol_map: BTreeMap<WasmRuntimeImport, u32>,
+    pub(super) user_import_symbol_map: Vec<u32>,
     pub(super) defined_func_symbol_map: Vec<u32>,
 }
 
@@ -30,6 +31,12 @@ impl SymbolMaps {
             WasmFunctionSymbol::RuntimeImport(import) => {
                 self.runtime_import_symbol_map.get(import).copied()
             }
+            WasmFunctionSymbol::UserImport {
+                user_import_ordinal,
+            } => self
+                .user_import_symbol_map
+                .get(*user_import_ordinal as usize)
+                .copied(),
         }
     }
 }
@@ -51,8 +58,9 @@ fn linker_symbol_name_for_function_import(import: &FunctionImport) -> String {
             })
             .to_string(),
         NATIVE_CALLABLE_IMPORT_MODULE => import.name.clone(),
+        USER_FUNCTION_IMPORT_MODULE => import.name.clone(),
         module => panic!(
-            "unsupported WASM function import module `{module}` for import `{}`; relocatable output only supports `{RUNTIME_IMPORT_MODULE}` runtime ABI imports and `{NATIVE_CALLABLE_IMPORT_MODULE}` native callable object imports",
+            "unsupported WASM function import module `{module}` for import `{}`; relocatable output only supports `{RUNTIME_IMPORT_MODULE}` runtime ABI imports, `{NATIVE_CALLABLE_IMPORT_MODULE}` native callable object imports, and `{USER_FUNCTION_IMPORT_MODULE}` user-function imports",
             import.name
         ),
     }
@@ -63,6 +71,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
     let mut func_symbol_map = vec![0u32; total_funcs as usize];
     let mut data_symbol_map = vec![0u32; data_segments.len()];
     let mut runtime_import_symbol_map = BTreeMap::new();
+    let mut user_import_symbol_map = Vec::new();
     let mut defined_func_symbol_map = vec![0u32; scan.defined_func_count as usize];
     let mut symbol_index = 0u32;
 
@@ -80,6 +89,8 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
                 )
             });
             runtime_import_symbol_map.insert(import_id, symbol_index);
+        } else if import.module == USER_FUNCTION_IMPORT_MODULE {
+            user_import_symbol_map.push(symbol_index);
         }
         symbol_index += 1;
     }
@@ -141,6 +152,7 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         func_symbol_map,
         data_symbol_map,
         runtime_import_symbol_map,
+        user_import_symbol_map,
         defined_func_symbol_map,
     }
 }

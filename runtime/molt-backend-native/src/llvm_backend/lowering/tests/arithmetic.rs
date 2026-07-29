@@ -218,9 +218,10 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         ctx.bool_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
-    backend
-        .function_return_types
-        .insert("helper_bool".to_string(), TirType::Bool);
+    backend.function_linkage_abis.insert(
+        "helper_bool".to_string(),
+        test_native_linkage_abi(vec![], Some(TirType::Bool)),
+    );
     let dummy = TirFunction::new("dummy".into(), vec![], TirType::DynBox);
     let dummy_fn = backend.module.add_function(
         "dummy",
@@ -249,9 +250,10 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         ctx.f64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
-    backend
-        .function_return_types
-        .insert("helper_f64".to_string(), TirType::F64);
+    backend.function_linkage_abis.insert(
+        "helper_f64".to_string(),
+        test_native_linkage_abi(vec![], Some(TirType::F64)),
+    );
     let dummy = TirFunction::new("dummy".into(), vec![], TirType::DynBox);
     let dummy_fn = backend.module.add_function(
         "dummy",

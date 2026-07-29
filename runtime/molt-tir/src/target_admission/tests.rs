@@ -36,6 +36,7 @@ fn binary(kind: &str, ty: &str) -> SimpleIR {
 
 fn runtime_without_frame_introspection() -> RuntimeTargetCapabilities {
     RuntimeTargetCapabilities {
+        extern_function_linkage: false,
         execution_frame_state: true,
         python_frame_introspection: false,
         python_identity: true,
@@ -52,6 +53,46 @@ fn runtime_without_frame_introspection() -> RuntimeTargetCapabilities {
         unstructured_control_flow: true,
         host_capabilities: true,
     }
+}
+
+#[test]
+fn extern_linkage_capability_is_one_shared_target_admission_gate() {
+    let mut declaration = FunctionIR {
+        name: "external_helper".to_string(),
+        params: vec!["arg".to_string()],
+        ops: vec![OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        }],
+        ..FunctionIR::default()
+    };
+    declaration
+        .externalize_with_signature()
+        .expect("canonical extern declaration");
+    let ir = SimpleIR {
+        functions: vec![declaration],
+        profile: None,
+    };
+
+    let error = validate_target_contract(
+        &ir,
+        "source",
+        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        RuntimeTargetCapabilities::NONE,
+    )
+    .expect_err("targets without a provider ABI must reject extern declarations");
+    assert!(error.contains("source target has no extern provider/linkage ABI"));
+
+    validate_target_contract(
+        &ir,
+        "linkable",
+        NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+        RuntimeTargetCapabilities {
+            extern_function_linkage: true,
+            ..RuntimeTargetCapabilities::NONE
+        },
+    )
+    .expect("declaration-capable targets admit canonical extern signatures");
 }
 
 #[test]

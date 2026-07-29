@@ -4,6 +4,8 @@ mod object;
 mod paths;
 mod sidecars;
 
+pub(crate) use files::bytes_to_lower_hex;
+
 #[cfg(test)]
 pub(crate) use lock::with_shared_stdlib_cache_publish_lock;
 pub(crate) use object::publish_shared_stdlib_cache_object;

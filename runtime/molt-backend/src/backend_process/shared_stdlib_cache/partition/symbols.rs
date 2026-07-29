@@ -43,7 +43,11 @@ pub(crate) fn prune_and_partition_native_stdlib(
     entry_module: &str,
     stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
     module_registry_roots: &std::collections::BTreeSet<String>,
-) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
+) -> (
+    Vec<molt_backend::FunctionIR>,
+    Vec<molt_backend::FunctionIR>,
+    molt_backend::NativeBackendModuleContext,
+) {
     molt_backend::inject_runtime_exit(ir);
     // Import bedrock: init bodies are reachable only through the registry
     // blob's MODULE_INIT_TABLE relocations, so the registry's init symbols
@@ -51,6 +55,7 @@ pub(crate) fn prune_and_partition_native_stdlib(
     molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
     molt_backend::eliminate_dead_imports(ir);
     molt_backend::eliminate_dead_ops(ir);
+    let module_context = molt_backend::SimpleBackend::build_module_context(&ir.functions);
     let user_func_set: std::collections::BTreeSet<String> = ir
         .functions
         .iter()
@@ -63,5 +68,5 @@ pub(crate) fn prune_and_partition_native_stdlib(
         .partition(|f| user_func_set.contains(&f.name));
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
-    (user_remaining, stdlib_funcs)
+    (user_remaining, stdlib_funcs, module_context)
 }

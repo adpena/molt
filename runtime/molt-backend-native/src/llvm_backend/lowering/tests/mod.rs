@@ -16,6 +16,22 @@ fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
     backend
 }
 
+fn test_native_linkage_abi(
+    param_types: Vec<TirType>,
+    return_type: Option<TirType>,
+) -> crate::NativeFunctionLinkageAbi {
+    crate::NativeFunctionLinkageAbi {
+        source_signature: crate::ir::ExternFunctionSignature {
+            arity: param_types.len(),
+            has_closure: false,
+            returns_value: return_type.is_some(),
+            execution_context: crate::ir::ExecutionContextPolicy::None,
+        },
+        param_types,
+        return_type,
+    }
+}
+
 fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
     let kind_id = Attribute::get_named_enum_kind_id(attr_name);
     kind_id == 0

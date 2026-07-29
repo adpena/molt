@@ -19,8 +19,9 @@ pub mod tir;
 pub mod trampolines;
 
 pub use molt_ir::{
-    BackendIrDocument, ExecutionContextPolicy, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR,
-    SimpleIR, validate_simple_ir, write_function_ir_contract,
+    BackendIrDocument, EXTERN_SIGNATURE_RETURN_VALUE, ExecutionContextPolicy,
+    ExternFunctionSignature, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR,
+    validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
 };
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,

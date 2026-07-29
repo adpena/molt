@@ -248,6 +248,7 @@ fn native_application_object_batches_cleanup_temp_dir_after_merge_failure() {
             app_callable_manifest: None,
             log_prefix: "MOLT_BACKEND(test)",
             module_registry: None,
+            module_context: None,
         },
     )
     .expect_err("forced linker failure should propagate");
@@ -349,6 +350,7 @@ fn native_application_object_uses_op_budget_even_when_count_fits() {
             app_callable_manifest: None,
             log_prefix: "MOLT_BACKEND(test)",
             module_registry: None,
+            module_context: None,
         },
     )
     .expect_err("op budget must force relocatable batching");
@@ -472,15 +474,15 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
 }
 
 #[test]
-fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
+fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     let inherited = FunctionIR {
         name: "demo__molt_module_chunk_1".to_string(),
-        params: vec!["module".to_string()],
+        params: Vec::new(),
         ops: vec![OpIR {
             kind: "ret_void".to_string(),
             ..OpIR::default()
         }],
-        param_types: Some(vec!["i64".to_string()]),
+        param_types: Some(Vec::new()),
         source_file: Some("demo.py".to_string()),
         is_extern: false,
         execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
@@ -514,7 +516,7 @@ fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
         is_extern: false,
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
-    let declarations = inherited_function_declarations(&[local.clone(), inherited.clone()]);
+    let declarations = external_function_declarations(&[local.clone(), inherited.clone()]);
 
     let mut string_only_reference = vec![FunctionIR {
         name: "string_collision".to_string(),
@@ -530,16 +532,55 @@ fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
         is_extern: false,
         execution_context: Default::default(),
     }];
-    append_referenced_inherited_declarations(&mut string_only_reference, &declarations);
+    append_referenced_external_declarations(&mut string_only_reference, &declarations);
     assert_eq!(
         string_only_reference.len(),
         1,
-        "only typed context-threading edges may pull inherited declarations into a batch"
+        "plain string payloads must not pull external declarations into a batch"
+    );
+
+    let mut dynamic_method_collision = vec![FunctionIR {
+        name: "method_collision".to_string(),
+        ops: vec![OpIR {
+            kind: "call_method".to_string(),
+            s_value: Some(inherited.name.clone()),
+            ..OpIR::default()
+        }],
+        ..FunctionIR::default()
+    }];
+    append_referenced_external_declarations(&mut dynamic_method_collision, &declarations);
+    assert_eq!(
+        dynamic_method_collision.len(),
+        1,
+        "dynamic method names must not be mistaken for static external symbols"
+    );
+
+    let mut local_external_reference = vec![FunctionIR {
+        name: "warm_user".to_string(),
+        params: Vec::new(),
+        ops: vec![OpIR {
+            kind: "call_internal".to_string(),
+            s_value: Some(local.name.clone()),
+            ..OpIR::default()
+        }],
+        param_types: None,
+        source_file: Some("warm.py".to_string()),
+        is_extern: false,
+        execution_context: Default::default(),
+    }];
+    append_referenced_external_declarations(&mut local_external_reference, &declarations);
+    assert_eq!(local_external_reference.len(), 2);
+    let local_declaration = &local_external_reference[1];
+    assert_eq!(local_declaration.name, local.name);
+    assert!(local_declaration.is_extern);
+    assert_eq!(
+        local_declaration.execution_context,
+        molt_backend::ir::ExecutionContextPolicy::Local
     );
 
     let mut batch_functions = vec![local];
 
-    append_referenced_inherited_declarations(&mut batch_functions, &declarations);
+    append_referenced_external_declarations(&mut batch_functions, &declarations);
 
     assert_eq!(batch_functions.len(), 2);
     let declaration = &batch_functions[1];
@@ -548,7 +589,8 @@ fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
     assert_eq!(declaration.param_types, inherited.param_types);
     assert_eq!(declaration.source_file, inherited.source_file);
     assert!(declaration.is_extern);
-    assert!(declaration.ops.is_empty());
+    assert_eq!(declaration.ops.len(), 1);
+    assert_eq!(declaration.ops[0].kind, "ret_void");
     assert_eq!(
         declaration.execution_context,
         molt_backend::ir::ExecutionContextPolicy::Inherited

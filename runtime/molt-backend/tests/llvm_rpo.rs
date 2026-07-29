@@ -16,7 +16,6 @@ use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
-use molt_backend::tir::values::ValueId;
 
 /// Build a function with `num_blocks` empty blocks (terminators initialized
 /// to `Unreachable`; tests overwrite them as needed).

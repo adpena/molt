@@ -2,6 +2,76 @@ use super::exceptions::luau_tir_roundtrip_function;
 use super::*;
 
 #[test]
+fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
+    let declarations = [
+        FunctionIR {
+            name: "stdlib_void_helper".to_string(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            is_extern: true,
+            ..FunctionIR::default()
+        },
+        FunctionIR {
+            name: "stdlib_value_helper".to_string(),
+            ops: vec![
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some(crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec![crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            is_extern: true,
+            ..FunctionIR::default()
+        },
+    ];
+
+    for declaration in declarations {
+        declaration
+            .extern_signature()
+            .expect("test input must be a canonical extern declaration");
+        let expected = format!(
+            "luau backend cannot compile extern function `{}`: the luau target has no extern provider/linkage ABI",
+            declaration.name
+        );
+        let mut backend = LuauBackend::new();
+        let error = backend
+            .compile_checked(&SimpleIR {
+                functions: vec![declaration.clone()],
+                profile: None,
+            })
+            .expect_err("Luau must reject externs without a provider/linkage ABI");
+
+        assert_eq!(error, expected);
+        assert!(
+            backend.output.is_empty(),
+            "extern rejection must happen before any Luau source is assembled"
+        );
+        assert!(backend.unsupported_ops.is_empty());
+
+        let mut pipeline_backend = LuauBackend::new();
+        let pipeline_error = pipeline_backend
+            .compile_via_ir(&SimpleIR {
+                functions: vec![declaration],
+                profile: None,
+            })
+            .expect_err("the Luau IR pipeline must use the checked compile boundary");
+        assert_eq!(pipeline_error, expected);
+        assert!(
+            pipeline_backend.output.is_empty(),
+            "the Luau IR pipeline must reject externs before source assembly"
+        );
+        assert!(pipeline_backend.unsupported_ops.is_empty());
+    }
+}
+
+#[test]
 fn test_sanitize_ident() {
     assert_eq!(sanitize_ident("foo"), "foo");
     assert_eq!(sanitize_ident("my.attr"), "_m_user_6d792e61747472");
@@ -1474,14 +1544,15 @@ fn ordered_dict_runtime_executes_full_semantics_in_lune_when_available() {
         return;
     };
 
+    let dict_runtime_source = format!(
+        "local molt_binary_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal function molt_binary_new(kind: string, value: string): any local result = {{}}; molt_binary_metadata[result] = {{kind=kind, value=value}}; return result end\n{}{}{}",
+        dict_runtime::DICT_CORE_RUNTIME,
+        dict_runtime::CALLARGS_RUNTIME,
+        dict_runtime::EQUALITY_REPR_RUNTIME
+    );
     let source = format!(
         "--!strict\nlocal molt_func_attrs = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_function_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_call_checked: (any, ...any) -> any\nlocal molt_equal: (any, any, any?) -> boolean\nlocal molt_sequence_length_key = {{}}\nlocal molt_sequence_kind_key = {{}}\nlocal function molt_sequence_len(sequence: {{any}}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {{any}} local sequence = table.pack(...); rawset(sequence, molt_sequence_length_key, sequence.n); rawset(sequence, molt_sequence_kind_key, kind); rawset(sequence, \"n\", nil); return sequence end\nlocal function molt_pack_list(...): {{any}} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {{any}} return molt_pack_sequence_kind(\"tuple\", ...) end\n{}\nlocal math_floor = math.floor\n{}\n{}",
-        format!(
-            "local molt_binary_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal function molt_binary_new(kind: string, value: string): any local result = {{}}; molt_binary_metadata[result] = {{kind=kind, value=value}}; return result end\n{}{}{}",
-            dict_runtime::DICT_CORE_RUNTIME,
-            dict_runtime::CALLARGS_RUNTIME,
-            dict_runtime::EQUALITY_REPR_RUNTIME
-        ),
+        dict_runtime_source,
         include_str!("../../luau_json_prelude.luau"),
         r#"
 local function run_authority_oracle()

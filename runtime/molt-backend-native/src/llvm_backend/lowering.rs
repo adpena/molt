@@ -49,6 +49,38 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 #[cfg(feature = "llvm")]
+fn require_function_linkage_abi<'a>(
+    func: &TirFunction,
+    backend: &'a LlvmBackend<'_>,
+) -> std::borrow::Cow<'a, crate::NativeFunctionLinkageAbi> {
+    if let Some(abi) = backend.function_linkage_abis.get(&func.name) {
+        return std::borrow::Cow::Borrowed(abi);
+    }
+    #[cfg(test)]
+    {
+        // Direct lowering unit tests intentionally bypass the production
+        // compile driver. Keep their local-only fixture authority out of
+        // shipped code while production fails closed on every absent row.
+        let returns_value = !matches!(func.return_type, TirType::None);
+        std::borrow::Cow::Owned(crate::NativeFunctionLinkageAbi {
+            source_signature: crate::ir::ExternFunctionSignature {
+                arity: func.param_types.len(),
+                has_closure: false,
+                returns_value,
+                execution_context: func.execution_context,
+            },
+            param_types: crate::representation_plan::native_linkage_param_types(func),
+            return_type: returns_value.then(|| func.return_type.clone()),
+        })
+    }
+    #[cfg(not(test))]
+    panic!(
+        "LLVM function `{}` has no exact native linkage ABI",
+        func.name
+    );
+}
+
+#[cfg(feature = "llvm")]
 mod call_lowering;
 #[cfg(feature = "llvm")]
 mod constant_ops;
@@ -663,18 +695,44 @@ fn require_llvm_function_type<'ctx>(
 }
 
 #[cfg(feature = "llvm")]
+fn add_molt_nounwind_attribute<'ctx>(backend: &LlvmBackend<'ctx>, function: FunctionValue<'ctx>) {
+    // Molt reports Python failures through its pending-error ABI rather than
+    // native unwinding. Do not infer termination: Python bodies and external
+    // providers may loop forever, so LLVM `willreturn` would be unsound.
+    let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+    function.add_attribute(
+        AttributeLoc::Function,
+        backend.context.create_enum_attribute(nounwind_kind, 0),
+    );
+}
+
+#[cfg(feature = "llvm")]
 pub fn declare_tir_function<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> FunctionValue<'ctx> {
-    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = func
+    let linkage_abi = require_function_linkage_abi(func, backend);
+    assert_eq!(
+        linkage_abi.param_types.len(),
+        func.param_types.len(),
+        "LLVM definition `{}` parameter count disagrees with its exact linkage ABI",
+        func.name
+    );
+    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
         .param_types
         .iter()
         .map(|ty| lower_type(backend.context, ty).into())
         .collect();
 
-    let ret_ty = lower_type(backend.context, &func.return_type);
-    let fn_ty = ret_ty.fn_type(&param_llvm_types, false);
+    let fn_ty = match linkage_abi.return_type.as_ref() {
+        Some(return_type) => {
+            lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
+        }
+        None => backend
+            .context
+            .void_type()
+            .fn_type(&param_llvm_types, false),
+    };
     // Reuse an existing forward-declaration if present (e.g., from a prior
     // Call op that referenced this function before it was defined).
     // If not, create a new function.  This avoids LLVM appending `.1` to
@@ -694,19 +752,54 @@ pub fn declare_tir_function<'ctx>(
     } else {
         backend.module.add_function(&func.name, fn_ty, None)
     };
-    // All molt-compiled functions use NaN-boxed error returns (never C++
-    // exceptions) and always terminate. Mark them nounwind + willreturn
-    // so LLVM can omit landing pads and perform aggressive code motion.
-    let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
-    llvm_fn.add_attribute(
-        AttributeLoc::Function,
-        backend.context.create_enum_attribute(nounwind_kind, 0),
+    add_molt_nounwind_attribute(backend, llvm_fn);
+    llvm_fn
+}
+
+#[cfg(feature = "llvm")]
+pub fn declare_extern_tir_function<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+) -> FunctionValue<'ctx> {
+    let linkage_abi = backend
+        .function_linkage_abis
+        .get(&func.name)
+        .unwrap_or_else(|| panic!("LLVM extern `{}` lost its exact linkage ABI", func.name));
+    assert_eq!(
+        func.param_types.len(),
+        linkage_abi.param_types.len(),
+        "LLVM extern `{}` TIR parameter count disagrees with its exact linkage ABI",
+        func.name
     );
-    let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
-    llvm_fn.add_attribute(
-        AttributeLoc::Function,
-        backend.context.create_enum_attribute(willreturn_kind, 0),
-    );
+    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
+        .param_types
+        .iter()
+        .map(|ty| lower_type(backend.context, ty).into())
+        .collect();
+    let fn_ty = match linkage_abi.return_type.as_ref() {
+        Some(return_type) => {
+            lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
+        }
+        None => backend
+            .context
+            .void_type()
+            .fn_type(&param_llvm_types, false),
+    };
+    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+        let existing = require_llvm_function_type(&func.name, existing, fn_ty);
+        assert_eq!(
+            existing.count_basic_blocks(),
+            0,
+            "LLVM extern `{}` must remain declaration-only",
+            func.name
+        );
+        existing
+    } else {
+        backend
+            .module
+            .add_function(&func.name, fn_ty, Some(inkwell::module::Linkage::External))
+    };
+    add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
 }
 
@@ -882,7 +975,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     ));
                     self.get_undef_for_type(lower_type(self.backend.context, &arg.ty))
                 });
-                self.values.insert(arg.id, value);
                 // An `int` parameter the plan does NOT prove overflow-safe is
                 // carried BOXED (`DynBox`), exactly as a non-entry phi is (see
                 // the `else` arm). The calling convention passes every argument
@@ -900,6 +992,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // carrier the body reasons about — matching the native lane,
                 // whose `int` params are likewise boxed words.
                 let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
+                let linkage_ty = require_function_linkage_abi(self.func, self.backend)
+                    .param_types
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "LLVM definition `{}` linkage ABI omitted parameter {i}",
+                            self.func.name
+                        )
+                    });
+                let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb);
+                let value =
+                    self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
+                self.values.insert(arg.id, value);
                 self.value_types.insert(arg.id, effective_ty);
             }
         } else {

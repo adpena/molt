@@ -74,7 +74,7 @@ def _manifest(cache_key: str) -> str:
 
 
 def _partition_manifest(name: str = "partition-a") -> str:
-    return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}}'
+    return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}}'
 
 
 def _write_object_digest_sidecar(stdlib_object: Path) -> None:

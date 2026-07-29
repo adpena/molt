@@ -6,7 +6,11 @@ pub(super) struct WasmTrampolineAnalysis {
     pub(super) task_kinds: BTreeMap<String, TrampolineKind>,
     pub(super) task_closure_sizes: BTreeMap<String, i64>,
     pub(super) default_trampoline_spec: BTreeMap<String, (usize, bool)>,
-    pub(super) function_has_ret: BTreeMap<String, bool>,
+    /// Whether a direct WASM call to each user function leaves one boxed-i64
+    /// result on the operand stack. Defined functions always do (ret_void
+    /// materializes None); extern declarations follow their canonical
+    /// FunctionIR signature.
+    pub(super) function_abi_returns_value: BTreeMap<String, bool>,
 }
 
 pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis {
@@ -16,6 +20,9 @@ pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis 
     let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
     let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
     for func_ir in &ir.functions {
+        if func_ir.is_extern {
+            continue;
+        }
         let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
         let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
         let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
@@ -118,7 +125,7 @@ pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis 
     }
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     let mut default_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
-    let mut function_has_ret: BTreeMap<String, bool> = BTreeMap::new();
+    let mut function_abi_returns_value: BTreeMap<String, bool> = BTreeMap::new();
     for func_ir in &ir.functions {
         let default_has_closure = func_ir
             .params
@@ -133,10 +140,15 @@ pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis 
             .copied()
             .unwrap_or((default_arity, default_has_closure));
         default_trampoline_spec.insert(func_ir.name.clone(), spec);
-        function_has_ret.insert(
-            func_ir.name.clone(),
-            crate::function_requires_value_return(func_ir),
-        );
+        let abi_returns_value = if func_ir.is_extern {
+            func_ir
+                .extern_signature()
+                .unwrap_or_else(|error| panic!("invalid WASM extern function declaration: {error}"))
+                .returns_value
+        } else {
+            true
+        };
+        function_abi_returns_value.insert(func_ir.name.clone(), abi_returns_value);
     }
 
     WasmTrampolineAnalysis {
@@ -144,6 +156,6 @@ pub(super) fn analyze_wasm_trampolines(ir: &SimpleIR) -> WasmTrampolineAnalysis 
         task_kinds,
         task_closure_sizes,
         default_trampoline_spec,
-        function_has_ret,
+        function_abi_returns_value,
     }
 }
