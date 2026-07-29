@@ -26,7 +26,7 @@ fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("joined".to_string()),
+                args: Some(vec!["joined".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -65,7 +65,6 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("alias".to_string()),
                 args: Some(vec!["alias".to_string()]),
                 ..OpIR::default()
             },

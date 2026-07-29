@@ -192,7 +192,7 @@ fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
     call_helper.args = Some(Vec::new());
 
     let mut ret_result = op("ret");
-    ret_result.var = Some("result".to_string());
+    ret_result.args = Some(vec!["result".to_string()]);
 
     let mut helper_missing = op("missing");
     helper_missing.out = Some("value".to_string());

@@ -53,7 +53,7 @@ fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("helper_obj".to_string()),
+                args: Some(vec!["helper_obj".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -80,7 +80,7 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("helper_obj".to_string()),
+                args: Some(vec!["helper_obj".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -216,7 +216,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("result".to_string()),
+                args: Some(vec!["result".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -313,7 +313,7 @@ fn const_str_empty_string_payload_still_compiles() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("empty".to_string()),
+                    args: Some(vec!["empty".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -355,7 +355,7 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("result".to_string()),
+                args: Some(vec!["result".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -376,7 +376,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 params: vec!["value".to_string()],
                 ops: vec![OpIR {
                     kind: "ret".to_string(),
-                    var: Some("value".to_string()),
+                    args: Some(vec!["value".to_string()]),
                     ..OpIR::default()
                 }],
                 param_types: None,
@@ -410,7 +410,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                     },
                     OpIR {
                         kind: "ret".to_string(),
-                        var: Some("result".to_string()),
+                        args: Some(vec!["result".to_string()]),
                         ..OpIR::default()
                     },
                 ],
@@ -446,7 +446,7 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("helper_obj".to_string()),
+                args: Some(vec!["helper_obj".to_string()]),
                 ..OpIR::default()
             },
         ],

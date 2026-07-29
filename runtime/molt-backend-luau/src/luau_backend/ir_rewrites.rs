@@ -737,18 +737,6 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     j += 1;
                     continue;
                 }
-                // Skip bare `ret` ops inside the exception re-raise
-                // block (no var, no args, followed by a nearby end_if).
-                if k == "ret"
-                    && ops[j].var.is_none()
-                    && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
-                {
-                    let has_end_if = (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
-                    if has_end_if {
-                        j += 1;
-                        continue;
-                    }
-                }
                 if k == "index"
                     && let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args)
                     && args.len() >= 2
@@ -771,18 +759,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                             continue;
                         }
                         if mk == "ret" {
-                            // Match ret with explicit var reference.
-                            if let Some(ref ret_var) = ops[m].var
-                                && ret_var == out
-                            {
-                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
-                            }
-                            // Also match bare ret (no var/args) that
-                            // follows index — the index already read
-                            // the return value into scope.
-                            if ops[m].var.is_none()
-                                && ops[m].args.as_ref().is_none_or(|a| a.is_empty())
-                            {
+                            if ops[m].args.as_ref().and_then(|args| args.first()) == Some(out) {
                                 return_labels.insert(label_id, (slot.clone(), args[1].clone()));
                             }
                         }
@@ -845,7 +822,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     // Match! Replace store_index + boilerplate with ret.
                     result.push(OpIR {
                         kind: "ret".to_string(),
-                        var: Some(value.clone()),
+                        args: Some(vec![value.clone()]),
                         ..OpIR::default()
                     });
                     if k == "jump" {
@@ -898,17 +875,6 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     j += 1;
                     continue;
                 }
-                // Skip bare ret inside exception re-raise blocks.
-                if k == "ret"
-                    && ops[j].var.is_none()
-                    && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
-                {
-                    let has_end_if = (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
-                    if has_end_if {
-                        j += 1;
-                        continue;
-                    }
-                }
                 if k == "index"
                     && let Some(ref idx_args) = ops[j].args
                     && idx_args.len() >= 2
@@ -919,16 +885,13 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     j += 1;
                     continue;
                 }
-                // Found a bare ret after the index — replace the
-                // whole sequence with ret(value).
                 if k == "ret" && found_index_out.is_some() {
-                    let bare =
-                        ops[j].var.is_none() && ops[j].args.as_ref().is_none_or(|a| a.is_empty());
-                    let refs_index = ops[j].var.as_ref() == found_index_out.as_ref();
-                    if bare || refs_index {
+                    let refs_index = ops[j].args.as_ref().and_then(|args| args.first())
+                        == found_index_out.as_ref();
+                    if refs_index {
                         result.push(OpIR {
                             kind: "ret".to_string(),
-                            var: Some(value.clone()),
+                            args: Some(vec![value.clone()]),
                             ..OpIR::default()
                         });
                         i = j + 1;
@@ -1043,7 +1006,7 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         }
 
         // Check if this op is an unconditional return.
-        let is_return = matches!(kind, "ret" | "return" | "return_value" | "ret_void");
+        let is_return = molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind);
         result.push(op.clone());
 
         if is_return {

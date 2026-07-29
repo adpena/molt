@@ -149,11 +149,11 @@ mod tests {
         branch.args = Some(vec!["cond".into()]);
         branch.value = Some(7);
         let mut fallthrough_return = op("ret");
-        fallthrough_return.var = Some("fallback".into());
+        fallthrough_return.args = Some(vec!["fallback".into()]);
         let mut label = op("label");
         label.value = Some(7);
         let mut target_return = op("ret");
-        target_return.var = Some("carried".into());
+        target_return.args = Some(vec!["carried".into()]);
         let ops = vec![branch, fallthrough_return, label, target_return];
 
         let plan = analyze_simple_cfg_liveness(&ops);
@@ -167,11 +167,11 @@ mod tests {
         let mut check = op("check_exception");
         check.value = Some(9);
         let mut normal_return = op("ret");
-        normal_return.var = Some("normal".into());
+        normal_return.args = Some(vec!["normal".into()]);
         let mut handler = op("label");
         handler.value = Some(9);
         let mut handler_return = op("ret");
-        handler_return.var = Some("exception_context".into());
+        handler_return.args = Some(vec!["exception_context".into()]);
         let ops = vec![check, normal_return, handler, handler_return];
 
         let plan = analyze_simple_cfg_liveness(&ops);
@@ -218,7 +218,7 @@ mod tests {
         let mut resume = op("state_label");
         resume.value = Some(3);
         let mut resumed_return = op("ret");
-        resumed_return.var = Some("frame_value".into());
+        resumed_return.args = Some(vec!["frame_value".into()]);
         let ops = vec![switch, suspend, resume, resumed_return];
 
         let plan = analyze_simple_cfg_liveness(&ops);
@@ -247,7 +247,7 @@ mod tests {
         let mut define = op("const_int");
         define.out = Some("value".into());
         let mut ret = op("ret");
-        ret.var = Some("value".into());
+        ret.args = Some(vec!["value".into()]);
         let plan = analyze_simple_cfg_liveness(&[define, ret]);
 
         assert!(plan.live_after(0).contains("value"));

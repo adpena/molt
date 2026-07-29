@@ -82,7 +82,7 @@ fn entry_block_params_compile_with_int_shadow_targets() {
     store_slot.args = Some(vec!["tmp".to_string()]);
 
     let mut ret_arg = op("ret");
-    ret_arg.var = Some("arg".to_string());
+    ret_arg.args = Some(vec!["arg".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -128,7 +128,7 @@ fn structured_if_phi_merges_compile() {
     phi.args = Some(vec!["then_val".to_string(), "else_val".to_string()]);
 
     let mut ret_joined = op("ret");
-    ret_joined.var = Some("joined".to_string());
+    ret_joined.args = Some(vec!["joined".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -193,7 +193,7 @@ fn nested_structured_if_phi_merges_compile() {
     outer_phi.args = Some(vec!["outer_then".to_string(), "base".to_string()]);
 
     let mut ret_joined = op("ret");
-    ret_joined.var = Some("joined".to_string());
+    ret_joined.args = Some(vec!["joined".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {

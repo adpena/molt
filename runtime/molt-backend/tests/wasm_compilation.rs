@@ -210,7 +210,6 @@ fn wasm_contains_name_fragment(wasm: &[u8], needle: &str) -> bool {
 
 fn ret_value(name: &str) -> OpIR {
     let mut ret = op("ret");
-    ret.var = Some(name.to_string());
     ret.args = Some(vec![name.to_string()]);
     ret
 }
@@ -1430,7 +1429,7 @@ fn jumpful_br_if_function_validates() {
     label_join.value = Some(3);
 
     let mut ret = op("ret");
-    ret.var = Some("v1".to_string());
+    ret.args = Some(vec!["v1".to_string()]);
 
     let wasm = compile_single_function(
         vec![cond, br_if, one, jump, label_then, two, label_join, ret],

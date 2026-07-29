@@ -1,5 +1,8 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
-use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
+use crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator;
+use crate::tir::simple_def_use::{
+    simple_ir_return_has_value, visit_simple_ir_defined_names, visit_simple_ir_reads,
+};
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,6 +74,16 @@ fn split_frame_name(base: &str, occupied: &mut BTreeSet<String>) -> String {
             return candidate;
         }
         idx += 1;
+    }
+}
+
+fn split_label_id(occupied: &mut BTreeSet<i64>, cursor: &mut i64) -> Option<i64> {
+    loop {
+        let candidate = *cursor;
+        *cursor = cursor.checked_add(1)?;
+        if occupied.insert(candidate) {
+            return Some(candidate);
+        }
     }
 }
 
@@ -214,7 +227,7 @@ fn split_status_return_ops(occupied: &mut BTreeSet<String>, should_continue: boo
         },
         OpIR {
             kind: "ret".to_string(),
-            var: Some(name),
+            args: Some(vec![name]),
             ..OpIR::default()
         },
     ]
@@ -227,7 +240,8 @@ fn split_rewrite_void_terminals_to_status(
 ) -> Vec<OpIR> {
     let mut rewritten = Vec::with_capacity(ops.len());
     for op in ops {
-        if op.kind == "ret_void" {
+        if simpleir_kind_is_return_terminator(op.kind.as_str()) && !simple_ir_return_has_value(&op)
+        {
             rewritten.extend(split_status_return_ops(occupied, should_continue));
         } else {
             rewritten.push(op);
@@ -239,7 +253,7 @@ fn split_rewrite_void_terminals_to_status(
 fn split_insert_local_frame_exits(ops: Vec<OpIR>) -> Vec<OpIR> {
     let mut with_exits = Vec::with_capacity(ops.len() + 4);
     for op in ops {
-        if matches!(op.kind.as_str(), "ret" | "ret_void") {
+        if simpleir_kind_is_return_terminator(op.kind.as_str()) {
             with_exits.push(OpIR {
                 kind: "trace_exit".to_string(),
                 ..OpIR::default()
@@ -646,9 +660,9 @@ pub fn split_large_function(
         return Err(Box::new(original_for_split_failure));
     }
 
-    let func_returns_value = func.ops.iter().any(|op| op.kind == "ret");
+    let func_returns_value = func.ops.iter().any(simple_ir_return_has_value);
     for (idx, op) in func.ops.iter().enumerate() {
-        if matches!(op.kind.as_str(), "ret" | "ret_void") && idx + 1 != func.ops.len() {
+        if simpleir_kind_is_return_terminator(op.kind.as_str()) && idx + 1 != func.ops.len() {
             return Err(Box::new(original_for_split_failure.clone()));
         }
     }
@@ -672,14 +686,13 @@ pub fn split_large_function(
         .map(|(idx, name)| (name.clone(), idx))
         .collect();
     let uses_split_frame = !frame_slot_for.is_empty();
-    let mut next_synthetic_label = label_positions
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let exception_return_label = next_synthetic_label;
-    next_synthetic_label = next_synthetic_label.saturating_add(1);
+    let mut occupied_labels = label_positions.keys().copied().collect::<BTreeSet<_>>();
+    let mut next_synthetic_label = 0;
+    let Some(exception_return_label) =
+        split_label_id(&mut occupied_labels, &mut next_synthetic_label)
+    else {
+        return Err(Box::new(original_for_split_failure));
+    };
 
     struct ChunkPlan {
         name: String,
@@ -737,8 +750,10 @@ pub fn split_large_function(
             })
             .min();
         if let Some(suffix_start) = suffix_clone_start {
-            let skip_label = next_synthetic_label;
-            next_synthetic_label = next_synthetic_label.saturating_add(1);
+            let Some(skip_label) = split_label_id(&mut occupied_labels, &mut next_synthetic_label)
+            else {
+                return Err(Box::new(original_for_split_failure.clone()));
+            };
             normal_skip_label_for_cloned_suffix = Some(skip_label);
             chunk_ops.push(OpIR {
                 kind: "jump".to_string(),
@@ -778,13 +793,13 @@ pub fn split_large_function(
         let (returns_value, returns_control_status) = if func_returns_value {
             let terminal = if chunk_ops
                 .last()
-                .is_some_and(|op| matches!(op.kind.as_str(), "ret" | "ret_void"))
+                .is_some_and(|op| simpleir_kind_is_return_terminator(op.kind.as_str()))
             {
                 chunk_ops.pop()
             } else {
                 None
             };
-            let returns_value = terminal.as_ref().is_some_and(|op| op.kind == "ret");
+            let returns_value = terminal.as_ref().is_some_and(simple_ir_return_has_value);
             if uses_split_frame {
                 let stores = split_frame_store_ops(
                     &frame_name,
@@ -899,23 +914,26 @@ pub fn split_large_function(
             ..OpIR::default()
         });
     }
-    for (ci, plan) in plans.iter().enumerate() {
+    for plan in &plans {
         let mut call_args = func.params.clone();
         if uses_split_frame {
             call_args.push(frame_name.clone());
         }
-        let chunk_continue_name = format!("__chunk_continue_{ci}");
+        let chunk_result_name = split_frame_name(
+            if plan.returns_control_status {
+                "__molt_split_chunk_continue"
+            } else if plan.returns_value {
+                "__molt_split_chunk_return"
+            } else {
+                "__molt_split_chunk_discard"
+            },
+            &mut occupied_names,
+        );
         stub_ops.push(OpIR {
             kind: "call_internal".to_string(),
             s_value: Some(plan.name.clone()),
             args: Some(call_args),
-            out: Some(if plan.returns_control_status {
-                chunk_continue_name.clone()
-            } else if plan.returns_value {
-                "__chunk_ret".to_string()
-            } else {
-                format!("__chunk_discard_{ci}")
-            }),
+            out: Some(chunk_result_name.clone()),
             passes_execution_context: chunk_execution_context == ExecutionContextPolicy::Inherited,
             ..OpIR::default()
         });
@@ -925,11 +943,14 @@ pub fn split_large_function(
             ..OpIR::default()
         });
         if plan.returns_control_status {
-            let continue_label = next_synthetic_label;
-            next_synthetic_label = next_synthetic_label.saturating_add(1);
+            let Some(continue_label) =
+                split_label_id(&mut occupied_labels, &mut next_synthetic_label)
+            else {
+                return Err(Box::new(original_for_split_failure.clone()));
+            };
             stub_ops.push(OpIR {
                 kind: "br_if".to_string(),
-                args: Some(vec![chunk_continue_name]),
+                args: Some(vec![chunk_result_name]),
                 value: Some(continue_label),
                 ..OpIR::default()
             });
@@ -947,21 +968,23 @@ pub fn split_large_function(
         if plan.returns_value {
             stub_ops.push(OpIR {
                 kind: "ret".to_string(),
-                var: Some("__chunk_ret".to_string()),
+                args: Some(vec![chunk_result_name]),
                 ..OpIR::default()
             });
             continue;
         }
     }
     if func_returns_value {
+        let missing_return_name =
+            split_frame_name("__molt_split_missing_return", &mut occupied_names);
         stub_ops.push(OpIR {
             kind: "const_none".to_string(),
-            out: Some("__chunk_missing_ret".to_string()),
+            out: Some(missing_return_name.clone()),
             ..OpIR::default()
         });
         stub_ops.push(OpIR {
             kind: "ret".to_string(),
-            var: Some("__chunk_missing_ret".to_string()),
+            args: Some(vec![missing_return_name]),
             ..OpIR::default()
         });
     } else {
@@ -976,14 +999,16 @@ pub fn split_large_function(
         ..OpIR::default()
     });
     if func_returns_value {
+        let exception_return_name =
+            split_frame_name("__molt_split_exception_return", &mut occupied_names);
         stub_ops.push(OpIR {
             kind: "const_none".to_string(),
-            out: Some("__chunk_exception_ret".to_string()),
+            out: Some(exception_return_name.clone()),
             ..OpIR::default()
         });
         stub_ops.push(OpIR {
             kind: "ret".to_string(),
-            var: Some("__chunk_exception_ret".to_string()),
+            args: Some(vec![exception_return_name]),
             ..OpIR::default()
         });
     } else {

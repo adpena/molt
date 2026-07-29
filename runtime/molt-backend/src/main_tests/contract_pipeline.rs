@@ -111,7 +111,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
 
 #[cfg(feature = "rust-backend")]
 #[test]
-fn rust_source_for_ir_rejects_stub_markers() {
+fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -129,10 +129,11 @@ fn rust_source_for_ir_rejects_stub_markers() {
         profile: None,
     };
 
-    let err = rust_source_for_ir(&ir).expect_err("Rust target must reject stub markers");
+    let err = rust_source_for_ir(&ir).expect_err("Rust target must reject unknown operations");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(
-        err.to_string().contains("unimplemented op stubs"),
+        err.to_string()
+            .contains("unclassified in the generated runtime semantic authority"),
         "unexpected error: {err}"
     );
 }
@@ -146,7 +147,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }],
                 param_types: None,

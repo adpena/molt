@@ -824,6 +824,10 @@ class ExpressionVisitorMixin(_MixinBase):
         if isinstance(node.value, ast.Name):
             obj_name = node.value.id
             exact_class = self.exact_locals.get(obj_name)
+        elif isinstance(node.value, ast.NamedExpr) and isinstance(
+            node.value.target, ast.Name
+        ):
+            obj_name = node.value.target.id
         return self._emit_attribute_load(node, obj, obj_name, exact_class)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:

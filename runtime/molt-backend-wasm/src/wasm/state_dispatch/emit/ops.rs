@@ -192,10 +192,13 @@ pub(super) fn emit_dispatch_op(
             );
             true
         }
-        "ret" => {
+        kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)
+            == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
+        {
             let ret_local = op
-                .var
+                .args
                 .as_ref()
+                .and_then(|args| args.first())
                 .and_then(|name| op_emitter.locals().get(name).copied());
             if let Some(local_idx) = ret_local {
                 func.instruction(&Instruction::LocalGet(local_idx));
@@ -203,14 +206,16 @@ pub(super) fn emit_dispatch_op(
                 dispatch_control_panic(
                     &func_ir.name,
                     idx,
-                    format_args!("ret target local {:?} is not present", op.var),
+                    format_args!("ret target args {:?} are not present", op.args),
                 );
             }
             emit_arena_free(func, op_emitter);
             func.instruction(&Instruction::Return);
             true
         }
-        "ret_void" => {
+        kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)
+            == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
+        {
             emit_arena_free(func, op_emitter);
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::Return);

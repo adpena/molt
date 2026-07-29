@@ -1,4 +1,4 @@
-use wasm_encoder::{Function, Instruction, ValType};
+use wasm_encoder::{Function, Instruction};
 
 mod task;
 
@@ -7,7 +7,6 @@ use task::{emit_task_trampoline, task_trampoline_local_types};
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::emit_call;
 use crate::wasm_table::WasmCallableTableTarget;
-use crate::wasm_values::box_int;
 use crate::{TrampolineBehavior, TrampolineSpec};
 
 impl WasmBackend {
@@ -17,7 +16,6 @@ impl WasmBackend {
         target_func_index: u32,
         table_target: WasmCallableTableTarget,
         spec: TrampolineSpec,
-        multi_return_count: Option<usize>,
     ) {
         let TrampolineSpec {
             arity,
@@ -34,19 +32,6 @@ impl WasmBackend {
         if let TrampolineBehavior::Task(task_kind) = behavior {
             let task_local_types = task_trampoline_local_types(task_kind);
             local_types.extend(task_local_types);
-        }
-        // For multi-value return trampolines (Plain kind only): allocate
-        // N temp locals for the return values + 1 local for the tuple builder.
-        // Params occupy locals 0..=2, so extra locals start at index 3.
-        let mr_locals_start: u32 = 3 + local_types.len() as u32;
-        if let (Some(ret_count), TrampolineBehavior::UnpackArgs) = (multi_return_count, behavior) {
-            // N temp locals for storing each return value
-            for _ in 0..ret_count {
-                local_types.push(ValType::I64);
-            }
-            // 1 local for the tuple builder handle
-            local_types.push(ValType::I64);
-            let _ = ret_count; // suppress unused warning
         }
         let mut func = Function::new_with_locals_types(local_types);
         match behavior {
@@ -82,45 +67,6 @@ impl WasmBackend {
                 }
                 emit_call(&mut func, reloc_enabled, target_func_index);
             }
-        }
-        if let Some(ret_count) = multi_return_count {
-            assert!(
-                matches!(behavior, TrampolineBehavior::UnpackArgs),
-                "multi-value returns require an unpack-args trampoline"
-            );
-            // The target function pushed `ret_count` i64 values onto the
-            // stack.  Pop them into temp locals (last return value is on
-            // top, so store in reverse order) then reconstruct a tuple.
-            let builder_local = mr_locals_start + ret_count as u32;
-            for i in (0..ret_count).rev() {
-                func.instruction(&Instruction::LocalSet(mr_locals_start + i as u32));
-            }
-            // list_builder_new(count) -> builder handle
-            func.instruction(&Instruction::I64Const(box_int(ret_count as i64)));
-            emit_call(
-                &mut func,
-                reloc_enabled,
-                self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderNew],
-            );
-            func.instruction(&Instruction::LocalSet(builder_local));
-            // list_builder_append(builder, value) for each value in order
-            for i in 0..ret_count {
-                func.instruction(&Instruction::LocalGet(builder_local));
-                func.instruction(&Instruction::LocalGet(mr_locals_start + i as u32));
-                emit_call(
-                    &mut func,
-                    reloc_enabled,
-                    self.import_ids
-                        [crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderAppend],
-                );
-            }
-            // tuple_builder_finish(builder) -> tuple handle (single i64)
-            func.instruction(&Instruction::LocalGet(builder_local));
-            emit_call(
-                &mut func,
-                reloc_enabled,
-                self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TupleBuilderFinish],
-            );
         }
         func.instruction(&Instruction::End);
         self.codes.function(&func);

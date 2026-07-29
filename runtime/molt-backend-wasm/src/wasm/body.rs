@@ -9,7 +9,7 @@ use wasm_encoder::ValType;
 
 pub use ops::WasmLirFallbackReason;
 pub(crate) use ops::{WasmBodyOp, WasmBodyOps, WasmCallTarget};
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(feature = "test-util")]
 pub use test_view::WasmBodyTestView;
 
 #[derive(Debug, Clone)]

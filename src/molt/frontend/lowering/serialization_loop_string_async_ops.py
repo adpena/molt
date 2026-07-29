@@ -787,7 +787,7 @@ class SerializationLoopStringAsyncOpsMixin(_MixinBase):
             if var_name in ctx.json_list_int_containers:
                 ctx.json_list_int_containers.add(op.result.name)
         elif op.kind == "ret":
-            ctx.json_ops.append({"kind": "ret", "var": op.args[0].name})
+            ctx.json_ops.append({"kind": "ret", "args": [op.args[0].name]})
         elif op.kind == "ret_void":
             ctx.json_ops.append({"kind": "ret_void"})
         elif op.kind == "ALLOC_TASK":

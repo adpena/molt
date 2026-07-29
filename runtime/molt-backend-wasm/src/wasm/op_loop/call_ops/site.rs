@@ -197,16 +197,12 @@ mod tests {
             &mut local_types,
             &mut local_count,
         );
-        locals.ensure_multi_return_callee_value(0, &mut local_types, &mut local_count);
-        locals.ensure_multi_return_call_value("pair", 0, &mut local_types, &mut local_count);
 
         let last_use_local = BTreeMap::from([
             ("value".to_string(), 10),
             ("__molt_tmp0".to_string(), 10),
             ("payload_ptr".to_string(), 10),
             ("payload_len".to_string(), 10),
-            ("__multi_ret_0".to_string(), 10),
-            ("__multi_call_pair_0".to_string(), 10),
         ]);
 
         assert_eq!(

@@ -229,7 +229,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         name: "molt_init_sys".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "return_none".to_string(),
+            kind: "ret_void".to_string(),
             ..OpIR::default()
         }],
         param_types: None,

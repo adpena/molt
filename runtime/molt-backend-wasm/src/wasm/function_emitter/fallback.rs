@@ -19,9 +19,8 @@ pub(super) fn emit_fallback_function_body(
     let reloc_enabled = ctx.reloc_enabled;
     let call_site_abi = &ctx.call_site_abi;
     let import_ids = ctx.import_ids;
-    let frame_plan = WasmFunctionFramePlan::for_function(func_ir, ctx);
+    let frame_plan = WasmFunctionFramePlan::for_function(func_ir);
     let (mut func, frame) = frame_plan.into_function_and_frame();
-    let multi_return_candidates = ctx.multi_return_candidates;
     frame.emit_debug_local_map(func_ir);
 
     let dispatch_plan =
@@ -60,7 +59,6 @@ pub(super) fn emit_fallback_function_body(
         import_ids,
         exception_handler_region_indices: &exception_handler_region_indices,
         frame: &frame,
-        multi_return_candidates,
         func_index,
         reloc_enabled,
         native_eh_enabled,

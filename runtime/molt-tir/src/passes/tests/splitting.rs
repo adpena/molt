@@ -1,4 +1,5 @@
 use super::*;
+use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 
 fn split_for_test(
     func: FunctionIR,
@@ -207,11 +208,20 @@ fn split_large_function_still_splits_regular_large_functions() {
         }),
         "stub must allocate the split frame used for cross-chunk live values"
     );
+    let call_results = stub_chunk_calls
+        .iter()
+        .filter_map(|op| op.out.as_deref())
+        .collect::<BTreeSet<_>>();
     assert!(
-        stub.ops
-            .iter()
-            .any(|op| op.kind == "ret" && op.var.as_deref() == Some("__chunk_ret")),
-        "split stub must return the named propagated chunk result",
+        stub.ops.iter().any(|op| {
+            op.kind == "ret"
+                && op
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.first())
+                    .is_some_and(|name| call_results.contains(name.as_str()))
+        }),
+        "split stub must return the exact collision-free chunk-call result"
     );
     assert!(
         chunks
@@ -228,6 +238,96 @@ fn split_large_function_still_splits_regular_large_functions() {
         })),
         "split chunks must store cross-chunk live values into the split frame"
     );
+}
+
+#[test]
+fn split_large_function_uses_generated_return_family_and_collision_free_synthetics() {
+    let reserved_names = vec![
+        "__molt_split_frame",
+        "__molt_split_frame_init",
+        "__molt_split_frame_index",
+        "__molt_split_frame_store_index",
+        "__molt_split_chunk_return",
+        "__molt_split_missing_return",
+        "__molt_split_exception_return",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let func = FunctionIR {
+        name: "generated_return_family".to_string(),
+        params: reserved_names.clone(),
+        execution_context: ExecutionContextPolicy::Inherited,
+        ops: vec![
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            make_const_int("value", 1),
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            make_arith("add", &["value", "value"], "result"),
+            OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["result".to_string()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+
+    let (stub, chunks) = split_for_test(func, 2).expect("generated return must split");
+
+    assert!(chunks.iter().any(|chunk| {
+        chunk.ops.iter().any(|op| {
+            op.kind == "ret"
+                && op
+                    .args
+                    .as_ref()
+                    .is_some_and(|args| args == &["result".to_string()])
+        })
+    }));
+    let generated_stub_names = stub
+        .ops
+        .iter()
+        .flat_map(|op| {
+            let mut names = Vec::new();
+            visit_simple_ir_defined_names(op, |name| names.push(name.to_string()));
+            names
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        generated_stub_names
+            .iter()
+            .all(|name| !reserved_names.contains(name))
+    );
+    let stub_labels = stub
+        .ops
+        .iter()
+        .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+        .filter_map(|op| op.value)
+        .collect::<BTreeSet<_>>();
+    assert!(!stub_labels.contains(&0));
+    assert_eq!(
+        stub_labels.len(),
+        stub.ops
+            .iter()
+            .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+            .count()
+    );
+    verify_split_function_def_use(&stub).expect("collision-free stub def-use must verify");
+    for chunk in &chunks {
+        verify_split_function_def_use(chunk).expect("return-family chunk def-use must verify");
+    }
 }
 
 #[test]
@@ -548,7 +648,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         .iter()
         .filter(|op| op.kind == "call_internal")
         .filter_map(|op| op.out.clone())
-        .filter(|out| out.starts_with("__chunk_continue_"))
+        .filter(|out| out.starts_with("__molt_split_chunk_continue"))
         .collect();
     assert_eq!(
         control_outs.len(),
@@ -581,7 +681,8 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
             .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
             .filter_map(|op| op.value)
             .collect();
-        let cloned_skip_labels: Vec<i64> = labels.iter().copied().filter(|id| *id > 523).collect();
+        let source_labels = BTreeSet::from([32, 352, 430, 523]);
+        let cloned_skip_labels: Vec<i64> = labels.difference(&source_labels).copied().collect();
         let cloned_handler = chunk
             .ops
             .iter()
@@ -599,10 +700,12 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
                 chunk.ops[handler_idx..].windows(2).any(|window| {
                     window[0].kind == "const_bool"
                         && window[0].value == Some(0)
-                        && window[0]
-                            .out
-                            .as_ref()
-                            .is_some_and(|out| window[1].var.as_ref() == Some(out))
+                        && window[0].out.as_ref().is_some_and(|out| {
+                            window[1]
+                                .args
+                                .as_ref()
+                                .is_some_and(|args| args == &[out.clone()])
+                        })
                         && window[1].kind == "ret"
                 });
             for (idx, op) in chunk.ops.iter().enumerate() {
@@ -821,7 +924,7 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
         1
     );
     for (index, op) in stub.ops.iter().enumerate() {
-        if matches!(op.kind.as_str(), "ret" | "ret_void") {
+        if crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str()) {
             assert_eq!(stub.ops[index - 1].kind, "trace_exit");
         }
     }

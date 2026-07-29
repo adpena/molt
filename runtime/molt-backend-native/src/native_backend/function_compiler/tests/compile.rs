@@ -60,7 +60,6 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("loads".to_string()),
                     args: Some(vec!["loads".to_string()]),
                     ..OpIR::default()
                 },
@@ -76,7 +75,6 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("none_ret".to_string()),
                     args: Some(vec!["none_ret".to_string()]),
                     ..OpIR::default()
                 },
@@ -119,7 +117,6 @@ fn compile_retained_alias_after_source_dec_ref(alias_kind: &str) {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("alias".to_string()),
                     args: Some(vec!["alias".to_string()]),
                     ..OpIR::default()
                 },

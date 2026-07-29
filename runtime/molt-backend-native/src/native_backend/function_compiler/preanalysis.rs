@@ -452,7 +452,11 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
-            "ret" => has_ret = true,
+            kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
+                == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
+            {
+                has_ret = true;
+            }
             "drop_inserted" => drop_inserted = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,

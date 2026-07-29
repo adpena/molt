@@ -20,8 +20,8 @@ use control_flow::{
     structure_pcall_failure_blocks,
 };
 use local_values::{
-    inline_single_use_constants, optimize_multi_return, propagate_single_use_copies,
-    simplify_return_chain, sink_single_use_locals, strip_undefined_rhs_assignments,
+    inline_single_use_constants, propagate_single_use_copies, simplify_return_chain,
+    sink_single_use_locals, strip_undefined_rhs_assignments,
 };
 use loop_folds::{fold_range_indices, simplify_comparison_break, strip_trailing_continue};
 use source_text::{find_matching_paren, is_ident_char, is_pure_expr};
@@ -49,7 +49,6 @@ pub(super) fn optimize_luau_source(source: &mut String) {
     hoist_loop_invariants(source);
     sink_single_use_locals(source);
     simplify_return_chain(source);
-    optimize_multi_return(source);
     fold_range_indices(source);
 
     // Phase 2c: Final cleanup. Re-strip exception blocks that survived

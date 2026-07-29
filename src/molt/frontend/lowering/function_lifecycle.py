@@ -188,6 +188,8 @@ class FunctionLifecycleMixin(_MixinBase):
             reset_del_targets=True,
         )
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
+        for param in params or ():
+            self._clear_imported_module_binding(param)
         self._reset_async_scope_state()
         self._reset_type_hint_scope_state(reset_bytearray_len=False)
         self._reset_function_cache_state()
@@ -260,10 +262,12 @@ class FunctionLifecycleMixin(_MixinBase):
         leaking through the cell boundary.
         """
         enclosing_modules = enclosing_state["imported_modules"]
+        enclosing_provenance = enclosing_state["imported_module_provenance"]
         enclosing_names = enclosing_state["imported_names"]
         enclosing_attrs = enclosing_state["imported_attr_names"]
         for name in free_vars:
             self.imported_modules.pop(name, None)
+            self.imported_module_provenance.pop(name, None)
             self.imported_names.pop(name, None)
             self.imported_attr_names.pop(name, None)
             self.local_imported_modules.discard(name)
@@ -275,6 +279,8 @@ class FunctionLifecycleMixin(_MixinBase):
                 self.imported_names[name] = enclosing_names[name]
                 self.imported_attr_names[name] = enclosing_attrs.get(name, name)
                 self.local_imported_names.add(name)
+            if name in enclosing_provenance:
+                self.imported_module_provenance[name] = enclosing_provenance[name]
 
     def _init_return_slot(self) -> None:
         if self.return_label is not None:

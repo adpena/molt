@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 
 use crate::ir::OpIR;
 use crate::tir::op_kinds_generated::{
-    SimpleIrVarFieldRole, simpleir_first_trailing_result_arg_table, simpleir_out_field_is_metadata,
-    simpleir_var_field_role_table,
+    SimpleIrReturnShape, SimpleIrVarFieldRole, simpleir_first_trailing_result_arg_table,
+    simpleir_out_field_is_metadata, simpleir_return_shape, simpleir_var_field_role_table,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,10 +26,10 @@ pub struct SimpleIrRead<'a> {
 pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
     match simpleir_var_field_role_table(op.kind.as_str()) {
         SimpleIrVarFieldRole::Read => true,
-        SimpleIrVarFieldRole::MetadataWhenArgs => {
-            op.args.as_ref().is_none_or(Vec::is_empty)
-        }
-        SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::Result => false,
+        SimpleIrVarFieldRole::MetadataWhenArgs => op.args.as_ref().is_none_or(Vec::is_empty),
+        SimpleIrVarFieldRole::Definition
+        | SimpleIrVarFieldRole::Result
+        | SimpleIrVarFieldRole::Forbidden => false,
     }
 }
 
@@ -97,6 +97,26 @@ pub fn visit_simple_ir_reads<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrRea
             field: SimpleIrReadField::Var,
         });
     }
+}
+
+/// Visit the canonical value payload of a normal return terminator.
+///
+/// The generated control-kind registry owns return-family membership. Within
+/// that family, `args` is the sole value carrier. Every CFG, SSA, splitter, and
+/// backend-side structural transform must consume this helper.
+pub fn visit_simple_ir_return_values<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
+    if simpleir_return_shape(op.kind.as_str()) != SimpleIrReturnShape::Value {
+        return;
+    }
+    if let Some(value) = op.args.as_deref().and_then(|args| args.first()) {
+        visit(value);
+    }
+}
+
+pub fn simple_ir_return_has_value(op: &OpIR) -> bool {
+    let mut has_value = false;
+    visit_simple_ir_return_values(op, |_| has_value = true);
+    has_value
 }
 
 #[cfg(test)]
@@ -237,5 +257,21 @@ mod tests {
             assert!(simple_ir_result_names(&side_effect).is_empty(), "{kind}");
             assert_eq!(simple_ir_read_names(&side_effect), vec!["input"], "{kind}");
         }
+    }
+
+    #[test]
+    fn generated_return_family_shares_one_value_carrier_authority() {
+        let mut terminator = op("ret");
+        terminator.args = Some(vec!["value".into()]);
+
+        let mut values = Vec::new();
+        visit_simple_ir_return_values(&terminator, |value| values.push(value));
+        assert_eq!(values, ["value"]);
+        assert!(simple_ir_return_has_value(&terminator));
+
+        assert!(!simple_ir_return_has_value(&op("ret_void")));
+        let mut non_terminator = op("call");
+        non_terminator.args = Some(vec!["not_a_return".into()]);
+        assert!(!simple_ir_return_has_value(&non_terminator));
     }
 }

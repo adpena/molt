@@ -50,6 +50,7 @@ from .schema import (
     _SCCP_CONSTANT_SEED_RULES,
     _SCEV_EXPR_RULES,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
+    _SIMPLEIR_RETURN_SHAPES,
     _SIMPLEIR_FIELD_ROLE_FACT_SETS,
     _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS,
     _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS,
@@ -84,13 +85,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     if not table_path.exists():
         raise OpKindTableError(f"op-kind table missing: {table_path}")
     data = tomllib.loads(table_path.read_text(encoding="utf-8"))
-    # Normal returns are a refinement of the existing exhaustive control-kind
-    # table. False is the closed-world default; only the three canonical return
-    # rows opt in, while consumers still observe a total generated fact column.
-    for row in data.get("simpleir_control_kind", []):
-        if isinstance(row, dict):
-            row.setdefault("return_terminator", False)
-
     opcodes = data.get("opcode", [])
     if not opcodes:
         raise OpKindTableError("table has no [[opcode]] rows")
@@ -236,6 +230,41 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "simpleir_frame_introspection_runtime_symbols must use exact canonical molt_* spellings"
             )
 
+    requirement_roles = data.get("simpleir_runtime_requirement_roles", [])
+    if not requirement_roles or not all(
+        isinstance(row, dict)
+        and isinstance(row.get("table"), str)
+        and row["table"]
+        and isinstance(row.get("constant"), str)
+        and row["constant"]
+        for row in requirement_roles
+    ):
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_roles requires non-empty table/constant rows"
+        )
+    if len({row["table"] for row in requirement_roles}) != len(requirement_roles):
+        raise OpKindTableError("simpleir_runtime_requirement_roles has duplicate tables")
+    if len({row["constant"] for row in requirement_roles}) != len(requirement_roles):
+        raise OpKindTableError("simpleir_runtime_requirement_roles has duplicate constants")
+    if len(requirement_roles) > 16:
+        raise OpKindTableError(
+            "simpleir_runtime_requirement_roles exceeds u16 storage width"
+        )
+    for row in requirement_roles:
+        if re.fullmatch(r"[A-Z][A-Z0-9_]*", row["constant"]) is None:
+            raise OpKindTableError(
+                "runtime requirement constants must be canonical uppercase identifiers"
+            )
+        table = data.get(row["table"])
+        if not isinstance(table, list) or not all(
+            isinstance(kind, str) for kind in table
+        ):
+            raise OpKindTableError(
+                f"runtime requirement role references missing/non-string list {row['table']}"
+            )
+    if "FRAME_INTROSPECTION" not in {row["constant"] for row in requirement_roles}:
+        raise OpKindTableError("runtime requirement roles must own FRAME_INTROSPECTION")
+
     qualified_callables = data.get("simpleir_runtime_qualified_callable", [])
     if not isinstance(qualified_callables, list) or not all(
         isinstance(row, dict)
@@ -306,6 +335,17 @@ def load_table(table_path: Path = TABLE) -> dict:
                 raise OpKindTableError(
                     f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
                 )
+    return_terminators = {
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row.get("return_shape") is not None
+    }
+    conflicting_return_roles = return_terminators.intersection(var_field_members)
+    if conflicting_return_roles:
+        raise OpKindTableError(
+            "SimpleIR return terminators cannot declare another var field role: "
+            + ", ".join(sorted(conflicting_return_roles))
+        )
 
     trailing_result_kinds: set[str] = set()
     for row in data.get("simpleir_trailing_arg_result", []):
@@ -1592,7 +1632,13 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
                 raise OpKindTableError(
                     f"simpleir_control_kind {kind}: {field!r} must be a bool"
                 )
-        unknown = set(row) - {"kind", *_SIMPLEIR_CONTROL_FACT_FIELDS}
+        return_shape = row.get("return_shape")
+        if return_shape is not None and return_shape not in _SIMPLEIR_RETURN_SHAPES:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: return_shape must be one of "
+                f"{sorted(_SIMPLEIR_RETURN_SHAPES)}, got {return_shape!r}"
+            )
+        unknown = set(row) - {"kind", "return_shape", *_SIMPLEIR_CONTROL_FACT_FIELDS}
         if unknown:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: unknown fields {sorted(unknown)}"
@@ -1617,9 +1663,9 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: terminator requires structural"
             )
-        if row.get("return_terminator", False) and not row["terminator"]:
+        if return_shape is not None and not row["terminator"]:
             raise OpKindTableError(
-                f"simpleir_control_kind {kind}: return_terminator requires terminator"
+                f"simpleir_control_kind {kind}: return_shape requires terminator"
             )
         if row["wasm_dispatch_block_leader"] and not row["wasm_split_barrier"]:
             raise OpKindTableError(
@@ -1643,7 +1689,9 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: wasm resume-at requires dispatch block leader"
             )
-        if not any(row.get(field, False) for field in _SIMPLEIR_CONTROL_FACT_FIELDS):
+        if return_shape is None and not any(
+            row.get(field, False) for field in _SIMPLEIR_CONTROL_FACT_FIELDS
+        ):
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: at least one fact must be true"
             )

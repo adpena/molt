@@ -100,7 +100,7 @@ fn const_float_opir(out: &str, value: f64) -> OpIR {
 fn ret_opir(var: &str) -> OpIR {
     OpIR {
         kind: "ret".into(),
-        var: Some(var.into()),
+        args: Some(vec![var.into()]),
         ..OpIR::default()
     }
 }

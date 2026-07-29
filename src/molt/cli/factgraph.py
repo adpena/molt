@@ -300,6 +300,9 @@ def emit_pipeline_fact_graph(
             resolved_modules=resolved_modules,
             ir=ir,
             warnings=build_preamble.warnings,
+            backend_compiler_fingerprint=(
+                runtime_context.backend_compiler_fingerprint
+            ),
             start_daemon=False,
         )
         if dispatch_error is not None:

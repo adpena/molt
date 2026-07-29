@@ -787,7 +787,7 @@ pub(super) fn emit_block_ops_inner(
 pub(super) fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &mut Vec<OpIR>) {
     if values.is_empty() {
         if original_has_ret {
-            let ret_name = format!("_ret_none_{}", out.len());
+            let ret_name = format!("_ret_value_{}", out.len());
             out.push(OpIR {
                 kind: "const_none".to_string(),
                 out: Some(ret_name.clone()),
@@ -795,7 +795,6 @@ pub(super) fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &
             });
             out.push(OpIR {
                 kind: "ret".to_string(),
-                var: Some(ret_name.clone()),
                 args: Some(vec![ret_name]),
                 ..OpIR::default()
             });
@@ -806,10 +805,15 @@ pub(super) fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &
             });
         }
     } else {
+        let [value] = values else {
+            panic!(
+                "TIR return must carry exactly one Python object before SimpleIR lowering, found {}",
+                values.len()
+            );
+        };
         out.push(OpIR {
             kind: "ret".to_string(),
-            var: Some(value_var(values[0])),
-            args: Some(values.iter().map(|v| value_var(*v)).collect()),
+            args: Some(vec![value_var(*value)]),
             ..OpIR::default()
         });
     }
@@ -830,7 +834,7 @@ pub(super) fn emit_terminator(
         Terminator::Return { values } => {
             if values.is_empty() {
                 if original_has_ret {
-                    let ret_name = format!("_ret_none_{}", out.len());
+                    let ret_name = format!("_ret_value_{}", out.len());
                     out.push(OpIR {
                         kind: "const_none".to_string(),
                         out: Some(ret_name.clone()),
@@ -838,7 +842,6 @@ pub(super) fn emit_terminator(
                     });
                     out.push(OpIR {
                         kind: "ret".to_string(),
-                        var: Some(ret_name.clone()),
                         args: Some(vec![ret_name]),
                         ..OpIR::default()
                     });
@@ -849,11 +852,8 @@ pub(super) fn emit_terminator(
                     });
                 }
             } else {
-                // The native backend reads the return value from `op.var`,
-                // not from `op.args`.  Set both for compatibility.
                 out.push(OpIR {
                     kind: "ret".to_string(),
-                    var: Some(value_var(values[0])),
                     args: Some(values.iter().map(|v| value_var(*v)).collect()),
                     ..OpIR::default()
                 });

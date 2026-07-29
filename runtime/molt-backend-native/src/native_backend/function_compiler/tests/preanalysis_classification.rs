@@ -205,7 +205,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
             },
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("out".to_string()),
+                args: Some(vec!["out".to_string()]),
                 ..OpIR::default()
             },
         ],
@@ -247,7 +247,7 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
         params: vec![],
         ops: vec![OpIR {
             kind: "ret".to_string(),
-            var: Some("out".to_string()),
+            args: Some(vec!["out".to_string()]),
             ..OpIR::default()
         }],
         param_types: None,

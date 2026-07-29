@@ -870,7 +870,6 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
         "before kind_to_opcode."
     ),
     "terminator": "Whether a SimpleIR kind terminates the current CFG block.",
-    "return_terminator": "Whether a SimpleIR kind is a normal function-return terminator.",
     "suspend": "Whether a SimpleIR kind is a generator/coroutine suspend point.",
     "repoll": "Whether resume dispatch re-enters at the suspend op itself.",
     "block_leader": "Whether a SimpleIR kind starts a CFG basic block.",
@@ -947,8 +946,62 @@ def _render_simpleir_control_facts(data: dict) -> str:
         )
         out.append("\n")
 
-    consumed_fields = ("structural", "pre_ssa_rewritten", "ssa_only")
     aliases = _simpleir_kind_aliases(data)
+    return_rows = [
+        row
+        for row in data.get("simpleir_control_kind", [])
+        if row.get("return_shape") is not None
+    ]
+    return_members: list[str] = []
+    for row in return_rows:
+        return_members.extend((row["kind"], *aliases.get(row["kind"], ())))
+    out.append(
+        _render_simpleir_kind_bool_fn(
+            "simpleir_kind_is_return_terminator",
+            return_members,
+            "Whether a SimpleIR kind is a normal function-return terminator.",
+        )
+    )
+    out.extend(
+        [
+            "\n/// Canonical operand shape of a SimpleIR function return.\n",
+            "/// Generated from each control row's `return_shape`; targets must not infer\n",
+            "/// return multiplicity from storage representation or backend convention.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum SimpleIrReturnShape {\n",
+            "    NotReturn,\n",
+            "    Void,\n",
+            "    Value,\n",
+            "}\n\n",
+            "pub const SIMPLEIR_RETURN_KINDS: &[&str] = &[\n",
+        ]
+    )
+    for member in return_members:
+        out.append(f'    "{member}",\n')
+    out.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub fn simpleir_return_shape(kind: &str) -> SimpleIrReturnShape {\n",
+            "    match kind {\n",
+        ]
+    )
+    for shape, variant in (("void", "Void"), ("value", "Value")):
+        members: list[str] = []
+        for row in return_rows:
+            if row["return_shape"] == shape:
+                members.extend((row["kind"], *aliases.get(row["kind"], ())))
+        patterns = " | ".join(f'\"{member}\"' for member in members)
+        out.append(f"        {patterns} => SimpleIrReturnShape::{variant},\n")
+    out.extend(
+        [
+            "        _ => SimpleIrReturnShape::NotReturn,\n",
+            "    }\n",
+            "}\n\n",
+        ]
+    )
+
+    consumed_fields = ("structural", "pre_ssa_rewritten", "ssa_only")
     consumed: list[str] = []
     for row in data.get("simpleir_control_kind", []):
         if not any(row[field] for field in consumed_fields):
@@ -979,6 +1032,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
         "    Definition,\n",
         "    Result,\n",
         "    MetadataWhenArgs,\n",
+        "    Forbidden,\n",
         "}\n\n",
         "#[inline]\n",
         "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
@@ -987,6 +1041,15 @@ def _render_simpleir_field_roles(data: dict) -> str:
     for key, role in var_roles:
         patterns = " | ".join(f'\"{member}\"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
+    return_terminators = [
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row.get("return_shape") is not None
+    ]
+    return_patterns = " | ".join(f'\"{kind}\"' for kind in return_terminators)
+    lines.append(
+        f"        {return_patterns} => SimpleIrVarFieldRole::Forbidden,\n"
+    )
     lines.extend(
         [
             "        _ => SimpleIrVarFieldRole::Read,\n",
@@ -1079,22 +1142,9 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
 
 
 def _render_simpleir_runtime_semantics(data: dict) -> str:
-    roles = (
-        ("simpleir_identity_semantics_kinds", "IDENTITY"),
-        ("simpleir_tuple_semantics_kinds", "TUPLE"),
-        ("simpleir_exception_semantics_kinds", "EXCEPTION"),
-        ("simpleir_deterministic_lifetime_semantics_kinds", "DETERMINISTIC_LIFETIME"),
-        ("simpleir_format_protocol_semantics_kinds", "FORMAT_PROTOCOL"),
-        ("simpleir_iterable_protocol_semantics_kinds", "ITERABLE_PROTOCOL"),
-        ("simpleir_object_model_semantics_kinds", "OBJECT_MODEL"),
-        ("simpleir_truthiness_semantics_kinds", "TRUTHINESS"),
-        ("simpleir_comparison_semantics_kinds", "COMPARISON"),
-        ("simpleir_fallible_protocol_semantics_kinds", "FALLIBLE_PROTOCOL"),
-        ("simpleir_async_runtime_semantics_kinds", "ASYNC_RUNTIME"),
-        ("simpleir_unstructured_control_semantics_kinds", "UNSTRUCTURED_CONTROL"),
-        ("simpleir_host_capability_semantics_kinds", "HOST_CAPABILITY"),
-        ("simpleir_execution_frame_semantics_kinds", "EXECUTION_FRAME"),
-        ("simpleir_frame_introspection_semantics_kinds", "FRAME_INTROSPECTION"),
+    roles = tuple(
+        (row["table"], row["constant"])
+        for row in data["simpleir_runtime_requirement_roles"]
     )
     registered = set()
     for row in data.get("kind", []):
@@ -1127,6 +1177,12 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "    }\n",
             "    pub const fn union(self, other: Self) -> Self {\n",
             "        Self(self.0 | other.0)\n",
+            "    }\n",
+            "    pub const fn bits(self) -> u16 {\n",
+            "        self.0\n",
+            "    }\n",
+            "    pub const fn from_bits(bits: u16) -> Option<Self> {\n",
+            f"        if bits & !{(1 << len(roles)) - 1} == 0 {{ Some(Self(bits)) }} else {{ None }}\n",
             "    }\n",
             "}\n\n",
             "/// Return `None` only for an unclassified spelling. Registered kinds\n",

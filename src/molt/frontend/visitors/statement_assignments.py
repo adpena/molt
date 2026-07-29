@@ -650,7 +650,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         )
 
     def _emit_unpack_assign(
-        self, target: ast.Tuple | ast.List, value_node: MoltValue | None
+        self,
+        target: ast.Tuple | ast.List,
+        value_node: MoltValue | None,
+        source_expr: ast.AST | None = None,
     ) -> None:
         if value_node is None:
             raise FrontendRejection(
@@ -718,8 +721,16 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     metadata={"expected_count": len(target.elts)},
                 )
             )
-            for elt, item_val in zip(target.elts, item_vals):
-                self._emit_assign_target(elt, item_val, None)
+            source_elts = (
+                source_expr.elts
+                if isinstance(source_expr, (ast.Tuple, ast.List))
+                and len(source_expr.elts) == len(target.elts)
+                else [None] * len(target.elts)
+            )
+            for elt, item_val, item_source in zip(
+                target.elts, item_vals, source_elts, strict=True
+            ):
+                self._emit_assign_target(elt, item_val, item_source)
             return
 
         prefix_len = star_index
@@ -742,7 +753,13 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="CONST", args=[idx], result=idx_val))
             item_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="INDEX", args=[seq_val, idx_val], result=item_val))
-            self._emit_assign_target(target.elts[idx], item_val, None)
+            item_source = (
+                source_expr.elts[idx]
+                if isinstance(source_expr, (ast.Tuple, ast.List))
+                and idx < len(source_expr.elts)
+                else None
+            )
+            self._emit_assign_target(target.elts[idx], item_val, item_source)
 
         start_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[prefix_len], result=start_val))
@@ -789,7 +806,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         source_expr: ast.AST | None,
     ) -> None:
         if isinstance(target, (ast.Tuple, ast.List)):
-            self._emit_unpack_assign(target, value_node)
+            self._emit_unpack_assign(target, value_node, source_expr)
             return
         if value_node is None:
             raise FrontendRejection(
@@ -829,15 +846,23 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 if source_expr is not None
                 else None
             )
+            imported_module_alias = self._imported_module_alias_target(source_expr)
+            imported_module_provenance = self._imported_module_alias_provenance(
+                source_expr
+            )
             self.imported_names.pop(target.id, None)
             self.imported_attr_names.pop(target.id, None)
-            self.imported_modules.pop(target.id, None)
+            self._set_imported_module_binding(
+                target.id,
+                imported_module_alias,
+                imported_module_provenance,
+            )
             self.local_imported_names.discard(target.id)
-            self.local_imported_modules.discard(target.id)
             if self.current_func_name == "molt_main" or target.id in self.global_decls:
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
+                self.global_imported_module_provenance.pop(target.id, None)
                 if optional_intrinsic_name is None:
                     self.module_intrinsic_globals.pop(target.id, None)
                 else:
@@ -846,6 +871,23 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     )
                     self.module_intrinsic_globals[target.id] = runtime_name
                     self.reserved_external_func_symbols.add(runtime_name)
+            if imported_module_alias is not None:
+                if self.current_func_name == "molt_main":
+                    self.global_imported_modules[target.id] = imported_module_alias
+            if self.current_func_name == "molt_main":
+                self.global_imported_module_provenance[target.id] = (
+                    imported_module_provenance
+                )
+            elif target.id in self.global_decls:
+                previous_global = {
+                    target.id: self.global_imported_module_provenance[target.id]
+                } if target.id in self.global_imported_module_provenance else {}
+                self.global_imported_module_provenance[target.id] = (
+                    self._join_imported_module_provenance(
+                        previous_global,
+                        {target.id: imported_module_provenance},
+                    )[target.id]
+                )
             if (
                 self.current_func_name == "molt_main"
                 or target.id not in self.global_decls
@@ -929,6 +971,21 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         )
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
+        non_module = self._imported_module_alias_provenance(None)
+        self._clear_imported_module_binding(name)
+        if self.current_func_name == "molt_main":
+            self.global_imported_module_provenance[name] = non_module
+        elif name in self.global_decls:
+            self.global_imported_module_provenance[name] = (
+                self._join_imported_module_provenance(
+                    {
+                        name: self.global_imported_module_provenance.get(
+                            name, non_module
+                        )
+                    },
+                    {name: non_module},
+                )[name]
+            )
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
             self._class_ns_delete(class_scope, name)

@@ -54,7 +54,7 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
                 observed,
                 print,
                 exit,
-                op("return_none"),
+                op("ret_void"),
             ],
             param_types: None,
             source_file: None,
@@ -142,7 +142,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 name: "__main____annotate__".to_string(),
                 params: vec!["args".to_string()],
                 ops: vec![OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }],
                 param_types: None,
@@ -154,7 +154,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }],
                 param_types: None,
@@ -194,7 +194,7 @@ fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("out".to_string()),
+                    args: Some(vec!["out".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -262,7 +262,7 @@ fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() 
                 add,
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("sum".to_string()),
+                    args: Some(vec!["sum".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -302,7 +302,7 @@ fn compile_checked_rejects_typed_integer_arithmetic_before_emission() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("sum".to_string()),
+                    args: Some(vec!["sum".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -343,7 +343,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                         ..OpIR::default()
                     },
                     OpIR {
-                        kind: "return_none".to_string(),
+                        kind: "ret_void".to_string(),
                         ..OpIR::default()
                     },
                 ],
@@ -356,7 +356,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }],
                 param_types: None,
@@ -389,7 +389,7 @@ fn compile_call_method_uses_s_value_method_name() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -422,7 +422,7 @@ fn compile_ord_at_emits_fused_helper() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("code".to_string()),
+                    args: Some(vec!["code".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -450,139 +450,70 @@ fn compile_ord_at_emits_fused_helper() {
 
 #[test]
 fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
-    let mut backend = RustBackend::new();
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_main".to_string(),
-            params: vec![
-                "filename".to_string(),
-                "name".to_string(),
-                "firstlineno".to_string(),
-                "linetable".to_string(),
-                "varnames".to_string(),
-                "names".to_string(),
-                "argcount".to_string(),
-                "posonlyargcount".to_string(),
-                "kwonlyargcount".to_string(),
-                "container".to_string(),
-                "needle".to_string(),
-            ],
-            ops: vec![
-                OpIR {
-                    kind: "code_slots_init".to_string(),
-                    value: Some(4),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "code_new".to_string(),
-                    args: Some(vec![
-                        "filename".to_string(),
-                        "name".to_string(),
-                        "firstlineno".to_string(),
-                        "linetable".to_string(),
-                        "varnames".to_string(),
-                        "names".to_string(),
-                        "argcount".to_string(),
-                        "posonlyargcount".to_string(),
-                        "kwonlyargcount".to_string(),
-                    ]),
-                    out: Some("code".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "inc_ref".to_string(),
-                    args: Some(vec!["code".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "code_slot_set".to_string(),
-                    value: Some(2),
-                    args: Some(vec!["code".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "trace_enter_slot".to_string(),
-                    value: Some(2),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "frame_locals_set".to_string(),
-                    args: Some(vec!["container".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_stack_enter".to_string(),
-                    out: Some("exc_base".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_stack_depth".to_string(),
-                    out: Some("exc_depth".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_stack_set_depth".to_string(),
-                    args: Some(vec!["exc_depth".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_stack_exit".to_string(),
-                    args: Some(vec!["exc_base".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_last".to_string(),
-                    out: Some("last_exc".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_last_pending".to_string(),
-                    out: Some("pending_exc".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_clear".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "trace_exit".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "dec_ref".to_string(),
-                    args: Some(vec!["code".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "contains".to_string(),
-                    args: Some(vec!["container".to_string(), "needle".to_string()]),
-                    out: Some("present".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    var: Some("present".to_string()),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
+    let cases = [
+        (
+            "code_slots",
+            Vec::new(),
+            OpIR {
+                kind: "code_slots_init".to_string(),
+                value: Some(4),
+                ..OpIR::default()
+            },
+            "operation requires Python aliasing, cycles, None storage, hashing, and object protocols",
+        ),
+        (
+            "exception_state",
+            Vec::new(),
+            OpIR {
+                kind: "exception_clear".to_string(),
+                ..OpIR::default()
+            },
+            "operation requires Python exception state, matching, and structured unwinding",
+        ),
+        (
+            "deterministic_lifetime",
+            vec!["value".to_string()],
+            OpIR {
+                kind: "inc_ref".to_string(),
+                args: Some(vec!["value".to_string()]),
+                ..OpIR::default()
+            },
+            "operation requires deterministic Python lifetime/finalizer semantics",
+        ),
+    ];
 
-    let error = backend
-        .compile_checked(&ir)
-        .expect_err("Rust target lacks these Python runtime authorities");
-    assert!(
-        error.contains("rejected before source generation")
-            && error.contains("code_slots_init")
-            && error.contains("operation requires Python aliasing, cycles, None storage, hashing, and object protocols"),
-        "the first unsupported semantic family must fail before emission: {error}"
-    );
-    assert!(backend.output.is_empty());
+    for (name, params, unsupported_op, expected_reason) in cases {
+        let expected_kind = unsupported_op.kind.clone();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: name.to_string(),
+                params,
+                ops: vec![
+                    unsupported_op,
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        };
+        let mut backend = RustBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("Rust target must reject each unsupported runtime authority");
+        assert!(
+            error.contains("rejected before source generation")
+                && error.contains(&expected_kind)
+                && error.contains(expected_reason),
+            "{name} must reach its own generated admission reason: {error}"
+        );
+        assert!(backend.output.is_empty(), "{name} emitted partial source");
+    }
 }
 
 #[test]
@@ -639,7 +570,7 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -751,7 +682,7 @@ fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -842,7 +773,7 @@ fn compile_unpack_sequence_iterates_unicode_scalars_not_utf8_bytes() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -875,7 +806,7 @@ fn malformed_simple_ir_unpack_is_reported_not_emitted() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -939,7 +870,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -979,7 +910,7 @@ fn compile_checked_rejects_even_i64_sized_bigint_literals() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],
@@ -1071,7 +1002,7 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
                 },
                 OpIR {
                     kind: "ret".to_string(),
-                    var: Some("tmp".to_string()),
+                    args: Some(vec!["tmp".to_string()]),
                     ..OpIR::default()
                 },
             ],
@@ -1160,7 +1091,7 @@ fn strip_dead_after_return_skips_jump_after_nested_return_until_else() {
             ..OpIR::default()
         },
         OpIR {
-            kind: "return_none".to_string(),
+            kind: "ret_void".to_string(),
             ..OpIR::default()
         },
         OpIR {
@@ -1186,14 +1117,14 @@ fn strip_dead_after_return_skips_jump_after_nested_return_until_else() {
 
     let lowered = strip_dead_after_return(&ops);
     let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["if", "return_none", "else", "const", "end_if"]);
+    assert_eq!(kinds, vec!["if", "ret_void", "else", "const", "end_if"]);
 }
 
 #[test]
 fn strip_dead_after_return_skips_top_level_jump_after_return() {
     let ops = vec![
         OpIR {
-            kind: "return_none".to_string(),
+            kind: "ret_void".to_string(),
             ..OpIR::default()
         },
         OpIR {
@@ -1216,7 +1147,7 @@ fn strip_dead_after_return_skips_top_level_jump_after_return() {
 
     let lowered = strip_dead_after_return(&ops);
     let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["return_none"]);
+    assert_eq!(kinds, vec!["ret_void"]);
 }
 
 /// An op kind that no dispatch arm claims must fail at the Result boundary.
@@ -1235,7 +1166,7 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return_none".to_string(),
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 },
             ],

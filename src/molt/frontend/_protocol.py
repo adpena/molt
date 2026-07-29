@@ -1458,7 +1458,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_unpack_assign(
-        self, target: ast.Tuple | ast.List, value_node: MoltValue | None
+        self,
+        target: ast.Tuple | ast.List,
+        value_node: MoltValue | None,
+        source_expr: ast.AST | None = None,
     ) -> None: ...
 
     def _emit_widen(
@@ -1621,6 +1624,38 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool: ...
 
     def _imported_module_binding_target(self, binding_name: str) -> str | None: ...
+
+    def _imported_module_alias_target(self, value: ast.AST | None) -> str | None: ...
+
+    def _imported_module_alias_provenance(
+        self, value: ast.AST | None
+    ) -> frozenset[str]: ...
+
+    def _set_imported_module_binding(
+        self,
+        binding_name: str,
+        module_name: str | None,
+        provenance: frozenset[str] | None = None,
+    ) -> None: ...
+
+    def _clear_imported_module_binding(self, binding_name: str) -> None: ...
+
+    def _runtime_qualified_callable_provenance_for_binding(
+        self, binding_name: str | None, attr_name: str
+    ) -> tuple[str | None, int]: ...
+
+    def _begin_module_provenance_flow(
+        self, *, record_exception_prefixes: bool
+    ) -> list[dict[str, frozenset[str]]]: ...
+
+    def _record_module_provenance_flow_state(self) -> None: ...
+
+    def _finish_module_provenance_flow(
+        self,
+        paths: list[dict[str, frozenset[str]]],
+        *,
+        normal_paths: Sequence[dict[str, frozenset[str]]] = (),
+    ) -> None: ...
 
     def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
 

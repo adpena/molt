@@ -250,7 +250,7 @@ mod tests {
             op_args("if", &["cmp"]),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("ret_true".to_string()),
+                args: Some(vec!["ret_true".to_string()]),
                 ..OpIR::default()
             },
             op("end_if"),
@@ -259,7 +259,7 @@ mod tests {
             op_out("const_bool", "ret_false"),
             OpIR {
                 kind: "ret".to_string(),
-                var: Some("ret_false".to_string()),
+                args: Some(vec!["ret_false".to_string()]),
                 ..OpIR::default()
             },
         ];
@@ -281,9 +281,9 @@ mod tests {
 
         for expected in ["ret_true", "ret_false"] {
             assert!(
-                result
-                    .iter()
-                    .any(|op| op.kind == "ret" && op.var.as_deref() == Some(expected)),
+                result.iter().any(|op| {
+                    op.kind == "ret" && op.args.as_ref().is_some_and(|args| args == &[expected])
+                }),
                 "named return path {expected} must survive roundtrip: {result:?}"
             );
         }
@@ -510,9 +510,10 @@ mod tests {
     fn roundtrip_output_has_terminator() {
         let ops = vec![op_out("const", "x"), op_args("ret", &["x"])];
         let result = roundtrip(ops);
-        let has_term = result
-            .iter()
-            .any(|o| matches!(o.kind.as_str(), "ret" | "ret_void" | "jump" | "br_if"));
+        let has_term = result.iter().any(|op| {
+            crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str())
+                || matches!(op.kind.as_str(), "jump" | "br_if")
+        });
         assert!(
             has_term,
             "output must contain a terminator op, got: {:?}",

@@ -82,7 +82,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                     },
                     OpIR {
                         kind: "ret".to_string(),
-                        var: Some("chunk_ret".to_string()),
+                        args: Some(vec!["chunk_ret".to_string()]),
                         ..OpIR::default()
                     },
                 ],
@@ -109,7 +109,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                     },
                     OpIR {
                         kind: "ret".to_string(),
-                        var: Some("__chunk_ret".to_string()),
+                        args: Some(vec!["__chunk_ret".to_string()]),
                         ..OpIR::default()
                     },
                 ],

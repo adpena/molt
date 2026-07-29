@@ -91,18 +91,9 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
             dead_at_depth = None;
         }
 
-        let is_terminator = matches!(
-            kind,
-            "ret"
-                | "return"
-                | "return_value"
-                | "return_none"
-                | "ret_none"
-                | "ret_void"
-                | "jump"
-                | "raise"
-                | "reraise"
-        );
+        let is_terminator =
+            molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind)
+                || matches!(kind, "jump" | "raise" | "reraise");
         result.push(op.clone());
         if is_terminator {
             dead_at_depth = Some(depth);

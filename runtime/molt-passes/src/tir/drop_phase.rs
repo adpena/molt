@@ -334,7 +334,6 @@ mod tests {
             params: vec!["n".into()],
             ops: vec![OpIR {
                 kind: "ret".into(),
-                var: Some("n".into()),
                 args: Some(vec!["n".into()]),
                 ..OpIR::default()
             }],

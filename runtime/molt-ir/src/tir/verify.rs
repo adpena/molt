@@ -497,7 +497,18 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     }
                 }
             }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
+            Terminator::Return { values } => {
+                if values.len() > 1 {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!(
+                            "Python function return carries at most one object, found {} values",
+                            values.len()
+                        ),
+                    ));
+                }
+            }
+            Terminator::Unreachable => {}
         }
     }
 }
@@ -1360,6 +1371,22 @@ mod tests {
             "expected duplicate error, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn multiple_python_return_values_fail_before_target_lowering() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0), ValueId(1)],
+        };
+
+        let errors = verify_function(&func).expect_err("multi-value Python return must fail");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("Python function return carries at most one object")
+        }));
     }
 
     #[test]

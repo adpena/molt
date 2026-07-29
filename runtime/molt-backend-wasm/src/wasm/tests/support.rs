@@ -10,8 +10,8 @@ pub(super) use crate::wasm_abi::{
 };
 pub(super) use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 pub(super) use crate::wasm_plan::{
-    detect_multi_return_candidates, is_shared_drop_fact_marker,
-    wasm_scalar_integer_fast_path_for_op, wasm_scalar_truthiness_fast_path_for_name,
+    is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
+    wasm_scalar_truthiness_fast_path_for_name,
 };
 pub(super) use crate::{FunctionIR, OpIR, SimpleIR};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
@@ -46,9 +46,7 @@ pub(super) fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> Op
 pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
     ir: SimpleIR,
 ) -> WasmCompileOutput {
-    let multi_return_candidates = detect_multi_return_candidates(&ir);
-    let trampoline_analysis =
-        super::super::trampoline_analysis::analyze_wasm_trampolines(&ir, multi_return_candidates);
+    let trampoline_analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
         reloc_enabled: false,
@@ -62,7 +60,7 @@ pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) ->
     let mut allocate = wasm_test_op(kind, Some("obj"), vec!["cls"]);
     allocate.value = payload_size;
     let mut ret = wasm_test_op("ret", None, vec!["obj"]);
-    ret.var = Some("obj".to_string());
+    ret.args = Some(vec!["obj".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(
             "molt_main",
@@ -91,7 +89,7 @@ pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR 
         ..OpIR::default()
     };
     let mut ret = wasm_test_op("ret", None, vec!["out"]);
-    ret.var = Some("out".to_string());
+    ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -119,7 +117,7 @@ pub(super) fn wasm_native_callable_ir_with_args(abi: &str, args: Vec<&str>) -> S
         Some("molt_nativepkg_ndimage_distance_transform_edt".to_string());
     native_call.native_callable_abi = Some(abi.to_string());
     let mut ret = wasm_test_op("ret", None, vec!["out"]);
-    ret.var = Some("out".to_string());
+    ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(
             "molt_main",
@@ -138,7 +136,7 @@ pub(super) fn wasm_module_attr_native_callable_ir(abi: &str, args: Vec<&str>) ->
     native_call.native_callable_binding = Some("module_attr".to_string());
     native_call.native_callable_abi = Some(abi.to_string());
     let mut ret = wasm_test_op("ret", None, vec!["out"]);
-    ret.var = Some("out".to_string());
+    ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(
             "molt_main",

@@ -19,9 +19,5 @@ name = "rust_transpiler_preview"
 required-features = ["rust-backend"]
 
 [[test]]
-name = "megafn_source_snapshot"
-required-features = ["rust-backend"]
-
-[[test]]
 name = "float_repr_cpython_parity"
 required-features = ["rust-backend"]

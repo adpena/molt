@@ -22,7 +22,6 @@ fn op_ret(arg: &str) -> OpIR {
     OpIR {
         kind: "ret".to_string(),
         args: Some(vec![arg.to_string()]),
-        var: Some(arg.to_string()),
         ..OpIR::default()
     }
 }

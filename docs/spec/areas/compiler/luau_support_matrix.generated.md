@@ -7,10 +7,10 @@
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `28`
+- `implemented-exact`: `25`
 - `implemented-target-limited`: `11`
-- `not-admitted`: `367`
-- `total`: `406`
+- `not-admitted`: `366`
+- `total`: `402`
 
 ## Matrix
 
@@ -329,10 +329,6 @@
 | `range_new` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `release` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `repr_from_obj` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `ret` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `ret_void` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `return` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `return_value` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `round` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `rshift` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `set_add` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |

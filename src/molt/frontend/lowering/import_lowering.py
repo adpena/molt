@@ -19,8 +19,11 @@ from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
 )
+
+_NON_MODULE_PROVENANCE = "<non-module>"
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -103,6 +106,136 @@ class ImportLoweringMixin(_MixinBase):
         ):
             module_name = self.global_imported_modules.get(binding_name)
         return module_name
+
+    def _set_imported_module_binding(
+        self,
+        binding_name: str,
+        module_name: str | None,
+        provenance: frozenset[str] | None = None,
+    ) -> None:
+        """Set one lexical module binding through the shared provenance authority."""
+        self.imported_modules.pop(binding_name, None)
+        self.local_imported_modules.discard(binding_name)
+        if module_name is not None:
+            self.imported_modules[binding_name] = module_name
+            if self.current_func_name != "molt_main":
+                self.local_imported_modules.add(binding_name)
+        self.imported_module_provenance[binding_name] = (
+            provenance
+            if provenance is not None
+            else frozenset(
+                (module_name,) if module_name is not None else (_NON_MODULE_PROVENANCE,)
+            )
+        )
+        self._record_module_provenance_flow_state()
+
+    def _clear_imported_module_binding(self, binding_name: str) -> None:
+        self._set_imported_module_binding(binding_name, None)
+
+    def _imported_module_alias_target(self, value: ast.AST | None) -> str | None:
+        """Resolve exact module identity for an ordinary alias assignment.
+
+        Import provenance is a binding fact, not syntax limited to ``import``.
+        Chained aliases therefore enter the same lexical maps as direct import
+        bindings; later rebinding removes them through the ordinary assignment
+        authority.
+        """
+        if not isinstance(value, ast.Name):
+            return None
+        return self._imported_module_binding_target(value.id)
+
+    def _imported_module_alias_provenance(
+        self, value: ast.AST | None
+    ) -> frozenset[str]:
+        if not isinstance(value, ast.Name):
+            return frozenset((_NON_MODULE_PROVENANCE,))
+        provenance = self.imported_module_provenance.get(value.id)
+        if provenance is not None:
+            return provenance
+        target = self._imported_module_binding_target(value.id)
+        return (
+            frozenset((target,))
+            if target is not None
+            else frozenset((_NON_MODULE_PROVENANCE,))
+        )
+
+    @staticmethod
+    def _join_imported_module_provenance(
+        *states: dict[str, frozenset[str]],
+    ) -> dict[str, frozenset[str]]:
+        names = set().union(*(state.keys() for state in states))
+        return {
+            name: frozenset().union(
+                *(
+                    state.get(name, frozenset((_NON_MODULE_PROVENANCE,)))
+                    for state in states
+                )
+            )
+            for name in names
+        }
+
+    def _runtime_qualified_callable_provenance_for_binding(
+        self, binding_name: str | None, attr_name: str
+    ) -> tuple[str | None, int]:
+        if binding_name is None:
+            return None, 0
+        modules = self.imported_module_provenance.get(binding_name)
+        if modules is None:
+            exact = self._imported_module_binding_target(binding_name)
+            modules = frozenset((exact,)) if exact is not None else frozenset()
+        modules_with_symbols = {
+            module
+            for module in modules
+            if module != _NON_MODULE_PROVENANCE
+            and self._runtime_qualified_callable_symbol(module, attr_name) is not None
+        }
+        symbols = {
+            symbol
+            for module in modules_with_symbols
+            if (symbol := self._runtime_qualified_callable_symbol(module, attr_name))
+            is not None
+        }
+        if not symbols:
+            return None, 0
+        if (
+            len(symbols) == 1
+            and len(modules_with_symbols) == len(modules)
+            and _NON_MODULE_PROVENANCE not in modules
+        ):
+            return next(iter(symbols)), 0
+        return None, SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+
+    def _begin_module_provenance_flow(
+        self, *, record_exception_prefixes: bool
+    ) -> list[dict[str, frozenset[str]]]:
+        paths = [dict(self.imported_module_provenance)]
+        self._module_provenance_flow_stack.append(
+            (paths, record_exception_prefixes)
+        )
+        return paths
+
+    def _record_module_provenance_flow_state(self) -> None:
+        state = dict(self.imported_module_provenance)
+        for paths, record_exception_prefixes in self._module_provenance_flow_stack:
+            if record_exception_prefixes:
+                paths.append(state)
+
+    def _finish_module_provenance_flow(
+        self,
+        paths: list[dict[str, frozenset[str]]],
+        *,
+        normal_paths: Sequence[dict[str, frozenset[str]]] = (),
+    ) -> None:
+        active_paths, _ = self._module_provenance_flow_stack.pop()
+        if active_paths is not paths:
+            raise AssertionError("module provenance flow scopes must be LIFO")
+        candidates = list(normal_paths)
+        if not candidates:
+            candidates.extend(paths)
+            candidates.append(dict(self.imported_module_provenance))
+        self.imported_module_provenance = self._join_imported_module_provenance(
+            *candidates
+        )
 
     def _runtime_qualified_callable_symbol(
         self, module_name: str | None, attr_name: str

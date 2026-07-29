@@ -457,7 +457,7 @@ fn rewrite_phi_to_store_load_rewrites_merge_phi() {
         },
         OpIR {
             kind: "ret".to_string(),
-            var: Some("merged".to_string()),
+            args: Some(vec!["merged".to_string()]),
             ..OpIR::default()
         },
     ];

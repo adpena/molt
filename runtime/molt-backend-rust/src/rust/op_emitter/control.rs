@@ -277,17 +277,13 @@ impl RustBackend {
             let v = rust_ident(val);
             self.emit_param_writeback();
             self.emit_line(&format!("return {v}.clone();"));
-        } else if let Some(ref v) = op.var {
-            let v = rust_ident(v);
-            self.emit_param_writeback();
-            self.emit_line(&format!("return {v}.clone();"));
         } else {
             self.emit_param_writeback();
             self.emit_line("return MoltValue::None;");
         }
     }
 
-    pub(super) fn emit_op_return_none(&mut self, _op: &OpIR) {
+    pub(super) fn emit_op_ret_void(&mut self, _op: &OpIR) {
         self.emit_param_writeback();
         if self.current_is_main {
             self.emit_line("return;");
