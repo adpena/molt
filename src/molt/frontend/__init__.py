@@ -120,6 +120,7 @@ from molt.frontend.sema import (
 # Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
 from molt.frontend.lowering.analysis_collect_static import AnalysisCollectStaticMixin
 from molt.frontend.lowering.analysis_patterns import AnalysisPatternMixin
+from molt.frontend.lowering.app_bindings import AppBindingAuthorityMixin
 from molt.frontend.lowering.attribute_access import AttributeAccessMixin
 from molt.frontend.lowering.class_resolution import ClassResolutionMixin
 from molt.frontend.lowering.compile_warnings import CompileWarningMixin
@@ -247,6 +248,7 @@ __all__ = [
 
 class SimpleTIRGenerator(
     GeneratorStateMixin,
+    AppBindingAuthorityMixin,
     LocalBindingMixin,
     MidendOptimizationMixin,
     SerializationMixin,

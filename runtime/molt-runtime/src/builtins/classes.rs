@@ -1,6 +1,6 @@
 use crate::{GilGuard, PyToken};
 use std::sync::Mutex;
-use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 use molt_obj_model::MoltObject;
 
@@ -23,7 +23,48 @@ use crate::{
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum BuiltinClassAnchorPhase {
+    Published = 1,
+    BreakingCycles = 2,
+    CyclesBroken = 3,
+    Releasing = 4,
+    Released = 5,
+}
+
+struct BuiltinClassAnchorLifecycle(AtomicU8);
+
+impl BuiltinClassAnchorLifecycle {
+    fn published() -> Self {
+        Self(AtomicU8::new(BuiltinClassAnchorPhase::Published as u8))
+    }
+
+    fn transition(
+        &self,
+        expected: BuiltinClassAnchorPhase,
+        next: BuiltinClassAnchorPhase,
+        operation: &str,
+    ) {
+        let observed = self
+            .0
+            .compare_exchange(
+                expected as u8,
+                next as u8,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .unwrap_or_else(|actual| {
+                panic!(
+                    "builtin class anchor {operation} requires phase {expected:?}; observed raw phase {actual}"
+                )
+            });
+        debug_assert_eq!(observed, expected as u8);
+    }
+}
+
 pub(crate) struct BuiltinClasses {
+    anchor_lifecycle: BuiltinClassAnchorLifecycle,
     pub(crate) object: u64,
     pub(crate) type_obj: u64,
     pub(crate) none_type: u64,
@@ -190,16 +231,53 @@ impl BuiltinClasses {
 
     fn dec_ref_all(&self, _py: &PyToken<'_>) {
         crate::gil_assert();
-        for (index, bits) in self.anchors().into_iter().enumerate() {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                assert!(
-                    crate::resolve_ptr(ptr.expose_provenance() as u64).is_some(),
-                    "builtin class anchor {index} was released before anchor teardown"
-                );
-            }
+        self.assert_anchor_family_live("terminal release");
+        self.anchor_lifecycle.transition(
+            BuiltinClassAnchorPhase::CyclesBroken,
+            BuiltinClassAnchorPhase::Releasing,
+            "release",
+        );
+        for bits in self.anchors() {
             dec_ref_bits(_py, bits);
         }
+        self.anchor_lifecycle.transition(
+            BuiltinClassAnchorPhase::Releasing,
+            BuiltinClassAnchorPhase::Released,
+            "release completion",
+        );
     }
+
+    fn assert_anchor_family_live(&self, operation: &str) {
+        for (index, bits) in self.anchors().into_iter().enumerate() {
+            assert_builtin_class_anchor_live(index, bits, operation);
+        }
+    }
+}
+
+fn assert_builtin_class_anchor_live(index: usize, bits: u64, operation: &str) {
+    let ptr = obj_from_bits(bits).as_ptr().unwrap_or_else(|| {
+        panic!("builtin class anchor {index} is not a heap pointer during {operation}")
+    });
+    // The provenance registry behind `resolve_ptr` deliberately does not exist
+    // in release builds. TYPE_ID_TYPE is cycle-capable, however, so every live
+    // builtin class is present in the shipped GC registry until deallocation.
+    // Query that opaque-key authority before dereferencing the header: a stale
+    // pointer becomes a deterministic registry miss instead of a release-only
+    // use-after-free in this diagnostic.
+    assert!(
+        unsafe { crate::object::gc::gc_is_tracked(ptr) },
+        "builtin class anchor {index} was released before {operation}"
+    );
+    assert_eq!(
+        unsafe { object_type_id(ptr) },
+        TYPE_ID_TYPE,
+        "builtin class anchor {index} changed heap type before {operation}"
+    );
+    assert_ne!(
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() },
+        0,
+        "builtin class anchor {index} lost every owner before {operation}"
+    );
 }
 
 fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
@@ -765,7 +843,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         "(object, callback=None, /)",
     );
 
-    Some(BuiltinClasses {
+    let builtins = BuiltinClasses {
+        anchor_lifecycle: BuiltinClassAnchorLifecycle::published(),
         object,
         type_obj,
         none_type,
@@ -844,7 +923,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         generic_alias,
         union_type,
         reference_type,
-    })
+    };
+    builtins.assert_anchor_family_live("publication");
+    Some(builtins)
 }
 
 pub(crate) fn builtin_classes(_py: &PyToken<'_>) -> &'static BuiltinClasses {
@@ -890,9 +971,21 @@ pub(crate) fn builtin_classes_break_cycles(py: &PyToken<'_>, state: &RuntimeStat
     }
     unsafe {
         let builtins = &*ptr;
-        for bits in builtins.anchors() {
+        builtins.anchor_lifecycle.transition(
+            BuiltinClassAnchorPhase::Published,
+            BuiltinClassAnchorPhase::BreakingCycles,
+            "cycle break",
+        );
+        builtins.assert_anchor_family_live("cycle breaking");
+        for (index, bits) in builtins.anchors().into_iter().enumerate() {
             class_break_cycles(py, bits);
+            assert_builtin_class_anchor_live(index, bits, "cycle break completion");
         }
+        builtins.anchor_lifecycle.transition(
+            BuiltinClassAnchorPhase::BreakingCycles,
+            BuiltinClassAnchorPhase::CyclesBroken,
+            "cycle break completion",
+        );
     }
 }
 
@@ -1036,7 +1129,10 @@ pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::release_failed_builtin_classes;
+    use super::{
+        BuiltinClassAnchorLifecycle, BuiltinClassAnchorPhase, assert_builtin_class_anchor_live,
+        release_failed_builtin_classes,
+    };
     use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
     use crate::*;
 
@@ -1076,6 +1172,71 @@ mod tests {
                 "rollback must release the self edge and its external owner only",
             );
             dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn builtin_anchor_lifecycle_rejects_early_and_double_release() {
+        let lifecycle = BuiltinClassAnchorLifecycle::published();
+        assert!(
+            crate::test_support::catch_expected_unwind(|| lifecycle.transition(
+                BuiltinClassAnchorPhase::CyclesBroken,
+                BuiltinClassAnchorPhase::Releasing,
+                "early release",
+            ))
+            .is_err()
+        );
+        lifecycle.transition(
+            BuiltinClassAnchorPhase::Published,
+            BuiltinClassAnchorPhase::BreakingCycles,
+            "cycle break",
+        );
+        lifecycle.transition(
+            BuiltinClassAnchorPhase::BreakingCycles,
+            BuiltinClassAnchorPhase::CyclesBroken,
+            "cycle break completion",
+        );
+        lifecycle.transition(
+            BuiltinClassAnchorPhase::CyclesBroken,
+            BuiltinClassAnchorPhase::Releasing,
+            "release",
+        );
+        lifecycle.transition(
+            BuiltinClassAnchorPhase::Releasing,
+            BuiltinClassAnchorPhase::Released,
+            "release completion",
+        );
+        assert!(
+            crate::test_support::catch_expected_unwind(|| lifecycle.transition(
+                BuiltinClassAnchorPhase::CyclesBroken,
+                BuiltinClassAnchorPhase::Releasing,
+                "double release",
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn builtin_anchor_liveness_uses_release_valid_gc_membership() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_ptr = alloc_string(_py, b"EarlyReleasedBuiltinAnchorProbe");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let class_ptr = alloc_class_obj(_py, name_bits);
+            dec_ref_bits(_py, name_bits);
+            assert!(!class_ptr.is_null());
+            let class_bits = MoltObject::from_ptr(class_ptr).bits();
+
+            assert_builtin_class_anchor_live(0, class_bits, "probe publication");
+            dec_ref_bits(_py, class_bits);
+            assert!(
+                crate::test_support::catch_expected_unwind(|| {
+                    assert_builtin_class_anchor_live(0, class_bits, "probe teardown")
+                })
+                .is_err(),
+                "an anchor released before teardown must fail the shipped-profile membership tooth"
+            );
         });
     }
 }

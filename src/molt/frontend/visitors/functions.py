@@ -444,6 +444,12 @@ class FunctionVisitorMixin(_MixinBase):
                 else:
                     self._store_local_value(func_name, func_val)
                 self._emit_module_attr_set(func_name, func_val)
+            self._record_source_app_callable(
+                func_name,
+                kind=FunctionKind.GENERATOR,
+                symbol=poll_func_name,
+                decorated=bool(node.decorator_list),
+            )
             return None
 
         func_name = node.name
@@ -742,6 +748,12 @@ class FunctionVisitorMixin(_MixinBase):
             else:
                 self._store_local_value(func_name, func_val)
             self._emit_module_attr_set(func_name, func_val)
+        self._record_source_app_callable(
+            func_name,
+            kind=FunctionKind.SYNC,
+            symbol=func_symbol,
+            decorated=bool(node.decorator_list),
+        )
         return None
 
     def visit_Lambda(self, node: ast.Lambda) -> MoltValue:

@@ -14,7 +14,7 @@ WHY A SEPARATE DRIVER (not a molt_diff flag)
 tests/molt_diff.py drives the NATIVE backend through the build daemon and runs
 the produced native binary. The WASM path is structurally different: the only
 supported way to RUN a Molt wasm module is the canonical Node host shim
-(`node wasm/run_wasm.js <output_linked.wasm>`) — bare wasmtime/wasmer cannot
+(`node wasm/run_wasm.js <manifest.json>`) — bare wasmtime/wasmer cannot
 satisfy the `env.molt_*_host` imports by design (see tools/wasm_run_matrix.py
 and task #62). So the MOLT half (build + run) is wasm-specific; everything else
 — the CPython oracle, the per-test `# MOLT_META` gating, the stdout/stderr
@@ -71,6 +71,7 @@ import harness_memory_guard  # noqa: E402
 # comparison + partition logic, which we reuse verbatim.
 sys.path.insert(0, str(ROOT / "tests"))
 import molt_diff  # noqa: E402
+from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
 
 RUN_WASM_JS = ROOT / "wasm" / "run_wasm.js"
 
@@ -124,6 +125,8 @@ def _build_wasm(
         "wasm",
         "--build-profile",
         build_profile,
+        "--linked",
+        "--require-linked",
         "--respect-pythonpath",
         "--out-dir",
         str(out_dir),
@@ -152,13 +155,11 @@ def _build_wasm(
     return linked, ""
 
 
-def _run_wasm(linked: Path, runtime_wasm: Path | None) -> tuple[str, str, int]:
+def _run_wasm(linked: Path) -> tuple[str, str, int]:
     """Run the linked wasm via the canonical node host shim."""
     env = dict(os.environ)
-    env["MOLT_WASM_PREFER_LINKED"] = "1"
-    if runtime_wasm is not None and runtime_wasm.exists():
-        env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    cmd = [_node_bin(), str(RUN_WASM_JS), str(linked)]
+    manifest = wasm_runtime_manifest_path(linked)
+    cmd = [_node_bin(), str(RUN_WASM_JS), str(manifest)]
     try:
         proc = harness_memory_guard.guarded_completed_process(
             cmd,
@@ -261,8 +262,7 @@ def diff_wasm_test(
         record["detail"] = "wasm build failed: " + build_err.strip()[-400:]
         return record
 
-    runtime_wasm = out_dir / "molt_runtime.wasm"
-    molt_out, molt_err, molt_ret = _run_wasm(linked, runtime_wasm)
+    molt_out, molt_err, molt_ret = _run_wasm(linked)
     molt_err = _strip_node_noise(molt_err)
 
     molt_out_n = molt_diff._normalize_output(molt_out, normalize)

@@ -268,6 +268,13 @@ def _dispatch_entrypoint_command(
             if deploy_profile is not None
             else None
         )
+        split_runtime = bool(
+            getattr(args, "split_runtime", False)
+            or (
+                deploy_defaults_for_profile is not None
+                and deploy_defaults_for_profile.get("split_runtime", False)
+            )
+        )
         # `stdlib_profile` is resolved through the ONE config authority
         # (`config_resolution.resolve_stdlib_profile`). The module-graph closure
         # reads `MOLT_STDLIB_PROFILE` directly (`_ensure_core_stdlib_modules`),
@@ -371,7 +378,7 @@ def _dispatch_entrypoint_command(
             snapshot=getattr(args, "snapshot", False),
             stdlib_profile=stdlib_profile,
             lib_paths=lib_paths or None,
-            split_runtime=getattr(args, "split_runtime", False),
+            split_runtime=split_runtime,
             capability_manifest=getattr(args, "capability_manifest", None),
             require_signed_manifest=getattr(args, "require_signed_manifest", False),
             audit_log=getattr(args, "audit_log", None),

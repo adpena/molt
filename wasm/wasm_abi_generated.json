@@ -5245,6 +5245,8 @@
     "runpy_run_module": "molt_runpy_run_module",
     "runpy_run_path": "molt_runpy_run_path",
     "runtime_active_runtime": "molt_runtime_active_runtime",
+    "runtime_execution_enter": "molt_runtime_execution_enter",
+    "runtime_execution_leave": "molt_runtime_execution_leave",
     "runtime_init": "molt_runtime_init",
     "runtime_shutdown": "molt_runtime_shutdown",
     "scratch_alloc": "molt_scratch_alloc",

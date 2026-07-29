@@ -65,6 +65,7 @@ class _GeneratorProtocolAttrs(Protocol):
     active_exceptions: list[ActiveException]
     annotation_name_counter: Any
     annotation_type_params: dict[str, MoltValue]
+    app_callable_bindings: dict[str, dict[str, Any]]
     async_closure_offset: int | None
     async_context: Any
     async_index_loop_stack: list[int]
@@ -140,4 +141,3 @@ class _GeneratorProtocolAttrs(Protocol):
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
-    imported_module_provenance: dict[str, frozenset[str]]

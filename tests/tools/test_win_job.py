@@ -91,6 +91,11 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
         job_members = set(win_job.process_ids(job))
         assert {proc.pid, gc_pid} <= job_members
         assert win_job.active_process_count(job) == len(job_members)
+        process_memory = win_job.process_memory(job, include_image_names=True)
+        assert {proc.pid, gc_pid} <= {sample.pid for sample in process_memory}
+        assert all(sample.rss_bytes > 0 for sample in process_memory)
+        assert all(sample.started_at_ns is not None for sample in process_memory)
+        assert all(sample.image_name for sample in process_memory)
         assert win_job.current_working_set_bytes(job) > 0
         assert win_job.peak_job_memory_bytes(job) > 0
 

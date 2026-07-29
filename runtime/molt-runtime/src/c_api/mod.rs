@@ -16,7 +16,7 @@ pub use molt_api::*;
 
 use self::molt_api::molt_capi_method_dispatch;
 use crate::builtins::exceptions::molt_exception_new_from_class;
-use crate::concurrency::gil::{gil_held, release_runtime_gil};
+use crate::concurrency::gil::gil_held;
 use crate::object::layout::{function_call_target_ptr, function_set_call_target_ptr};
 use crate::state::runtime_state::{
     RuntimeState, molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown, runtime_state,

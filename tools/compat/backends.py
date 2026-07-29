@@ -50,6 +50,7 @@ from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     verify_available_llvm_toolchain,
 )
+from molt.wasm_artifact import wasm_runtime_manifest_path
 
 # molt_diff is imported by the harness before adapters are used; we import the
 # already-bootstrapped module here for its capability/CLI-python helpers so the
@@ -364,7 +365,7 @@ class WasmAdapter:
             build_profile,
             out_dir,
             capabilities,
-            extra_build_args=["--linked"],
+            extra_build_args=["--linked", "--require-linked"],
         )
         build_timeout = _build_timeout("MOLT_COMPAT_WASM_BUILD_TIMEOUT", 600.0)
         b_out, b_err, b_rc, b_to = _guarded_run(
@@ -386,13 +387,10 @@ class WasmAdapter:
                 detail="wasm build produced no linked module",
             )
         run_env = dict(env)
-        run_env["MOLT_WASM_PREFER_LINKED"] = "1"
-        runtime_wasm = out_dir / "molt_runtime.wasm"
-        if runtime_wasm.exists():
-            run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+        manifest = wasm_runtime_manifest_path(linked)
         run_timeout = _build_timeout("MOLT_COMPAT_WASM_RUN_TIMEOUT", 60.0)
         r_out, r_err, r_rc, r_to = _guarded_run(
-            [shutil.which("node") or "node", str(_RUN_WASM_JS), str(linked)],
+            [shutil.which("node") or "node", str(_RUN_WASM_JS), str(manifest)],
             prefix="MOLT_COMPAT_WASM",
             env=run_env,
             timeout=run_timeout,

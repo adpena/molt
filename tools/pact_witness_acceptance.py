@@ -19,6 +19,7 @@ from molt.scientific_stack_versions import (
     numpy_witness_seal_root,
     resolve_scientific_stack,
 )
+from molt.wasm_artifact import wasm_runtime_manifest_entry_path
 
 try:
     from tools.command_execution import CommandExecutor
@@ -252,26 +253,11 @@ def _build_env() -> dict[str, str]:
     return env
 
 
-def _select_wasm_entry(build_dir: Path) -> Path:
-    app_wasm = build_dir / "app.wasm"
-    runtime_wasm = build_dir / "molt_runtime.wasm"
-    if app_wasm.is_file():
-        if not runtime_wasm.is_file():
-            raise SystemExit(f"missing split runtime artifact: {runtime_wasm}")
-        return app_wasm
-    output_wasm = build_dir / "output.wasm"
-    if not output_wasm.is_file():
-        raise SystemExit(f"missing build artifact: {output_wasm}")
-    return output_wasm
-
-
-def _wasm_run_env(wasm_entry: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    if wasm_entry.name == "app.wasm":
-        env["MOLT_WASM_DIRECT_LINK"] = "1"
-        env["MOLT_WASM_PREFER_LINKED"] = "0"
-        env["MOLT_RUNTIME_WASM"] = str(wasm_entry.with_name("molt_runtime.wasm"))
-    return env
+def _select_wasm_manifest(build_dir: Path) -> Path:
+    manifest = build_dir / "manifest.json"
+    if not manifest.is_file():
+        raise SystemExit(f"missing WASM execution manifest: {manifest}")
+    return manifest
 
 
 def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
@@ -381,9 +367,10 @@ def _build_wasm(build_dir: Path) -> Path:
     )
     _summarize_build_diagnostics(diagnostics_path)
     _run_build_health_gate(diagnostics_path)
-    entry = _select_wasm_entry(build_dir)
+    manifest = _select_wasm_manifest(build_dir)
+    entry = wasm_runtime_manifest_entry_path(manifest)
     _assert_no_poison_stubs(build_dir, entry)
-    return entry
+    return manifest
 
 
 def _run_build_health_gate(diagnostics_path: Path) -> None:
@@ -780,7 +767,7 @@ def _write_static_extension_init_failure_diagnostic(
     return report_path
 
 
-def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
+def _run_candidate(manifest: Path, run_dir: Path) -> tuple[Path, Path]:
     reference = _prepare_reference_oracle(run_dir)
     raw_output = run_dir / "reference_outputs.npz"
     candidate = run_dir / "candidate_outputs.npz"
@@ -790,9 +777,9 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
         _node_bin(),
         "--experimental-wasm-exnref",
         str(ROOT / "wasm" / "run_wasm.js"),
-        str(output_wasm),
+        str(manifest),
     ]
-    env = _wasm_run_env(output_wasm)
+    env = os.environ.copy()
     result = _run_capture(node_args, cwd=run_dir, env=env)
     if result.returncode != 0:
         _write_static_extension_init_failure_diagnostic(
@@ -878,8 +865,8 @@ def main(argv: list[str] | None = None) -> int:
             "result is NOT acceptance evidence — reproduce green with it unset.",
             flush=True,
         )
-    output_wasm = _build_wasm(build_dir)
-    candidate, reference = _run_candidate(output_wasm, run_dir)
+    manifest = _build_wasm(build_dir)
+    candidate, reference = _run_candidate(manifest, run_dir)
     _check_parity(candidate, reference)
     if _iteration_mode():
         print(

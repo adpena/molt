@@ -1490,6 +1490,16 @@ type = 0
 runtime_name = "molt_runtime_init"
 
 [[import]]
+name = "runtime_execution_enter"
+type = 0
+runtime_name = "molt_runtime_execution_enter"
+
+[[import]]
+name = "runtime_execution_leave"
+type = 1
+runtime_name = "molt_runtime_execution_leave"
+
+[[import]]
 name = "runtime_shutdown"
 type = 0
 runtime_name = "molt_runtime_shutdown"
@@ -6768,14 +6778,19 @@ essential_exports = [
   "molt_exception_pending_fast",
   "molt_handle_resolve",
   "molt_header_size",
+  "molt_index",
   "memory",
   "molt_memory",
   "molt_host_init",
   "molt_list_builder_append",
   "molt_list_builder_finish",
   "molt_list_builder_new",
+  "molt_len",
   "molt_main",
   "molt_object_repr",
+  "molt_profile_dump",
+  "molt_runtime_execution_enter",
+  "molt_runtime_execution_leave",
   "molt_scratch_alloc",
   "molt_scratch_free",
   "molt_string_as_ptr",

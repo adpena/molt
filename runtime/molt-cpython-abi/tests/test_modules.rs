@@ -564,6 +564,10 @@ unsafe extern "C" fn fake_gil_check() -> std::os::raw::c_int {
 unsafe extern "C" fn fake_runtime_is_initialized() -> std::os::raw::c_int {
     1
 }
+unsafe extern "C" fn fake_thread_state_drop_enter() -> u64 {
+    1
+}
+unsafe extern "C" fn fake_thread_state_drop_leave(_token: u64) {}
 unsafe extern "C" fn fake_attached_runtime_context() -> u32 {
     molt_cpython_abi::hooks::AttachedRuntimeContextKind::NativeGil as u32
 }
@@ -580,6 +584,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_restore: fake_gil_restore,
     gil_check: fake_gil_check,
     runtime_is_initialized: fake_runtime_is_initialized,
+    thread_state_drop_enter: fake_thread_state_drop_enter,
+    thread_state_drop_leave: fake_thread_state_drop_leave,
     attached_runtime_context: fake_attached_runtime_context,
     pending_call_error: fake_pending_call_error,
     alloc_str: fake_alloc_str,

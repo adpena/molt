@@ -6201,17 +6201,32 @@ fn nested_public_gil_release_preserves_outer_attachment() {
 }
 
 #[test]
-fn public_gil_boundary_owns_only_attachment_when_gil_is_preheld() {
+fn public_gil_boundary_reuses_macro_entry_attachment_when_gil_is_preheld() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(crate::c_api::molt_init(), 0);
     crate::with_gil_entry_nopanic!(_py, {
-        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
         assert_eq!(crate::c_api::molt_gil_acquire(), 0);
         assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+            attachments,
+            "persistent public boundary must reuse macro entry attachment"
+        );
         assert_eq!(crate::c_api::molt_gil_release(), 0);
         assert!(crate::concurrency::gil::gil_held());
-        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+            attachments,
+            "persistent public release must not decrement the macro attachment"
+        );
+        assert!(
+            molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
+            "public release must preserve the owning macro attachment"
+        );
     });
+    assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
 }
 
 #[test]

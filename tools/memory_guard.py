@@ -721,6 +721,16 @@ def _sampling_telemetry_payload(
         "first_transient_failure_at": telemetry.first_transient_failure_at,
         "last_transient_failure_at": telemetry.last_transient_failure_at,
         "last_transient_error": telemetry.last_transient_error,
+        "source": telemetry.source,
+        "wall_time_s": telemetry.wall_time_s,
+        "cpu_time_s": telemetry.cpu_time_s,
+        "max_wall_time_s": telemetry.max_wall_time_s,
+        "max_cpu_time_s": telemetry.max_cpu_time_s,
+        "process_rows": telemetry.process_rows,
+        "max_process_rows": telemetry.max_process_rows,
+        "observer_wall_time_s": telemetry.observer_wall_time_s,
+        "observer_cpu_time_s": telemetry.observer_cpu_time_s,
+        "observer_cpu_duty_cycle": telemetry.observer_cpu_duty_cycle,
     }
 
 
@@ -732,6 +742,9 @@ def run_guarded(
     poll_interval: float,
     sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
     capture_output: bool = True,
+    stdout_capture_path: str | Path | None = None,
+    stderr_capture_path: str | Path | None = None,
+    capture_tail_bytes: int | None = None,
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
@@ -753,7 +766,6 @@ def run_guarded(
     running_summary_environ: Mapping[str, str] | None = None,
     running_summary_max_global_rss_kb: int | None = None,
     on_spawn: Callable[[int], None] | None = None,
-    sampling_scope: str = "global",
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -761,10 +773,20 @@ def run_guarded(
         sampler = sample_processes
     if poll_interval <= 0:
         raise ValueError("poll interval must be greater than 0")
-    if sampling_scope not in {"global", "owned_tree"}:
-        raise ValueError("sampling_scope must be 'global' or 'owned_tree'")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
+    if (stdout_capture_path is None) != (stderr_capture_path is None):
+        raise ValueError("stdout/stderr capture paths must be provided together")
+    if stdout_capture_path is not None and not capture_output:
+        raise ValueError("capture paths require capture_output")
+    if capture_tail_bytes is not None and capture_tail_bytes <= 0:
+        raise ValueError("capture_tail_bytes must be positive")
+    if capture_tail_bytes is not None and stdout_capture_path is None:
+        raise ValueError("capture_tail_bytes requires external capture paths")
+    if stdout_capture_path is not None and Path(stdout_capture_path).resolve() == Path(
+        stderr_capture_path  # type: ignore[arg-type]
+    ).resolve():
+        raise ValueError("stdout/stderr capture paths must be distinct")
     if keepalive_interval is not None and keepalive_interval <= 0:
         keepalive_interval = None
     if text and isinstance(input, bytes):
@@ -787,6 +809,7 @@ def run_guarded(
         child_rlimit_kb=child_rlimit_kb,
     )
     start = time.monotonic()
+    observer_cpu_start = time.process_time()
     baseline_pgids: frozenset[int] = frozenset()
     guard_signal: int | None = None
 
@@ -838,16 +861,27 @@ def run_guarded(
             launch_command=list(launch.command),
         )
         if capture_output:
-            if text:
+            if stdout_capture_path is not None:
+                stdout_path = Path(stdout_capture_path)
+                stderr_path = Path(stderr_capture_path)  # type: ignore[arg-type]
+                stdout_path.parent.mkdir(parents=True, exist_ok=True)
+                stderr_path.parent.mkdir(parents=True, exist_ok=True)
+                if text:
+                    stdout_capture = stdout_path.open(
+                        mode="x+t", encoding=encoding, errors=errors
+                    )
+                    stderr_capture = stderr_path.open(
+                        mode="x+t", encoding=encoding, errors=errors
+                    )
+                else:
+                    stdout_capture = stdout_path.open(mode="x+b")
+                    stderr_capture = stderr_path.open(mode="x+b")
+            elif text:
                 stdout_capture = tempfile.TemporaryFile(
-                    mode="w+t",
-                    encoding=encoding,
-                    errors=errors,
+                    mode="w+t", encoding=encoding, errors=errors
                 )
                 stderr_capture = tempfile.TemporaryFile(
-                    mode="w+t",
-                    encoding=encoding,
-                    errors=errors,
+                    mode="w+t", encoding=encoding, errors=errors
                 )
             else:
                 stdout_capture = tempfile.TemporaryFile(mode="w+b")
@@ -919,29 +953,69 @@ def run_guarded(
             started_at=_utc_timestamp(),
         )
         tracker = ProcessTreeTracker(proc.pid)
-        if sampling_scope == "owned_tree" and guard_job is not None:
-            # A Windows Job already provides race-free ownership for the entire
-            # descendant tree. Query that kernel object directly for benchmark
-            # telemetry instead of paying for a whole-host process snapshot on
-            # every sample. The synthetic root row represents the aggregate
-            # Job working set; Job close remains the cleanup authority.
+        sampling_source = (
+            "windows_full_process_table"
+            if _is_windows_process_model()
+            else "posix_process_table"
+        )
+        if sampler is not sample_processes:
+            sampling_source = "custom"
+        if guard_job is not None:
             cleanup_orphans = False
+        if guard_job is not None:
+            # A Windows Job already provides race-free ownership for the entire
+            # descendant tree. Query only those kernel-owned members for every
+            # guarded command; full host snapshots are fallback/diagnostic
+            # authority, never the steady-state sampler.
             job_command = " ".join(command)
+            job_member_commands: dict[tuple[int, int | None], str] = {}
+            previous_job_members: frozenset[int] = frozenset()
 
             def _sample_owned_job() -> Mapping[int, ProcessSample]:
-                rss_bytes = _win_job.current_working_set_bytes(guard_job)
-                return {
-                    proc.pid: ProcessSample(
-                        pid=proc.pid,
-                        ppid=os.getpid(),
-                        rss_kb=(rss_bytes + 1023) // 1024,
-                        command=job_command,
-                        pgid=child_process.pgid,
-                        started_at_ns=None,
+                nonlocal job_member_commands, previous_job_members
+                members = _win_job.process_memory(guard_job)
+                member_ids = frozenset(member.pid for member in members)
+                if member_ids != previous_job_members:
+                    members = _win_job.process_memory(
+                        guard_job,
+                        include_image_names=True,
                     )
-                }
+                    previous_job_members = frozenset(member.pid for member in members)
+                    live_keys = {
+                        (member.pid, member.started_at_ns) for member in members
+                    }
+                    job_member_commands = {
+                        key: value
+                        for key, value in job_member_commands.items()
+                        if key in live_keys
+                    }
+                    for member in members:
+                        if member.image_name:
+                            job_member_commands[(member.pid, member.started_at_ns)] = (
+                                member.image_name
+                            )
+                samples: dict[int, ProcessSample] = {}
+                for member in members:
+                    command_text = (
+                        job_command
+                        if member.pid == proc.pid
+                        else job_member_commands.get(
+                            (member.pid, member.started_at_ns),
+                            f"windows-job-member pid={member.pid}",
+                        )
+                    )
+                    samples[member.pid] = ProcessSample(
+                        pid=member.pid,
+                        ppid=os.getpid() if member.pid == proc.pid else proc.pid,
+                        rss_kb=(member.rss_bytes + 1023) // 1024,
+                        command=command_text,
+                        pgid=child_process.pgid,
+                        started_at_ns=member.started_at_ns,
+                    )
+                return samples
 
             sampler = _sample_owned_job
+            sampling_source = "windows_job_members"
         root_started_at_ns = (
             windows_process_handle_started_at_ns(getattr(proc, "_handle", None))
             if _is_windows_process_model()
@@ -1069,8 +1143,16 @@ def run_guarded(
         first_transient_sampling_failure_at: str | None = None
         last_transient_sampling_failure_at: str | None = None
         last_transient_sampling_error: str | None = None
+        sampling_wall_time_s = 0.0
+        sampling_cpu_time_s = 0.0
+        max_sampling_wall_time_s = 0.0
+        max_sampling_cpu_time_s = 0.0
+        sampling_process_rows = 0
+        max_sampling_process_rows = 0
 
         def sampling_telemetry() -> GuardSamplingTelemetry:
+            observer_wall_time_s = max(0.0, time.monotonic() - start)
+            observer_cpu_time_s = max(0.0, time.process_time() - observer_cpu_start)
             return GuardSamplingTelemetry(
                 attempts=sampling_attempts,
                 successes=sampling_successes,
@@ -1078,6 +1160,20 @@ def run_guarded(
                 first_transient_failure_at=first_transient_sampling_failure_at,
                 last_transient_failure_at=last_transient_sampling_failure_at,
                 last_transient_error=last_transient_sampling_error,
+                source=sampling_source,
+                wall_time_s=sampling_wall_time_s,
+                cpu_time_s=sampling_cpu_time_s,
+                max_wall_time_s=max_sampling_wall_time_s,
+                max_cpu_time_s=max_sampling_cpu_time_s,
+                process_rows=sampling_process_rows,
+                max_process_rows=max_sampling_process_rows,
+                observer_wall_time_s=observer_wall_time_s,
+                observer_cpu_time_s=observer_cpu_time_s,
+                observer_cpu_duty_cycle=(
+                    observer_cpu_time_s / observer_wall_time_s
+                    if observer_wall_time_s > 0.0
+                    else 0.0
+                ),
             )
 
         def record_transient_sampling_failure(
@@ -1289,28 +1385,53 @@ def run_guarded(
             nonlocal guard_interrupted, last_sample_cost_s
             nonlocal remembered_samples, remembered_watched
             nonlocal sampling_attempts, sampling_successes
+            nonlocal sampling_wall_time_s, sampling_cpu_time_s
+            nonlocal max_sampling_wall_time_s, max_sampling_cpu_time_s
+            nonlocal sampling_process_rows, max_sampling_process_rows
             active_sampler = _timeout_sampler(sampler) if timeout_deadline else sampler
-            sample_started = time.monotonic()
+            sample_started_ns = time.perf_counter_ns()
+            sample_cpu_started_ns = time.process_time_ns()
             sampling_attempts += 1
+
+            def record_sampling_cost(process_rows: int = 0) -> None:
+                nonlocal last_sample_cost_s
+                nonlocal sampling_wall_time_s, sampling_cpu_time_s
+                nonlocal max_sampling_wall_time_s, max_sampling_cpu_time_s
+                nonlocal sampling_process_rows, max_sampling_process_rows
+                wall_cost = (time.perf_counter_ns() - sample_started_ns) / 1_000_000_000
+                cpu_cost = (time.process_time_ns() - sample_cpu_started_ns) / 1_000_000_000
+                last_sample_cost_s = wall_cost
+                sampling_wall_time_s += wall_cost
+                sampling_cpu_time_s += cpu_cost
+                max_sampling_wall_time_s = max(max_sampling_wall_time_s, wall_cost)
+                max_sampling_cpu_time_s = max(max_sampling_cpu_time_s, cpu_cost)
+                sampling_process_rows += process_rows
+                max_sampling_process_rows = max(
+                    max_sampling_process_rows,
+                    process_rows,
+                )
+
             try:
                 samples = active_sampler()
             except WindowsProcessSnapshotTimeout as exc:
-                last_sample_cost_s = time.monotonic() - sample_started
+                record_sampling_cost()
                 if allow_transient_timeout:
                     record_transient_sampling_failure(exc)
                     return None
                 terminate_after_sampling_failure(reason="sampler_timeout")
                 raise
             except KeyboardInterrupt:
+                record_sampling_cost()
                 guard_interrupted = True
                 terminate_after_sampling_failure(reason="guard_interrupted")
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=termination_wait_s)
                 return remembered_samples or {}, set(remembered_watched or ())
             except Exception:
+                record_sampling_cost()
                 terminate_after_sampling_failure(reason="sampler_failure")
                 raise
-            last_sample_cost_s = time.monotonic() - sample_started
+            record_sampling_cost(len(samples))
             sampling_successes += 1
             watched = tracker.update(samples)
             remembered_samples = samples
@@ -1649,11 +1770,27 @@ def run_guarded(
             if stdin_thread is not None:
                 stdin_thread.join(timeout=1.0)
             if stdout_capture is not None:
-                stdout_capture.seek(0)
-                stdout = stdout_capture.read()
+                stdout_capture.flush()
+                if capture_tail_bytes is not None and stdout_capture_path is not None:
+                    with Path(stdout_capture_path).open("rb") as tail_handle:
+                        tail_handle.seek(0, os.SEEK_END)
+                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_data = tail_handle.read()
+                    stdout = tail_data.decode(encoding, errors=errors) if text else tail_data
+                else:
+                    stdout_capture.seek(0)
+                    stdout = stdout_capture.read()
             if stderr_capture is not None:
-                stderr_capture.seek(0)
-                stderr = stderr_capture.read()
+                stderr_capture.flush()
+                if capture_tail_bytes is not None and stderr_capture_path is not None:
+                    with Path(stderr_capture_path).open("rb") as tail_handle:
+                        tail_handle.seek(0, os.SEEK_END)
+                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_data = tail_handle.read()
+                    stderr = tail_data.decode(encoding, errors=errors) if text else tail_data
+                else:
+                    stderr_capture.seek(0)
+                    stderr = stderr_capture.read()
         finally:
             if stdout_capture is not None:
                 stdout_capture.close()

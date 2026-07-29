@@ -1,7 +1,6 @@
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -82,11 +81,6 @@ def main() -> None:
         help="Output directory for profiles (default: logs/wasm_profile/<timestamp>).",
     )
     parser.add_argument(
-        "--linked",
-        action="store_true",
-        help="Attempt single-module wasm linking with wasm-ld when available.",
-    )
-    parser.add_argument(
         "--runs",
         type=int,
         default=1,
@@ -106,8 +100,6 @@ def main() -> None:
     out_dir = args.out_dir or (Path("logs") / "wasm_profile" / stamp)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.linked:
-        os.environ["MOLT_WASM_LINK"] = "1"
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     if not bench_wasm.build_runtime_wasm(
@@ -118,21 +110,18 @@ def main() -> None:
         limits=limits,
     ):
         sys.exit(1)
-    if args.linked and not bench_wasm.build_runtime_wasm(
+    if not bench_wasm.build_runtime_wasm(
         reloc=True,
         output=bench_wasm.RUNTIME_WASM_RELOC,
         tty=False,
         log=None,
         limits=limits,
     ):
-        print(
-            "Relocatable runtime build failed; falling back to non-linked wasm runs.",
-            file=sys.stderr,
-        )
+        print("Relocatable runtime build failed; linked profile is required.", file=sys.stderr)
+        sys.exit(1)
 
     wasm_binary = bench_wasm.prepare_wasm_binary(
         bench,
-        require_linked=args.linked,
         tty=False,
         log=None,
         keep_temp=False,
@@ -172,7 +161,7 @@ def main() -> None:
         "git_rev": bench_wasm._git_rev(),
         "bench": bench,
         "bench_name": bench_name,
-        "linked_requested": args.linked,
+        "execution_mode": "linked",
         "linked_used": wasm_binary.linked_used,
         "runs": args.runs,
         "cpu_prof_interval_us": args.cpu_prof_interval,

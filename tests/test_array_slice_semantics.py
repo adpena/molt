@@ -121,8 +121,10 @@ def test_array_slice_semantics_split_browser_host(tmp_path: Path) -> None:
 
     app_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert app_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
@@ -133,6 +135,8 @@ def test_array_slice_semantics_split_browser_host(tmp_path: Path) -> None:
                 payload = app_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -156,8 +160,7 @@ import {{ loadMoltWasm }} from {browser_host_uri!r};
 
 const baseUrl = {base_url!r};
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/app.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
 }});
 host.run();

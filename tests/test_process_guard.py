@@ -118,3 +118,43 @@ def test_guarded_timeout_without_requested_timeout_fails_closed() -> None:
             timeout=None,
             guard_loader=lambda _cwd: harness,
         )
+
+
+def test_guarded_timeout_preserves_terminal_telemetry() -> None:
+    guarded_result = type(
+        "GuardedResult",
+        (),
+        {
+            "timed_out": True,
+            "stdout": "partial",
+            "stderr": "guard timed out",
+            "returncode": 124,
+            "peak": object(),
+            "peak_total": object(),
+        },
+    )()
+
+    class FakeContext:
+        @classmethod
+        def from_env(cls, *_args: object, **_kwargs: object) -> "FakeContext":
+            return cls()
+
+        def run(self, command: list[str], **_kwargs: object) -> object:
+            return guarded_result
+
+    harness = type(
+        "FakeHarness",
+        (),
+        {"HarnessExecutionContext": FakeContext},
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        process_guard.run_completed_command(
+            ["compiler", "input.py"],
+            memory_guard_prefix="MOLT_TEST",
+            timeout=5.0,
+            capture_output=True,
+            guard_loader=lambda _cwd: harness,
+        )
+
+    assert getattr(raised.value, "guarded_result") is guarded_result

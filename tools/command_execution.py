@@ -106,6 +106,9 @@ class CommandExecutor:
         env: Mapping[str, str] | None = None,
         input: str | bytes | None = None,
         capture_output: bool = False,
+        stdout_capture_path: str | Path | None = None,
+        stderr_capture_path: str | Path | None = None,
+        capture_tail_bytes: int | None = None,
         text: bool | None = False,
         timeout: float | None = None,
         check: bool = False,
@@ -128,6 +131,9 @@ class CommandExecutor:
             env=env,
             input=input,
             capture_output=capture_output,
+            stdout_capture_path=stdout_capture_path,
+            stderr_capture_path=stderr_capture_path,
+            capture_tail_bytes=capture_tail_bytes,
             text=text,
             timeout=timeout,
             check=check,
@@ -209,6 +215,8 @@ class CommandExecutor:
         encoding: str | None = None,
         errors: str | None = None,
         bufsize: int = -1,
+        timeout: float | None = None,
+        summary_json: str | Path | None = None,
     ) -> subprocess.Popen[Any]:
         """Start an interactive child through the canonical memory-guard owner."""
 
@@ -241,9 +249,14 @@ class CommandExecutor:
             str(limits.poll_interval),
             "--child-rlimit-gb",
             str(0 if limits.child_rlimit_gb is None else limits.child_rlimit_gb),
-            "--",
-            *command,
         ]
+        if timeout is not None:
+            if timeout <= 0:
+                raise ValueError("timeout must be positive")
+            guarded_argv.extend(("--timeout", str(timeout)))
+        if summary_json is not None:
+            guarded_argv.extend(("--summary-json", str(summary_json)))
+        guarded_argv.extend(("--", *command))
         return self.start_owned(
             guarded_argv,
             cwd=cwd,

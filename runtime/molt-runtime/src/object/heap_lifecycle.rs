@@ -29,6 +29,11 @@ thread_local! {
         const { RefCell::new([None, None, None, None]) };
 }
 
+pub(crate) fn touch_terminal_sink_tls_lifetime() {
+    let _ = TERMINAL_EDGE_SINK_POOL.try_with(|_| {});
+    let _ = TERMINAL_RESOURCE_SINK_POOL.try_with(|_| {});
+}
+
 static TERMINAL_EDGE_SINK_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 fn take_best_buffer<T>(slots: &mut [Option<Vec<T>>; 4], required: usize) -> Vec<T> {
@@ -86,9 +91,11 @@ impl DetachedEdgeSink {
         resource_capacity: usize,
     ) -> Option<Self> {
         let edges = TERMINAL_EDGE_SINK_POOL
-            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity));
+            .try_with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity))
+            .ok()?;
         let resources = TERMINAL_RESOURCE_SINK_POOL
-            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity));
+            .try_with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity))
+            .ok()?;
         let mut sink = Self {
             edges,
             resources,
@@ -103,8 +110,10 @@ impl DetachedEdgeSink {
     /// refcount-zero object would violate memory safety. The steady-state path
     /// performs no allocation once the per-thread high-water mark is learned.
     pub(crate) fn terminal_with_capacities(edge_capacity: usize, resource_capacity: usize) -> Self {
-        let mut edges = TERMINAL_EDGE_SINK_POOL
-            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity));
+        let (mut edges, edge_pool_live) = TERMINAL_EDGE_SINK_POOL
+            .try_with(|pool| take_best_buffer(&mut pool.borrow_mut(), edge_capacity))
+            .map(|edges| (edges, true))
+            .unwrap_or_else(|_| (Vec::new(), false));
         if edges.capacity() < edge_capacity {
             TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
             if edges.try_reserve_exact(edge_capacity).is_err() {
@@ -113,8 +122,10 @@ impl DetachedEdgeSink {
                 std::alloc::handle_alloc_error(layout);
             }
         }
-        let mut resources = TERMINAL_RESOURCE_SINK_POOL
-            .with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity));
+        let (mut resources, resource_pool_live) = TERMINAL_RESOURCE_SINK_POOL
+            .try_with(|pool| take_best_buffer(&mut pool.borrow_mut(), resource_capacity))
+            .map(|resources| (resources, true))
+            .unwrap_or_else(|_| (Vec::new(), false));
         if resources.capacity() < resource_capacity {
             TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
             if resources.try_reserve_exact(resource_capacity).is_err() {
@@ -126,7 +137,7 @@ impl DetachedEdgeSink {
         Self {
             edges,
             resources,
-            recycle: true,
+            recycle: edge_pool_live && resource_pool_live,
         }
     }
 
@@ -238,14 +249,14 @@ impl Drop for DetachedEdgeSink {
         if self.recycle {
             let mut edges = std::mem::take(&mut self.edges);
             edges.clear();
-            TERMINAL_EDGE_SINK_POOL.with(|pool| {
+            let _ = TERMINAL_EDGE_SINK_POOL.try_with(|pool| {
                 if let Some(slot) = pool.borrow_mut().iter_mut().find(|slot| slot.is_none()) {
                     *slot = Some(edges);
                 }
             });
             let mut resources = std::mem::take(&mut self.resources);
             resources.clear();
-            TERMINAL_RESOURCE_SINK_POOL.with(|pool| {
+            let _ = TERMINAL_RESOURCE_SINK_POOL.try_with(|pool| {
                 if let Some(slot) = pool.borrow_mut().iter_mut().find(|slot| slot.is_none()) {
                     *slot = Some(resources);
                 }

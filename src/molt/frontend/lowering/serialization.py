@@ -696,6 +696,15 @@ class SerializationMixin(
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == "trace_enter_slot" for op in json_ops):
                 func_entry["execution_context"] = "local"
+            if (
+                name == "molt_main"
+                and self.entry_module is not None
+                and self.module_name == self.entry_module
+            ):
+                func_entry["app_callable_bindings"] = [
+                    dict(self.app_callable_bindings[binding_name])
+                    for binding_name in sorted(self.app_callable_bindings)
+                ]
             # Always emit param_types so the backend creates Cranelift block
             # params for function arguments. Without this, parameters are
             # uninitialized (read as 0x0 = float +0.0 in NaN-boxing).

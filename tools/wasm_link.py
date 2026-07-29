@@ -31,6 +31,12 @@ from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt  # noqa: E402
 from wasm_metrics import wasm_metrics  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli.app_export_contract import (  # noqa: E402
+    app_export_call_abi,
+    excluded_app_symbols,
+    exported_app_symbols,
+    load_app_export_contract,
+)
 from molt.cli.external_link_providers import (  # noqa: E402
     WASM_COMPILER_RT_LINK_IMPORT_CLASS,
     WASM_LIBCXX_LINK_IMPORT_CLASS,
@@ -59,6 +65,7 @@ from molt._wasm_runtime_exports import (  # noqa: E402
 from molt._wasm_abi_generated import (  # noqa: E402
     WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
+    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
@@ -138,13 +145,9 @@ from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
     _canonicalize_standard_section_order as _canonicalize_standard_section_order,
     _collect_output_export_symbol_map as _collect_output_export_symbol_map,
-    _collect_output_wrapper_specs as _collect_output_wrapper_specs,
-    _collect_preserved_output_export_names as _collect_preserved_output_export_names,
-    _dominant_output_module_prefix as _dominant_output_module_prefix,
     _ensure_function_exports_by_symbol_names as _ensure_function_exports_by_symbol_names,
-    _entry_module_prefix_from_main_init as _entry_module_prefix_from_main_init,
-    _inject_output_export_aliases as _inject_output_export_aliases,
-    _is_public_output_export_name as _is_public_output_export_name,
+    _inject_app_export_adapters as _inject_app_export_adapters,
+    _validate_app_export_adapters as _validate_app_export_adapters,
     _memory_import_min as _memory_import_min,
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
@@ -1790,6 +1793,36 @@ def _public_output_export_symbol_map(
     return public_export_map
 
 
+def _app_export_surface_error(
+    data: bytes,
+    contract: Mapping[str, object] | None,
+    *,
+    stage: str,
+) -> str | None:
+    if contract is None:
+        return None
+    exports = set(_collect_function_exports(data))
+    expected = set(exported_app_symbols(contract))
+    missing = sorted(expected - exports)
+    forbidden = sorted(set(excluded_app_symbols(contract)) & exports)
+    details: list[str] = []
+    if missing:
+        details.append("missing=" + ",".join(missing))
+    if forbidden:
+        details.append("excluded-exported=" + ",".join(forbidden))
+    if not missing:
+        try:
+            call_abi = app_export_call_abi(contract)
+            adapter = call_abi.get("adapter")
+            if isinstance(adapter, Mapping) and adapter.get("strategy") == "retain-result":
+                _validate_app_export_adapters(data, tuple(sorted(expected)))
+        except ValueError as exc:
+            details.append(f"adapter-invalid={exc}")
+    if not details:
+        return None
+    return f"app callable export contract mismatch at {stage}: " + "; ".join(details)
+
+
 def _restore_public_output_exports(
     data: bytes,
     public_export_map: Mapping[str, str],
@@ -2280,30 +2313,11 @@ def _tree_shake_runtime(
         export_name = wasm_split_runtime_export_name_for_import(name)
         if export_name is not None:
             normalized_required_exports.add(export_name)
+    # Host-facing publication roots have one generated authority in
+    # ``output_export_policy.essential_exports``.  Keeping a second literal
+    # list here previously let linked-result decoders lose ``molt_len`` and
+    # ``molt_index`` while a superficially similar subset remained exported.
     normalized_required_exports.update(_ESSENTIAL_EXPORTS)
-    # Preserve the minimal exception-inspection surface used by the direct
-    # runner and browser host to marshal JS values and turn pending runtime
-    # exceptions into actionable diagnostics.
-    normalized_required_exports.update(
-        {
-            "molt_alloc",
-            "molt_handle_resolve",
-            "molt_header_size",
-            "molt_scratch_alloc",
-            "molt_scratch_free",
-            "molt_bytes_from_bytes",
-            "molt_string_from_bytes",
-            "molt_string_as_ptr",
-            "molt_exception_last",
-            "molt_exception_kind",
-            "molt_exception_message",
-            "molt_traceback_format_exc",
-            "molt_type_tag_of_bits",
-            "molt_object_repr",
-            "molt_profile_dump",
-            "molt_dec_ref_obj",
-        }
-    )
     raw_dynamic_exports = os.environ.get(
         "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS", ""
     ).strip()
@@ -3730,6 +3744,7 @@ def _run_wasm_ld_with_custodied_inputs(
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
+    app_export_contract_path: Path | None = None,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
     facts_metrics: dict[str, float] = {}
@@ -3771,6 +3786,15 @@ def _run_wasm_ld_with_custodied_inputs(
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
     output_data = output.read_bytes()
+    app_export_contract: dict[str, object] | None = None
+    app_call_abi: dict[str, object] | None = None
+    if app_export_contract_path is not None:
+        try:
+            app_export_contract = load_app_export_contract(app_export_contract_path)
+            app_call_abi = app_export_call_abi(app_export_contract)
+        except ValueError as exc:
+            print(f"Wasm link failed: {exc}", file=sys.stderr)
+            return 1
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
     try:
         facts_provider = _make_rust_wasm_facts_provider(
@@ -3856,7 +3880,12 @@ def _run_wasm_ld_with_custodied_inputs(
             | set(_sealed_native_init_symbols(native_objects))
         )
     )
-    export_symbol_map = _collect_output_export_symbol_map(output_data)
+    try:
+        export_symbol_map = _collect_output_export_symbol_map(output_data)
+    except ValueError as exc:
+        print(f"Wasm link failed: {exc}", file=sys.stderr)
+        temp_dir.cleanup()
+        return 1
     callable_entry_export_map = {
         name: export_symbol_map[name]
         for name in callable_entry_export_names
@@ -3878,10 +3907,27 @@ def _run_wasm_ld_with_custodied_inputs(
     callable_entry_symbol_names_by_slot = tuple(
         callable_entry_export_map[name] for name in callable_entry_export_names
     )
+    contract_app_exports = (
+        exported_app_symbols(app_export_contract)
+        if app_export_contract is not None
+        else ()
+    )
+    app_target_symbol_map = {
+        name: export_symbol_map[name]
+        for name in contract_app_exports
+        if name in export_symbol_map
+    }
+    app_adapter_symbol_map: dict[str, str] = {}
+    app_retain_symbol_name: str | None = None
     preserved_output_exports = list(
         dict.fromkeys(
             [
-                *_collect_preserved_output_export_names(output_data, output_facts),
+                *contract_app_exports,
+                *(
+                    name
+                    for name in WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+                    if name in export_symbol_map
+                ),
                 *(
                     entry.canonical_name
                     for entry in _split_runtime_export_contract("app")
@@ -3890,11 +3936,19 @@ def _run_wasm_ld_with_custodied_inputs(
             ]
         )
     )
-    user_export_symbol_names = [
-        export_symbol_map[name]
-        for name in preserved_output_exports
-        if name in export_symbol_map
-    ]
+    missing_contract_exports = sorted(
+        set(
+            contract_app_exports
+        )
+        - export_symbol_map.keys()
+    )
+    if missing_contract_exports:
+        print(
+            "Wasm link failed: frontend app export contract names are absent from "
+            "the relocatable app artifact: " + ", ".join(missing_contract_exports),
+            file=sys.stderr,
+        )
+        return 1
     rewritten = _rewrite_output_imports(output, runtime_exports, temp_dir)
     if rewritten is None:
         temp_dir.cleanup()
@@ -3909,6 +3963,30 @@ def _run_wasm_ld_with_custodied_inputs(
     except ValueError as exc:
         print(f"Failed to rewrite native direct imports: {exc}", file=sys.stderr)
         return 1
+    if app_call_abi is not None:
+        try:
+            rewritten_path, app_adapter_symbol_map = _inject_app_export_adapters(
+                rewritten_path,
+                temp_dir,
+                public_export_names=contract_app_exports,
+                call_abi=app_call_abi,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Wasm link failed: {exc}", file=sys.stderr)
+            return 1
+        export_symbol_map.update(app_adapter_symbol_map)
+        adapter_spec = app_call_abi.get("adapter")
+        if isinstance(adapter_spec, Mapping):
+            retain_spec = adapter_spec.get("retain_import")
+            if isinstance(retain_spec, Mapping):
+                retain_name = retain_spec.get("name")
+                if isinstance(retain_name, str):
+                    app_retain_symbol_name = retain_name
+    user_export_symbol_names = [
+        export_symbol_map[name]
+        for name in preserved_output_exports
+        if name in export_symbol_map
+    ]
     native_link_inputs, native_force_exports = _rewrite_native_runtime_imports(
         tuple(native_objects),
         runtime_exports,
@@ -4219,6 +4297,18 @@ def _run_wasm_ld_with_custodied_inputs(
         if restored_linked_bytes != linked_bytes:
             work_linked.write_bytes(restored_linked_bytes)
             linked_bytes = restored_linked_bytes
+        if app_adapter_symbol_map:
+            try:
+                _validate_app_export_adapters(
+                    linked_bytes,
+                    contract_app_exports,
+                    adapter_symbol_map=app_adapter_symbol_map,
+                    target_symbol_map=app_target_symbol_map,
+                    retain_symbol_name=app_retain_symbol_name,
+                )
+            except ValueError as exc:
+                print(f"Wasm link failed: {exc}", file=sys.stderr)
+                return 1
         try:
             native_link_error = _validate_required_native_direct_symbols(
                 linked_bytes,
@@ -4802,6 +4892,25 @@ def _run_wasm_ld_with_custodied_inputs(
             max(0.0, (time.perf_counter() - strip_start) * 1000.0), 6
         )
 
+        app_export_error = _app_export_surface_error(
+            work_linked.read_bytes(),
+            app_export_contract,
+            stage="linked-publication",
+        )
+        if app_export_error is not None:
+            print(app_export_error, file=sys.stderr)
+            return 1
+        if split_runtime:
+            assert app_stage is not None
+            app_export_error = _app_export_surface_error(
+                app_stage.read_bytes(),
+                app_export_contract,
+                stage="split-app-publication",
+            )
+            if app_export_error is not None:
+                print(app_export_error, file=sys.stderr)
+                return 1
+
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
             failed_validation = linked.with_name(
@@ -4895,6 +5004,7 @@ def _run_wasm_ld(
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     wasm_facts_scanner: Path,
+    app_export_contract_path: Path | None = None,
 ) -> int:
     for native_object in native_objects:
         if not native_object.exists():
@@ -4929,6 +5039,13 @@ def _run_wasm_ld(
                 label="app",
                 accept=_is_wasm_binary,
             )
+            app_export_contract_snapshot = None
+            if app_export_contract_path is not None:
+                app_export_contract_snapshot = _snapshot_link_input(
+                    app_export_contract_path,
+                    snapshot_root,
+                    label="app-export-contract",
+                )
             native_snapshot_list: list[Path] = []
             for index, native_object in enumerate(native_objects):
                 native_snapshot = _snapshot_link_input(
@@ -4975,6 +5092,7 @@ def _run_wasm_ld(
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_file=phase_timings_file,
                 wasm_facts_scanner=wasm_facts_scanner,
+                app_export_contract_path=app_export_contract_snapshot,
             )
     except OSError as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
@@ -5042,6 +5160,7 @@ def main() -> int:
     )
     parser.add_argument("--phase-timings-file", type=Path, default=None)
     parser.add_argument("--wasm-facts-scanner", type=Path, required=True)
+    parser.add_argument("--app-export-contract", type=Path, required=True)
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -5097,6 +5216,7 @@ def main() -> int:
         preserve_debug_sections=args.preserve_debug_sections,
         phase_timings_file=args.phase_timings_file,
         wasm_facts_scanner=args.wasm_facts_scanner,
+        app_export_contract_path=args.app_export_contract,
     )
 
 

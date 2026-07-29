@@ -39,6 +39,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    copy_wasm_runtime_manifest_for_artifact,
+    wasm_runtime_manifest_path,
+)
 
 DEFAULT_PROBE_SOURCE = 'print("hello world")\n'
 DEFAULT_TARGETS = ("native", "wasm", "luau", "mlir")
@@ -486,6 +490,8 @@ def _measure_artifact(
         if fresh_copies:
             run_path = _fresh_copy_path(artifact, fresh_dir, index)
             shutil.copy2(artifact, run_path)
+            if artifact.suffix == ".wasm":
+                copy_wasm_runtime_manifest_for_artifact(artifact, run_path)
             if executable_copy:
                 run_path.chmod(run_path.stat().st_mode | 0o111)
         run_env = env
@@ -505,6 +511,8 @@ def _measure_artifact(
                     run_path.unlink()
                 except FileNotFoundError:
                     pass
+                if artifact.suffix == ".wasm":
+                    (run_path.parent / "manifest.json").unlink(missing_ok=True)
         records.append(_sample_record(index=index, command=command, result=result))
         if result.returncode == 0 and result.elapsed_s is not None:
             elapsed.append(result.elapsed_s)
@@ -555,6 +563,7 @@ def _resolve_node_binary(env: dict[str, str]) -> str | None:
 
 def _node_runner_factory(node_bin: str) -> RunnerFactory:
     def runner(path: Path, _env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+        manifest = wasm_runtime_manifest_path(path)
         return (
             [
                 node_bin,
@@ -563,12 +572,10 @@ def _node_runner_factory(node_bin: str) -> RunnerFactory:
                 "--no-wasm-dynamic-tiering",
                 "--wasm-num-compilation-tasks=1",
                 str(WASM_RUNNER),
-                str(path),
+                str(manifest),
             ],
             {
                 "NODE_NO_WARNINGS": "1",
-                "MOLT_WASM_PREFER_LINKED": "1",
-                "MOLT_WASM_LINKED_PATH": str(path),
             },
         )
 

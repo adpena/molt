@@ -51,7 +51,7 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 ## Toolchain Port Tranche Update (2026-02-13)
 - Implemented: latest-major backend/toolchain port for `runtime/molt-backend` (`cranelift 0.128.x`, `wasm-encoder 0.245.1`, `wasmparser 0.245.1`) with native+wasm compile/test gates green for touched lanes.
 - Implemented: `runtime/molt-worker` parser/decode port to `sqlparser 0.61.x` with maintained SQL limit-wrapper behavior and green worker test suite.
-- Implemented: `run_wasm.js` linked-mode runtime wiring now lazily loads runtime sidecar assets, so linked artifacts execute without requiring `MOLT_RUNTIME_WASM` presence.
+- Implemented: Node, browser, and Rust hosts load only manifest-declared linked or split-runtime modules and verify their byte size and SHA-256 before execution.
 - Implemented: linked runner regression test `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked`.
 - Implemented: `tools/bench_wasm.py` linked compile wiring now injects reloc-runtime table-base (`MOLT_WASM_TABLE_BASE`) during linked-mode bench builds, eliminating linked `null function or function signature mismatch` traps observed on `output_linked.wasm`.
 - Implemented: final active element segments are the sole callable-table publication authority; runners verify the generated final-artifact attestation and never rewrite table entries after instantiation.

@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
+from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -145,7 +146,13 @@ def _node_command(artifact: Path) -> list[str]:
     node = shutil.which("node")
     if not node:
         raise RuntimeError("node is required for wasm startup measurement")
-    return [node, "--require", str(NODE_PROBE), str(WASM_RUNNER), str(artifact)]
+    return [
+        node,
+        "--require",
+        str(NODE_PROBE),
+        str(WASM_RUNNER),
+        str(wasm_runtime_manifest_path(artifact)),
+    ]
 
 
 def _cpython_env(env: dict[str, str]) -> dict[str, str]:
@@ -181,27 +188,14 @@ def _measure_probe(name: str, script: Path, *, env: dict[str, str], samples: int
     trace_env["MOLT_TRACE_RUNTIME_INIT"] = "1"
     native_run = _measure([str(native.artifact)], env=trace_env, samples=samples, timeout=timeout, label=f"{name} native")
     native_run["runtime_init"] = _runtime_phases(native_run["records"])
-    linked_env = dict(env)
-    linked_env["MOLT_WASM_LINKED"] = "1"
-    wasm_linked = _measure(_node_command(wasm.artifact), env=linked_env, samples=samples, timeout=timeout, label=f"{name} wasm-linked")
+    wasm_linked = _measure(_node_command(wasm.artifact), env=env, samples=samples, timeout=timeout, label=f"{name} wasm-linked")
     wasm_linked["phases"] = _phase_stats(wasm_linked["records"])
-    app = wasm.artifacts.get("app_wasm") or wasm.artifacts.get("wasm")
-    runtime = wasm.artifacts.get("runtime_wasm")
-    wasm_split: dict[str, Any] = {"ok": False, "skipped": "split app/runtime artifacts unavailable"}
-    if app and runtime and app.exists() and runtime.exists():
-        split_env = dict(env)
-        split_env.update({"MOLT_WASM_DIRECT_LINK": "1", "MOLT_WASM_PREFER_LINKED": "0", "MOLT_RUNTIME_WASM": str(runtime)})
-        wasm_split = _measure(_node_command(app), env=split_env, samples=samples, timeout=timeout, label=f"{name} wasm-split")
-        wasm_split["phases"] = _phase_stats(wasm_split["records"])
     row.update({
         "native": {"build_command": native.command, "artifact": _artifact(native.artifact), "run": native_run},
         "wasm": {
             "build_command": wasm.command,
             "linked_artifact": _artifact(wasm.artifact),
-            "app_artifact": _artifact(app) if app and app.exists() else None,
-            "runtime_artifact": _artifact(runtime) if runtime and runtime.exists() else None,
             "linked": wasm_linked,
-            "split": wasm_split,
         },
     })
     return row

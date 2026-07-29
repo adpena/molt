@@ -1295,6 +1295,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::RuntimeExecutionEnter,
+        name: "runtime_execution_enter",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::RuntimeExecutionLeave,
+        name: "runtime_execution_leave",
+        type_idx: 1,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeShutdown,
         name: "runtime_shutdown",
         type_idx: 0,
@@ -15161,6 +15171,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "runtime_init" => Some(WasmRuntimeImport::RuntimeInit),
         "molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit),
+        "runtime_execution_enter" => Some(WasmRuntimeImport::RuntimeExecutionEnter),
+        "molt_runtime_execution_enter" => Some(WasmRuntimeImport::RuntimeExecutionEnter),
+        "runtime_execution_leave" => Some(WasmRuntimeImport::RuntimeExecutionLeave),
+        "molt_runtime_execution_leave" => Some(WasmRuntimeImport::RuntimeExecutionLeave),
         "runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown),
         "molt_runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown),
         "sys_set_version_info" => Some(WasmRuntimeImport::SysSetVersionInfo),

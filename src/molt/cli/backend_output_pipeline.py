@@ -38,6 +38,7 @@ def _emit_backend_pipeline_outputs(
     prepared_backend_setup: _PreparedBackendSetup,
     prepared_backend_runtime_context: _PreparedBackendRuntimeContext,
     prepared_backend_compile: _PreparedBackendCompile,
+    app_export_contract_path: Path | None,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan,
     artifacts_root: Path,
     resolved_modules: frozenset[str],
@@ -120,6 +121,7 @@ def _emit_backend_pipeline_outputs(
                 artifacts_root=artifacts_root,
                 stage_timings_ms=pipeline_stage_ms,
                 wasm_facts_scanner=prepared_backend_setup.backend_bin,
+                app_export_contract_path=app_export_contract_path,
             )
         )
         if prepared_non_native_result_error is not None:

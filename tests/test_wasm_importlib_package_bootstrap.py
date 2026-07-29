@@ -259,15 +259,7 @@ def test_wasm_module_entrypoint_package_relative_imports_split_direct(
         f"stderr:\n{build.stderr[-2000:]}"
     )
 
-    run = run_wasm_linked(
-        root,
-        out_dir / "app.wasm",
-        env_overrides={
-            "MOLT_WASM_DIRECT_LINK": "1",
-            "MOLT_WASM_PREFER_LINKED": "0",
-            "MOLT_RUNTIME_WASM": str(out_dir / "molt_runtime.wasm"),
-        },
-    )
+    run = run_wasm_linked(root, out_dir / "app.wasm")
     assert run.returncode == 0, run.stderr
     assert run.stdout.splitlines() == [
         "probe_pkg",

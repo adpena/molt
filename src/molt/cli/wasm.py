@@ -31,6 +31,7 @@ __all__ = (
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
+    "_runtime_import_name_for_export_from_manifest",
     "_runtime_import_canonical_names_from_manifest",
     "_runtime_import_export_names_from_manifest",
     "_runtime_import_fallbacks_from_manifest",
@@ -146,6 +147,13 @@ def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | Non
     if manifest_import_name is None:
         return None
     return wasm_split_runtime_export_name_for_import(manifest_import_name)
+
+
+def _runtime_import_name_for_export_from_manifest(export_name: str) -> str | None:
+    import_name = wasm_runtime_import_name(export_name)
+    if import_name is not None:
+        return import_name
+    return wasm_split_runtime_import_name_for_export(export_name)
 
 
 def _runtime_import_export_names_from_manifest(

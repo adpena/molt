@@ -278,25 +278,25 @@ pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
     let Ok(size) = usize::try_from(size) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     };
     let alloc_size = size.max(1);
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     };
     if crate::resource::with_tracker(|tracker| tracker.on_allocate(alloc_size)).is_err() {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     }
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
         crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     }

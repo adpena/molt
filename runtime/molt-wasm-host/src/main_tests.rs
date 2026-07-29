@@ -1,10 +1,13 @@
 use super::{
     HostState, ProcessManager, SocketManager, WebSocketManager, call_app_startup_entries,
-    define_isolate_host_imports, linked_path_candidates, wasm_path_candidates,
+    define_isolate_host_imports, resolve_execution_modules, select_manifest_path,
 };
+use sha2::Digest;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use wasmtime::{Engine, Func, Linker, Module, Store, Val, ValType};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -28,51 +31,106 @@ fn test_host_state() -> HostState {
 }
 
 #[test]
-fn wasm_path_candidates_prefer_explicit_then_canonical_dist() {
+fn manifest_path_has_one_explicit_env_default_precedence() {
     let cwd = Path::new("/repo");
-    let candidates = wasm_path_candidates(
-        Some(PathBuf::from("/tmp/app.wasm")),
-        Some(PathBuf::from("/env/app.wasm")),
-        cwd,
+    assert_eq!(
+        select_manifest_path(
+            Some(PathBuf::from("/tmp/app.wasm")),
+            Some(PathBuf::from("/env/manifest.json")),
+            cwd,
+        ),
+        PathBuf::from("/tmp/app.wasm")
     );
     assert_eq!(
-        candidates,
-        vec![
-            PathBuf::from("/tmp/app.wasm"),
-            PathBuf::from("/env/app.wasm"),
-            PathBuf::from("/repo/dist/output.wasm"),
-        ]
+        select_manifest_path(None, Some(PathBuf::from("/env/manifest.json")), cwd),
+        PathBuf::from("/env/manifest.json")
+    );
+    assert_eq!(
+        select_manifest_path(None, None, cwd),
+        PathBuf::from("/repo/dist/manifest.json")
     );
 }
 
-#[test]
-fn linked_path_candidates_prefer_env_then_sibling_then_canonical_dist() {
-    let cwd = Path::new("/repo");
-    let wasm_path = Path::new("/artifacts/output.wasm");
-    let candidates = linked_path_candidates(
-        wasm_path,
-        Some(PathBuf::from("/env/output_linked.wasm")),
-        cwd,
-    );
-    assert_eq!(
-        candidates,
-        vec![
-            PathBuf::from("/env/output_linked.wasm"),
-            PathBuf::from("/artifacts/output_linked.wasm"),
-            PathBuf::from("/repo/dist/output_linked.wasm"),
-        ]
-    );
+fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "molt-wasm-host-manifest-{}-{label}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).expect("create manifest fixture root");
+    fs::write(root.join("program.wasm"), module_bytes).expect("write module fixture");
+    fs::write(
+        root.join("manifest.json"),
+        format!(
+            r#"{{"version":2,"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
+            module_bytes.len()
+        ),
+    )
+    .expect("write manifest fixture");
+    root
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[test]
-fn linked_path_candidates_deduplicate_canonical_sibling() {
-    let cwd = Path::new("/repo");
-    let wasm_path = Path::new("/repo/dist/output.wasm");
-    let candidates = linked_path_candidates(wasm_path, None, cwd);
-    assert_eq!(
-        candidates,
-        vec![PathBuf::from("/repo/dist/output_linked.wasm")]
-    );
+fn runtime_manifest_resolves_and_verifies_linked_module() {
+    let bytes = b"linked wasm fixture";
+    let digest = sha256_hex(bytes);
+    let root = runtime_manifest_fixture("valid", bytes, &digest);
+    let manifest = root.join("manifest.json");
+    let resolved = resolve_execution_modules(Some(manifest.to_string_lossy().into_owned()))
+        .expect("resolve valid linked manifest");
+    assert_eq!(resolved.manifest_path, manifest);
+    assert_eq!(resolved.main_path, root.join("program.wasm"));
+    assert!(resolved.runtime_path.is_none());
+    assert!(resolved.linked);
+    fs::remove_dir_all(root).expect("remove valid fixture");
+}
+
+#[test]
+fn runtime_manifest_resolves_and_verifies_split_modules() {
+    let app_bytes = b"app wasm fixture";
+    let app_digest = sha256_hex(app_bytes);
+    let root = runtime_manifest_fixture("split", app_bytes, &app_digest);
+    let runtime = root.join("runtime.wasm");
+    let runtime_bytes = b"runtime wasm fixture";
+    fs::write(&runtime, runtime_bytes).expect("write runtime fixture");
+    let runtime_digest = sha256_hex(runtime_bytes);
+    fs::write(
+        root.join("manifest.json"),
+        format!(
+            r#"{{"version":2,"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
+            app_bytes.len(),
+            runtime_bytes.len(),
+        ),
+    )
+    .expect("write split manifest");
+    let resolved = resolve_execution_modules(Some(
+        root.join("manifest.json").to_string_lossy().into_owned(),
+    ))
+    .expect("resolve valid split manifest");
+    assert_eq!(resolved.main_path, root.join("program.wasm"));
+    assert_eq!(resolved.runtime_path, Some(runtime));
+    assert!(!resolved.linked);
+    fs::remove_dir_all(root).expect("remove split fixture");
+}
+
+#[test]
+fn runtime_manifest_rejects_digest_drift() {
+    let root = runtime_manifest_fixture("digest-drift", b"linked wasm fixture", &"0".repeat(64));
+    let manifest = root.join("manifest.json");
+    let error = resolve_execution_modules(Some(manifest.to_string_lossy().into_owned()))
+        .expect_err("digest drift must fail");
+    assert!(error.to_string().contains("linked SHA-256 mismatch"));
+    fs::remove_dir_all(root).expect("remove drift fixture");
 }
 
 #[test]

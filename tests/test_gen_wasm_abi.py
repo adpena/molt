@@ -409,6 +409,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("alloc", "molt_alloc")' in rendered_py
     assert "if name in WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert '("runtime_init", "molt_runtime_init")' in rendered_py
+    assert '("runtime_execution_enter", "molt_runtime_execution_enter")' in rendered_py
+    assert '("runtime_execution_leave", "molt_runtime_execution_leave")' in rendered_py
     assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in rendered_py
@@ -420,6 +422,12 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '"PyType_Ready": "function"' in rendered_py
     assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
         "molt_socket_drop"
+    )
+    assert rendered_js_abi["runtime_export_by_import"]["runtime_execution_enter"] == (
+        "molt_runtime_execution_enter"
+    )
+    assert rendered_js_abi["runtime_export_by_import"]["runtime_execution_leave"] == (
+        "molt_runtime_execution_leave"
     )
     assert rendered_js_abi["runtime_export_by_import"]["PyArg_ParseTuple"] == (
         "molt_PyArg_ParseTuple"
@@ -1697,6 +1705,11 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         "memory",
         "molt_memory",
         "molt_main",
+        "molt_len",
+        "molt_index",
+        "molt_profile_dump",
+        "molt_runtime_execution_enter",
+        "molt_runtime_execution_leave",
         "molt_table",
         "__indirect_function_table",
     } <= set(policy["essential_exports"])
@@ -1722,3 +1735,17 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
     assert "_WASM_ABI.wasm_runtime_export_name" in link_format
     assert '"molt_alloc"' not in link_format
     assert '"molt_isolate_import"' not in link_format
+
+
+def test_runtime_execution_token_exports_are_wasm_only() -> None:
+    execution = (
+        ROOT / "runtime/molt-runtime/src/concurrency/execution.rs"
+    ).read_text(encoding="utf-8")
+    for name in ("molt_runtime_execution_enter", "molt_runtime_execution_leave"):
+        declaration = (
+            '#[cfg(target_arch = "wasm32")]\n'
+            "#[unsafe(no_mangle)]\n"
+            f'pub extern "C" fn {name}'
+        )
+        assert declaration in execution
+    assert execution.count('pub extern "C" fn molt_runtime_execution_') == 2

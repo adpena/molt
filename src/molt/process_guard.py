@@ -106,6 +106,9 @@ def run_completed_command(
     env: Mapping[str, str] | None = None,
     cwd: str | Path | None = None,
     capture_output: bool = False,
+    stdout_capture_path: str | Path | None = None,
+    stderr_capture_path: str | Path | None = None,
+    capture_tail_bytes: int | None = None,
     memory_guard_prefix: str | None = CLI_MEMORY_GUARD_PREFIX,
     input: str | bytes | None = None,
     timeout: float | None = None,
@@ -132,6 +135,8 @@ def run_completed_command(
         raise ValueError("stderr must inherit, PIPE, DEVNULL, or STDOUT")
     text_mode = bool(text or encoding is not None or errors is not None)
     if memory_guard_prefix is None:
+        if stdout_capture_path is not None or stderr_capture_path is not None:
+            raise ValueError("evidence capture paths require guarded execution")
         probe_timeout = (
             DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
         )
@@ -168,6 +173,9 @@ def run_completed_command(
         cwd=cwd,
         input=input,  # type: ignore[arg-type]
         capture_output=capture_streams,
+        stdout_capture_path=stdout_capture_path,
+        stderr_capture_path=stderr_capture_path,
+        capture_tail_bytes=capture_tail_bytes,
         text=text_mode,
         timeout=timeout,
         encoding=encoding or "utf-8",
@@ -183,12 +191,18 @@ def run_completed_command(
                 "guarded subprocess reported a timeout without a requested "
                 "timeout; timeout custody is inconsistent"
             )
-        raise subprocess.TimeoutExpired(
+        error = subprocess.TimeoutExpired(
             command,
             timeout,
             output=result.stdout,
             stderr=result.stderr,
         )
+        # Preserve the canonical guard result for callers that need terminal
+        # telemetry (notably per-binary Cargo test receipts).  TimeoutExpired
+        # keeps the subprocess-compatible boundary while this attachment avoids
+        # discarding the guard's RSS samples and exact terminal record.
+        setattr(error, "guarded_result", result)
+        raise error
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode,
