@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from molt.dx import development_artifact_env
+from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import (
     command_envelope,
     custody,
@@ -26,6 +27,9 @@ from tools.proof_queue_pkg import (
     toolchain_capture,
 )
 from tools.proof_queue_pkg import diagnostics as diagnostic_engine
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _file_receipt_identity(path: Path) -> dict[str, object]:
@@ -281,7 +285,7 @@ def _validated_execution_context(
         or supervisor.get("supervisor_returncode") != 0
         or not isinstance(supervisor_receipt, dict)
         or supervisor_receipt.get("schema")
-        != "molt.proof-process-closure-receipt.v2"
+        != "molt.proof-process-closure-receipt.v3"
         or supervisor_receipt.get("complete") is not True
         or supervisor_receipt.get("state") != "COMPLETE"
         or not isinstance(supervisor_binary, dict)
@@ -398,7 +402,7 @@ def _validated_execution_context(
     if (
         receipt_payload != supervisor_receipt
         or not isinstance(policy_payload, dict)
-        or policy_payload.get("schema") != "molt.proof-process-closure.v1"
+        or policy_payload.get("schema") != "molt.proof-process-closure.v2"
         or policy_payload.get("nonce") != execution_nonce
         or policy_payload.get("mode") != expected_mode
         or not isinstance(source_custody, dict)
@@ -464,7 +468,7 @@ def _validated_execution_context(
         or supervisor_receipt.get("nonce_sha256") != expected_nonce_hash
     ):
         raise ValueError("native process supervisor policy binding is invalid")
-    verified_supervisor = subprocess.run(
+    verified_supervisor = _COMMANDS.run(
         [
             str(binary_path),
             "verify",
@@ -474,8 +478,7 @@ def _validated_execution_context(
             str(receipt_path),
         ],
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if verified_supervisor.returncode != 0:
@@ -524,6 +527,7 @@ def _write_execution_request(
     env_override_names: list[str],
     log_path: Path,
     summary_path: Path,
+    timeout_seconds: float,
 ) -> tuple[Path, Path, dict[str, object], str]:
     envelope = json.loads(str(row["command_envelope_json"]))
     if not isinstance(envelope, dict):
@@ -553,6 +557,7 @@ def _write_execution_request(
         "run_id": run_id,
         "execution_nonce": execution_nonce,
         "env_override_names": sorted(env_override_names, key=str.casefold),
+        "timeout_seconds": timeout_seconds,
     }
     request_path.write_text(
         json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1135,6 +1140,7 @@ def _run_one(
                 env_override_names=list(env_overrides),
                 log_path=log_path,
                 summary_path=summary_json,
+                timeout_seconds=timeout,
             )
         )
         poll_interval = custody._proof_queue_memory_guard_poll_sec(env_overrides)

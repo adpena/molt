@@ -14,6 +14,7 @@ import functools
 import hashlib
 import hmac
 import json
+import math
 import os
 import platform
 import re
@@ -25,7 +26,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_SOURCE_ROOT = _REPO_ROOT / "src"
@@ -50,11 +51,13 @@ _PYTHON_IDENTITY_PROBE = (
 )
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import proof_plan  # noqa: E402
 from tools.proof_queue_pkg import custody_cas, execution_custody, toolchain_capture  # noqa: E402
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
-EXECUTION_SCHEMA = "molt.proof-command-execution.v3"
+EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 _PYTHON_COMMAND = re.compile(r"^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$", re.IGNORECASE)
 _PY_LAUNCHERS = frozenset({"py", "py.exe"})
@@ -1181,16 +1184,20 @@ def _content_identity_available(identity: Mapping[str, object]) -> bool:
 
 
 def _run_captured(
-    command: Sequence[str], *, cwd: Path, env: Mapping[str, str], timeout: float = 30.0
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout: float = 30.0,
+    text: bool = True,
+) -> subprocess.CompletedProcess[Any]:
+    return _COMMANDS.run(
         list(command),
         cwd=cwd,
         env=dict(env),
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        capture_output=True,
+        text=text,
         timeout=timeout,
     )
 
@@ -1733,6 +1740,11 @@ def _tool_identity(
                 env=env,
                 target=_rust_target(exact, env),
                 command_argv=_nested_command(exact) or exact,
+                linker_process_helpers=(
+                    policy.data.get("linker_process_helpers")
+                    if isinstance(policy.data.get("linker_process_helpers"), Mapping)
+                    else {}
+                ),
             )
         )
         process_images.extend(linker_images)
@@ -2436,8 +2448,8 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
             "tree": None,
             "status_sha256": None,
         }
-    status = subprocess.run(
-        [
+    status = _run_captured(
+        (
             "git",
             "--no-optional-locks",
             "status",
@@ -2445,12 +2457,10 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
             "-z",
             "--untracked-files=all",
             "--ignore-submodules=none",
-        ],
+        ),
         cwd=cwd,
-        env=dict(env),
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        env=env,
+        text=False,
     )
     if status.returncode != 0:
         return {
@@ -2470,13 +2480,11 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
 
 
 def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
-    completed = subprocess.run(
-        ["git", "ls-files", "--cached", "--full-name", "-z"],
+    completed = _run_captured(
+        ("git", "ls-files", "--cached", "--full-name", "-z"),
         cwd=cwd,
-        env=dict(env),
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        env=env,
+        text=False,
     )
     if completed.returncode != 0:
         raise ValueError("proof source custody cannot enumerate tracked inputs")
@@ -2583,7 +2591,12 @@ def _supervisor_fixed_images(
     root = os.path.normcase(os.path.abspath(execution_command[0]))
     images: dict[str, dict[str, str]] = {}
 
-    def add(role: str, raw_path: object, raw_digest: object) -> None:
+    def add(
+        role: str,
+        raw_path: object,
+        raw_digest: object,
+        raw_root_exit_disposition: object = None,
+    ) -> None:
         if not isinstance(raw_path, str) or not isinstance(raw_digest, str):
             return
         if re.fullmatch(r"[0-9a-f]{64}", raw_digest) is None:
@@ -2592,10 +2605,23 @@ def _supervisor_fixed_images(
         if not path.is_absolute() or not path.is_file():
             return
         key = os.path.normcase(os.path.abspath(path))
+        disposition = (
+            str(raw_root_exit_disposition)
+            if raw_root_exit_disposition is not None
+            else "require-exit"
+        )
+        if disposition not in {"require-exit", "terminate"}:
+            raise ValueError(f"supervisor image has invalid root-exit disposition: {path}")
         row = {"role": role, "path": str(path), "sha256": raw_digest}
+        if disposition != "require-exit":
+            row["root_exit_disposition"] = disposition
         prior = images.get(key)
         if prior is not None and prior["sha256"] != raw_digest:
             raise ValueError(f"supervisor image has conflicting identities: {path}")
+        if prior is not None and prior.get("root_exit_disposition", "require-exit") != disposition:
+            raise ValueError(
+                f"supervisor image has conflicting root-exit dispositions: {path}"
+            )
         if prior is None:
             images[key] = row
 
@@ -2617,6 +2643,7 @@ def _supervisor_fixed_images(
                         str(image.get("role") or name),
                         image.get("path"),
                         image.get("sha256"),
+                        image.get("root_exit_disposition"),
                     )
     for name, raw in environment_executables.items():
         if not isinstance(raw, Mapping):
@@ -2713,7 +2740,7 @@ def _supervisor_policy(
         toolchains, environment_executables, execution_command
     )
     return {
-        "schema": "molt.proof-process-closure.v1",
+        "schema": "molt.proof-process-closure.v2",
         "nonce": nonce,
         "mode": mode,
         "cwd": str(cwd.resolve(strict=True)),
@@ -2909,6 +2936,7 @@ def execute_guarded_request(request_path: Path) -> int:
     cwd = Path(str(request["cwd"]))
     run_id = request.get("run_id")
     execution_nonce = request.get("execution_nonce")
+    timeout_seconds = request.get("timeout_seconds")
     override_names = request.get("env_override_names", [])
     if not isinstance(command, list) or not isinstance(envelope, dict):
         raise ValueError("proof execution request has no typed command envelope")
@@ -2918,6 +2946,15 @@ def execute_guarded_request(request_path: Path) -> int:
         r"[0-9a-f]{64}", execution_nonce
     ):
         raise ValueError("proof execution request has no canonical nonce")
+    if (
+        not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0
+    ):
+        raise ValueError("proof execution request has no finite positive timeout")
+    execution_deadline = time.monotonic() + float(timeout_seconds)
+    shutdown_reserve = min(2.0, max(0.1, float(timeout_seconds) * 0.05))
     if not isinstance(override_names, list) or not all(
         isinstance(name, str) for name in override_names
     ):
@@ -3420,20 +3457,29 @@ def execute_guarded_request(request_path: Path) -> int:
             stdout_path.open("xb") as stdout_handle,
             stderr_path.open("xb") as stderr_handle,
         ):
-            supervisor_completed = subprocess.run(
-                [
+            supervisor_process = _COMMANDS.start_owned(
+                (
                     str(supervisor_binary),
                     "run",
                     "--policy",
                     str(supervisor_policy_path),
                     "--receipt",
                     str(supervisor_receipt_path),
-                ],
+                ),
                 cwd=cwd,
                 env=execution_env,
-                check=False,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
+            )
+            supervisor_timeout = execution_deadline - time.monotonic() - shutdown_reserve
+            if supervisor_timeout <= 0:
+                raise subprocess.TimeoutExpired(
+                    [str(supervisor_binary), "run"], float(timeout_seconds)
+                )
+            supervisor_returncode = _COMMANDS.wait_owned(
+                supervisor_process,
+                timeout=supervisor_timeout,
+                terminate_timeout=shutdown_reserve,
             )
             stdout_handle.flush()
             stderr_handle.flush()
@@ -3455,8 +3501,8 @@ def execute_guarded_request(request_path: Path) -> int:
         root_exit_code = supervisor_receipt.get("root_exit_code")
         if not isinstance(root_exit_code, int):
             root_exit_code = (
-                int(supervisor_completed.returncode)
-                if supervisor_completed.returncode != 0
+                int(supervisor_returncode)
+                if supervisor_returncode != 0
                 else 2
             )
         completed = subprocess.CompletedProcess(
@@ -3473,7 +3519,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 "receipt": supervisor_receipt,
                 "receipt_file": _file_identity(supervisor_receipt_path),
                 "event_artifact": supervisor_event_artifact,
-                "supervisor_returncode": int(supervisor_completed.returncode),
+                "supervisor_returncode": int(supervisor_returncode),
                 "run_s": supervisor_run_s,
             }
         )

@@ -169,6 +169,7 @@ executable = "rustc"
 fingerprint_domain = "rustup"
 version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
+linker_process_helpers = { "link.exe" = ["vctip.exe"] }
 version_pattern = '^rustc 1\.96\.1\b'
 setup_value = "1.96.1"
 setup_evidence = [

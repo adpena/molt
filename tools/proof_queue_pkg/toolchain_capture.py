@@ -10,17 +10,18 @@ import os
 from pathlib import Path
 import shlex
 import shutil
-import subprocess
 import tempfile
 import time
 from typing import Mapping, Sequence
 
+from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
 
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
 VERIFICATION_SCHEMA = "molt.proof-toolchain-verification.v1"
 PROCESS_IMAGE_SCHEMA = "molt.proof-process-image-capture.v1"
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ def capture_rust_link_process_images(
     env: Mapping[str, str],
     target: str | None,
     command_argv: Sequence[str] = (),
+    linker_process_helpers: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Ask the selected Rust toolchain to link a zero-dependency synthetic crate.
 
@@ -263,13 +265,12 @@ def capture_rust_link_process_images(
                 if value.startswith("-C") or value.startswith("--crate-type="):
                     command.append(value)
                 index += 1
-        completed = subprocess.run(
+        completed = _COMMANDS.run(
             command,
             cwd=cwd,
             env=probe_env,
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=120.0,
         )
@@ -288,13 +289,12 @@ def capture_rust_link_process_images(
         selected_paths = [primary]
         driver_name = primary.name.casefold()
         if any(token in driver_name for token in ("clang", "gcc", "cc", "c++")):
-            dry_run = subprocess.run(
+            dry_run = _COMMANDS.run(
                 [str(primary), "-###", *selected[1:]],
                 cwd=cwd,
                 env=probe_env,
                 check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 timeout=30.0,
             )
@@ -307,19 +307,47 @@ def capture_rust_link_process_images(
                 )
             for nested in nested_commands:
                 selected_paths.append(_resolve_executable(nested[0], probe_env))
+        helper_policy = {
+            str(linker).casefold(): tuple(str(helper) for helper in helpers)
+            for linker, helpers in (linker_process_helpers or {}).items()
+        }
+        declared_helpers = helper_policy.get(driver_name, ())
+        selected_helpers: list[Path] = []
+        for helper_name in declared_helpers:
+            if Path(helper_name).name != helper_name:
+                raise ValueError("Rust linker helper policy requires basenames")
+            helper = primary.with_name(helper_name)
+            if helper.is_file():
+                selected_helpers.append(helper.resolve(strict=True))
+        selected_paths.extend(selected_helpers)
         unique_paths = list(dict.fromkeys(selected_paths))
-        images = [
-            _process_image(
+        images = []
+        auxiliary_keys = {os.path.normcase(str(path)) for path in selected_helpers}
+        for index, path in enumerate(unique_paths):
+            image = _process_image(
                 "rust-linker" if index == 0 else "rust-link-helper", path
             )
-            for index, path in enumerate(unique_paths)
-        ]
+            if os.path.normcase(str(path)) in auxiliary_keys:
+                image["root_exit_disposition"] = "terminate"
+            images.append(image)
         telemetry = {
             "schema": "molt.proof-rust-link-selection-telemetry.v1",
             "target": target,
             "probe": "cargo-rustc" if cargo is not None else "rustc",
             "selected_process_count": len(images),
             "selection_probe_count": 1,
+            "declared_helper_count": len(declared_helpers),
+            "selected_helper_count": len(selected_helpers),
+            "helper_policy_sha256": hashlib.sha256(
+                json.dumps(
+                    {
+                        linker: list(helpers)
+                        for linker, helpers in sorted(helper_policy.items())
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
             "command_semantics_sha256": hashlib.sha256(
                 json.dumps(
                     [str(value) for value in command_argv], separators=(",", ":")
@@ -372,6 +400,11 @@ def revalidate_rust_link_process_images(
         if not isinstance(path_raw, str) or not Path(path_raw).is_absolute():
             raise ValueError("pre-arm Rust linker image has no absolute path")
         current = _process_image(str(role), Path(path_raw))
+        disposition = raw.get("root_exit_disposition")
+        if disposition is not None:
+            if disposition != "terminate":
+                raise ValueError("Rust linker image has invalid root-exit disposition")
+            current["root_exit_disposition"] = disposition
         if current != dict(raw):
             raise ValueError(
                 f"Rust linker process image changed while live custody armed: {path_raw}"

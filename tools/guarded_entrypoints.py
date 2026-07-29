@@ -24,7 +24,17 @@ EXPLICIT_GUARDED_ENTRYPOINTS = (
     "src/molt/harness_layers.py",
 )
 
-_HARNESS_MEMORY_GUARD_TOKEN = b"harness_memory_guard"
+_GUARDED_PROCESS_AUTHORITY_TOKENS = (
+    b"harness_memory_guard",
+    b"process_guard_common",
+)
+_GUARDED_TEST_PROCESS_IMPORTS = frozenset(
+    {
+        "check_output_guarded_test_process",
+        "run_guarded_test_process",
+        "start_owned_test_process",
+    }
+)
 
 
 def _path_has_parts(path: Path, parts: tuple[str, ...]) -> bool:
@@ -48,12 +58,12 @@ def _skip_guarded_entrypoint_scan(path: Path, *, root: Path) -> bool:
     )
 
 
-def _imports_harness_memory_guard(path: Path) -> bool:
+def _imports_guarded_process_authority(path: Path) -> bool:
     try:
         source_bytes = path.read_bytes()
     except OSError:
         return False
-    if _HARNESS_MEMORY_GUARD_TOKEN not in source_bytes:
+    if not any(token in source_bytes for token in _GUARDED_PROCESS_AUTHORITY_TOKENS):
         return False
     try:
         source = source_bytes.decode("utf-8")
@@ -66,12 +76,27 @@ def _imports_harness_memory_guard(path: Path) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(
-                alias.name in {"harness_memory_guard", "tools.harness_memory_guard"}
+                alias.name
+                in {
+                    "harness_memory_guard",
+                    "tools.harness_memory_guard",
+                    "tests.process_guard_common",
+                }
                 for alias in node.names
             ):
                 return True
-        elif isinstance(node, ast.ImportFrom) and node.module == "tools":
-            if any(alias.name == "harness_memory_guard" for alias in node.names):
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "tools" and any(
+                alias.name == "harness_memory_guard" for alias in node.names
+            ):
+                return True
+            if node.module == "tests" and any(
+                alias.name == "process_guard_common" for alias in node.names
+            ):
+                return True
+            if node.module == "tests.process_guard_common" and any(
+                alias.name in _GUARDED_TEST_PROCESS_IMPORTS for alias in node.names
+            ):
                 return True
     return False
 
@@ -85,7 +110,7 @@ def _guarded_entrypoint_tokens(root: Path) -> tuple[str, ...]:
     def add_if_guarded(path: Path) -> None:
         if _skip_guarded_entrypoint_scan(path, root=root):
             return
-        if not _imports_harness_memory_guard(path):
+        if not _imports_guarded_process_authority(path):
             return
         token = "/" + path.relative_to(root).as_posix()
         if token not in seen:

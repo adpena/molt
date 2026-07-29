@@ -35,6 +35,7 @@ from molt.llvm_toolchain import (
     required_llvm_backend_pin,
     verify_available_llvm_toolchain,
 )
+from molt.process_guard import run_completed_command as _run_completed_command
 
 
 def _required_llvm_backend_pin(root: Path) -> LlvmBackendPin | None:
@@ -73,11 +74,12 @@ def _clang_llvm_version_detail(major: int) -> str | None:
     if not clang:
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             [clang, "--version"],
-            check=False,
+            env=None,
+            cwd=None,
             capture_output=True,
-            text=True,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -243,7 +245,7 @@ def _windows_vsdevcmd_path() -> Path | None:
     if vswhere is None:
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_completed_command(
             [
                 str(vswhere),
                 "-latest",
@@ -254,9 +256,10 @@ def _windows_vsdevcmd_path() -> Path | None:
                 "-property",
                 "installationPath",
             ],
-            check=False,
+            env=None,
+            cwd=None,
             capture_output=True,
-            text=True,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -449,11 +452,12 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         )
     else:
         try:
-            rustc = subprocess.run(
+            rustc = _run_completed_command(
                 [rustc_path, "--version"],
-                check=False,
+                env=None,
+                cwd=None,
                 capture_output=True,
-                text=True,
+                memory_guard_prefix="MOLT_BUILD",
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

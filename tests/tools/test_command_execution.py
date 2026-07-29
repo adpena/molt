@@ -36,6 +36,44 @@ def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> N
     assert calls[1]["memory_guard_prefix"] == executor.prefix
 
 
+def test_executor_rebinds_loaded_molt_to_its_own_repo(monkeypatch) -> None:
+    foreign = SimpleNamespace(__path__=["C:/foreign/molt"])
+    monkeypatch.setitem(sys.modules, "molt", foreign)
+
+    executor = command_execution.CommandExecutor.for_file(__file__)
+
+    assert foreign.__path__ == [str(executor.repo_root / "src" / "molt")]
+
+
+def test_owned_wait_escalates_only_its_exact_process() -> None:
+    calls: list[tuple[str, float | None]] = []
+
+    class Process:
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            if len([call for call in calls if call[0] == "wait"]) < 3:
+                raise subprocess.TimeoutExpired(["owned"], timeout)
+            return 9
+
+        def terminate(self):
+            calls.append(("terminate", None))
+
+        def kill(self):
+            calls.append(("kill", None))
+
+    executor = command_execution.CommandExecutor.for_file(__file__)
+    with pytest.raises(subprocess.TimeoutExpired):
+        executor.wait_owned(Process(), timeout=1.0, terminate_timeout=0.5)  # type: ignore[arg-type]
+
+    assert calls == [
+        ("wait", 1.0),
+        ("terminate", None),
+        ("wait", 0.5),
+        ("kill", None),
+        ("wait", 0.5),
+    ]
+
+
 def test_executor_rejects_shell_text() -> None:
     executor = command_execution.CommandExecutor.for_file(__file__)
     with pytest.raises(TypeError, match="typed argv"):

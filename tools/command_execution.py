@@ -46,6 +46,23 @@ def _prefix(source_file: str | Path, root: Path) -> str:
     return f"MOLT_{identity.upper()}"
 
 
+def _bind_repo_import_authority(root: Path) -> None:
+    """Make the executor's repository the sole search authority for ``molt``.
+
+    Proof tools can start under a sitecustomize imported from another worktree.
+    Binding here keeps every CommandExecutor consumer on the repository that
+    owns its source file instead of requiring per-tool ``molt.__path__`` repairs.
+    """
+
+    source_root = root / "src"
+    source_text = str(source_root)
+    if source_text not in sys.path:
+        sys.path.insert(0, source_text)
+    loaded_molt = sys.modules.get("molt")
+    if loaded_molt is not None and hasattr(loaded_molt, "__path__"):
+        loaded_molt.__path__ = [str(source_root / "molt")]
+
+
 @lru_cache(maxsize=None)
 def _process_guard_authority(repo_root: str) -> Any:
     path = Path(repo_root) / "src" / "molt" / "process_guard.py"
@@ -96,6 +113,7 @@ class CommandExecutor:
     @classmethod
     def for_file(cls, source_file: str | Path) -> "CommandExecutor":
         root = _repo_root(source_file)
+        _bind_repo_import_authority(root)
         return cls(prefix=_prefix(source_file, root), repo_root=root)
 
     def run(
@@ -201,6 +219,28 @@ class CommandExecutor:
             creationflags=creationflags,
             start_new_session=start_new_session,
         )
+
+    def wait_owned(
+        self,
+        process: subprocess.Popen[Any],
+        *,
+        timeout: float,
+        terminate_timeout: float = 5.0,
+    ) -> int:
+        """Wait finitely and clean only the exact process this caller owns."""
+
+        if timeout <= 0 or terminate_timeout <= 0:
+            raise ValueError("owned process timeouts must be positive")
+        try:
+            return int(process.wait(timeout=timeout))
+        except subprocess.TimeoutExpired as timeout_error:
+            process.terminate()
+            try:
+                process.wait(timeout=terminate_timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=terminate_timeout)
+            raise timeout_error
 
     def start_guarded(
         self,

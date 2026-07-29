@@ -1,6 +1,6 @@
 use crate::{
     Capability, ClosureMode, EventJournal, EventKind, FileIdentity, ImageCacheKey, ImageClass,
-    ImageHashCache, ProcessEvent, Receipt, SupervisorState, ValidatedPolicy,
+    ImageHashCache, ProcessEvent, Receipt, RootExitDisposition, SupervisorState, ValidatedPolicy,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
@@ -219,6 +219,27 @@ unsafe fn supervise(
                     image: None,
                     exit_code: Some(code),
                 })?;
+                images.remove(&pid);
+                if pid == root && !processes.is_empty() {
+                    let non_auxiliary = processes
+                        .iter()
+                        .filter(|child| {
+                            images.get(child).is_none_or(|image| {
+                                policy.root_exit_disposition(&image.path)
+                                    != RootExitDisposition::Terminate
+                            })
+                        })
+                        .count();
+                    if non_auxiliary == 0 {
+                        receipt.accounting.root_exit_terminated_processes += processes.len() as u64;
+                    } else {
+                        receipt.record_violation(format!(
+                            "root exited before {non_auxiliary} non-auxiliary descendant process(es)"
+                        ));
+                        violated = true;
+                    }
+                    terminate_tracees(&traced, root);
+                }
             }
             continue;
         }

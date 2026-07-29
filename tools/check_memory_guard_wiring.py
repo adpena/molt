@@ -376,7 +376,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "tests/harness/run_molt_conformance.py",
         (
             "harness_memory_guard",
-            "guarded_completed_process",
+            "process_guard_common",
+            "run_guarded_test_process",
             "HarnessExecutionContext",
             "repo_process_sentinel",
         ),
@@ -386,7 +387,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "tests/harness/run_monty_conformance.py",
         (
             "harness_memory_guard",
-            "guarded_completed_process",
+            "process_guard_common",
+            "run_guarded_test_process",
             "repo_process_sentinel",
         ),
         "Monty conformance runner must guard child commands",
@@ -394,8 +396,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
     TokenContract(
         "tests/benchmarks/bench_generator.py",
         (
-            "harness_memory_guard",
-            "guarded_completed_process",
+            "process_guard_common",
+            "run_guarded_test_process",
             "MOLT_BENCH",
         ),
         "generator benchmark must guard CPython/Molt runs",
@@ -530,8 +532,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
     TokenContract(
         "tests/runtime_compat/test_runtime_compat.py",
         (
-            "harness_memory_guard",
-            "guarded_completed_process",
+            "process_guard_common",
+            "run_guarded_test_process",
             "MOLT_RUNTIME_COMPAT",
         ),
         "runtime compatibility tests must guard child commands",

@@ -1,6 +1,8 @@
 #![cfg(any(target_os = "windows", target_os = "linux"))]
 
-use molt_proof_supervisor::{ClosureMode, FixedImage, POLICY_SCHEMA, Policy, Receipt, sha256_file};
+use molt_proof_supervisor::{
+    ClosureMode, FixedImage, POLICY_SCHEMA, Policy, Receipt, RootExitDisposition, sha256_file,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -44,6 +46,75 @@ fn declared_tree_accepts_a_fixed_descendant_image() {
 }
 
 #[test]
+fn declared_auxiliary_is_terminated_when_root_exits() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
+    let directory = unique_directory();
+    fs::create_dir_all(&directory).unwrap();
+    let auxiliary = directory.join(if cfg!(windows) {
+        "fixture-auxiliary.exe"
+    } else {
+        "fixture-auxiliary"
+    });
+    fs::copy(&binary, &auxiliary).unwrap();
+    let marker = directory.join("auxiliary.pid");
+    let policy_path = directory.join("policy.json");
+    let receipt_path = directory.join("receipt.json");
+    let policy = Policy {
+        schema: POLICY_SCHEMA.to_owned(),
+        nonce: format!(
+            "{:032x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ),
+        mode: ClosureMode::DeclaredTree,
+        cwd: std::env::current_dir().unwrap(),
+        command: vec![
+            binary.display().to_string(),
+            "fixture-child".to_owned(),
+            "spawn-auxiliary".to_owned(),
+            auxiliary.display().to_string(),
+            marker.display().to_string(),
+        ],
+        environment: BTreeMap::new(),
+        root_role: "fixture".to_owned(),
+        fixed_images: vec![
+            FixedImage {
+                role: "fixture".to_owned(),
+                path: binary.clone(),
+                sha256: sha256_file(&binary).unwrap(),
+                root_exit_disposition: RootExitDisposition::RequireExit,
+            },
+            FixedImage {
+                role: "fixture-auxiliary".to_owned(),
+                path: auxiliary,
+                sha256: sha256_file(&binary).unwrap(),
+                root_exit_disposition: RootExitDisposition::Terminate,
+            },
+        ],
+        derived_roots: vec![],
+    };
+    fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    let status = Command::new(&binary)
+        .args(["run", "--policy"])
+        .arg(&policy_path)
+        .arg("--receipt")
+        .arg(&receipt_path)
+        .status()
+        .unwrap();
+    let receipt: Receipt = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    assert!(status.success(), "{receipt:#?}");
+    assert!(receipt.complete, "{receipt:#?}");
+    assert_eq!(receipt.accounting.root_exit_terminated_processes, 1);
+    assert_eq!(
+        receipt.accounting.observed_process_creates,
+        receipt.accounting.observed_process_exits
+    );
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
 fn process_heavy_declared_tree_keeps_terminal_receipt_compact() {
     let receipt = supervise_with_fixture_args(ClosureMode::DeclaredTree, &["spawn-many", "256"]);
     assert!(receipt.complete, "{receipt:#?}");
@@ -83,6 +154,7 @@ fn failed_root_exec_can_never_reconcile_as_complete() {
             role: "invalid-root".to_owned(),
             path: non_executable.clone(),
             sha256: sha256_file(&non_executable).unwrap(),
+            root_exit_disposition: RootExitDisposition::RequireExit,
         }],
         derived_roots: vec![],
     };
@@ -170,6 +242,7 @@ fn outer_timeout_termination_closes_job_and_never_publishes_complete_receipt() {
             role: "fixture".to_owned(),
             path: binary.clone(),
             sha256: sha256_file(&binary).unwrap(),
+            root_exit_disposition: RootExitDisposition::RequireExit,
         }],
         derived_roots: vec![],
     };
@@ -265,6 +338,7 @@ fn supervise_with_fixture_args(mode: ClosureMode, fixture_args: &[&str]) -> Rece
             role: "fixture".to_owned(),
             path: binary.clone(),
             sha256: sha256_file(&binary).unwrap(),
+            root_exit_disposition: RootExitDisposition::RequireExit,
         }],
         derived_roots: vec![],
     };

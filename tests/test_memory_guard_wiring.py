@@ -129,6 +129,30 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
         "_guard_repro_message",
         "guarded_completed_process",
     )
+    assert contracts["tests/harness/run_molt_conformance.py"] == (
+        "harness_memory_guard",
+        "process_guard_common",
+        "run_guarded_test_process",
+        "HarnessExecutionContext",
+        "repo_process_sentinel",
+    )
+    assert contracts["tests/harness/run_monty_conformance.py"] == (
+        "harness_memory_guard",
+        "process_guard_common",
+        "run_guarded_test_process",
+        "repo_process_sentinel",
+    )
+    assert contracts["tests/benchmarks/bench_generator.py"] == (
+        "process_guard_common",
+        "run_guarded_test_process",
+        "MOLT_BENCH",
+    )
+    assert contracts["tests/runtime_compat/test_runtime_compat.py"] == (
+        "process_guard_common",
+        "run_guarded_test_process",
+        "MOLT_RUNTIME_COMPAT",
+    )
+    assert contracts["src/molt/cli/setup_readiness.py"] == ("MOLT_BUILD",)
 
 
 def test_legacy_shell_entrypoints_enter_guarded_python_wrappers() -> None:

@@ -18,8 +18,8 @@ pub mod platform;
 pub use evidence::{ArtifactSummary, EventJournal, IdentitySummary, PublishedEvidence};
 pub use image_cache::{ImageCacheKey, ImageHashCache};
 
-pub const POLICY_SCHEMA: &str = "molt.proof-process-closure.v1";
-pub const RECEIPT_SCHEMA: &str = "molt.proof-process-closure-receipt.v2";
+pub const POLICY_SCHEMA: &str = "molt.proof-process-closure.v2";
+pub const RECEIPT_SCHEMA: &str = "molt.proof-process-closure-receipt.v3";
 const MAX_DIAGNOSTICS_PER_CLASS: usize = 16;
 const MAX_DIAGNOSTIC_BYTES: usize = 2048;
 
@@ -30,12 +30,22 @@ pub enum ClosureMode {
     DeclaredTree,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootExitDisposition {
+    #[default]
+    RequireExit,
+    Terminate,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixedImage {
     pub role: String,
     pub path: PathBuf,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "RootExitDisposition::is_require_exit")]
+    pub root_exit_disposition: RootExitDisposition,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,6 +53,7 @@ pub struct FixedAuthority {
     pub path: PathBuf,
     pub sha256: String,
     pub roles: BTreeSet<String>,
+    pub root_exit_disposition: RootExitDisposition,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -139,8 +150,15 @@ pub struct Accounting {
     pub observed_process_exits: u64,
     pub observed_execs: u64,
     pub root_execs: u64,
+    pub root_exit_terminated_processes: u64,
     pub completion_port_new_processes: Option<u64>,
     pub completion_port_exits: Option<u64>,
+}
+
+impl RootExitDisposition {
+    fn is_require_exit(&self) -> bool {
+        *self == Self::RequireExit
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -427,14 +445,21 @@ impl Policy {
                 role: image.role.clone(),
                 path: path.clone(),
                 sha256: actual.clone(),
+                root_exit_disposition: image.root_exit_disposition,
             };
             let authority = fixed.entry(key).or_insert_with(|| FixedAuthority {
                 path,
                 sha256: actual.clone(),
                 roles: BTreeSet::new(),
+                root_exit_disposition: image.root_exit_disposition,
             });
             if authority.sha256 != actual {
                 return Err("one executable identity has conflicting fixed digests".to_owned());
+            }
+            if authority.root_exit_disposition != image.root_exit_disposition {
+                return Err(
+                    "one executable identity has conflicting root-exit dispositions".to_owned(),
+                );
             }
             authority.roles.insert(image.role.clone());
             normalized_images.push(normalized);
@@ -449,6 +474,9 @@ impl Policy {
             .ok_or_else(|| "root command is outside fixed image authority".to_owned())?;
         if !root.roles.contains(&self.root_role) {
             return Err("root command role does not match root_role".to_owned());
+        }
+        if root.root_exit_disposition != RootExitDisposition::RequireExit {
+            return Err("root command must require its own exit".to_owned());
         }
         let mut derived = Vec::with_capacity(self.derived_roots.len());
         let mut seen_roots = BTreeSet::new();
@@ -503,6 +531,15 @@ impl Policy {
 }
 
 impl ValidatedPolicy {
+    pub fn root_exit_disposition(&self, path: &Path) -> RootExitDisposition {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.fixed
+            .get(&normalized_path_key(&canonical))
+            .map_or(RootExitDisposition::RequireExit, |authority| {
+                authority.root_exit_disposition
+            })
+    }
+
     pub fn classify_path(
         &self,
         path: &Path,
@@ -675,11 +712,13 @@ mod tests {
                     role: "cargo".to_owned(),
                     path: lexical_proxy.clone(),
                     sha256: digest.clone(),
+                    root_exit_disposition: RootExitDisposition::RequireExit,
                 },
                 FixedImage {
                     role: "rustc".to_owned(),
                     path: executable.clone(),
                     sha256: digest,
+                    root_exit_disposition: RootExitDisposition::RequireExit,
                 },
             ],
             derived_roots: vec![],

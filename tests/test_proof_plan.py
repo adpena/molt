@@ -341,6 +341,23 @@ def test_toolchain_setup_projection_drift_is_rejected() -> None:
     assert any("uv: setup evidence token missing" in error for error in errors)
 
 
+def test_linker_process_helper_policy_requires_unique_basenames() -> None:
+    policies = tuple(
+        replace(
+            policy,
+            data={
+                **policy.data,
+                "linker_process_helpers": {"nested/link.exe": ["../vctip.exe"]},
+            },
+        )
+        if policy.name == "rustc"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    assert any("linker helper key must be a basename" in error for error in errors)
+
+
 def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> None:
     policy = next(
         policy for policy in PLAN.toolchain_policies if policy.name == "wasm-tools"

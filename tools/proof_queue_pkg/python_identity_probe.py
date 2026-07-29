@@ -27,6 +27,18 @@ hash_workers = int(sys.argv[2])
 if hash_workers < 1 or hash_workers > 32:
     raise RuntimeError(f"invalid proof hash worker custody: {hash_workers}")
 
+
+def run_git_probe(args, *, cwd, text=False):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+        timeout=30.0,
+    )
+
 def file_key(path, stat):
     if stat.st_ino:
         return f"inode:{stat.st_dev}:{stat.st_ino}"
@@ -453,12 +465,9 @@ def top_level_source_owners(distribution, root, *, label):
     return owners
 
 def source_distribution_root(distribution, metadata_root):
-    git_root = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
+    git_root = run_git_probe(
+        ["rev-parse", "--show-toplevel"],
         cwd=metadata_root,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         text=True,
     )
     if git_root.returncode != 0:
@@ -526,17 +535,15 @@ def editable_manifest(distribution, root, admitted_root):
         for relative, identity in sorted(file_rows)
     ]
     git_started = time.perf_counter()
-    git = subprocess.run(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
-        cwd=root, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    git = run_git_probe(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        cwd=root,
     )
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=False,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    head = run_git_probe(
+        ["rev-parse", "HEAD"], cwd=root, text=True,
     )
-    tree = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, check=False,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    tree = run_git_probe(
+        ["rev-parse", "HEAD^{tree}"], cwd=root, text=True,
     )
     git_elapsed = time.perf_counter() - git_started
     manifest = json.dumps(files, separators=(",", ":"), sort_keys=True)
