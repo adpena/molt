@@ -906,6 +906,45 @@ pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'s
     }
 }
 
+/// Complete generated wire-op carrier authority for explicit runtime requirements.
+pub const SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS: &[&str] = &[
+    "builtin_func",
+    "call_func",
+    "get_attr_generic_obj",
+    "get_attr_name_default",
+    "module_get_attr",
+    "module_get_global",
+    "module_import_from",
+];
+
+/// Whether a wire operation may carry explicit runtime requirement bits.
+#[inline]
+pub fn simpleir_kind_may_carry_runtime_requirement_bits(kind: &str) -> bool {
+    matches!(
+        kind,
+        "builtin_func"
+            | "call_func"
+            | "get_attr_generic_obj"
+            | "get_attr_name_default"
+            | "module_get_attr"
+            | "module_get_global"
+            | "module_import_from"
+    )
+}
+
+/// Complete generated wire-op carrier authority for canonical runtime symbols.
+pub const SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: &[&str] =
+    &["module_get_attr", "module_get_global", "module_import_from"];
+
+/// Whether a wire operation may carry canonical runtime-symbol provenance.
+#[inline]
+pub fn simpleir_kind_may_carry_runtime_symbol(kind: &str) -> bool {
+    matches!(
+        kind,
+        "module_get_attr" | "module_get_global" | "module_import_from"
+    )
+}
+
 /// Whether s_value is a first-class function reference.
 #[inline]
 pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {

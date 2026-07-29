@@ -470,3 +470,74 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
     assert!(!external_names.contains("molt_main"));
     assert!(!external_names.contains("demo__module"));
 }
+
+#[test]
+fn native_batch_ir_carries_referenced_inherited_execution_context_contracts() {
+    let inherited = FunctionIR {
+        name: "demo__molt_module_chunk_1".to_string(),
+        params: vec!["module".to_string()],
+        ops: vec![OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        }],
+        param_types: Some(vec!["i64".to_string()]),
+        source_file: Some("demo.py".to_string()),
+        is_extern: false,
+        execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
+    };
+    let local = FunctionIR {
+        name: "molt_init_demo".to_string(),
+        params: vec![],
+        ops: vec![
+            OpIR {
+                kind: "trace_enter_slot".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".to_string(),
+                s_value: Some(inherited.name.clone()),
+                passes_execution_context: true,
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            },
+        ],
+        param_types: None,
+        source_file: Some("demo.py".to_string()),
+        is_extern: false,
+        execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
+    };
+    let declarations = inherited_function_declarations(&[local.clone(), inherited.clone()]);
+    let mut batch_functions = vec![local];
+
+    append_referenced_inherited_declarations(&mut batch_functions, &declarations);
+
+    assert_eq!(batch_functions.len(), 2);
+    let declaration = &batch_functions[1];
+    assert_eq!(declaration.name, inherited.name);
+    assert_eq!(declaration.params, inherited.params);
+    assert_eq!(declaration.param_types, inherited.param_types);
+    assert_eq!(declaration.source_file, inherited.source_file);
+    assert!(declaration.is_extern);
+    assert!(declaration.ops.is_empty());
+    assert_eq!(
+        declaration.execution_context,
+        molt_backend::ir::ExecutionContextPolicy::Inherited
+    );
+
+    let batch_ir = SimpleIR {
+        functions: batch_functions,
+        profile: None,
+    };
+    let encoded = serde_json::to_vec(&batch_ir).expect("serialize self-contained batch IR");
+    let decoded: SimpleIR =
+        serde_json::from_slice(&encoded).expect("deserialize and validate batch IR");
+    assert_eq!(decoded.functions.len(), 2);
+}

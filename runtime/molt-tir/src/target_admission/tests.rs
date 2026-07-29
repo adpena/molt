@@ -1,5 +1,8 @@
 use super::*;
-use crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements;
+use crate::tir::op_kinds_generated::{
+    SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS, SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS,
+    SimpleIrRuntimeRequirements,
+};
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 
 fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
@@ -238,6 +241,51 @@ fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
         error.contains("exact Python-visible frame objects"),
         "{error}"
     );
+}
+
+#[test]
+fn every_generated_runtime_requirement_carrier_parses_and_reaches_admission() {
+    for &kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
+        let source = format!(
+            r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{},"out":"value"}}]}}]}}"#,
+            SimpleIrRuntimeRequirements::FRAME_INTROSPECTION.bits(),
+        );
+        let ir = SimpleIR::from_json_str(&source)
+            .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
+        let error = validate_runtime_target_contract(
+            &ir,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("every explicit carrier must reach target admission");
+        assert!(error.contains(&format!("f:op#0 `{kind}`")), "{error}");
+        assert!(
+            error.contains("exact Python-visible frame objects"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn every_generated_runtime_symbol_carrier_parses_and_reaches_admission() {
+    for &kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+        let source = format!(
+            r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
+        );
+        let ir = SimpleIR::from_json_str(&source)
+            .unwrap_or_else(|error| panic!("generated symbol carrier {kind} must parse: {error}"));
+        let error = validate_runtime_target_contract(
+            &ir,
+            "execution-only",
+            runtime_without_frame_introspection(),
+        )
+        .expect_err("every runtime-symbol carrier must reach target admission");
+        assert!(error.contains(&format!("f:op#0 `{kind}`")), "{error}");
+        assert!(
+            error.contains("exact Python-visible frame objects"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

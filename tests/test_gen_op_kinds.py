@@ -5387,6 +5387,25 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     ]:
         assert f'        "{qualified}",' in rendered
 
+    assert "SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS" in rendered
+    rust_rendered = generator.render_rs(generator.load_table())
+    assert "SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS" in rust_rendered
+    assert "simpleir_kind_may_carry_runtime_requirement_bits" in rust_rendered
+    for kind in [
+        "builtin_func",
+        "call_func",
+        "get_attr_generic_obj",
+        "get_attr_name_default",
+        "module_get_attr",
+        "module_get_global",
+        "module_import_from",
+    ]:
+        assert f'        "{kind}",' in rendered
+        assert f'"{kind}"' in rust_rendered
+    assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rendered
+    assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rust_rendered
+    assert "simpleir_kind_may_carry_runtime_symbol" in rust_rendered
+
 
 def test_runtime_protected_attribute_gateways_reject_invalid_authority(
     tmp_path: Path,
@@ -5438,6 +5457,55 @@ def test_runtime_protected_gateway_callables_reject_invalid_authority(
         with pytest.raises(
             generator.OpKindTableError,
             match="protected_gateway_callables",
+        ):
+            generator.load_table(path)
+
+
+def test_runtime_requirement_carriers_reject_invalid_authority(tmp_path: Path) -> None:
+    generator = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    canonical = '    "builtin_func", "call_func",'
+    for label, replacement in {
+        "empty": "",
+        "duplicate": '    "builtin_func", "builtin_func",',
+        "unknown": '    "not_a_wire_kind",',
+        "non-string": "    1,",
+    }.items():
+        mutated = source.replace(canonical, replacement, 1)
+        assert mutated != source, label
+        if label == "empty":
+            mutated = mutated.replace(
+                '    "get_attr_generic_obj", "get_attr_name_default",\n'
+                '    "module_get_attr", "module_get_global", "module_import_from",\n',
+                "",
+                1,
+            )
+        path = tmp_path / f"carrier_{label}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(
+            generator.OpKindTableError,
+            match="runtime_requirement_carrier_kinds",
+        ):
+            generator.load_table(path)
+
+
+def test_runtime_symbol_carriers_reject_invalid_authority(tmp_path: Path) -> None:
+    generator = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    canonical = 'simpleir_runtime_symbol_carrier_kinds = [\n    "module_get_attr", "module_get_global", "module_import_from",\n]'
+    for label, replacement in {
+        "empty": "simpleir_runtime_symbol_carrier_kinds = []",
+        "duplicate": 'simpleir_runtime_symbol_carrier_kinds = ["module_get_attr", "module_get_attr"]',
+        "unknown": 'simpleir_runtime_symbol_carrier_kinds = ["not_a_wire_kind"]',
+        "non-string": "simpleir_runtime_symbol_carrier_kinds = [1]",
+    }.items():
+        mutated = source.replace(canonical, replacement, 1)
+        assert mutated != source, label
+        path = tmp_path / f"symbol_carrier_{label}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(
+            generator.OpKindTableError,
+            match="runtime_symbol_carrier_kinds",
         ):
             generator.load_table(path)
 

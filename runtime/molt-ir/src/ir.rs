@@ -933,6 +933,13 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;
             if op.passes_execution_context {
+                if func.execution_context == ExecutionContextPolicy::None {
+                    return Err(format!(
+                        "function `{}` without an execution context cannot thread one to `{}`",
+                        func.name,
+                        op.s_value.as_deref().unwrap_or("<missing target>")
+                    ));
+                }
                 let Some(target) = op.s_value.as_deref() else {
                     return Err("execution-context call metadata requires a direct target".into());
                 };
@@ -1101,6 +1108,7 @@ mod json_parse_tests {
                     {
                         "name": "caller",
                         "params": ["module_chunk"],
+                        "execution_context": "inherited",
                         "ops": [
                             {"kind": "const_str", "s_value": "module_chunk", "out": "same_text"},
                             {"kind": "call_internal", "s_value": "module_chunk", "passes_execution_context": true},
@@ -1114,6 +1122,38 @@ mod json_parse_tests {
 
         assert_eq!(ir.functions.len(), 2);
         assert!(ir.functions[1].ops[1].passes_execution_context);
+    }
+
+    #[test]
+    fn execution_context_validation_rejects_threading_from_a_frameless_caller() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "module_chunk",
+                        "params": [],
+                        "execution_context": "inherited",
+                        "ops": [{"kind": "ret_void"}]
+                    },
+                    {
+                        "name": "frameless_caller",
+                        "params": [],
+                        "ops": [
+                            {"kind": "call_internal", "s_value": "module_chunk", "passes_execution_context": true},
+                            {"kind": "ret_void"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("a frameless caller has no execution context to thread");
+
+        assert!(
+            err.contains(
+                "function `frameless_caller` without an execution context cannot thread one to `module_chunk`"
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1160,6 +1200,7 @@ mod json_parse_tests {
                     {
                         "name": "caller",
                         "params": [],
+                        "execution_context": "inherited",
                         "ops": [
                             {"kind": "call", "s_value": "module_chunk", "passes_execution_context": true},
                             {"kind": "ret_void"}
@@ -1334,11 +1375,14 @@ mod json_parse_tests {
 
     #[test]
     fn simple_ir_runtime_requirement_bits_are_typed_and_op_scoped() {
-        let accepted = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":1,"out":"value"}]}]}"#,
-        )
-        .expect("known requirement bits belong on module acquisition ops");
-        assert_eq!(accepted.functions[0].ops[0].runtime_requirement_bits, 1);
+        for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":1,"out":"value"}}]}}]}}"#,
+            );
+            let accepted = SimpleIR::from_json_str(&source)
+                .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
+            assert_eq!(accepted.functions[0].ops[0].runtime_requirement_bits, 1);
+        }
 
         let wrong_op = SimpleIR::from_json_str(
             r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","runtime_requirement_bits":1,"out":"value"}]}]}"#,
@@ -1351,6 +1395,28 @@ mod json_parse_tests {
         )
         .expect_err("unknown generated requirement bits must fail closed");
         assert!(unknown_bit.contains("unknown runtime_requirement_bits"));
+    }
+
+    #[test]
+    fn simple_ir_runtime_symbols_are_typed_and_op_scoped() {
+        for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
+            );
+            let accepted = SimpleIR::from_json_str(&source).unwrap_or_else(|error| {
+                panic!("generated symbol carrier {kind} must parse: {error}")
+            });
+            assert_eq!(
+                accepted.functions[0].ops[0].runtime_symbol.as_deref(),
+                Some("molt_getframe")
+            );
+        }
+
+        let wrong_op = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","runtime_symbol":"molt_getframe","out":"value"}]}]}"#,
+        )
+        .expect_err("runtime symbols must not leak onto unrelated op families");
+        assert!(wrong_op.contains("cannot carry runtime_symbol"));
     }
 
     #[test]

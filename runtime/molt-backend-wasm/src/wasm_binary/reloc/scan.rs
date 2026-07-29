@@ -259,7 +259,7 @@ impl RelocScan {
                 });
             self.pending_code.push(PendingReloc::TableIndex {
                 offset,
-                target: site.target.clone(),
+                target: site.target,
                 role: site.role,
             });
         }
