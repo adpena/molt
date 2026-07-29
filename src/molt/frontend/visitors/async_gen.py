@@ -873,6 +873,19 @@ class AsyncGenVisitorMixin(_MixinBase):
                 Diagnostic.CONTROL_FLOW,
                 "async for is only supported in async functions",
             )
+        provenance_flow = self._begin_module_provenance_flow(
+            record_exception_prefixes=True
+        )
+        try:
+            return self._visit_async_for_lowering(node)
+        finally:
+            # Async iteration may execute zero times. Join the pre-loop binding
+            # state with every loop-body assignment exactly like synchronous
+            # for/while lowering, so module provenance is never narrowed to the
+            # iteration target's non-module state.
+            self._finish_module_provenance_flow(provenance_flow)
+
+    def _visit_async_for_lowering(self, node: ast.AsyncFor) -> None:
         iterable = self.visit(node.iter)
         if iterable is None:
             raise FrontendRejection(

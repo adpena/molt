@@ -189,22 +189,6 @@ pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[
         results: &[],
     },
     StaticFuncTypeSpec {
-        params: &[ValType::I64, ValType::I64],
-        results: &[ValType::I64, ValType::I64],
-    },
-    StaticFuncTypeSpec {
-        params: &[ValType::I64, ValType::I64, ValType::I64],
-        results: &[ValType::I64, ValType::I64, ValType::I64],
-    },
-    StaticFuncTypeSpec {
-        params: &[ValType::I64],
-        results: &[ValType::I64, ValType::I64],
-    },
-    StaticFuncTypeSpec {
-        params: &[],
-        results: &[ValType::I64, ValType::I64],
-    },
-    StaticFuncTypeSpec {
         params: &[
             ValType::I64,
             ValType::I64,
@@ -403,4 +387,4 @@ pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[
     },
 ];
 
-pub(crate) const STATIC_TYPE_COUNT: u32 = 53;
+pub(crate) const STATIC_TYPE_COUNT: u32 = 49;

@@ -290,9 +290,9 @@ def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
         if entry["name"] in bridge_and_hook_exports
     }
     assert set(link_imports) == bridge_and_hook_exports
-    assert {
-        entry["primitive_class"] for entry in link_imports.values()
-    } == {"molt_cpython_abi_link_import"}
+    assert {entry["primitive_class"] for entry in link_imports.values()} == {
+        "molt_cpython_abi_link_import"
+    }
 
 
 def test_wasm_abi_manifest_owns_static_type_section() -> None:
@@ -301,15 +301,13 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     static_types = data["static_type"]
     static_type_count = len(static_types)
 
-    assert static_type_count > 50
+    assert static_type_count == 49
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert {"params": [], "results": ["i32"]} in static_types
-    assert static_types[31] == {"params": ["i64", "i64"], "results": ["i64", "i64"]}
-    assert static_types[32] == {
-        "params": ["i64", "i64", "i64"],
-        "results": ["i64", "i64", "i64"],
-    }
+    assert static_types[31] == {"params": ["i64"] * 9, "results": ["i64"]}
+    assert static_types[34] == {"params": ["i64"] * 12, "results": ["i64"]}
+    assert all(len(signature["results"]) <= 1 for signature in static_types)
     assert all(entry["type"] < len(static_types) for entry in data["import"])
 
     rendered_rs = _rendered_rs(gen, data)
@@ -1572,7 +1570,10 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         in callable_layout
     )
     assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
-    assert "table_base\n                .checked_add(slot - fixed_prefix_len)" in callable_layout
+    assert (
+        "table_base\n                .checked_add(slot - fixed_prefix_len)"
+        in callable_layout
+    )
     assert "WasmCallableTableAddress::FixedSharedRuntimeAbi" in callable_layout
 
 
@@ -1674,9 +1675,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
     js_link_imports = rendered_js_abi["external_native_link_imports"]
-    assert not (
-        provider_classes & set(js_link_imports["primitive_classes"].values())
-    )
+    assert not (provider_classes & set(js_link_imports["primitive_classes"].values()))
 
     allowlist = gen.OUT_ALLOWED_IMPORTS.read_text(encoding="utf-8")
     assert allowlist == gen.render_allowed_imports(data)

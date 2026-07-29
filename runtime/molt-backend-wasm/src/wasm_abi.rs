@@ -53,19 +53,6 @@ pub(crate) const TAG_EXCEPTION_FUNC_TYPE: u32 = 1;
 /// Tag index for the molt exception tag (first and only tag in the module).
 pub(crate) const TAG_EXCEPTION_INDEX: u32 = 0;
 
-// ---------------------------------------------------------------------------
-// Multi-value return type indices (WASM 2.0 multi-value proposal)
-//
-// These type indices are reserved in the static type section for functions
-// that return 2-3 i64 values instead of allocating a tuple on the heap.
-// This enables the optimization described in WASM_OPTIMIZATION_PLAN.md §3.1:
-// eliminate 1 alloc + N field_get calls per multi-return call site.
-//
-// Builtins that always return a known-size tuple (e.g. divmod -> 2 values,
-// dict items iteration -> 2 values) can be migrated to use these signatures
-// once both the host import and call-site lowering are updated.
-// ---------------------------------------------------------------------------
-
 pub(crate) trait TypeSectionExt {
     fn function<P, R>(&mut self, params: P, results: R)
     where
@@ -206,21 +193,21 @@ mod tests {
             STATIC_TYPE_COUNT as usize,
             "static type table must emit exactly STATIC_TYPE_COUNT entries"
         );
+        assert!(
+            sigs.iter().all(|(_, results)| *results <= 1),
+            "Python-callable WASM ABI must not reserve a second multi-result return authority: {sigs:?}"
+        );
 
         let pinned: &[(usize, (usize, usize))] = &[
             (0, (0, 1)),   // () -> i64
             (1, (1, 0)),   // (i64) -> ()
             (8, (0, 0)),   // () -> ()
-            (31, (2, 2)),  // MULTI_RETURN_2
-            (32, (3, 3)),  // MULTI_RETURN_3
-            (33, (1, 2)),  // MULTI_RETURN_UNARY_TO_2
-            (34, (0, 2)),  // MULTI_RETURN_NULLARY_TO_2
-            (35, (9, 1)),  // high arity
-            (38, (12, 1)), // high arity
-            (41, (4, 1)),  // call_method_ic0
-            (45, (8, 1)),  // call_method_ic4
-            (46, (5, 1)),  // call_super_method_ic0
-            (50, (9, 1)),  // call_super_method_ic4
+            (31, (9, 1)),  // high arity
+            (34, (12, 1)), // high arity
+            (37, (4, 1)),  // call_method_ic0
+            (41, (8, 1)),  // call_method_ic4
+            (42, (5, 1)),  // call_super_method_ic0
+            (46, (9, 1)),  // call_super_method_ic4
         ];
         for &(idx, expected) in pinned {
             assert_eq!(
