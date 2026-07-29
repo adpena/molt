@@ -372,6 +372,14 @@ def _record_policy_rejection(
         started_at=now,
         finished_at=now,
         elapsed_s=0.0,
+        receipt_context_json=json.dumps(
+            state._unattested_receipt_context(
+                status="not-executed",
+                phase="command policy rejection",
+                reason=policy_error,
+            ),
+            sort_keys=True,
+        ),
     )
     evidence._write_failed_run_log(
         log_path,
@@ -541,6 +549,40 @@ def _run_one(
             log_path=log_path,
             policy_error=policy_error,
         )
+    try:
+        session_id = state._proof_session_id(resource_family, contention_key)
+        env = development_artifact_env(
+            repo_root,
+            os.environ,
+            session_prefix=f"proof-{resource_family}",
+            session_id=session_id,
+        )
+        env["MOLT_PROOF_QUEUE"] = "1"
+        env["MOLT_PROOF_QUEUE_DB"] = str(db)
+        env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
+        env.update(env_overrides)
+        row = state._row_by_run_id(conn, run_id)
+        if row is None:
+            raise ValueError(f"proof run {run_id!r} disappeared before execution")
+        receipt_context = evidence._capture_execution_receipt_context(row, env=env)
+        state._update_run(
+            conn,
+            run_id,
+            receipt_context_json=json.dumps(receipt_context, sort_keys=True),
+        )
+    except Exception as exc:
+        return evidence._fail_preexecution_run(
+            args,
+            conn,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            log_path=log_path,
+            exc=exc,
+            phase="proof interpreter and receipt capture",
+        )
     preflight_errors = policy._ensure_run_toolchain_preflight(
         repo_root=repo_root,
         resource_family=resource_family,
@@ -555,6 +597,14 @@ def _run_one(
             started_at=now,
             finished_at=now,
             elapsed_s=0.0,
+            receipt_context_json=json.dumps(
+                state._unattested_receipt_context(
+                    status="not-executed",
+                    phase="toolchain preflight",
+                    reason="; ".join(preflight_errors),
+                ),
+                sort_keys=True,
+            ),
         )
         lines = ["proof queue toolchain preflight failed:", *preflight_errors]
         evidence._write_failed_run_log(
@@ -580,17 +630,6 @@ def _run_one(
             )
         return 2
     try:
-        session_id = state._proof_session_id(resource_family, contention_key)
-        env = development_artifact_env(
-            repo_root,
-            os.environ,
-            session_prefix=f"proof-{resource_family}",
-            session_id=session_id,
-        )
-        env["MOLT_PROOF_QUEUE"] = "1"
-        env["MOLT_PROOF_QUEUE_DB"] = str(db)
-        env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
-        env.update(env_overrides)
         poll_interval = custody._proof_queue_memory_guard_poll_sec(env_overrides)
         env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
         wrapped = custody._memory_guard_command(
@@ -632,6 +671,22 @@ def _run_one(
             )
         print(f"proof_session_id={session_id}", file=log)
         print(f"cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
+        print(
+            "queue_control_plane_python="
+            + json.dumps(
+                receipt_context["python_interpreters"]["queue_control_plane"],
+                sort_keys=True,
+            ),
+            file=log,
+        )
+        print(
+            "proof_command_python="
+            + json.dumps(
+                receipt_context["python_interpreters"]["proof_command"],
+                sort_keys=True,
+            ),
+            file=log,
+        )
         print(f"memory_guard_poll_sec={poll_interval}", file=log)
         print(f"memory_guard_summary_json={summary_json}", file=log)
         print(f"memory_guard_command={shlex.join(wrapped)}", file=log)

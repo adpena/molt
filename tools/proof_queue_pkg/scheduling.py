@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from tools import lane_maturity
-from tools.proof_queue_pkg import evidence, state
+from tools.proof_queue_pkg import evidence, interpreter, state
 
 
 def _lane_maturity_admission(
@@ -37,7 +37,6 @@ def _lane_maturity_admission(
     )
 
 
-
 def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
@@ -52,7 +51,6 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     )
 
 
-
 def _row_command(row: sqlite3.Row) -> list[str]:
     try:
         payload = json.loads(row["command_json"])
@@ -61,7 +59,6 @@ def _row_command(row: sqlite3.Row) -> list[str]:
     if not isinstance(payload, list):
         return []
     return [str(part) for part in payload]
-
 
 
 def _active_contention_conflicts(
@@ -115,7 +112,6 @@ def _active_contention_conflicts(
     return conflicts
 
 
-
 def _format_active_contention_conflicts(
     conflicts: Sequence[tuple[str, sqlite3.Row]],
 ) -> str:
@@ -125,13 +121,11 @@ def _format_active_contention_conflicts(
     return "\n".join(lines)
 
 
-
 def _print_active_contention_conflicts(
     conflicts: Sequence[tuple[str, sqlite3.Row]],
 ) -> None:
     if conflicts:
         print(_format_active_contention_conflicts(conflicts), file=sys.stderr)
-
 
 
 def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -145,7 +139,6 @@ def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             """
         )
     )
-
 
 
 def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
@@ -162,7 +155,6 @@ def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]
             (run_id,),
         )
     )
-
 
 
 def _dependency_state(
@@ -185,12 +177,10 @@ def _dependency_state(
     return "ready", []
 
 
-
 def _blocker_summary(blockers: Sequence[sqlite3.Row]) -> str:
     return ", ".join(
         f"{blocker['parent_run_id']}:{blocker['status']}" for blocker in blockers
     )
-
 
 
 def _mark_queued_dependency_blocked(
@@ -208,6 +198,14 @@ def _mark_queued_dependency_blocked(
         row["run_id"],
         status="blocked",
         finished_at=state._utc_now(),
+        receipt_context_json=json.dumps(
+            state._unattested_receipt_context(
+                status="not-executed",
+                phase="dependency blocking",
+                reason=f"blocked by {blocker_summary}",
+            ),
+            sort_keys=True,
+        ),
     )
     log_path = Path(str(payload["log_path"]))
     evidence._write_failed_run_log(
@@ -234,7 +232,6 @@ def _mark_queued_dependency_blocked(
     if announce:
         print(f"blocked {row['run_id']} parents={blocker_summary}")
     return blocker_summary
-
 
 
 def _refresh_blocked_queued_runs(
@@ -278,7 +275,6 @@ def _refresh_blocked_queued_runs(
     return blocked_count
 
 
-
 def _insert_run(
     conn: sqlite3.Connection,
     *,
@@ -303,16 +299,26 @@ def _insert_run(
     conn.execute(
         """
         INSERT INTO proof_runs (
-            run_id, logical_id, reason, status, command_json, cwd,
+            run_id, logical_id, reason, status, command_json,
+            python_interpreter_json, receipt_context_json, cwd,
             resource_family, contention_key, resource_mutex_key, scopes_json,
             env_json, git_json, log_path, summary_json
-        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
             logical_id,
             reason,
             json.dumps(command),
+            json.dumps(interpreter.authority_for_command(command), sort_keys=True),
+            json.dumps(
+                state._unattested_receipt_context(
+                    status="not-executed",
+                    phase="queued",
+                    reason="execution worker has not captured receipt context",
+                ),
+                sort_keys=True,
+            ),
             str(cwd),
             resource_family,
             contention_key,
@@ -328,7 +334,6 @@ def _insert_run(
         ),
     )
     conn.commit()
-
 
 
 def _admit_run(
@@ -367,16 +372,26 @@ def _admit_run(
         conn.execute(
             """
             INSERT INTO proof_runs (
-                run_id, logical_id, reason, status, command_json, cwd,
+                run_id, logical_id, reason, status, command_json,
+                python_interpreter_json, receipt_context_json, cwd,
                 resource_family, contention_key, resource_mutex_key,
                 scopes_json, env_json, git_json, log_path, summary_json
-            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
                 logical_id,
                 reason,
                 json.dumps(command),
+                json.dumps(interpreter.authority_for_command(command), sort_keys=True),
+                json.dumps(
+                    state._unattested_receipt_context(
+                        status="not-executed",
+                        phase="queued",
+                        reason="execution worker has not captured receipt context",
+                    ),
+                    sort_keys=True,
+                ),
                 str(cwd),
                 resource_family,
                 contention_key,
@@ -384,7 +399,9 @@ def _admit_run(
                 json.dumps(scopes),
                 json.dumps(env_overrides or {}, sort_keys=True),
                 json.dumps(
-                    git_snapshot if git_snapshot is not None else state._git_snapshot(cwd),
+                    git_snapshot
+                    if git_snapshot is not None
+                    else state._git_snapshot(cwd),
                     sort_keys=True,
                 ),
                 str(log_path),
