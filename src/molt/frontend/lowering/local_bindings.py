@@ -37,12 +37,12 @@ class LocalBindingMixin(_MixinBase):
         self.emit(MoltOp(kind="CONST_STR", args=["__name__"], result=name_key))
         missing = self._emit_missing_value()
         name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(
-            MoltOp(
-                kind="GETATTR_NAME_DEFAULT",
-                args=[obj, name_key, missing],
-                result=name_val,
-            )
+        self._emit_getattr_name_default(
+            obj,
+            name_key,
+            missing,
+            name_val,
+            literal_name="__name__",
         )
         is_missing = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[name_val, missing], result=is_missing))

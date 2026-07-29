@@ -2437,6 +2437,100 @@ def test_runtime_callable_exact_class_receiver_is_proven_nonmodule() -> None:
 
 
 @pytest.mark.parametrize(
+    ("case", "setup", "expression"),
+    [
+        ("getattr-literal", "", 'getattr(sys, "_getframe")'),
+        ("getattr-transport", "", 'getattr(identity(sys), "_getframe")'),
+        (
+            "getattr-dynamic-name",
+            '    name = "_getframe"\n',
+            "getattr(sys, name)",
+        ),
+        ("module-dict", "", 'sys.__dict__["_getframe"]'),
+        ("vars-module", "", 'vars(sys)["_getframe"]'),
+        (
+            "object-getattribute",
+            "",
+            'object.__getattribute__(sys, "_getframe")',
+        ),
+    ],
+)
+def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
+    case: str, setup: str, expression: str
+) -> None:
+    source = (
+        "import sys\n"
+        "def identity(value):\n"
+        "    return value\n"
+        "def f():\n"
+        f"{setup}"
+        f"    return {expression}\n"
+    )
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    protected = [
+        op
+        for op in function["ops"]
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert protected, (case, function["ops"])
+
+
+def test_runtime_callable_reflection_gateways_preserve_exact_class_negatives() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(
+        ast.parse(
+            "class Safe:\n"
+            "    def __init__(self):\n"
+            "        self._getframe = 1\n"
+            "def f(name):\n"
+            "    safe = Safe()\n"
+            "    return (\n"
+            "        getattr(safe, name),\n"
+            "        vars(safe),\n"
+            "        safe.__dict__['_getframe'],\n"
+            "        safe.__getattribute__('_getframe'),\n"
+            "    )\n"
+        )
+    )
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    assert all(
+        not (
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        )
+        for op in function["ops"]
+    )
+
+
+def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse('def f(value):\n    return getattr(value, "safe_name")\n'))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    assert all(
+        not (
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        )
+        for op in function["ops"]
+    )
+
+
+@pytest.mark.parametrize(
     ("scope", "source", "function_suffix"),
     [
         (
