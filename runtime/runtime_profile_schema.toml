@@ -92,6 +92,17 @@ metrics = [
 ]
 
 [[section]]
+name = "execution_safety"
+metrics = [
+  { name = "drop_panic_count", semantic = "counter" },
+  { name = "drop_cleanup_panic_count", semantic = "counter" },
+  { name = "drop_detach_panic_count", semantic = "counter" },
+  { name = "drop_release_panic_count", semantic = "counter" },
+  { name = "shutdown_drop_cext_panic_count", semantic = "counter" },
+  { name = "shutdown_drop_depth_panic_count", semantic = "counter" },
+]
+
+[[section]]
 name = "hot_paths"
 metrics = [
   { name = "call_bind_ic_hit", semantic = "counter" },

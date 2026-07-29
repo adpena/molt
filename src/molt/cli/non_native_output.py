@@ -14,6 +14,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection, TypedDict
 
+from molt._wasm_abi_generated import (
+    WASM_ESSENTIAL_EXPORTS,
+    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
+)
+from molt.cli.app_export_contract import load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     browser_asset_manifest_keys,
@@ -59,6 +64,7 @@ from molt.cli.wasm import (
     _runtime_export_name_for_import_from_manifest,
     _runtime_import_canonical_names_from_manifest,
     _runtime_import_export_names_from_manifest,
+    _runtime_import_name_for_export_from_manifest,
     _runtime_import_result_kinds_from_manifest,
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
@@ -106,6 +112,48 @@ def _bytes_asset(payload: bytes, asset_path: str) -> dict[str, object]:
         "path": asset_path,
         "size": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _app_export_manifest(
+    contract: dict[str, object], artifact: Path
+) -> dict[str, object]:
+    raw_bindings = contract.get("bindings")
+    if not isinstance(raw_bindings, list):
+        raise ValueError("app export contract bindings are unavailable")
+    export_symbols = {
+        symbol
+        for binding in raw_bindings
+        if isinstance(binding, dict)
+        and binding.get("disposition") == "export"
+        and isinstance((symbol := binding.get("symbol")), str)
+    }
+    signatures = _wasm_export_function_signatures(
+        artifact,
+        export_names=export_symbols,
+    )
+    missing = sorted(export_symbols - signatures.keys())
+    if missing:
+        raise ValueError(
+            "linked artifact is missing contract-declared app callable export(s): "
+            + ", ".join(missing)
+        )
+    bindings: list[dict[str, object]] = []
+    for raw_binding in raw_bindings:
+        if not isinstance(raw_binding, dict):
+            raise ValueError("app export contract binding is not an object")
+        binding = dict(raw_binding)
+        symbol = binding.get("symbol")
+        if binding.get("disposition") == "export" and isinstance(symbol, str):
+            binding["signature"] = signatures[symbol]
+        bindings.append(binding)
+    return {
+        "schema": contract["schema"],
+        "contract_digest": contract["contract_digest"],
+        "registry_digest": contract["registry_digest"],
+        "entry_module": contract["entry_module"],
+        "call_abi": contract["call_abi"],
+        "bindings": bindings,
     }
 
 
@@ -222,6 +270,43 @@ def _runtime_export_signatures_for_imports(
         import_name: export_signatures[export_name]
         for import_name, export_name in sorted(import_to_export.items())
         if export_name in export_signatures
+    }
+
+
+def _runtime_import_abi_manifest(
+    runtime_module: Path, import_names: Collection[str]
+) -> dict[str, object]:
+    names = set(import_names)
+    runtime_export_signatures = _runtime_export_signatures_for_imports(
+        runtime_module, names
+    )
+    return {
+        "module": "molt_runtime",
+        "names": sorted(names),
+        "canonical_names": _runtime_import_canonical_names_from_manifest(names),
+        "export_names": _runtime_import_export_names_from_manifest(names),
+        "signatures": _runtime_import_signatures_from_manifest(
+            names,
+            runtime_export_signatures=runtime_export_signatures,
+        ),
+        "runtime_export_signatures": runtime_export_signatures,
+        "result_kinds": _runtime_import_result_kinds_from_manifest(
+            names,
+            runtime_export_signatures=runtime_export_signatures,
+        ),
+    }
+
+
+def _runtime_host_abi_import_names() -> set[str]:
+    """Project generated host publication roots into runtime-import ABI keys."""
+
+    return {
+        import_name
+        for export_name in WASM_ESSENTIAL_EXPORTS
+        if (
+            import_name := _runtime_import_name_for_export_from_manifest(export_name)
+        )
+        is not None
     }
 
 
@@ -570,6 +655,7 @@ def _prepare_non_native_build_result(
     artifacts_root: Path | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
+    app_export_contract_path: Path | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -596,8 +682,16 @@ def _prepare_non_native_build_result(
         resolved_linked_output = linked_output_path
         bundle_root: Path | None = None
         artifacts: dict[str, str] = {"wasm": str(output_wasm)}
+        # Browser execution has one canonical deploy shape: the sealed split
+        # app/runtime bundle.  The old raw ``output.wasm`` lane had no manifest,
+        # no owned-result adapters, and could not satisfy browser_host's strict
+        # ABI/integrity contract.  Keep raw output only as a build intermediate.
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         staged_runtime_wasm: Path | None = None
+        runtime_wasm: Path | None = None
+        runtime_reloc_wasm: Path | None = None
+        runtime_wasm_generation: Path | None = None
+        runtime_wasm_expected_identity: Path | None = None
         # The split-runtime lane reads the staged artifact set too, so the
         # empty defaults must exist on every path, not just `linked`.
         staged_external_native_artifacts: tuple[
@@ -605,7 +699,24 @@ def _prepare_non_native_build_result(
         ] = ()
         external_native_fingerprint_inputs: tuple[Path, ...] = ()
         wasm_static_link_native_inputs: tuple[Path, ...] = ()
-        if linked:
+        app_export_contract: dict[str, object] | None = None
+        if linked or _split_runtime:
+            if app_export_contract_path is None:
+                return None, _fail(
+                    "Linked WASM requires the frontend app export contract",
+                    json_output,
+                    command="build",
+                )
+            try:
+                app_export_contract = load_app_export_contract(
+                    app_export_contract_path
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Invalid frontend app export contract: {exc}",
+                    json_output,
+                    command="build",
+                )
             if native_artifact_plan is not None and native_artifact_plan.artifacts:
                 try:
                     staged_external_native_artifacts = (
@@ -788,6 +899,9 @@ def _prepare_non_native_build_result(
                 "--wasm-facts-scanner",
                 str(wasm_facts_scanner),
             ]
+            link_cmd.extend(
+                ["--app-export-contract", str(app_export_contract_path)]
+            )
             for native_input in wasm_static_link_native_inputs:
                 link_cmd.extend(["--native-object", str(native_input)])
             if _split_runtime:
@@ -856,6 +970,7 @@ def _prepare_non_native_build_result(
                     *link_tool_sources,
                     *browser_deploy_sources,
                     *external_native_fingerprint_inputs,
+                    app_export_contract_path,
                 ],
                 link_cmd=link_cmd,
                 stored_fingerprint=stored_link_fingerprint,
@@ -966,12 +1081,6 @@ def _prepare_non_native_build_result(
                             command="build",
                         )
         if not is_wasm_freestanding and not _split_runtime and not linked:
-            if runtime_wasm is None:
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
             )
@@ -1061,9 +1170,80 @@ def _prepare_non_native_build_result(
         if cwasm_path is not None:
             success_messages.append(f"Precompiled {cwasm_path}")
 
+        if linked and not _split_runtime and resolved_linked_output is not None:
+            assert app_export_contract is not None
+            try:
+                app_exports_manifest = _app_export_manifest(
+                    app_export_contract,
+                    resolved_linked_output,
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Linked WASM app export manifest is invalid: {exc}",
+                    json_output,
+                    command="build",
+                )
+            linked_export_signatures = _wasm_export_function_signatures(
+                resolved_linked_output,
+                export_name_prefix="molt_",
+            )
+            linked_runtime_import_names = {
+                import_name
+                for export_name in linked_export_signatures
+                if (
+                    import_name := _runtime_import_name_for_export_from_manifest(
+                        export_name
+                    )
+                )
+                is not None
+            }
+            linked_env_import_names = _collect_wasm_module_import_names(
+                resolved_linked_output,
+                "env",
+            )
+            linked_self_imports = linked_env_import_names.intersection(
+                linked_export_signatures
+            )
+            unexpected_linked_self_imports = linked_self_imports.difference(
+                WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+            )
+            if unexpected_linked_self_imports:
+                return None, _fail(
+                    "Linked WASM has self-imports outside generated output export "
+                    f"authority: {sorted(unexpected_linked_self_imports)!r}",
+                    json_output,
+                    command="build",
+                )
+            linked_manifest = output_wasm.parent / "manifest.json"
+            _atomic_write_json(
+                linked_manifest,
+                {
+                    "version": 2,
+                    "mode": "linked",
+                    "abi": {
+                        "runtime_imports": _runtime_import_abi_manifest(
+                            resolved_linked_output,
+                            linked_runtime_import_names,
+                        ),
+                        "linked_self_imports": sorted(linked_self_imports),
+                        "app_exports": app_exports_manifest,
+                    },
+                    "modules": {
+                        "linked": _file_asset(
+                            resolved_linked_output,
+                            resolved_linked_output.name,
+                        )
+                    },
+                    "entry": {"module": "linked", "function": "molt_main"},
+                },
+                indent=2,
+            )
+            artifacts["manifest"] = str(linked_manifest)
+
         # --split-runtime: wasm_link.py produces app.wasm + molt_runtime.wasm;
         # generate manifest.json and worker.js shim here.
         if _split_runtime and runtime_reloc_wasm is not None:
+            assert app_export_contract is not None
             split_dir = output_wasm.parent
 
             app_wasm = split_dir / "app.wasm"
@@ -1107,6 +1287,17 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
+            try:
+                app_exports_manifest = _app_export_manifest(
+                    app_export_contract,
+                    app_wasm,
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Split-runtime app export manifest is invalid: {exc}",
+                    json_output,
+                    command="build",
+                )
 
             app_size = app_wasm.stat().st_size
             rt_size = rt_wasm.stat().st_size
@@ -1115,35 +1306,22 @@ def _prepare_non_native_build_result(
             app_runtime_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_runtime"
             )
+            runtime_abi_names = (
+                set(app_runtime_import_names) | _runtime_host_abi_import_names()
+            )
             app_native_callable_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_native"
             )
             app_env_import_names = _collect_wasm_module_import_names(app_wasm, "env")
             runtime_env_import_names = _collect_wasm_module_import_names(rt_wasm, "env")
             browser_host_import_names = app_env_import_names | runtime_env_import_names
-            app_runtime_export_signatures = _runtime_export_signatures_for_imports(
-                rt_wasm, app_runtime_import_names
+            runtime_import_abi = _runtime_import_abi_manifest(
+                rt_wasm,
+                runtime_abi_names,
             )
-            app_runtime_import_export_names = (
-                _runtime_import_export_names_from_manifest(
-                    app_runtime_import_names,
-                )
-            )
-            app_runtime_import_canonical_names = (
-                _runtime_import_canonical_names_from_manifest(
-                    app_runtime_import_names,
-                )
-            )
-            app_runtime_import_result_kinds = (
-                _runtime_import_result_kinds_from_manifest(
-                    app_runtime_import_names,
-                    runtime_export_signatures=app_runtime_export_signatures,
-                )
-            )
-            app_runtime_import_signatures = _runtime_import_signatures_from_manifest(
-                app_runtime_import_names,
-                runtime_export_signatures=app_runtime_export_signatures,
-            )
+            app_runtime_export_signatures = runtime_import_abi[
+                "runtime_export_signatures"
+            ]
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
                 rt_memory_min or 0,
@@ -1231,30 +1409,17 @@ def _prepare_non_native_build_result(
                 "shared_table_initial": shared_table_initial,
                 "wasm_table_base": effective_wasm_table_base,
                 "abi": {
-                    "runtime_imports": {
-                        "module": "molt_runtime",
-                        "names": sorted(app_runtime_import_names),
-                        "canonical_names": app_runtime_import_canonical_names,
-                        "export_names": app_runtime_import_export_names,
-                        "signatures": app_runtime_import_signatures,
-                        "runtime_export_signatures": app_runtime_export_signatures,
-                        "result_kinds": app_runtime_import_result_kinds,
-                    },
+                    "runtime_imports": runtime_import_abi,
                     "browser_embed": browser_embed_abi,
                     "callable_table": {
                         "app": app_callable_table_summary,
                         "runtime": runtime_callable_table_summary,
                     },
+                    "app_exports": app_exports_manifest,
                 },
                 "modules": {
-                    "runtime": {
-                        "path": "molt_runtime.wasm",
-                        "size": rt_size,
-                    },
-                    "app": {
-                        "path": "app.wasm",
-                        "size": app_size,
-                    },
+                    "runtime": _file_asset(rt_wasm, "molt_runtime.wasm"),
+                    "app": _file_asset(app_wasm, "app.wasm"),
                 },
                 "assets": assets,
                 "target_features": target_features,
@@ -1282,7 +1447,7 @@ def _prepare_non_native_build_result(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     shared_table_base=effective_wasm_table_base,
-                    runtime_import_names=app_runtime_import_names,
+                    runtime_import_names=runtime_abi_names,
                     runtime_export_signatures=app_runtime_export_signatures,
                 ),
             )

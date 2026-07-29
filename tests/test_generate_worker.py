@@ -698,20 +698,24 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     )
     assert "let runtimeImportExportNames = runtimeExportByImport;" in run_wasm
     assert (
-        "const siblingRuntimeImportExportNames = siblingRuntimeImports.export_names || null;"
+        "const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;"
         in run_wasm
     )
     assert (
-        "runtimeImportExportNames = siblingRuntimeImportExportNames\n"
+        "runtimeImportExportNames = manifestRuntimeImportExportNames\n"
         "    ? {\n"
         "        ...runtimeExportByImport,\n"
-        "        ...siblingRuntimeImportExportNames,\n"
+        "        ...manifestRuntimeImportExportNames,\n"
         "      }\n"
         "    : runtimeExportByImport;" in run_wasm
     )
     assert "generatedRuntimeExportByImport" not in run_wasm
     assert run_wasm.count("const runtimeExportNameForImport =") == 1
     assert "const runtimeExportNameForImport = (importName) => {" in run_wasm
+    assert "const enterName = runtimeImportExportNames.runtime_execution_enter;" in run_wasm
+    assert "const leaveName = runtimeImportExportNames.runtime_execution_leave;" in run_wasm
+    assert "exports?.molt_runtime_execution_enter" not in run_wasm
+    assert "exports?.molt_runtime_execution_leave" not in run_wasm
     assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
     assert "const runtimeExport = runtimeExportNameForImport(name);" in run_wasm
     assert "fn = runtimeFallbackFunction(runtimeInstance.exports, name);" in run_wasm
@@ -804,9 +808,14 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     assert "normalizeImportResult," in browser_host
     assert "normalizeValueForKind," in browser_host
     assert (
-        "const loadSplitRuntimeManifest = async (options, wasmUrl) => {" in browser_host
+        "const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {"
+        in browser_host
     )
-    assert "split-runtime manifest missing abi.runtime_imports.names" in browser_host
+    assert "browser host manifest missing abi.runtime_imports.names" in browser_host
+    assert "const enterName = exportNames.runtime_execution_enter;" in browser_host
+    assert "const leaveName = exportNames.runtime_execution_leave;" in browser_host
+    assert "exports?.molt_runtime_execution_enter" not in browser_host
+    assert "exports?.molt_runtime_execution_leave" not in browser_host
     assert "const runtimeImportAbi = options.runtimeImportAbi || {};" in browser_host
     assert (
         "const manifestNames = new Set(runtimeImportAbi.names || []);" in browser_host
@@ -1221,6 +1230,20 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
         },
     }
     assert requested["export_names"] == {"molt_PyArg_ParseTuple"}
+
+
+def test_browser_runtime_manifest_projects_generated_host_publication_roots() -> None:
+    from molt.cli.non_native_output import _runtime_host_abi_import_names
+
+    names = _runtime_host_abi_import_names()
+    assert {
+        "index",
+        "len",
+        "runtime_execution_enter",
+        "runtime_execution_leave",
+    } <= names
+    assert "molt_main" not in names
+    assert "memory" not in names
 
 
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:

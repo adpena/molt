@@ -490,13 +490,33 @@ pub fn begin_runtime_test_transaction(
 /// Restore the owner and admission state captured at test entry.
 #[cfg(feature = "runtime-test-support")]
 pub fn restore_runtime_test_transaction(snapshot: PendingCallRuntimeTestSnapshot) {
+    finish_runtime_test_transaction(snapshot, true);
+}
+
+/// Finish a test-only destructive runtime reset without resurrecting custody
+/// from the runtime that was just destroyed. The next initialization winner
+/// must select the new process-main thread and reopen producer admission.
+#[cfg(feature = "runtime-test-support")]
+pub fn reset_runtime_test_transaction(snapshot: PendingCallRuntimeTestSnapshot) {
+    finish_runtime_test_transaction(snapshot, false);
+}
+
+#[cfg(feature = "runtime-test-support")]
+fn finish_runtime_test_transaction(
+    snapshot: PendingCallRuntimeTestSnapshot,
+    restore_prior_runtime: bool,
+) {
     PENDING_CALL_ADMISSION.close_and_quiesce();
     let leaked = discard_pending_calls();
     HANDLING_PENDING_CALLS.store(false, Ordering::Release);
     *MAIN_THREAD
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.main_thread;
-    if snapshot.admission_was_open {
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = if restore_prior_runtime {
+        snapshot.main_thread
+    } else {
+        None
+    };
+    if restore_prior_runtime && snapshot.admission_was_open {
         assert!(
             PENDING_CALL_ADMISSION.reopen(),
             "pending-call admission failed to restore after runtime test"

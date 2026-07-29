@@ -4,6 +4,7 @@ const dgram = require('dgram');
 const dns = require('dns');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
 const {
@@ -76,6 +77,8 @@ let linkedPath = null;
 let linkedBuffer = null;
 let runtimePath = null;
 let runtimeBuffer = null;
+let runtimeManifest = null;
+let runtimeManifestPath = null;
 let witSource = null;
 let runtimeAssetsLoaded = false;
 let wasmEnv = null;
@@ -134,6 +137,35 @@ const reservedRuntimeCallables = [
   { index: 22, runtimeExport: 'molt_cpython_abi_cext_call_trampoline', arity: 3, trampolineAbi: 'call_frame' },
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
+
+const withRuntimeExecution = (runtimeInst, operation) => {
+  const enterName = runtimeImportExportNames.runtime_execution_enter;
+  const leaveName = runtimeImportExportNames.runtime_execution_leave;
+  if (typeof enterName !== 'string' || typeof leaveName !== 'string') {
+    throw new Error('runtime manifest missing canonical execution-boundary exports');
+  }
+  const enter = runtimeInst?.exports?.[enterName];
+  const leave = runtimeInst?.exports?.[leaveName];
+  if (typeof enter !== 'function' || typeof leave !== 'function') {
+    throw new Error('runtime missing canonical execution-boundary exports');
+  }
+  const token = enter();
+  if (token === 0n || token === 0) {
+    throw new Error('runtime returned an empty execution-boundary token');
+  }
+  try {
+    return operation();
+  } finally {
+    leave(token);
+  }
+};
+const withOwnedValue = (value, release, operation) => {
+  try {
+    return operation(value);
+  } finally {
+    release(value);
+  }
+};
 let activeReservedRuntimeCallables = reservedRuntimeCallables;
 let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;
 const formatTraceError = (err) => {
@@ -200,160 +232,114 @@ const ensureWasmLocaleEnv = (env) => {
   }
 };
 
-const resolveDefaultWasmPath = (moduleDir = __dirname) =>
-  path.join(moduleDir, '..', 'dist', 'output.wasm');
-
-const resolveDefaultLinkedPath = (moduleDir = __dirname) =>
-  path.join(moduleDir, '..', 'dist', 'output_linked.wasm');
-
-const resolveDefaultRuntimePath = (moduleDir = __dirname, env = process.env) => {
-  const runtimeDirOverride = env.MOLT_RUNTIME_WASM_DIR;
-  if (runtimeDirOverride) {
-    return path.join(runtimeDirOverride, 'molt_runtime.wasm');
+const resolveManifestModulePath = (manifestPath, descriptor, label) => {
+  if (!descriptor || typeof descriptor.path !== 'string' || !descriptor.path) {
+    throw new Error(`runtime manifest missing modules.${label}.path`);
   }
-  return path.join(moduleDir, 'molt_runtime.wasm');
-};
-
-const resolveSiblingLinkedPath = (candidatePath) => {
-  if (!candidatePath) return null;
-  const parsed = path.parse(candidatePath);
-  if (parsed.name.endsWith('_linked')) {
-    return candidatePath;
+  const resolved = path.resolve(path.dirname(manifestPath), descriptor.path);
+  const bytes = fs.readFileSync(resolved);
+  if (!Number.isSafeInteger(descriptor.size) || descriptor.size !== bytes.length) {
+    throw new Error(
+      `${label} size mismatch: manifest=${String(descriptor.size)} actual=${bytes.length}`,
+    );
   }
-  return path.join(parsed.dir, `${parsed.name}_linked${parsed.ext || '.wasm'}`);
-};
-
-const resolveSiblingRuntimePath = (candidatePath) => {
-  if (!candidatePath) return null;
-  return path.join(path.dirname(candidatePath), 'molt_runtime.wasm');
-};
-
-const resolveSiblingBundlePath = (candidatePath) => {
-  if (!candidatePath) return null;
-  return path.join(path.dirname(candidatePath), 'bundle.tar');
-};
-
-const resolveSiblingManifestPath = (candidatePath) => {
-  if (!candidatePath) return null;
-  return path.join(path.dirname(candidatePath), 'manifest.json');
-};
-
-const loadSiblingManifest = (candidatePath) => {
-  const manifestPath = resolveSiblingManifestPath(candidatePath);
-  if (!manifestPath || !fs.existsSync(manifestPath)) {
-    return null;
+  if (typeof descriptor.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(descriptor.sha256)) {
+    throw new Error(`${label} manifest SHA-256 is invalid`);
   }
-  return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const actual = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (actual !== descriptor.sha256) {
+    throw new Error(`${label} SHA-256 mismatch: manifest=${descriptor.sha256} actual=${actual}`);
+  }
+  return { path: resolved, bytes };
 };
 
 const resolveWasmPaths = ({
-  wasmPath = null,
+  manifestPath = null,
   argv2 = process.argv[2],
   env = process.env,
   moduleDir = __dirname,
 } = {}) => {
-  const explicitWasmPath = wasmPath || argv2 || env.MOLT_WASM_PATH || null;
-  const canonicalWasmPath = resolveDefaultWasmPath(moduleDir);
-  const canonicalLinkedPath = resolveDefaultLinkedPath(moduleDir);
-  const selectedWasmPath =
-    explicitWasmPath ||
-    (fs.existsSync(canonicalWasmPath) ? canonicalWasmPath : null);
-  if (!selectedWasmPath) {
+  const selectedManifestPath = path.resolve(
+    manifestPath || argv2 || env.MOLT_WASM_MANIFEST_PATH || path.join(moduleDir, '..', 'dist', 'manifest.json'),
+  );
+  if (path.extname(selectedManifestPath).toLowerCase() !== '.json') {
     throw new Error(
-      'WASM path not found (arg, MOLT_WASM_PATH, or canonical dist/output.wasm)'
+      'run_wasm.js accepts a runtime manifest path, not a module path; pass manifest.json',
     );
   }
-  const explicitLinkedPath = (() => {
-    if (!explicitWasmPath) return null;
-    const parsed = path.parse(explicitWasmPath);
-    return parsed.name.endsWith('_linked') ? explicitWasmPath : null;
-  })();
-  const siblingLinkedPath = resolveSiblingLinkedPath(selectedWasmPath);
-  const siblingRuntimePath = resolveSiblingRuntimePath(selectedWasmPath);
-  const resolvedLinkedPath =
-    env.MOLT_WASM_LINKED_PATH ||
-    explicitLinkedPath ||
-    (siblingLinkedPath && fs.existsSync(siblingLinkedPath) ? siblingLinkedPath : null) ||
-    null;
-  const canonicalRuntimePath = resolveDefaultRuntimePath(moduleDir, env);
-  const resolvedRuntimePath =
-    env.MOLT_RUNTIME_WASM ||
-    (siblingRuntimePath && fs.existsSync(siblingRuntimePath) ? siblingRuntimePath : null) ||
-    (fs.existsSync(canonicalRuntimePath) ? canonicalRuntimePath : null);
+  const manifest = JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8'));
+  if (manifest.mode !== 'linked' && manifest.mode !== 'split-runtime') {
+    throw new Error(`runtime manifest has unsupported mode: ${String(manifest.mode)}`);
+  }
+  const app = manifest.mode === 'split-runtime'
+    ? resolveManifestModulePath(selectedManifestPath, manifest?.modules?.app, 'app wasm')
+    : null;
+  const runtime = manifest.mode === 'split-runtime'
+    ? resolveManifestModulePath(selectedManifestPath, manifest?.modules?.runtime, 'runtime wasm')
+    : null;
+  const linked = manifest.mode === 'linked'
+    ? resolveManifestModulePath(selectedManifestPath, manifest?.modules?.linked, 'linked wasm')
+    : null;
+  const selected = linked || app;
   return {
-    wasmPath: selectedWasmPath,
-    linkedPath: resolvedLinkedPath,
-    runtimePath: resolvedRuntimePath,
-    canonicalWasmPath,
-    canonicalLinkedPath,
-    canonicalRuntimePath,
+    manifest,
+    manifestPath: selectedManifestPath,
+    wasmPath: selected.path,
+    wasmBuffer: selected.bytes,
+    linkedPath: linked?.path || null,
+    linkedBuffer: linked?.bytes || null,
+    runtimePath: runtime?.path || null,
+    runtimeBuffer: runtime?.bytes || null,
   };
 };
 
 const initWasmAssets = () => {
   const resolved = resolveWasmPaths();
+  runtimeManifest = resolved.manifest;
+  runtimeManifestPath = resolved.manifestPath;
   wasmPath = resolved.wasmPath;
-  wasmBuffer = fs.readFileSync(wasmPath);
-  const siblingManifest = loadSiblingManifest(wasmPath);
-  const siblingRuntimeImports = siblingManifest?.abi?.runtime_imports || {};
-  const siblingRuntimeImportExportNames = siblingRuntimeImports.export_names || null;
-  const siblingRuntimeImportCanonicalNames = siblingRuntimeImports.canonical_names || null;
-  runtimeImportExportNames = siblingRuntimeImportExportNames
+  wasmBuffer = resolved.wasmBuffer;
+  const manifestRuntimeImports = runtimeManifest?.abi?.runtime_imports || {};
+  const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;
+  const manifestRuntimeImportCanonicalNames = manifestRuntimeImports.canonical_names || null;
+  runtimeImportExportNames = manifestRuntimeImportExportNames
     ? {
         ...runtimeExportByImport,
-        ...siblingRuntimeImportExportNames,
+        ...manifestRuntimeImportExportNames,
       }
     : runtimeExportByImport;
-  runtimeImportCanonicalNames = siblingRuntimeImportCanonicalNames
+  runtimeImportCanonicalNames = manifestRuntimeImportCanonicalNames
     ? {
         ...runtimeCanonicalByImport,
-        ...siblingRuntimeImportCanonicalNames,
+        ...manifestRuntimeImportCanonicalNames,
       }
     : runtimeCanonicalByImport;
   const manifestReservedRuntimeCallables =
-    reservedRuntimeCallablesFromManifest(siblingManifest);
+    reservedRuntimeCallablesFromManifest(runtimeManifest);
   activeReservedRuntimeCallables =
     manifestReservedRuntimeCallables || reservedRuntimeCallables;
   activeReservedRuntimeCallableCount = activeReservedRuntimeCallables.length;
   linkedPath = resolved.linkedPath;
-  linkedBuffer = null;
-  if (linkedPath && linkedPath === wasmPath) {
-    linkedBuffer = wasmBuffer;
-  } else if (linkedPath && fs.existsSync(linkedPath)) {
-    linkedBuffer = fs.readFileSync(linkedPath);
-  }
-  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
-  const preferLinked =
-    preferLinkedEnv === undefined ||
-    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
-  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
-  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
-  const directLinkRequestedByEnv =
-    directLinkEnv !== undefined &&
-    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
-  const directLinkRequestedByPreference = !forceLinked && !preferLinked;
-  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByPreference;
-  const useLinkedProbe = forceLinked || !directLinkRequested;
-  const tableBaseProbe =
-    useLinkedProbe && linkedBuffer
-      ? linkedBuffer
-      : wasmBuffer;
+  linkedBuffer = resolved.linkedBuffer;
+  const tableBaseProbe = linkedBuffer || wasmBuffer;
   detectedWasmTableBase = resolveWasmTableBase({
-    manifest: siblingManifest,
+    manifest: runtimeManifest,
     extracted: extractWasmTableBase(tableBaseProbe),
   });
   runtimePath = resolved.runtimePath;
-  runtimeBuffer = null;
-  if (runtimePath && fs.existsSync(runtimePath)) {
-    runtimeBuffer = fs.readFileSync(runtimePath);
-  }
+  runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = { ...process.env };
   implicitBundlePreopen = null;
   if (!Object.prototype.hasOwnProperty.call(wasmEnv, 'MOLT_VFS_BUNDLE')) {
-    const siblingBundlePath = resolveSiblingBundlePath(wasmPath);
-    if (siblingBundlePath && fs.existsSync(siblingBundlePath)) {
-      const bundleDir = path.dirname(siblingBundlePath);
-      const bundleName = path.basename(siblingBundlePath);
+    const bundleDescriptor = runtimeManifest?.modules?.bundle;
+    if (bundleDescriptor) {
+      const bundleAsset = resolveManifestModulePath(
+        runtimeManifestPath,
+        bundleDescriptor,
+        'bundle',
+      );
+      const bundleDir = path.dirname(bundleAsset.path);
+      const bundleName = path.basename(bundleAsset.path);
       implicitBundlePreopen = { guest: '/molt_bundle', host: bundleDir };
       wasmEnv.MOLT_VFS_BUNDLE = `/molt_bundle/${bundleName}`;
     }
@@ -444,13 +430,6 @@ const loadRuntimeAssets = () => {
     return;
   }
   runtimeAssetsLoaded = true;
-  if (!runtimePath) {
-    runtimePath = resolveWasmPaths({
-      wasmPath,
-      env: process.env,
-      moduleDir: __dirname,
-    }).runtimePath;
-  }
   if (!runtimePath || !fs.existsSync(runtimePath)) {
     runtimePath = null;
     runtimeBuffer = null;
@@ -1053,7 +1032,7 @@ const makeHostArgObject = (spec) => {
   }
 };
 
-const runHostExportCalls = async () => {
+const runHostExportCalls = () => {
   const calls = loadHostExportCallsSpec();
   if (!calls) {
     return;
@@ -1061,9 +1040,10 @@ const runHostExportCalls = async () => {
   if (!appInstanceForHostCalls || !appInstanceForHostCalls.exports) {
     throw new Error('app instance not initialized for host export calls');
   }
-  runMoltHostInit(appInstanceForHostCalls, 'host-call');
-  const results = [];
-  for (const call of calls) {
+  return withRuntimeExecution(runtimeInstance, () => {
+    runMoltHostInit(appInstanceForHostCalls, 'host-call');
+    const results = [];
+    for (const call of calls) {
     if (!call || typeof call !== 'object' || typeof call.export !== 'string') {
       throw new Error('each host export call must provide an export name');
     }
@@ -1096,24 +1076,26 @@ const runHostExportCalls = async () => {
         decRefMaybe(bits);
       }
     }
-    const pending = pendingAnyRuntimeExceptionMessage();
-    if (pending) {
-      throw new Error(pending);
+      withOwnedValue(resultBits, decRefMaybe, (ownedResultBits) => {
+        const pending = pendingAnyRuntimeExceptionMessage();
+        if (pending) {
+          throw new Error(pending);
+        }
+        if (traceRun) {
+          console.error(
+            `[molt wasm] host-call: ${call.export} returned ${String(resultBits)} (${typeof resultBits})`,
+          );
+        }
+        const resultRepr = reprObjectBits(ownedResultBits);
+        results.push({
+          export: call.export,
+          duration_ms: Date.now() - started,
+          result_repr: resultRepr,
+        });
+      });
     }
-    if (traceRun) {
-      console.error(
-        `[molt wasm] host-call: ${call.export} returned ${String(resultBits)} (${typeof resultBits})`,
-      );
-    }
-    const resultRepr = reprObjectBits(resultBits);
-    decRefMaybe(resultBits);
-    results.push({
-      export: call.export,
-      duration_ms: Date.now() - started,
-      result_repr: resultRepr,
-    });
-  }
-  process.stdout.write(`${JSON.stringify(results)}\n`);
+    process.stdout.write(`${JSON.stringify(results)}\n`);
+  });
 };
 
 const runMoltHostInit = (instance, label) => {
@@ -5143,9 +5125,7 @@ const runDirectLink = async () => {
   appInstanceForExceptions = null;
   appWasmMemory = null;
   if (!runtimeBuffer) {
-    throw new Error(
-      'molt runtime wasm is required for direct-link mode; set MOLT_RUNTIME_WASM or use linked execution.',
-    );
+    throw new Error('split-runtime manifest did not resolve a runtime module');
   }
   if (!runtimeImportsDesc) {
     throw new Error('molt runtime import metadata missing for direct-link mode');
@@ -5391,28 +5371,30 @@ const runDirectLink = async () => {
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }
-  if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
-    if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
-      throw new Error('molt_call_indirect2 export missing for smoke test');
+  withRuntimeExecution(runtimeInst, () => {
+    if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
+      if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
+        throw new Error('molt_call_indirect2 export missing for smoke test');
+      }
+      const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
+      console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
     }
-    const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
-    console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
-  }
-  runMoltHostInit(outputInstance, 'direct');
-  if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
+    runMoltHostInit(outputInstance, 'direct');
+    if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
+      if (traceRun) {
+        console.error('[molt wasm] direct: call molt_isolate_bootstrap');
+      }
+      outputInstance.exports.molt_isolate_bootstrap();
+      if (traceRun) {
+        console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
+      }
+    }
     if (traceRun) {
-      console.error('[molt wasm] direct: call molt_isolate_bootstrap');
+      console.error('[molt wasm] direct: call molt_main');
     }
-    outputInstance.exports.molt_isolate_bootstrap();
-    if (traceRun) {
-      console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
-    }
-  }
-  if (traceRun) {
-    console.error('[molt wasm] direct: call molt_main');
-  }
-  runMainWithWasiExit(() => {
-    molt_main();
+    runMainWithWasiExit(() => {
+      molt_main();
+    });
   });
 };
 
@@ -5565,18 +5547,20 @@ const runLinked = async () => {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
-  runMoltHostInit(linkedModule.instance, 'linked');
-  if (typeof linkedModule.instance.exports.molt_isolate_bootstrap === 'function') {
-    if (traceRun) {
-      console.error('[molt wasm] linked: call molt_isolate_bootstrap');
+  withRuntimeExecution(linkedModule.instance, () => {
+    runMoltHostInit(linkedModule.instance, 'linked');
+    if (typeof linkedModule.instance.exports.molt_isolate_bootstrap === 'function') {
+      if (traceRun) {
+        console.error('[molt wasm] linked: call molt_isolate_bootstrap');
+      }
+      linkedModule.instance.exports.molt_isolate_bootstrap();
+      if (traceRun) {
+        console.error('[molt wasm] linked: molt_isolate_bootstrap returned');
+      }
     }
-    linkedModule.instance.exports.molt_isolate_bootstrap();
-    if (traceRun) {
-      console.error('[molt wasm] linked: molt_isolate_bootstrap returned');
-    }
-  }
-  runMainWithWasiExit(() => {
-    molt_main();
+    runMainWithWasiExit(() => {
+      molt_main();
+    });
   });
 };
 
@@ -5585,17 +5569,6 @@ const runMain = async () => {
   appInstanceForExceptions = null;
   initWasmAssets();
   traceMark('runMain:init');
-  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
-  const directLinkRequestedByEnv =
-    directLinkEnv !== undefined &&
-    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
-  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
-  const preferLinked =
-    preferLinkedEnv === undefined ||
-    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
-  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
-  const directLinkRequestedByPreference = !forceLinked && !preferLinked;
-  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByPreference;
   const outputMetadata = parseWasmMetadata(wasmBuffer, {
     exportFunctionSignatures: false,
   });
@@ -5608,18 +5581,12 @@ const runMain = async () => {
       `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
     );
   }
-  if (!inputHasRuntimeImports && !linkedBuffer) {
-    linkedPath = wasmPath;
-    linkedBuffer = wasmBuffer;
+  const useLinked = runtimeManifest.mode === 'linked';
+  if (useLinked !== Boolean(linkedBuffer)) {
+    throw new Error('runtime manifest mode and linked module custody disagree');
   }
-
-  const autoDirectSplitRuntime =
-    inputHasRuntimeImports && !linkedBuffer && !forceLinked && Boolean(runtimeBuffer);
-  const useLinked = forceLinked || (!directLinkRequested && !autoDirectSplitRuntime);
-  if (useLinked && inputHasRuntimeImports && !linkedBuffer) {
-    throw new Error(
-      'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'
-    );
+  if (!useLinked && (!inputHasRuntimeImports || !runtimeBuffer)) {
+    throw new Error('split-runtime manifest requires app runtime imports and a runtime module');
   }
   runtimeImportsDesc = null;
   runtimeCallIndirectNames = [];
@@ -5627,11 +5594,7 @@ const runMain = async () => {
   if (!useLinked) {
     loadRuntimeAssets();
     if (!runtimeBuffer) {
-      const expected =
-        process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
-      throw new Error(
-        `Direct-link mode requires runtime wasm at ${expected}; provide MOLT_RUNTIME_WASM or use linked execution.`,
-      );
+      throw new Error('split-runtime manifest did not resolve a runtime module');
     }
     const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
     runtimeImportsDesc = runtimeMetadata.imports;
@@ -5748,5 +5711,8 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
 module.exports = {
   extractWasmTableBase,
   parseWasmImports,
+  resolveManifestModulePath,
   resolveWasmPaths,
+  withOwnedValue,
+  withRuntimeExecution,
 };

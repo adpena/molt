@@ -94,20 +94,24 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -137,8 +141,7 @@ const writeF32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteO
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -310,8 +313,6 @@ const writeF32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteO
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/app.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
   manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
@@ -398,20 +399,24 @@ def test_browser_host_direct_mode_tensor_linear_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -442,8 +447,7 @@ const writeF32 = (bytes, index, value) => f32View(bytes).setFloat32(index * 4, v
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -535,20 +539,24 @@ def test_browser_host_direct_mode_tinygrad_linear_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -579,8 +587,7 @@ const writeF32 = (bytes, index, value) => f32View(bytes).setFloat32(index * 4, v
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -673,20 +680,24 @@ def test_browser_host_direct_mode_molt_nn_linear_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -717,8 +728,7 @@ const writeF32 = (bytes, index, value) => f32View(bytes).setFloat32(index * 4, v
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -809,20 +819,24 @@ def test_browser_host_direct_mode_tensor_linear_without_webgpu_fails_fast(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -846,8 +860,7 @@ import {{ loadMoltWasm }} from {browser_host_uri!r};
 
 const baseUrl = {base_url!r};
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
 }});
@@ -919,20 +932,24 @@ def test_browser_host_direct_mode_tensor_linear_split_last_dim_uses_webgpu_dispa
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -963,8 +980,7 @@ const writeF32 = (bytes, index, value) => f32View(bytes).setFloat32(index * 4, v
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -1056,20 +1072,24 @@ def test_browser_host_direct_mode_tensor_linear_squared_relu_gate_uses_webgpu_di
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1100,8 +1120,7 @@ const writeF32 = (bytes, index, value) => f32View(bytes).setFloat32(index * 4, v
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -1199,20 +1218,24 @@ def test_browser_host_direct_mode_tensor_attention_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1243,8 +1266,7 @@ const writeF32 = (bytes, index, value) => view(bytes).setFloat32(index * 4, valu
 const readI32 = (bytes, index) => view(bytes).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{
@@ -1379,20 +1401,24 @@ def test_browser_host_direct_mode_turboquant_attention_uses_webgpu_dispatch(
     )
     assert build.returncode == 0, build.stderr
 
-    output_wasm = tmp_path / "output.wasm"
+    output_wasm = tmp_path / "app.wasm"
     runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
     assert output_wasm.exists()
     assert runtime_wasm.exists()
+    assert manifest_path.exists()
 
     class _WasmHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
             return None
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/output.wasm":
+            if self.path == "/app.wasm":
                 payload = output_wasm.read_bytes()
             elif self.path == "/molt_runtime.wasm":
                 payload = runtime_wasm.read_bytes()
+            elif self.path == "/manifest.json":
+                payload = manifest_path.read_bytes()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1422,8 +1448,7 @@ const writeF32 = (bytes, index, value) => view(bytes).setFloat32(index * 4, valu
 const readI32 = (bytes, index) => view(bytes).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
-  wasmUrl: `${{baseUrl}}/output.wasm`,
-  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
       gpuKernelDispatcher: {{

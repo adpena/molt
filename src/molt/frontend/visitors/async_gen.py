@@ -407,6 +407,12 @@ class AsyncGenVisitorMixin(_MixinBase):
                 else:
                     self._store_local_value(func_name, func_val)
                 self._emit_module_attr_set(func_name, func_val)
+            self._record_source_app_callable(
+                func_name,
+                kind=FunctionKind.ASYNC_GENERATOR,
+                symbol=func_symbol,
+                decorated=bool(node.decorator_list),
+            )
             return None
         func_name = node.name
         qualname = self._qualname_for_def(func_name)
@@ -691,6 +697,12 @@ class AsyncGenVisitorMixin(_MixinBase):
             else:
                 self._store_local_value(func_name, func_val)
             self._emit_module_attr_set(func_name, func_val)
+        self._record_source_app_callable(
+            func_name,
+            kind=FunctionKind.ASYNC,
+            symbol=func_symbol,
+            decorated=bool(node.decorator_list),
+        )
         return None
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:

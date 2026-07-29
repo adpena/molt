@@ -55,7 +55,7 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)
-    run = run_wasm_linked(root, output_wasm, env_overrides={"MOLT_RUNTIME_WASM": ""})
+    run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().splitlines() == [
         "child main",
@@ -110,7 +110,6 @@ def test_wasm_zipimport_package_lookup_parity(
         root,
         output_wasm,
         env_overrides={
-            "MOLT_RUNTIME_WASM": "",
             "MOLT_CAPABILITIES": "fs.read,fs.write,env.read",
         },
     )
@@ -163,7 +162,6 @@ def test_wasm_smtplib_thread_dependent_paths_fail_fast(
         root,
         output_wasm,
         env_overrides={
-            "MOLT_RUNTIME_WASM": "",
             "MOLT_CAPABILITIES": "net.bind,net.listen,net.outbound,env.read",
         },
     )

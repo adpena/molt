@@ -55,6 +55,7 @@ from molt.cli import runtime_features as cli_runtime_features
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli import typecheck as cli_typecheck
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
+from molt.cli.app_export_contract import build_app_export_contract
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalNativeAbiSymbol,
@@ -109,6 +110,25 @@ RUNTIME_CALLABLE_SYMBOLS = importlib.import_module("molt.cli.runtime_callable_sy
 NATIVE_LINK_COMMAND = importlib.import_module("molt.cli.native_link_command")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TARGET_PYTHON = importlib.import_module("molt.cli.target_python")
+
+
+def _empty_app_export_contract(tmp_path: Path) -> Path:
+    path = tmp_path / "app_export_contract.json"
+    path.write_text(
+        json.dumps(
+            build_app_export_contract(
+                entry_module="app",
+                ir={
+                    "functions": [
+                        {"name": "app__module_init", "app_callable_bindings": []}
+                    ]
+                },
+                registry_digest="d" * 64,
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _rewrite_preserving_mtime(
@@ -19803,6 +19823,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "split_runtime": False,
         "precompile": False,
         "wasm_facts_scanner": tmp_path / "molt-backend",
+        "app_export_contract_path": _empty_app_export_contract(tmp_path),
     }
 
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
@@ -19869,12 +19890,41 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         del path
         if module_name == "molt_runtime":
             return {"alloc", "molt_fast_list_append"}
+        if module_name == "env":
+            return {"molt_isolate_import"}
         return set()
 
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
         collect_import_names,
+    )
+
+    def linked_export_signatures(
+        _path: Path,
+        *,
+        export_name_prefix: str | None = None,
+        export_names: object = None,
+    ) -> dict[str, dict[str, object]]:
+        signatures = {
+            "molt_runtime_execution_enter": {"params": [], "result": "i64"},
+            "molt_runtime_execution_leave": {"params": ["i64"], "result": None},
+            "molt_isolate_import": {"params": ["i64"], "result": "i64"},
+            "molt_not_an_abi_export": {"params": [], "result": None},
+        }
+        if export_name_prefix is not None:
+            return {
+                name: signature
+                for name, signature in signatures.items()
+                if name.startswith(export_name_prefix)
+            }
+        selected = set(export_names or ())
+        return {name: signatures[name] for name in selected if name in signatures}
+
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_wasm_export_function_signatures",
+        linked_export_signatures,
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
@@ -19896,6 +19946,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         split_runtime=False,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
 
     assert err is None
@@ -19904,6 +19955,27 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     # (discovered by _collect_wasm_module_import_names) to the atomic pair
     # authority so both members are built from the same closed export set.
     assert pair_required == [frozenset({"alloc", "molt_fast_list_append"})]
+    linked_manifest = json.loads(
+        (output_wasm.parent / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert linked_manifest["mode"] == "linked"
+    assert linked_manifest["abi"]["runtime_imports"]["names"] == [
+        "runtime_execution_enter",
+        "runtime_execution_leave",
+    ]
+    assert linked_manifest["abi"]["runtime_imports"]["export_names"] == {
+        "runtime_execution_enter": "molt_runtime_execution_enter",
+        "runtime_execution_leave": "molt_runtime_execution_leave",
+    }
+    assert linked_manifest["abi"]["linked_self_imports"] == [
+        "molt_isolate_import"
+    ]
+    assert linked_manifest["modules"]["linked"] == {
+        "path": linked_wasm.name,
+        "size": linked_wasm.stat().st_size,
+        "sha256": hashlib.sha256(linked_wasm.read_bytes()).hexdigest(),
+    }
+    assert prepared.artifacts["manifest"] == str(output_wasm.parent / "manifest.json")
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
@@ -20039,6 +20111,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         split_runtime=True,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20068,6 +20141,20 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         bundle_manifest = json.loads(tar.extractfile("__manifest__.json").read())
     assert bundle_manifest["files"]
     manifest = json.loads((output_wasm.parent / "manifest.json").read_text())
+    assert manifest["modules"]["app"] == {
+        "path": "app.wasm",
+        "size": (output_wasm.parent / "app.wasm").stat().st_size,
+        "sha256": hashlib.sha256(
+            (output_wasm.parent / "app.wasm").read_bytes()
+        ).hexdigest(),
+    }
+    assert manifest["modules"]["runtime"] == {
+        "path": "molt_runtime.wasm",
+        "size": (output_wasm.parent / "molt_runtime.wasm").stat().st_size,
+        "sha256": hashlib.sha256(
+            (output_wasm.parent / "molt_runtime.wasm").read_bytes()
+        ).hexdigest(),
+    }
     assert (output_wasm.parent / "browser_gpu_dispatch.js").exists()
     assert (output_wasm.parent / "browser_gpu_worker.js").exists()
     assert (output_wasm.parent / "browser_target_features.js").exists()
@@ -20225,6 +20312,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         split_runtime=True,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20426,6 +20514,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         split_runtime=False,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20570,6 +20659,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         split_runtime=True,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=native_artifact_plan,
     )
 
@@ -20824,6 +20914,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         split_runtime=True,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
 
@@ -20907,6 +20998,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         split_runtime=True,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
 
     assert err is None
@@ -22230,11 +22322,35 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     ]
 
 
-def test_browser_deploy_profile_defaults_to_auto_wasm_profile() -> None:
-    assert (
-        cli_build_output_layout._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"]
-        == "auto"
+def test_browser_deploy_profile_owns_canonical_wasm_publication_defaults() -> None:
+    defaults = cli_build_output_layout._DEPLOY_PROFILE_DEFAULTS["browser"]
+    assert defaults["wasm_profile"] == "auto"
+    assert defaults["split_runtime"] is True
+
+
+def test_browser_deploy_profile_enables_split_runtime_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen: list[bool] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen.append(bool(kwargs.get("split_runtime")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["molt", "build", "--target", "wasm", "--profile", "browser", str(entry)],
     )
+
+    assert cli.main() == 0
+    assert seen == [True]
 
 
 def test_build_cli_defaults_to_auto_wasm_profile(

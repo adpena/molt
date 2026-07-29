@@ -553,7 +553,10 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
 
 // --- NaN-boxed ops ---
 
-fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_json::Value {
+pub(crate) fn runtime_profile_payload(
+    _py: &PyToken<'_>,
+    emit_leak_warning: bool,
+) -> serde_json::Value {
     let call_dispatch = CALL_DISPATCH_COUNT.load(AtomicOrdering::Relaxed);
     let cache_hit = STRING_COUNT_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
     let cache_miss = STRING_COUNT_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
@@ -628,6 +631,7 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
         GC_REGISTRY_LOCK_CONTENTION_COUNT.load(AtomicOrdering::Relaxed);
     let gc_registry_lock_wait_ns = GC_REGISTRY_LOCK_WAIT_NS.load(AtomicOrdering::Relaxed);
     let gc_tracked_high_water = GC_TRACKED_HIGH_WATER.load(AtomicOrdering::Relaxed);
+    let execution_drop = crate::concurrency::execution::execution_drop_panic_diagnostics();
     // RC drop-insertion substrate (design 20): the leak gauge.
     let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_bytes_total = DEALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
@@ -719,6 +723,12 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
         gc_registry_lock_wait_ns,
         gc_snapshot_alloc_failure_count: GC_SNAPSHOT_ALLOC_FAILURE_COUNT
             .load(AtomicOrdering::Relaxed),
+        drop_panic_count: execution_drop.total,
+        drop_cleanup_panic_count: execution_drop.cleanup,
+        drop_detach_panic_count: execution_drop.detach,
+        drop_release_panic_count: execution_drop.release,
+        shutdown_drop_cext_panic_count: execution_drop.shutdown_cext,
+        shutdown_drop_depth_panic_count: execution_drop.shutdown_depth,
         call_bind_ic_hit,
         call_bind_ic_miss,
         attr_site_name_hit,

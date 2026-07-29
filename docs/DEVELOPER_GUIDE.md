@@ -701,7 +701,7 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 - Build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
 - Build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
 - Build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
-- Run (Node/WASI): `node wasm/run_wasm.js dist/output_linked.wasm` (requires linked output; build with `--linked` or `--require-linked`)
+- Run (Node/WASI): `node wasm/run_wasm.js dist/manifest.json` (the manifest selects and verifies linked or split-runtime modules)
 
 ## Operational Assumptions
 

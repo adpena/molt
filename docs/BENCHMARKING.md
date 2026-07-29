@@ -194,6 +194,38 @@ uv run --python 3.14 python3 tools/bench.py --warmup 2
 uv run --python 3.14 python3 tools/bench.py --compare cpython
 ```
 
+### C-extension trampoline attestation
+
+Use `tools/benchmark_cext_trampoline.py` when changing C-extension ingress,
+execution custody, or CPython bridge allocation. The tool builds one release
+test executable with the allocation probe, binds its path, size, and SHA-256,
+then launches that exact binary directly in independent processes. The tool
+measures both sealed admitted calls and the nested checked boundary used by
+WASM slot 22. Each process publishes all 120 raw equal-work paired sub-blocks,
+balanced as ABBA+BAAB quartets within the process, plus its arithmetic mean
+process estimate. The starting orientation alternates between processes.
+The gate is a one-sided 95% Student-t upper confidence bound over independent
+process log ratios from 31 predeclared fresh processes per candidate; the
+default threshold is 1%, and neither candidate may
+allocate more than the baseline in any process. No median or outlier filtering
+is used. Full per-process stdout/stderr and RSS evidence are retained beside the
+JSON receipt.
+On supported platforms the Python orchestrator and memory guard are confined to
+the complement of one logical CPU after the build. Each timed Rust child moves
+itself onto that isolated CPU, establishes its requested priority, then queries
+and verifies its actual PID, affinity, and priority before warmup. Every sample
+records that child-side contract and the orchestrator rejects any mismatch with
+the guard's direct-child custody record.
+Strict sampling is currently admitted on Windows and Linux when at least two
+logical CPUs are available. Other platforms write a schema-versioned
+`not-admitted` receipt and exit with status 2 before building; they are never
+reported as a failed or noisy performance sample.
+
+```bash
+uv run --python 3.14 python3 tools/benchmark_cext_trampoline.py \
+  --out bench/results/cext_trampoline.json
+```
+
 ## Native Baselines (Optional)
 
 `tools/bench.py` compares Molt against optional baseline lanes using the same

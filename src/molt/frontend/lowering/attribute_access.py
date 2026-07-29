@@ -114,6 +114,7 @@ class AttributeAccessMixin(_MixinBase):
     ) -> None:
         if self.current_func_name != "molt_main" or self.module_obj is None:
             return
+        self._record_app_module_store(name, value)
         if defer and self.defer_module_attrs:
             self.deferred_module_attrs.add(name)
             return

@@ -54,6 +54,16 @@ class WindowsJobAccounting:
 
 
 @dataclass(frozen=True, slots=True)
+class WindowsJobProcessMemory:
+    """One live job member bound to its handle-backed creation identity."""
+
+    pid: int
+    rss_bytes: int
+    started_at_ns: int | None
+    image_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class WindowsSystemResources:
     """Process/handle/commit pressure captured without spawning a subprocess."""
 
@@ -237,6 +247,21 @@ def _k32() -> Any:
         wintypes.HANDLE,
         ctypes.POINTER(wintypes.DWORD),
     ]
+    k32.GetProcessTimes.restype = wintypes.BOOL
+    k32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     return k32
 
 
@@ -401,6 +426,21 @@ def active_process_count(job: int | None) -> int:
     return int(_basic_accounting_information(job).ActiveProcesses)
 
 
+@lru_cache(maxsize=8)
+def _process_id_list_type(capacity: int) -> type[ctypes.Structure]:
+    return type(
+        f"_PROCESS_ID_LIST_{capacity}",
+        (ctypes.Structure,),
+        {
+            "_fields_": [
+                ("NumberOfAssignedProcesses", wintypes.DWORD),
+                ("NumberOfProcessIdsInList", wintypes.DWORD),
+                ("ProcessIdList", ctypes.c_size_t * capacity),
+            ]
+        },
+    )
+
+
 def process_ids(job: int | None) -> tuple[int, ...]:
     """Snapshot every process id in ``job`` without a fixed-size ceiling."""
 
@@ -410,17 +450,7 @@ def process_ids(job: int | None) -> tuple[int, ...]:
         raise WinJobError("Windows job handle is required")
     capacity = 16
     while True:
-        list_type = type(
-            "_PROCESS_ID_LIST",
-            (ctypes.Structure,),
-            {
-                "_fields_": [
-                    ("NumberOfAssignedProcesses", wintypes.DWORD),
-                    ("NumberOfProcessIdsInList", wintypes.DWORD),
-                    ("ProcessIdList", ctypes.c_size_t * capacity),
-                ]
-            },
-        )
+        list_type = _process_id_list_type(capacity)
         info = list_type()
         returned = wintypes.DWORD()
         if _k32().QueryInformationJobObject(
@@ -438,25 +468,32 @@ def process_ids(job: int | None) -> tuple[int, ...]:
         capacity = max(capacity * 2, int(info.NumberOfAssignedProcesses), 1)
 
 
-def current_working_set_bytes(job: int | None) -> int:
-    """Sum the current working sets of a snapshot of live job members."""
+def _filetime_to_unix_ns(value: wintypes.FILETIME) -> int | None:
+    ticks = (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+    unix_100ns = ticks - 116444736000000000
+    return None if unix_100ns <= 0 else unix_100ns * 100
+
+
+def process_memory(
+    job: int | None, *, include_image_names: bool = False
+) -> tuple[WindowsJobProcessMemory, ...]:
+    """Read per-process RSS for only the exact kernel-owned job membership."""
 
     if not _WINDOWS:
-        return 0
+        return ()
     k32 = _k32()
-    total = 0
-    for pid in process_ids(job):
+    members = process_ids(job)
+    samples: list[WindowsJobProcessMemory] = []
+    unreadable: list[tuple[int, str, int]] = []
+    for pid in members:
         process = k32.OpenProcess(
             _PROCESS_QUERY_LIMITED_INFORMATION | _PROCESS_VM_READ,
             False,
             pid,
         )
         if not process:
-            # The member may have exited after the job snapshot.  Re-read the
-            # job rather than turning a normal exit race into telemetry failure.
-            if pid not in process_ids(job):
-                continue
-            raise _win32_error(f"OpenProcess(pid={pid})")
+            unreadable.append((pid, "OpenProcess", ctypes.get_last_error()))
+            continue
         try:
             counters = _PROCESS_MEMORY_COUNTERS_EX()
             counters.cb = ctypes.sizeof(counters)
@@ -465,11 +502,59 @@ def current_working_set_bytes(job: int | None) -> int:
                 ctypes.byref(counters),
                 counters.cb,
             ):
-                raise _win32_error(f"GetProcessMemoryInfo(pid={pid})")
-            total += int(counters.WorkingSetSize)
+                unreadable.append(
+                    (pid, "GetProcessMemoryInfo", ctypes.get_last_error())
+                )
+                continue
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not k32.GetProcessTimes(
+                process,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                unreadable.append((pid, "GetProcessTimes", ctypes.get_last_error()))
+                continue
+            started_at_ns = _filetime_to_unix_ns(created)
+            image_name = None
+            if include_image_names:
+                image_size = wintypes.DWORD(32768)
+                image_buffer = ctypes.create_unicode_buffer(image_size.value)
+                if k32.QueryFullProcessImageNameW(
+                    process,
+                    0,
+                    image_buffer,
+                    ctypes.byref(image_size),
+                ):
+                    image_name = image_buffer.value
+            samples.append(
+                WindowsJobProcessMemory(
+                    pid=pid,
+                    rss_bytes=int(counters.WorkingSetSize),
+                    started_at_ns=started_at_ns,
+                    image_name=image_name,
+                )
+            )
         finally:
             _close_handle(int(process), operation="CloseHandle(process telemetry)")
-    return total
+    if unreadable:
+        still_live = set(process_ids(job))
+        for pid, operation, error_code in unreadable:
+            if pid in still_live:
+                raise _win32_error(f"{operation}(pid={pid})", code=error_code)
+    return tuple(samples)
+
+
+def current_working_set_bytes(job: int | None) -> int:
+    """Sum the current working sets of a snapshot of live job members."""
+
+    if not _WINDOWS:
+        return 0
+    return sum(sample.rss_bytes for sample in process_memory(job))
 
 
 def peak_job_memory_bytes(job: int | None) -> int:

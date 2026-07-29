@@ -71,6 +71,7 @@ PUBLIC_SURFACE = [
 # Mixins extracted from SimpleTIRGenerator (extend as more families move).
 EXPECTED_MIXINS = [
     "GeneratorStateMixin",
+    "AppBindingAuthorityMixin",
     "LocalBindingMixin",
     "MidendOptimizationMixin",
     "MidendPipelineMixin",
@@ -372,13 +373,17 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_maybe_record_local_intrinsic_wrapper")
     assert hasattr(SimpleTIRGenerator, "_name_resolves_to_builtin")
     # import lowering
-    assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
     assert hasattr(SimpleTIRGenerator, "_emit_import_transaction")
     assert hasattr(SimpleTIRGenerator, "_emit_module_load")
     assert hasattr(SimpleTIRGenerator, "_emit_module_import_from_value")
     assert hasattr(SimpleTIRGenerator, "_emit_import_guard")
     assert hasattr(SimpleTIRGenerator, "_source_imports_use_transaction")
+    # entry-module callable binding authority
+    assert hasattr(SimpleTIRGenerator, "_record_app_module_store")
+    assert hasattr(SimpleTIRGenerator, "_record_source_app_callable")
+    assert hasattr(SimpleTIRGenerator, "_record_imported_app_callable")
+    assert hasattr(SimpleTIRGenerator, "_record_deleted_app_binding")
     # analysis helpers
     assert hasattr(SimpleTIRGenerator, "_collect_assigned_names")
     assert hasattr(SimpleTIRGenerator, "_collect_free_vars")

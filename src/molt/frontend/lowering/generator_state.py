@@ -379,6 +379,10 @@ class GeneratorStateMixin(_MixinBase):
         # because the caller's spliced scope has no ``__class__`` cell.
         self._inline_super_must_fold: bool = False
         self.globals: dict[str, MoltValue] = {}
+        # Final entry-module callable binding state.  Publication/import/delete
+        # lowering updates this table in execution order; serialization carries
+        # it on the entry module initializer for linker contract projection.
+        self.app_callable_bindings: dict[str, dict[str, Any]] = {}
         self.module_chunk_globals: set[str] = set()
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}

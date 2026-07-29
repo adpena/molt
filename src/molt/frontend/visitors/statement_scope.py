@@ -890,4 +890,11 @@ class StatementScopeVisitorMixin(_MixinBase):
             else:
                 self._store_local_value(bind_name, attr_val)
             self._emit_module_attr_set(bind_name, attr_val)
+            self._record_imported_app_callable(
+                bind_name,
+                module_name=module_name,
+                attr_name=attr_name,
+                value=attr_val,
+                relative=bool(node.level),
+            )
         return None

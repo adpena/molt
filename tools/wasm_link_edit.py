@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from collections.abc import Mapping
-from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from wasm_link_format import (
@@ -18,9 +17,7 @@ from wasm_link_format import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     _ESSENTIAL_EXPORTS,
-    _INTERNAL_OUTPUT_EXPORT_PREFIXES,
     _OUTPUT_EXPORT_ALIAS_PREFIX,
-    _OUTPUT_RUNTIME_EXPORT_ALIASES,
     _STANDARD_SECTION_ORDER,
     _append_linking_function_symbols,
     _build_custom_section,
@@ -33,10 +30,10 @@ from wasm_link_format import (
     _find_func_import_index,
     wasm_runtime_export_name,
     _parse_custom_section,
-    _parse_func_type_indices,
     _parse_import_desc,
     _parse_indexed_symbol,
     _parse_linking_payload,
+    _parse_func_type_indices,
     _parse_sections,
     _parse_type_section,
     _read_limits,
@@ -103,214 +100,524 @@ def _add_symtab_alias(
     return _build_sections(sections)
 
 
-def _inject_output_export_aliases(
+def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
+    export_indices = _collect_function_exports(data)
+    by_index: dict[int, set[str]] = {}
+    for symbol in parse_wasm_linking_symbols(data).function_symbols:
+        if symbol.name and symbol.index is not None:
+            by_index.setdefault(symbol.index, set()).add(symbol.name)
+    mapping: dict[str, str] = {}
+    for public_name, index in export_indices.items():
+        candidates = sorted(by_index.get(index, ()))
+        if len(candidates) > 1:
+            raise ValueError(
+                f"function export {public_name!r} at index {index} has ambiguous "
+                "linker symbol identity: "
+                + ", ".join(candidates)
+            )
+        if candidates:
+            mapping[public_name] = candidates[0]
+    return mapping
+
+
+def _write_varuint_padded(value: int) -> bytes:
+    if value < 0 or value > 0xFFFF_FFFF:
+        raise ValueError(f"padded u32 LEB value is outside range: {value}")
+    encoded = bytearray()
+    for index in range(5):
+        byte = value & 0x7F
+        value >>= 7
+        if index < 4:
+            byte |= 0x80
+        encoded.append(byte)
+    return bytes(encoded)
+
+
+def _extend_code_relocations(
+    data: bytes,
+    *,
+    existing_offset_delta: int,
+    additions: Sequence[tuple[int, int]],
+) -> bytes:
+    sections = _parse_sections(data)
+    rewritten: list[tuple[int, bytes]] = []
+    found = False
+    for section_id, payload in sections:
+        if section_id != 0:
+            rewritten.append((section_id, payload))
+            continue
+        name, custom_payload = _parse_custom_section(payload)
+        if name != "reloc.CODE":
+            rewritten.append((section_id, payload))
+            continue
+        if found:
+            raise ValueError("app export adapter input has duplicate reloc.CODE sections")
+        found = True
+        target_section_index, offset = _read_varuint(custom_payload, 0)
+        count, offset = _read_varuint(custom_payload, offset)
+        entries = bytearray()
+        for _ in range(count):
+            entry_type = custom_payload[offset]
+            offset += 1
+            old_offset, after_old_offset = _read_varuint(custom_payload, offset)
+            _symbol_index, entry_end = _read_varuint(
+                custom_payload, after_old_offset
+            )
+            if entry_type in (4, 5):
+                _addend, entry_end = _read_varuint(custom_payload, entry_end)
+            entries.append(entry_type)
+            entries.extend(_write_varuint(old_offset + existing_offset_delta))
+            entries.extend(custom_payload[after_old_offset:entry_end])
+            offset = entry_end
+        if offset != len(custom_payload):
+            raise ValueError("app export adapter found trailing reloc.CODE bytes")
+        for relocation_offset, symbol_index in additions:
+            entries.append(0)  # R_WASM_FUNCTION_INDEX_LEB
+            entries.extend(_write_varuint(relocation_offset))
+            entries.extend(_write_varuint(symbol_index))
+        updated_payload = (
+            _write_varuint(target_section_index)
+            + _write_varuint(count + len(additions))
+            + entries
+        )
+        rewritten.append((0, _build_custom_section(name, updated_payload)))
+    if not found:
+        raise ValueError("app export adapter input has no reloc.CODE authority")
+    return _build_sections(rewritten)
+
+
+def _inject_app_export_adapters(
     output: Path,
     temp_dir: tempfile.TemporaryDirectory,
-    facts: Mapping[str, object],
-) -> Path:
-    data = output.read_bytes()
-    wrapper_specs = _collect_output_wrapper_specs(data, facts)
-    if not wrapper_specs:
-        return output
+    *,
+    public_export_names: Sequence[str],
+    call_abi: Mapping[str, object],
+) -> tuple[Path, dict[str, str]]:
+    """Add exact contract-selected host adapters to a relocatable app object.
+
+    Compiled functions use ordinary internal call ownership: a return may alias
+    a borrowed parameter.  The browser host releases its argument objects as
+    soon as the call returns, so every public app-call boundary must promote
+    the tagged result to one owned reference before returning it to the host.
+    The digest-bound contract selects the public symbols; this function never
+    infers them from source names or export spelling.
+    """
+
+    names = tuple(dict.fromkeys(public_export_names))
+    if len(names) != len(public_export_names):
+        raise ValueError("app export contract contains duplicate public symbols")
+    if not names:
+        return output, {}
+
     try:
-        sections = _parse_sections(data)
-    except ValueError as exc:
-        print(
-            f"Failed to parse output module for export aliasing: {exc}", file=sys.stderr
-        )
-        return output
+        parameters = call_abi["parameters"]
+        result = call_abi["result"]
+        adapter = call_abi["adapter"]
+        assert isinstance(parameters, Mapping)
+        assert isinstance(result, Mapping)
+        assert isinstance(adapter, Mapping)
+        retain_import = adapter["retain_import"]
+        assert isinstance(retain_import, Mapping)
+        symbol_prefix = adapter["symbol_prefix"]
+        retain_module = retain_import["module"]
+        retain_name = retain_import["name"]
+    except (AssertionError, KeyError) as exc:
+        raise ValueError("canonical app-call ABI is incomplete") from exc
+    if (
+        parameters.get("representation") != "tagged-i64"
+        or parameters.get("ownership") != "borrowed"
+        or result.get("representation") != "tagged-i64"
+        or result.get("ownership") != "owned"
+        or adapter.get("strategy") != "retain-result"
+        or not isinstance(symbol_prefix, str)
+        or not symbol_prefix
+        or not isinstance(retain_module, str)
+        or not retain_module
+        or not isinstance(retain_name, str)
+        or not retain_name
+    ):
+        raise ValueError("unsupported canonical app-call ABI")
+
+    data = output.read_bytes()
+    sections = _parse_sections(data)
     types = _parse_type_section(sections)
     if not types:
-        return output
+        raise ValueError("app export adapter input has no function types")
     func_section_idx, func_type_indices = _parse_func_type_indices(sections)
     if func_section_idx < 0:
-        return output
+        raise ValueError("app export adapter input has no defined functions")
     import_count = _count_func_imports(sections)
-    inc_ref_import_index = _find_func_import_index(
-        data, "molt_runtime", "molt_inc_ref_obj"
-    )
     original_func_count = len(func_type_indices)
+    export_indices = _collect_function_exports(data)
+
+    retain_index = _find_func_import_index(data, retain_module, retain_name)
+    if retain_index is None:
+        raise ValueError(
+            "app export adapter requires runtime ownership import "
+            f"{retain_module}.{retain_name}"
+        )
+    retain_type_idx: int | None = None
+    for module, name, kind, desc in _collect_imports(data):
+        if kind == 0 and module == retain_module and name == retain_name:
+            retain_type_idx, end = _read_varuint(desc, 0)
+            if end != len(desc):
+                raise ValueError("app export retain import has malformed type index")
+            break
+    if (
+        retain_type_idx is None
+        or retain_type_idx >= len(types)
+        or types[retain_type_idx] != ((0x7E,), ())
+    ):
+        raise ValueError(
+            "app export retain import must have canonical (i64) -> () signature"
+        )
+
+    existing_exports = set(export_indices)
+    linking_symbols = parse_wasm_linking_symbols(data)
+    existing_symbols = {
+        symbol.name
+        for symbol in linking_symbols.function_symbols
+        if symbol.name
+    }
+    symbol_indices_by_function_index: dict[int, list[tuple[int, object]]] = {}
+    for symbol_index, symbol in enumerate(linking_symbols.symbols):
+        if symbol.kind == "function" and symbol.index is not None:
+            symbol_indices_by_function_index.setdefault(symbol.index, []).append(
+                (symbol_index, symbol)
+            )
+    retain_symbol_candidates = [
+        (symbol_index, symbol)
+        for symbol_index, symbol in symbol_indices_by_function_index.get(
+            retain_index, ()
+        )
+        if not symbol.is_defined and symbol.name == retain_name
+    ]
+    if len(retain_symbol_candidates) != 1:
+        raise ValueError(
+            "app export retain import must have exactly one undefined linker symbol"
+        )
+    retain_symbol_index = retain_symbol_candidates[0][0]
+
+    specs: list[tuple[str, str, int, int, int]] = []
+    adapter_symbol_map: dict[str, str] = {}
+    for public_name in names:
+        target_index = export_indices.get(public_name)
+        if target_index is None:
+            raise ValueError(
+                f"contract app export {public_name!r} is absent from adapter input"
+            )
+        local_index = target_index - import_count
+        if local_index < 0 or local_index >= original_func_count:
+            raise ValueError(
+                f"contract app export {public_name!r} does not target a defined function"
+            )
+        type_idx = func_type_indices[local_index]
+        if type_idx >= len(types):
+            raise ValueError(
+                f"contract app export {public_name!r} has invalid type index {type_idx}"
+            )
+        params, results = types[type_idx]
+        if any(param != 0x7E for param in params) or results != (0x7E,):
+            raise ValueError(
+                f"contract app export {public_name!r} must have canonical "
+                "(i64...) -> i64 signature"
+            )
+        adapter_symbol = f"{symbol_prefix}{public_name}"
+        if adapter_symbol in existing_exports or adapter_symbol in existing_symbols:
+            raise ValueError(
+                f"contract app export adapter symbol already exists: {adapter_symbol}"
+            )
+        target_symbol_candidates = [
+            (symbol_index, symbol)
+            for symbol_index, symbol in symbol_indices_by_function_index.get(
+                target_index, ()
+            )
+            if symbol.is_defined and symbol.name
+        ]
+        if len(target_symbol_candidates) != 1:
+            raise ValueError(
+                f"contract app export {public_name!r} must have exactly one "
+                "defined linker symbol"
+            )
+        target_symbol_index = target_symbol_candidates[0][0]
+        specs.append(
+            (
+                public_name,
+                adapter_symbol,
+                type_idx,
+                target_index,
+                target_symbol_index,
+            )
+        )
+        adapter_symbol_map[public_name] = adapter_symbol
 
     new_sections: list[tuple[int, bytes]] = []
     wrapper_symbol_entries: list[tuple[str, int, int]] = []
-    wrapper_index_by_name: dict[str, int] = {}
-    modified = False
+    saw_function_section = False
+    saw_export_section = False
+    saw_code_section = False
+    code_count_offset_delta = 0
+    code_relocations: list[tuple[int, int]] = []
     for section_id, payload in sections:
         if section_id == 3:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            updated_payload = bytearray()
-            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            saw_function_section = True
+            count, offset = _read_varuint(payload, 0)
+            updated_payload = bytearray(_write_varuint(count + len(specs)))
             updated_payload.extend(payload[offset:])
-            for _name, _alias_name, type_idx, _target_idx in wrapper_specs:
+            for _public_name, _adapter_symbol, type_idx, _target_idx, _symbol_idx in specs:
                 updated_payload.extend(_write_varuint(type_idx))
             new_sections.append((section_id, bytes(updated_payload)))
-            modified = True
             continue
         if section_id == 7:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            updated_payload = bytearray()
-            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            saw_export_section = True
+            count, offset = _read_varuint(payload, 0)
+            updated_payload = bytearray(_write_varuint(count + len(specs)))
             updated_payload.extend(payload[offset:])
-            for i, (_name, alias_name, _type_idx, _target_idx) in enumerate(
-                wrapper_specs
-            ):
-                wrapper_func_index = import_count + original_func_count + i
-                wrapper_index_by_name[alias_name] = wrapper_func_index
-                updated_payload.extend(_write_string(alias_name))
+            for index, (
+                _public_name,
+                adapter_symbol,
+                _type_idx,
+                _target_idx,
+                _symbol_idx,
+            ) in enumerate(specs):
+                wrapper_index = import_count + original_func_count + index
+                updated_payload.extend(_write_string(adapter_symbol))
                 updated_payload.append(0)
-                updated_payload.extend(_write_varuint(wrapper_func_index))
+                updated_payload.extend(_write_varuint(wrapper_index))
                 wrapper_symbol_entries.append(
                     (
-                        alias_name,
-                        wrapper_func_index,
+                        adapter_symbol,
+                        wrapper_index,
                         FLAG_BINDING_GLOBAL
                         | FLAG_EXPLICIT_NAME
                         | FLAG_EXPORTED
                         | FLAG_NO_STRIP,
                     )
                 )
-                if _name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
-                    wrapper_symbol_entries.append(
-                        (
-                            _name,
-                            wrapper_func_index,
-                            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_NO_STRIP,
-                        )
-                    )
             new_sections.append((section_id, bytes(updated_payload)))
-            modified = True
             continue
         if section_id == 10:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            updated_payload = bytearray()
-            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            saw_code_section = True
+            count, offset = _read_varuint(payload, 0)
+            encoded_count = _write_varuint(count + len(specs))
+            code_count_offset_delta = len(encoded_count) - offset
+            updated_payload = bytearray(encoded_count)
             updated_payload.extend(payload[offset:])
-            for name, alias_name, type_idx, target_idx in wrapper_specs:
-                params, results = types[type_idx]
+            for (
+                _public_name,
+                _adapter_symbol,
+                type_idx,
+                target_idx,
+                target_symbol_index,
+            ) in specs:
+                params, _results = types[type_idx]
                 body = bytearray()
-                local_count = (
-                    1
-                    if results
-                    and len(results) == 1
-                    and inc_ref_import_index is not None
-                    else 0
-                )
-                body.extend(_write_varuint(local_count))
-                if local_count:
-                    body.extend(_write_varuint(1))
-                    body.append(0x7E)
+                body.extend(_write_varuint(1))
+                body.extend(_write_varuint(1))
+                body.append(0x7E)
                 for param_index in range(len(params)):
                     body.append(0x20)
                     body.extend(_write_varuint(param_index))
                 body.append(0x10)
-                body.extend(_write_varuint(target_idx))
-                if local_count:
-                    assert inc_ref_import_index is not None
-                    result_local = len(params)
-                    body.append(0x22)
-                    body.extend(_write_varuint(result_local))
-                    body.append(0x10)
-                    body.extend(_write_varuint(inc_ref_import_index))
-                    body.append(0x20)
-                    body.extend(_write_varuint(result_local))
+                target_operand_offset = len(body)
+                body.extend(_write_varuint_padded(target_idx))
+                result_local = len(params)
+                body.append(0x22)
+                body.extend(_write_varuint(result_local))
+                body.append(0x10)
+                retain_operand_offset = len(body)
+                body.extend(_write_varuint_padded(retain_index))
+                body.append(0x20)
+                body.extend(_write_varuint(result_local))
                 body.append(0x0B)
-                updated_payload.extend(_write_varuint(len(body)))
+                encoded_body_size = _write_varuint(len(body))
+                body_start = len(updated_payload) + len(encoded_body_size)
+                code_relocations.append(
+                    (body_start + target_operand_offset, target_symbol_index)
+                )
+                code_relocations.append(
+                    (body_start + retain_operand_offset, retain_symbol_index)
+                )
+                updated_payload.extend(encoded_body_size)
                 updated_payload.extend(body)
             new_sections.append((section_id, bytes(updated_payload)))
-            modified = True
             continue
         new_sections.append((section_id, payload))
-    if not modified:
-        return output
+    if not (saw_function_section and saw_export_section and saw_code_section):
+        raise ValueError("app export adapter input is missing function/export/code sections")
 
-    updated = _build_sections(new_sections)
-    next_data = _append_linking_function_symbols(updated, wrapper_symbol_entries)
-    if next_data is not None:
-        updated = next_data
-    alias_path = Path(temp_dir.name) / "output_exports_alias.wasm"
-    alias_path.write_bytes(updated)
-    return alias_path
+    updated = _extend_code_relocations(
+        _build_sections(new_sections),
+        existing_offset_delta=code_count_offset_delta,
+        additions=code_relocations,
+    )
+    with_symbols = _append_linking_function_symbols(updated, wrapper_symbol_entries)
+    if with_symbols is None:
+        raise ValueError("app export adapter symbols were not published to linking metadata")
+    adapter_path = Path(temp_dir.name) / "output_app_export_adapters.wasm"
+    adapter_path.write_bytes(with_symbols)
+    return adapter_path, adapter_symbol_map
 
 
-def _collect_output_wrapper_specs(
-    data: bytes,
-    facts: Mapping[str, object],
-) -> list[tuple[str, str, int, int]]:
-    export_indices = _collect_function_exports(data)
+def _function_type_for_index(
+    data: bytes, function_index: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
     sections = _parse_sections(data)
     types = _parse_type_section(sections)
-    if not types:
-        return []
-    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
-    if func_section_idx < 0:
-        return []
     import_count = _count_func_imports(sections)
-    original_func_count = len(func_type_indices)
-    primary_prefix = _entry_module_prefix_from_main_init(export_indices, facts)
-    if primary_prefix is None:
-        primary_prefix = _dominant_output_module_prefix(export_indices)
+    if function_index < import_count:
+        imported_index = 0
+        for _module, _name, kind, desc in _collect_imports(data):
+            if kind != 0:
+                continue
+            if imported_index == function_index:
+                type_index, end = _read_varuint(desc, 0)
+                if end != len(desc) or type_index >= len(types):
+                    raise ValueError("app export adapter import has invalid function type")
+                return types[type_index]
+            imported_index += 1
+        raise ValueError(f"app export adapter function index is absent: {function_index}")
+    _section_index, type_indices = _parse_func_type_indices(sections)
+    local_index = function_index - import_count
+    if local_index >= len(type_indices):
+        raise ValueError(f"app export adapter function index is absent: {function_index}")
+    type_index = type_indices[local_index]
+    if type_index >= len(types):
+        raise ValueError("app export adapter has invalid function type")
+    return types[type_index]
 
-    wrapper_specs: list[tuple[str, str, int, int]] = []
-    for name, func_index in export_indices.items():
-        if name == "molt_main":
-            continue
-        local_index = func_index - import_count
-        if local_index < 0 or local_index >= original_func_count:
-            continue
-        type_idx = func_type_indices[local_index]
-        _params, results = types[type_idx]
-        if name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
-            wrapper_specs.append(
-                (name, f"{_OUTPUT_EXPORT_ALIAS_PREFIX}{name}", type_idx, func_index)
-            )
-            continue
-        if name.startswith("molt_"):
-            continue
-        if not results:
-            continue
-        if not _is_public_output_export_name(name, primary_prefix):
-            continue
-        wrapper_specs.append(
-            (name, f"{_OUTPUT_EXPORT_ALIAS_PREFIX}{name}", type_idx, func_index)
+
+def _canonical_retained_result_adapter_calls(
+    data: bytes, function_index: int
+) -> tuple[int, int]:
+    """Return target/retain calls from the canonical owned-result adapter body."""
+
+    params, results = _function_type_for_index(data, function_index)
+    if any(param != 0x7E for param in params) or results != (0x7E,):
+        raise ValueError(
+            "app export adapter must have canonical (i64...) -> i64 signature"
         )
-    return wrapper_specs
+    sections = _parse_sections(data)
+    import_count = _count_func_imports(sections)
+    local_index = function_index - import_count
+    if local_index < 0:
+        raise ValueError("app export adapter must be a defined function")
+    body: bytes | None = None
+    for section_id, payload in sections:
+        if section_id != 10:
+            continue
+        count, offset = _read_varuint(payload, 0)
+        if local_index >= count:
+            break
+        for body_index in range(count):
+            body_size, offset = _read_varuint(payload, offset)
+            body_end = offset + body_size
+            if body_end > len(payload):
+                raise ValueError("app export adapter has malformed function body")
+            if body_index == local_index:
+                body = payload[offset:body_end]
+                break
+            offset = body_end
+        break
+    if body is None:
+        raise ValueError("app export adapter has no function body")
+
+    offset = 0
+    local_group_count, offset = _read_varuint(body, offset)
+    if local_group_count != 1:
+        raise ValueError("app export adapter must declare one result local group")
+    local_count, offset = _read_varuint(body, offset)
+    if local_count != 1 or offset >= len(body) or body[offset] != 0x7E:
+        raise ValueError("app export adapter must declare one i64 result local")
+    offset += 1
+    for param_index in range(len(params)):
+        if offset >= len(body) or body[offset] != 0x20:
+            raise ValueError("app export adapter does not forward every parameter")
+        offset += 1
+        actual_index, offset = _read_varuint(body, offset)
+        if actual_index != param_index:
+            raise ValueError("app export adapter parameter forwarding order is invalid")
+    if offset >= len(body) or body[offset] != 0x10:
+        raise ValueError("app export adapter is missing its target call")
+    target_call, offset = _read_varuint(body, offset + 1)
+    result_local = len(params)
+    if offset >= len(body) or body[offset] != 0x22:
+        raise ValueError("app export adapter does not retain its target result local")
+    actual_local, offset = _read_varuint(body, offset + 1)
+    if actual_local != result_local:
+        raise ValueError("app export adapter result local is invalid")
+    if offset >= len(body) or body[offset] != 0x10:
+        raise ValueError("app export adapter is missing its retain call")
+    retain_call, offset = _read_varuint(body, offset + 1)
+    if offset >= len(body) or body[offset] != 0x20:
+        raise ValueError("app export adapter does not reload its owned result")
+    actual_local, offset = _read_varuint(body, offset + 1)
+    if actual_local != result_local or body[offset:] != b"\x0b":
+        raise ValueError("app export adapter has a noncanonical result tail")
+    if target_call == retain_call:
+        raise ValueError("app export adapter target and retain calls alias")
+    return target_call, retain_call
 
 
-def _collect_preserved_output_export_names(
+def _validate_app_export_adapters(
     data: bytes,
-    facts: Mapping[str, object],
-) -> list[str]:
-    return [
-        name
-        for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(
-            data, facts
-        )
-    ]
+    public_export_names: Sequence[str],
+    *,
+    adapter_symbol_map: Mapping[str, str] | None = None,
+    target_symbol_map: Mapping[str, str] | None = None,
+    retain_symbol_name: str | None = None,
+) -> None:
+    """Validate public identity and ownership semantics for every app export."""
 
-
-def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
-    export_indices = _collect_function_exports(data)
-    by_index: dict[int, list[str]] = {}
-    for symbol in parse_wasm_linking_symbols(data).function_symbols:
-        if symbol.name and symbol.index is not None:
-            by_index.setdefault(symbol.index, []).append(symbol.name)
-    mapping: dict[str, str] = {}
-    for public_name, index in export_indices.items():
-        candidates = by_index.get(index, [])
-        preferred = next(
-            (name for name in candidates if name.startswith("__molt_output_export_")),
-            None,
+    public_names = tuple(dict.fromkeys(public_export_names))
+    exports = _collect_function_exports(data)
+    symbol_indices = {
+        symbol.name: symbol.index
+        for symbol in parse_wasm_linking_symbols(data).function_symbols
+        if symbol.name and symbol.index is not None
+    }
+    for index, name in _collect_func_names(data).items():
+        symbol_indices.setdefault(name, index)
+    retain_index = (
+        symbol_indices.get(retain_symbol_name) if retain_symbol_name is not None else None
+    )
+    if retain_symbol_name is not None and retain_index is None:
+        raise ValueError(
+            f"app export adapter retain symbol is absent: {retain_symbol_name}"
         )
-        if preferred is None:
-            preferred = next((name for name in candidates if name == public_name), None)
-        if preferred is None and candidates:
-            preferred = candidates[0]
-        if preferred is not None:
-            mapping[public_name] = preferred
-    return mapping
+    for public_name in public_names:
+        public_index = exports.get(public_name)
+        if public_index is None:
+            raise ValueError(f"app export adapter is not public: {public_name}")
+        if adapter_symbol_map is None:
+            _canonical_retained_result_adapter_calls(data, public_index)
+            continue
+        adapter_symbol = adapter_symbol_map.get(public_name)
+        target_symbol = (
+            target_symbol_map.get(public_name) if target_symbol_map is not None else None
+        )
+        adapter_index = symbol_indices.get(adapter_symbol) if adapter_symbol else None
+        target_index = symbol_indices.get(target_symbol) if target_symbol else None
+        if adapter_index is None or target_index is None:
+            raise ValueError(
+                f"app export {public_name!r} lost exact adapter/target symbol identity"
+            )
+        if public_index != adapter_index:
+            raise ValueError(
+                f"app export {public_name!r} points to raw target {public_index}, "
+                f"not adapter {adapter_index}"
+            )
+        target_call, retain_call = _canonical_retained_result_adapter_calls(
+            data, public_index
+        )
+        if public_index == target_index or target_call != target_index:
+            raise ValueError(
+                f"app export {public_name!r} adapter does not call its distinct raw target"
+            )
+        if retain_index is None or retain_call != retain_index:
+            raise ValueError(
+                f"app export {public_name!r} adapter does not call {retain_symbol_name}"
+            )
 
 
 def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:
@@ -437,82 +744,6 @@ def _ensure_function_exports_by_symbol_names(
     if not modified:
         return None
     return _build_sections(new_sections)
-
-
-def _dominant_output_module_prefix(export_indices: dict[str, int]) -> str | None:
-    counts: Counter[str] = Counter()
-    for name in export_indices:
-        if name.startswith("molt_"):
-            continue
-        if not name or not name[0].isalnum():
-            continue
-        if "__" not in name:
-            continue
-        prefix, _rest = name.split("__", 1)
-        if prefix:
-            counts[prefix] += 1
-    if not counts:
-        return None
-    return counts.most_common(1)[0][0]
-
-
-def _entry_module_prefix_from_main_init(
-    export_indices: dict[str, int],
-    facts: Mapping[str, object],
-) -> str | None:
-    main_init_index = export_indices.get("molt_init___main__")
-    if main_init_index is None:
-        return None
-    raw_callees = facts.get("main_module_init_direct_calls")
-    if not isinstance(raw_callees, list) or not all(
-        isinstance(callee, int) and not isinstance(callee, bool) and callee >= 0
-        for callee in raw_callees
-    ):
-        raise ValueError(
-            "WASM facts main_module_init_direct_calls must be an index list"
-        )
-    callees = raw_callees
-    inverse_exports: dict[int, list[str]] = {}
-    for name, index in export_indices.items():
-        inverse_exports.setdefault(index, []).append(name)
-    for callee in callees:
-        candidates = inverse_exports.get(callee, ())
-        preferred = sorted(
-            candidates,
-            key=lambda name: (not name.startswith("molt_init_"), name),
-        )
-        for target_name in preferred:
-            if (
-                target_name.startswith("molt_init_")
-                and target_name != "molt_init___main__"
-            ):
-                return target_name.removeprefix("molt_init_")
-            if target_name.endswith("__init") and "__" in target_name:
-                prefix, _rest = target_name.rsplit("__", 1)
-                if prefix:
-                    return prefix
-    return None
-
-
-def _is_public_output_export_name(name: str, primary_prefix: str | None) -> bool:
-    if primary_prefix is not None:
-        marker = f"{primary_prefix}__"
-        if not name.startswith(marker):
-            return False
-        remainder = name[len(marker) :]
-    else:
-        if not name or not name[0].isalnum() or "__" not in name:
-            return False
-        _prefix, remainder = name.split("__", 1)
-    if not remainder:
-        return False
-    if remainder.startswith("__"):
-        return False
-    if remainder.startswith(_INTERNAL_OUTPUT_EXPORT_PREFIXES):
-        return False
-    if "___" in remainder:
-        return False
-    return True
 
 
 def _restore_output_export_aliases(data: bytes) -> bytes | None:

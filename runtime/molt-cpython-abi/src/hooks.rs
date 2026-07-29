@@ -194,6 +194,13 @@ pub struct RuntimeHooks {
     pub gil_restore: unsafe extern "C" fn(),
     pub gil_check: unsafe extern "C" fn() -> std::os::raw::c_int,
     pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
+    /// Acquire runtime-lifetime and default-GIL custody for destruction of a
+    /// retained CPython thread-state record. This lane must never attach or
+    /// create a PyThreadState because it is invoked from that TLS destructor.
+    /// Returns an opaque nonzero token consumed exactly once by
+    /// `thread_state_drop_leave`.
+    pub thread_state_drop_enter: unsafe extern "C" fn() -> u64,
+    pub thread_state_drop_leave: unsafe extern "C" fn(token: u64),
     /// Project the runtime's target-specific execution custody into one typed
     /// ABI-stable capability discriminant. Pending calls require a non-detached
     /// projection in addition to process-main identity.
@@ -639,7 +646,7 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 19;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 20;
 
 /// Target projection used to construct an attached runtime-context capability.
 /// This is deliberately not a boolean: native GIL, free-threaded attachment,
@@ -1208,6 +1215,10 @@ unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
 unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
     0
 }
+unsafe extern "C" fn stub_thread_state_drop_enter() -> u64 {
+    0
+}
+unsafe extern "C" fn stub_thread_state_drop_leave(_token: u64) {}
 unsafe extern "C" fn stub_attached_runtime_context() -> u32 {
     AttachedRuntimeContextKind::Detached as u32
 }
@@ -1309,6 +1320,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_restore: stub_gil_restore,
     gil_check: stub_gil_check,
     runtime_is_initialized: stub_runtime_is_initialized,
+    thread_state_drop_enter: stub_thread_state_drop_enter,
+    thread_state_drop_leave: stub_thread_state_drop_leave,
     attached_runtime_context: stub_attached_runtime_context,
     pending_call_error: stub_pending_call_error,
     alloc_str: stub_alloc_str,

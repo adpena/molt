@@ -31,6 +31,8 @@ import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
 from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_execution_manifest import write_wasm_execution_manifest
+from tests.runtime_profile_fixtures import process_profile_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -186,7 +188,7 @@ def test_run_split_direct_uses_wasm_test_memory_guard(
     assert captured["args"] == [
         "node",
         "wasm/run_wasm.js",
-        str(output_dir / "app.wasm"),
+        str(output_dir / "manifest.json"),
         "arg1",
     ]
     kwargs = captured["kwargs"]
@@ -194,8 +196,8 @@ def test_run_split_direct_uses_wasm_test_memory_guard(
     assert kwargs["timeout"] == 7
     env = kwargs["env"]
     assert isinstance(env, dict)
-    assert env["MOLT_WASM_DIRECT_LINK"] == "1"
-    assert env["MOLT_RUNTIME_WASM"] == str(output_dir / "molt_runtime.wasm")
+    assert "MOLT_WASM_DIRECT_LINK" not in env
+    assert "MOLT_RUNTIME_WASM" not in env
 
 
 def test_split_worker_popen_kwargs_apply_child_rlimit(
@@ -310,13 +312,10 @@ def _run_split_direct(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
     if extra_env:
         env.update(extra_env)
     return _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm"), *argv],
+        ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json"), *argv],
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -331,14 +330,11 @@ def _run_split_direct_host_exports(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
     env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     if extra_env:
         env.update(extra_env)
     return _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm")],
+        ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json")],
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -488,6 +484,7 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
     runtime_wasm = tmp_path / "molt_runtime.wasm"
     app_wasm.write_bytes(b"\0asm\x01\x00\x00\x00")
     runtime_wasm.write_bytes(b"\0asm\x01\x00\x00\x00")
+    write_wasm_execution_manifest(tmp_path, app=app_wasm, runtime=runtime_wasm)
 
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
@@ -495,6 +492,7 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
         + "\n",
         encoding="utf-8",
     )
+    profile = process_profile_payload()
 
     def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None, limits=None):
         assert timeout_s == 12.5
@@ -503,7 +501,7 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
             returncode=124,
             stderr=(
                 "# timeout after 12.5s (command aborted)\n"
-                'molt_profile_json {"alloc_count": 9, "handle_resolve": 3}\n'
+                f"molt_profile_json {json.dumps(profile, sort_keys=True)}\n"
             ),
             timed_out=True,
         )
@@ -525,7 +523,7 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
     assert payload["timed_out"] is True
     assert payload["timeout_s"] == 12.5
     assert payload["error_class"] == "runner_timeout"
-    assert payload["profile"] == {"alloc_count": 9, "handle_resolve": 3}
+    assert payload["profile"] == profile
 
 
 def test_run_cmd_timeout_gracefully_collects_sigterm_output(tmp_path: Path) -> None:
@@ -878,10 +876,9 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     assert build.returncode == 0, build.stdout + build.stderr
 
     run_env = os.environ.copy()
-    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -935,10 +932,9 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     assert build.returncode == 0, build.stdout + build.stderr
 
     run_env = os.environ.copy()
-    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -995,10 +991,9 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     assert build.returncode == 0, build.stdout + build.stderr
 
     run_env = os.environ.copy()
-    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1088,10 +1083,9 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     assert build.returncode == 0, build.stdout + build.stderr
 
     run_env = os.environ.copy()
-    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1286,10 +1280,9 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     assert build.returncode == 0, build.stdout + build.stderr
 
     run_env = os.environ.copy()
-    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1302,10 +1295,9 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     assert results[2]["result_repr"] == repr(expected_one)
 
     official_run_env = os.environ.copy()
-    official_run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     official_run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(official_prompt_calls_path)
     official_run = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
         env=official_run_env,
         timeout=60,
@@ -1888,6 +1880,7 @@ class TestManifestJson:
         assert data["total_size"] == expected
 
     def test_runtime_import_abi_matches_app_wasm(self, split_build_a):
+        from molt.cli.non_native_output import _runtime_host_abi_import_names
         from molt.cli.wasm import (
             _runtime_import_export_names_from_manifest,
             _runtime_import_result_kinds_from_manifest,
@@ -1903,14 +1896,17 @@ class TestManifestJson:
         runtime_import_names = wasm_artifact._collect_wasm_module_import_names(
             app_wasm, "molt_runtime"
         )
+        manifest_runtime_names = (
+            set(runtime_import_names) | _runtime_host_abi_import_names()
+        )
         expected_signatures = _runtime_import_signatures_from_manifest(
-            runtime_import_names
+            manifest_runtime_names
         )
         expected_result_kinds = _runtime_import_result_kinds_from_manifest(
-            runtime_import_names
+            manifest_runtime_names
         )
         expected_export_names = _runtime_import_export_names_from_manifest(
-            runtime_import_names
+            manifest_runtime_names
         )
         if not expected_signatures:
             pytest.skip("app has no runtime imports")
@@ -1918,7 +1914,7 @@ class TestManifestJson:
         abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
 
         assert abi["module"] == "molt_runtime"
-        assert abi["names"] == sorted(runtime_import_names)
+        assert abi["names"] == sorted(manifest_runtime_names)
         assert abi["export_names"] == expected_export_names
         assert abi["signatures"] == expected_signatures
         assert abi["result_kinds"] == expected_result_kinds

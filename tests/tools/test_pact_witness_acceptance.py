@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 import tools.pact_witness_acceptance as acceptance
+from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 
 def test_pact_witness_acceptance_rejects_unpinned_provenance(
@@ -126,14 +127,11 @@ def test_pact_witness_acceptance_prefers_split_runtime_app_entry(
     output_wasm.write_bytes(b"monolithic-prelink")
     app_wasm.write_bytes(b"split-app")
     runtime_wasm.write_bytes(b"split-runtime")
+    manifest = write_wasm_execution_manifest(
+        build_dir, app=app_wasm, runtime=runtime_wasm
+    )
 
-    selected = acceptance._select_wasm_entry(build_dir)
-    env = acceptance._wasm_run_env(selected)
-
-    assert selected == app_wasm
-    assert env["MOLT_WASM_DIRECT_LINK"] == "1"
-    assert env["MOLT_WASM_PREFER_LINKED"] == "0"
-    assert env["MOLT_RUNTIME_WASM"] == str(runtime_wasm)
+    assert acceptance._select_wasm_manifest(build_dir) == manifest
 
 
 def test_pact_witness_acceptance_uses_output_wasm_without_split_runtime(
@@ -143,13 +141,9 @@ def test_pact_witness_acceptance_uses_output_wasm_without_split_runtime(
     build_dir.mkdir()
     output_wasm = build_dir / "output.wasm"
     output_wasm.write_bytes(b"monolithic")
+    manifest = write_wasm_execution_manifest(build_dir, linked=output_wasm)
 
-    selected = acceptance._select_wasm_entry(build_dir)
-    env = acceptance._wasm_run_env(selected)
-
-    assert selected == output_wasm
-    assert "MOLT_WASM_DIRECT_LINK" not in env
-    assert "MOLT_RUNTIME_WASM" not in env
+    assert acceptance._select_wasm_manifest(build_dir) == manifest
 
 
 def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
@@ -192,8 +186,9 @@ def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
     run_dir.mkdir()
     output_wasm = tmp_path / "output.wasm"
     output_wasm.write_bytes(b"wasm")
+    manifest = write_wasm_execution_manifest(tmp_path, linked=output_wasm)
 
-    candidate, reference = acceptance._run_candidate(output_wasm, run_dir)
+    candidate, reference = acceptance._run_candidate(manifest, run_dir)
 
     assert candidate == run_dir / "candidate_outputs.npz"
     assert reference == run_dir / "reference_oracle.npz"

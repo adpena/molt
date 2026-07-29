@@ -69,6 +69,16 @@ class GuardSamplingTelemetry:
     first_transient_failure_at: str | None = None
     last_transient_failure_at: str | None = None
     last_transient_error: str | None = None
+    source: str = "unknown"
+    wall_time_s: float = 0.0
+    cpu_time_s: float = 0.0
+    max_wall_time_s: float = 0.0
+    max_cpu_time_s: float = 0.0
+    process_rows: int = 0
+    max_process_rows: int = 0
+    observer_wall_time_s: float = 0.0
+    observer_cpu_time_s: float = 0.0
+    observer_cpu_duty_cycle: float = 0.0
 
     @property
     def enforcement_complete(self) -> bool:

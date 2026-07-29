@@ -1821,10 +1821,77 @@ def test_run_guarded_binary_capture_preserves_bytes() -> None:
     assert result.stderr == b"err:\xffa"
 
 
-def test_run_guarded_interrupt_during_sampling_terminates_child_tree() -> None:
+def test_run_guarded_external_evidence_is_full_bounded_and_immutable(
+    tmp_path: Path,
+) -> None:
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    result = memory_guard.run_guarded(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.write('x' * 1000000 + 'stdout-end\\n'); "
+                "sys.stderr.write('y' * 1000000 + 'stderr-end\\n')"
+            ),
+        ],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        stdout_capture_path=stdout_path,
+        stderr_capture_path=stderr_path,
+        capture_tail_bytes=64,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.endswith(f"stdout-end{os.linesep}")
+    assert result.stderr.endswith(f"stderr-end{os.linesep}")
+    assert len(result.stdout.encode()) <= 64
+    assert len(result.stderr.encode()) <= 64
+    assert stdout_path.stat().st_size > 1_000_000
+    assert stderr_path.stat().st_size > 1_000_000
+    with pytest.raises(FileExistsError):
+        memory_guard.run_guarded(
+            [sys.executable, "-c", "print('must not overwrite evidence')"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            stdout_capture_path=stdout_path,
+            stderr_capture_path=stderr_path,
+            capture_tail_bytes=64,
+        )
+
+
+def test_run_guarded_external_evidence_contract_rejects_ambiguous_paths(
+    tmp_path: Path,
+) -> None:
+    shared = tmp_path / "shared.log"
+    with pytest.raises(ValueError, match="must be distinct"):
+        memory_guard.run_guarded(
+            [sys.executable, "-c", "print('not launched')"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            stdout_capture_path=shared,
+            stderr_capture_path=shared,
+            capture_tail_bytes=64,
+        )
+    with pytest.raises(ValueError, match="requires external capture paths"):
+        memory_guard.run_guarded(
+            [sys.executable, "-c", "print('not launched')"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            capture_tail_bytes=64,
+        )
+
+
+def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def interrupting_sampler():
         raise KeyboardInterrupt
 
+    monkeypatch.setattr(
+        memory_guard._win_job, "create_kill_on_close_job", lambda: None
+    )
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         max_rss_kb=1_000_000,
@@ -3097,6 +3164,12 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
+    # Exercise the explicit no-Job fallback; a live Windows Job is itself the
+    # exact descendant cleanup authority and intentionally bypasses PID-table
+    # orphan cleanup.
+    monkeypatch.setattr(
+        memory_guard._win_job, "create_kill_on_close_job", lambda: None
+    )
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -3131,6 +3204,9 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
         memory_guard,
         "cleanup_repo_scoped_orphans_since_baseline",
         fake_cleanup,
+    )
+    monkeypatch.setattr(
+        memory_guard._win_job, "create_kill_on_close_job", lambda: None
     )
 
     result = memory_guard.run_guarded(
@@ -3676,6 +3752,9 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
     monkeypatch.setattr(
+        memory_guard._win_job, "create_kill_on_close_job", lambda: None
+    )
+    monkeypatch.setattr(
         memory_guard,
         "_quarantine_cargo_incremental_state",
         fake_quarantine,
@@ -3940,6 +4019,16 @@ def test_summary_json_reports_incomplete_sampling_without_fabricating_incident(
         "first_transient_failure_at": "2026-07-18T15:24:00Z",
         "last_transient_failure_at": "2026-07-18T15:24:00Z",
         "last_transient_error": "snapshot deadline",
+        "source": "unknown",
+        "wall_time_s": 0.0,
+        "cpu_time_s": 0.0,
+        "max_wall_time_s": 0.0,
+        "max_cpu_time_s": 0.0,
+        "process_rows": 0,
+        "max_process_rows": 0,
+        "observer_wall_time_s": 0.0,
+        "observer_cpu_time_s": 0.0,
+        "observer_cpu_duty_cycle": 0.0,
     }
 
 
@@ -4965,6 +5054,9 @@ def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(
         memory_guard,
         "windows_process_handle_rss_kb",
         lambda _handle: 12_345,
+    )
+    monkeypatch.setattr(
+        memory_guard._win_job, "create_kill_on_close_job", lambda: None
     )
 
     result = memory_guard.run_guarded(

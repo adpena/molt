@@ -29,6 +29,7 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "wasm_opt_level": "Oz",
         "wasm_profile": "auto",
         "precompile": False,
+        "split_runtime": True,
         "tmp_quota_mb": 64,
         "stdlib_profile": AUTO_STDLIB_PROFILE,
     },

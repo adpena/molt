@@ -83,7 +83,7 @@ from molt.browser_asset_closure import (  # noqa: E402
     canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
-from molt.wasm_artifact import read_wasm_imports  # noqa: E402
+from molt.wasm_artifact import read_wasm_imports, wasm_runtime_manifest_path  # noqa: E402
 
 WASM_DIR = REPO_ROOT / "wasm"
 RUN_WASM_JS = WASM_DIR / "run_wasm.js"
@@ -284,6 +284,7 @@ def _run_node(
             "skipped",
             detail=f"missing {RUN_WASM_JS}",
         )
+    manifest = wasm_runtime_manifest_path(wasm)
     cmd = [
         node,
         "--no-warnings",
@@ -291,13 +292,10 @@ def _run_node(
         "--no-wasm-dynamic-tiering",
         "--wasm-num-compilation-tasks=1",
         str(RUN_WASM_JS),
-        str(wasm),
+        str(manifest),
     ]
     env = os.environ.copy()
     env.setdefault("NODE_NO_WARNINGS", "1")
-    env["MOLT_WASM_PATH"] = str(wasm)
-    env["MOLT_WASM_LINKED"] = "1"
-    env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
         proc = harness_memory_guard.guarded_completed_process(
@@ -394,11 +392,9 @@ def _run_molt_wasm_host(
                 "`cargo build --release -p molt-wasm-host`"
             ),
         )
-    cmd = [str(host), str(wasm)]
+    manifest = wasm_runtime_manifest_path(wasm)
+    cmd = [str(host), str(manifest)]
     env = os.environ.copy()
-    env["MOLT_WASM_PATH"] = str(wasm)
-    env["MOLT_WASM_LINKED"] = "1"
-    env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
         proc = harness_memory_guard.guarded_completed_process(

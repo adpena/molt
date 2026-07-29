@@ -3834,6 +3834,33 @@ impl ObjectBridge {
         unsafe { (*py_obj).ob_refcnt == 0 }
     }
 
+    /// Rebase an immortal managed view onto the ordinary runtime-owner bias
+    /// before its immortal runtime object enters the shutdown-only mortal lane.
+    ///
+    /// CPython reference operations on an immortal view are deliberately
+    /// no-ops, so there are no countable direct C owners to preserve at this
+    /// boundary. Runtime shutdown has already stopped new execution entrants;
+    /// it may therefore restore the single encoded owner bias that the normal
+    /// `RuntimeOwned -> ViewHoldOnly` terminal transition consumes.
+    pub fn prepare_runtime_immortal_for_shutdown(&self, bits: AbiHandle) {
+        let mut handle = self.handle_shard(bits).lock();
+        let Some(entry) = handle.to_py.get_mut(&bits) else {
+            return;
+        };
+        let py_obj = entry.view.py_obj();
+        if !unsafe { crate::abi_types::is_immortal_refcnt((*py_obj).ob_refcnt) } {
+            return;
+        }
+        if entry.lifecycle != BridgeLifecycle::RuntimeOwned {
+            eprintln!(
+                "molt fatal: immortal canonical ABI view entered shutdown outside RuntimeOwned: {:?}",
+                entry.lifecycle
+            );
+            std::process::abort();
+        }
+        unsafe { (*py_obj).ob_refcnt = 1 };
+    }
+
     /// Direct C references created during a finalizer/weakref revival window
     /// are resurrection roots even though they do not change runtime RC.
     pub fn has_direct_c_refs(&self, bits: AbiHandle) -> bool {
@@ -5339,6 +5366,21 @@ mod bridge_publication_race_tests {
             unsafe { (*ptr).ob_refcnt },
             crate::abi_types::IMMORTAL_REFCNT
         );
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    #[test]
+    fn immortal_runtime_view_rebases_once_for_terminal_shutdown() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let bits = MoltObject::from_int(60_001).bits();
+        let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+        unsafe { (*ptr).ob_refcnt = crate::abi_types::IMMORTAL_REFCNT };
+
+        bridge.prepare_runtime_immortal_for_shutdown(bits);
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+        assert!(bridge.runtime_last_ref_dropped(bits));
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 0);
         assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
     }
 }

@@ -34,6 +34,11 @@ pub(crate) struct PyToken<'gil> {
 #[cfg(target_arch = "wasm32")]
 impl GilGuard {
     #[inline(always)]
+    pub(crate) fn new_if_held() -> Option<Self> {
+        Some(Self::new())
+    }
+
+    #[inline(always)]
     pub(crate) fn new() -> Self {
         let () = WASM_SINGLE_THREAD_GIL_CAPABILITY;
         Self {
@@ -44,11 +49,6 @@ impl GilGuard {
     #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
         PyToken { _guard: self }
-    }
-
-    #[inline(always)]
-    pub(crate) fn new_extension_call() -> Self {
-        Self::new()
     }
 
     #[inline(always)]
@@ -119,6 +119,12 @@ pub(crate) fn hold_runtime_gil(_guard: GilGuard) {
 #[inline(always)]
 pub(crate) fn release_runtime_gil() {
     // no-op
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn touch_gil_tls_lifetime() {
+    // wasm has no native thread-local GIL custody.
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -195,7 +201,8 @@ pub(crate) struct PyToken<'gil> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
-    pub(crate) fn new() -> Self {
+    #[inline(always)]
+    pub(crate) fn new_if_held() -> Option<Self> {
         match GIL_DEPTH.try_with(|depth| {
             let current = depth.get();
             if current == 0 {
@@ -205,14 +212,18 @@ impl GilGuard {
                 true
             }
         }) {
-            Ok(true) => {
-                return Self {
-                    lane: GilGuardLane::Main,
-                    _not_send_sync: std::marker::PhantomData,
-                };
-            }
-            Ok(false) => {}
-            Err(_) => return Self::tls_destruction_new(),
+            Ok(true) => Some(Self {
+                lane: GilGuardLane::Main,
+                _not_send_sync: std::marker::PhantomData,
+            }),
+            Ok(false) | Err(_) if tls_destruction_gil_held() => Some(Self::tls_destruction_new()),
+            Ok(false) | Err(_) => None,
+        }
+    }
+
+    pub(crate) fn new() -> Self {
+        if let Some(nested) = Self::new_if_held() {
+            return nested;
         }
 
         let guard = molt_gil().lock();
@@ -233,11 +244,6 @@ impl GilGuard {
             lane: GilGuardLane::Main,
             _not_send_sync: std::marker::PhantomData,
         }
-    }
-
-    #[inline(always)]
-    pub(crate) fn new_extension_call() -> Self {
-        Self::new()
     }
 
     pub(crate) fn token(&self) -> PyToken<'_> {
@@ -491,6 +497,13 @@ pub(crate) fn release_runtime_gil() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn touch_gil_tls_lifetime() {
+    let _ = GIL_DEPTH.try_with(|_| {});
+    let _ = GIL_GUARD.try_with(|_| {});
+    let _ = RUNTIME_GIL_GUARD.try_with(|_| {});
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 struct TlsDestructionGilState {
     owner: Option<std::thread::ThreadId>,
     depth: usize,
@@ -651,7 +664,9 @@ mod tests {
         ready_rx.recv().unwrap();
 
         let outer = GilGuard::tls_destruction_new();
-        let inner = GilGuard::tls_destruction_new();
+        // Ordinary nested runtime work (for example Py_DECREF -> dec_ref hook)
+        // must detect and join the already-owned TLS-destruction lane.
+        let inner = GilGuard::new();
         assert!(super::tls_destruction_gil_held());
         proceed_tx.send(()).unwrap();
         drop(outer);

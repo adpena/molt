@@ -261,6 +261,8 @@ pub(crate) enum WasmRuntimeImport {
     TraceExit,
     TraceSetLine,
     RuntimeInit,
+    RuntimeExecutionEnter,
+    RuntimeExecutionLeave,
     RuntimeShutdown,
     SysSetVersionInfo,
     PrintBuiltin,

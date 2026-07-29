@@ -1,82 +1,154 @@
 use super::*;
 
-pub(super) fn resolve_wasm_path(arg: Option<String>) -> Result<PathBuf> {
-    let env_path = env::var("MOLT_WASM_PATH").ok().map(PathBuf::from);
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let candidates = wasm_path_candidates(arg.map(PathBuf::from), env_path, &cwd);
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    bail!("WASM path not found (arg, MOLT_WASM_PATH, or ./dist/output.wasm)");
+#[derive(Debug, Deserialize)]
+struct RuntimeManifest {
+    mode: String,
+    modules: RuntimeManifestModules,
 }
 
-pub(super) fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
-    let env_path = env::var("MOLT_WASM_LINKED_PATH").ok().map(PathBuf::from);
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    linked_path_candidates(wasm_path, env_path, &cwd)
-        .into_iter()
-        .find(|candidate| candidate.exists())
+#[derive(Debug, Deserialize)]
+struct RuntimeManifestModules {
+    app: Option<RuntimeManifestModule>,
+    runtime: Option<RuntimeManifestModule>,
+    linked: Option<RuntimeManifestModule>,
 }
 
-pub(super) fn wasm_path_candidates(
+#[derive(Debug, Deserialize)]
+struct RuntimeManifestModule {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Debug)]
+pub(super) struct ResolvedExecutionModules {
+    pub(super) manifest_path: PathBuf,
+    pub(super) main_path: PathBuf,
+    pub(super) runtime_path: Option<PathBuf>,
+    pub(super) linked: bool,
+}
+
+pub(super) fn select_manifest_path(
     arg: Option<PathBuf>,
     env_path: Option<PathBuf>,
     cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = arg {
-        candidates.push(path);
+) -> PathBuf {
+    arg.or(env_path)
+        .unwrap_or_else(|| cwd.join("dist").join("manifest.json"))
+}
+
+fn resolve_manifest_module(
+    manifest_path: &Path,
+    descriptor: Option<&RuntimeManifestModule>,
+    label: &str,
+) -> Result<PathBuf> {
+    let descriptor =
+        descriptor.with_context(|| format!("runtime manifest missing modules.{label}"))?;
+    if descriptor.path.is_empty() {
+        bail!("runtime manifest modules.{label}.path is empty");
     }
-    if let Some(path) = env_path
-        && !candidates.iter().any(|candidate| candidate == &path)
+    if descriptor.sha256.len() != 64
+        || !descriptor
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     {
-        candidates.push(path);
+        bail!("runtime manifest modules.{label}.sha256 is invalid");
     }
-    let canonical = cwd.join("dist").join("output.wasm");
-    if !candidates.iter().any(|candidate| candidate == &canonical) {
-        candidates.push(canonical);
+    let manifest_dir = manifest_path
+        .parent()
+        .context("runtime manifest path has no parent directory")?;
+    let module_path = manifest_dir.join(&descriptor.path);
+    let metadata = fs::metadata(&module_path).with_context(|| {
+        format!(
+            "runtime manifest modules.{label}.path is unreadable: {}",
+            module_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "runtime manifest modules.{label}.path is not a file: {}",
+            module_path.display()
+        );
     }
-    candidates
-}
-
-pub(super) fn linked_path_candidates(
-    wasm_path: &Path,
-    env_path: Option<PathBuf>,
-    cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = env_path {
-        candidates.push(path);
+    if metadata.len() != descriptor.size {
+        bail!(
+            "{label} size mismatch: manifest={} actual={}",
+            descriptor.size,
+            metadata.len()
+        );
     }
-    if let Some(stem) = wasm_path.file_stem().and_then(|s| s.to_str()) {
-        let ext = wasm_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("wasm");
-        let sibling = wasm_path.with_file_name(format!("{stem}_linked.{ext}"));
-        if !candidates.iter().any(|candidate| candidate == &sibling) {
-            candidates.push(sibling);
+    let mut file = fs::File::open(&module_path)
+        .with_context(|| format!("failed to open {label}: {}", module_path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash {label}: {}", module_path.display()))?;
+        if read == 0 {
+            break;
         }
+        hasher.update(&buffer[..read]);
     }
-    let canonical = cwd.join("dist").join("output_linked.wasm");
-    if !candidates.iter().any(|candidate| candidate == &canonical) {
-        candidates.push(canonical);
+    let actual = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != descriptor.sha256 {
+        bail!(
+            "{label} SHA-256 mismatch: manifest={} actual={actual}",
+            descriptor.sha256
+        );
     }
-    candidates
+    Ok(module_path)
 }
 
-pub(super) fn prefer_linked() -> bool {
-    match env::var("MOLT_WASM_PREFER_LINKED") {
-        Ok(val) => !matches!(val.to_lowercase().as_str(), "0" | "false" | "no" | "off"),
-        Err(_) => true,
+pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedExecutionModules> {
+    let cwd = env::current_dir().context("failed to resolve current directory")?;
+    let env_path = env::var_os("MOLT_WASM_MANIFEST_PATH").map(PathBuf::from);
+    let manifest_path = select_manifest_path(arg.map(PathBuf::from), env_path, &cwd);
+    if manifest_path.extension().and_then(|value| value.to_str()) != Some("json") {
+        bail!(
+            "molt-wasm-host accepts a runtime manifest path, not a module path; pass manifest.json"
+        );
     }
-}
-
-pub(super) fn force_linked() -> bool {
-    matches!(env::var("MOLT_WASM_LINKED").as_deref(), Ok("1"))
+    let manifest_bytes = fs::read(&manifest_path).with_context(|| {
+        format!(
+            "failed to read runtime manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: RuntimeManifest = serde_json::from_slice(&manifest_bytes).with_context(|| {
+        format!(
+            "failed to decode runtime manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    let (main_path, runtime_path, linked) = match manifest.mode.as_str() {
+        "linked" => (
+            resolve_manifest_module(&manifest_path, manifest.modules.linked.as_ref(), "linked")?,
+            None,
+            true,
+        ),
+        "split-runtime" => (
+            resolve_manifest_module(&manifest_path, manifest.modules.app.as_ref(), "app")?,
+            Some(resolve_manifest_module(
+                &manifest_path,
+                manifest.modules.runtime.as_ref(),
+                "runtime",
+            )?),
+            false,
+        ),
+        mode => bail!("runtime manifest has unsupported mode: {mode}"),
+    };
+    Ok(ResolvedExecutionModules {
+        manifest_path,
+        main_path,
+        runtime_path,
+        linked,
+    })
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {

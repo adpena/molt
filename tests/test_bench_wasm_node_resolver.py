@@ -1,10 +1,38 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 import tools.bench_wasm as bench_wasm
+
+
+def _module_descriptor(path: Path, manifest_path: Path) -> dict[str, object]:
+    payload = path.read_bytes()
+    return {
+        "path": path.relative_to(manifest_path.parent).as_posix(),
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _write_linked_build(output_path: Path) -> None:
+    output_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    linked = output_path.with_name("output_linked.wasm")
+    linked.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    manifest = output_path.with_name("manifest.json")
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "mode": "linked",
+                "modules": {"linked": _module_descriptor(linked, manifest)},
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _reset_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,7 +117,6 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     reloc_runtime.write_bytes(b"\x00asm")
     monkeypatch.setattr(bench_wasm, "RUNTIME_WASM_RELOC", reloc_runtime)
     monkeypatch.setattr(bench_wasm, "RUNTIME_WASM", tmp_path / "molt_runtime.wasm")
-    monkeypatch.setattr(bench_wasm, "_want_linked", lambda: True)
     base_env = {"MOLT_SESSION_ID": "wasm-unit", "CARGO_TARGET_DIR": str(tmp_path)}
     pruned_envs: list[dict[str, str]] = []
     monkeypatch.setattr(bench_wasm, "_base_env", lambda: base_env.copy())
@@ -115,35 +142,20 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     ) -> float:
         del tty, log, limits, use_molt_build_cache
         captured_env.update(env)
-        output_path.write_bytes(b"\x00asm")
+        _write_linked_build(output_path)
         return 0.01
 
-    def _fake_link(
-        _env: dict[str, str],
-        input_path: Path,
-        *,
-        require_linked: bool,
-        log,
-        limits=None,
-    ) -> Path:
-        del require_linked, log, limits
-        linked = input_path.with_name("output_linked.wasm")
-        linked.write_bytes(b"\x00asm")
-        return linked
-
     monkeypatch.setattr(bench_wasm, "_build_wasm_output", _fake_build)
-    monkeypatch.setattr(bench_wasm, "_link_wasm", _fake_link)
 
     wasm = bench_wasm.prepare_wasm_binary(
         "tests/benchmarks/bench_sum.py",
-        require_linked=False,
         tty=False,
         log=None,
         keep_temp=False,
     )
     assert wasm is not None
     assert pruned_envs == [base_env]
-    assert captured_env.get("MOLT_WASM_LINK") == "1"
+    assert "MOLT_WASM_LINK" not in captured_env
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
 
 
@@ -158,7 +170,7 @@ def test_build_wasm_output_reuses_molt_build_cache_by_default(
     def fake_run_cmd(command, *, env, capture, tty, log, timeout_s=None, limits=None):
         del env, capture, tty, log, timeout_s, limits
         commands.append(list(command))
-        output_path.write_bytes(b"\x00asm")
+        _write_linked_build(output_path)
         return bench_wasm._RunResult(returncode=0)
 
     monkeypatch.setattr(bench_wasm, "_run_cmd", fake_run_cmd)
@@ -177,6 +189,8 @@ def test_build_wasm_output_reuses_molt_build_cache_by_default(
 
     assert "--cache" in commands[0]
     assert "--no-cache" not in commands[0]
+    assert "--linked" in commands[0]
+    assert "--require-linked" in commands[0]
 
 
 def test_build_wasm_output_can_disable_molt_build_cache(
@@ -190,7 +204,7 @@ def test_build_wasm_output_can_disable_molt_build_cache(
     def fake_run_cmd(command, *, env, capture, tty, log, timeout_s=None, limits=None):
         del env, capture, tty, log, timeout_s, limits
         commands.append(list(command))
-        output_path.write_bytes(b"\x00asm")
+        _write_linked_build(output_path)
         return bench_wasm._RunResult(returncode=0)
 
     monkeypatch.setattr(bench_wasm, "_run_cmd", fake_run_cmd)
@@ -212,7 +226,7 @@ def test_build_wasm_output_can_disable_molt_build_cache(
     assert "--cache" not in commands[0]
 
 
-def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(
+def test_run_wasm_resolves_linked_module_only_from_manifest(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -223,28 +237,33 @@ def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(
     module_dir.mkdir()
     dist_dir.mkdir()
 
-    explicit_wasm = explicit_dir / "output.wasm"
     explicit_linked = explicit_dir / "output_linked.wasm"
-    canonical_wasm = dist_dir / "output.wasm"
-    canonical_linked = dist_dir / "output_linked.wasm"
-
-    explicit_wasm.write_bytes(b"\x00asm")
     explicit_linked.write_bytes(b"\x00asm")
-    canonical_wasm.write_bytes(b"\x00asm")
-    canonical_linked.write_bytes(b"\x00asm")
+    manifest_path = explicit_dir / "release.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "mode": "linked",
+                "modules": {
+                    "linked": _module_descriptor(explicit_linked, manifest_path)
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     script = tmp_path / "resolve_wasm_paths.cjs"
     script.write_text(
         "const mod = require(%r);\n"
         "const resolved = mod.resolveWasmPaths({\n"
-        "  wasmPath: %r,\n"
+        "  manifestPath: %r,\n"
         "  moduleDir: %r,\n"
         "  tmpDir: %r,\n"
         "});\n"
         "console.log(JSON.stringify(resolved));\n"
         % (
             str(repo_root / "wasm" / "run_wasm.js"),
-            str(explicit_wasm),
+            str(manifest_path),
             str(module_dir),
             str(tmp_path),
         )
@@ -259,11 +278,13 @@ def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(
     )
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
-    assert resolved["wasmPath"] == str(explicit_wasm)
+    assert resolved["manifestPath"] == str(manifest_path)
+    assert resolved["wasmPath"] == str(explicit_linked)
     assert resolved["linkedPath"] == str(explicit_linked)
+    assert resolved["runtimePath"] is None
 
 
-def test_run_wasm_errors_without_explicit_or_canonical_dist_even_if_temp_exists(
+def test_run_wasm_rejects_module_path_as_discovery_authority(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -282,12 +303,14 @@ def test_run_wasm_errors_without_explicit_or_canonical_dist_even_if_temp_exists(
     script.write_text(
         "const mod = require(%r);\n"
         "const resolved = mod.resolveWasmPaths({\n"
+        "  manifestPath: %r,\n"
         "  moduleDir: %r,\n"
         "  tmpDir: %r,\n"
         "});\n"
         "console.log(JSON.stringify(resolved));\n"
         % (
             str(repo_root / "wasm" / "run_wasm.js"),
+            str(temp_wasm),
             str(module_dir),
             str(tmp_dir),
         )
@@ -301,11 +324,10 @@ def test_run_wasm_errors_without_explicit_or_canonical_dist_even_if_temp_exists(
         check=False,
     )
     assert run.returncode != 0, run.stdout
-    assert "WASM path not found" in run.stderr
-    assert "temp output.wasm" not in run.stderr
+    assert "accepts a runtime manifest path, not a module path" in run.stderr
 
 
-def test_run_wasm_prefers_sibling_runtime_sidecar_before_canonical_root(
+def test_run_wasm_resolves_split_modules_relative_to_manifest(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -316,28 +338,37 @@ def test_run_wasm_prefers_sibling_runtime_sidecar_before_canonical_root(
     module_dir.mkdir()
     canonical_runtime_dir.mkdir()
 
-    explicit_wasm = explicit_dir / "output.wasm"
-    sibling_runtime = explicit_dir / "molt_runtime.wasm"
-    canonical_runtime = canonical_runtime_dir / "molt_runtime.wasm"
+    explicit_wasm = explicit_dir / "app-prod.wasm"
+    sibling_runtime = explicit_dir / "runtime-prod.wasm"
 
     explicit_wasm.write_bytes(b"\x00asm")
     sibling_runtime.write_bytes(b"\x00asm")
-    canonical_runtime.write_bytes(b"\x00asm")
+    manifest_path = explicit_dir / "release.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "mode": "split-runtime",
+                "modules": {
+                    "app": _module_descriptor(explicit_wasm, manifest_path),
+                    "runtime": _module_descriptor(sibling_runtime, manifest_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     script = tmp_path / "resolve_runtime_sidecar.cjs"
     script.write_text(
         "const mod = require(%r);\n"
         "const resolved = mod.resolveWasmPaths({\n"
-        "  wasmPath: %r,\n"
+        "  manifestPath: %r,\n"
         "  moduleDir: %r,\n"
-        "  env: { MOLT_RUNTIME_WASM_DIR: %r },\n"
         "});\n"
         "console.log(JSON.stringify(resolved));\n"
         % (
             str(repo_root / "wasm" / "run_wasm.js"),
-            str(explicit_wasm),
+            str(manifest_path),
             str(module_dir),
-            str(canonical_runtime_dir),
         )
     )
 
@@ -351,9 +382,11 @@ def test_run_wasm_prefers_sibling_runtime_sidecar_before_canonical_root(
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
     assert resolved["runtimePath"] == str(sibling_runtime)
+    assert resolved["wasmPath"] == str(explicit_wasm)
+    assert resolved["linkedPath"] is None
 
 
-def test_run_wasm_uses_canonical_runtime_dir_when_no_sibling_exists(
+def test_run_wasm_rejects_manifest_module_digest_drift(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -365,25 +398,38 @@ def test_run_wasm_uses_canonical_runtime_dir_when_no_sibling_exists(
     canonical_runtime_dir.mkdir()
 
     explicit_wasm = explicit_dir / "output.wasm"
-    canonical_runtime = canonical_runtime_dir / "molt_runtime.wasm"
+    runtime = explicit_dir / "runtime-prod.wasm"
 
     explicit_wasm.write_bytes(b"\x00asm")
-    canonical_runtime.write_bytes(b"\x00asm")
+    runtime.write_bytes(b"\x00asm")
+    manifest_path = explicit_dir / "manifest.json"
+    runtime_descriptor = _module_descriptor(runtime, manifest_path)
+    runtime_descriptor["sha256"] = "0" * 64
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "mode": "split-runtime",
+                "modules": {
+                    "app": _module_descriptor(explicit_wasm, manifest_path),
+                    "runtime": runtime_descriptor,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     script = tmp_path / "resolve_runtime_canonical.cjs"
     script.write_text(
         "const mod = require(%r);\n"
         "const resolved = mod.resolveWasmPaths({\n"
-        "  wasmPath: %r,\n"
+        "  manifestPath: %r,\n"
         "  moduleDir: %r,\n"
-        "  env: { MOLT_RUNTIME_WASM_DIR: %r },\n"
         "});\n"
         "console.log(JSON.stringify(resolved));\n"
         % (
             str(repo_root / "wasm" / "run_wasm.js"),
-            str(explicit_wasm),
+            str(manifest_path),
             str(module_dir),
-            str(canonical_runtime_dir),
         )
     )
 
@@ -394,6 +440,41 @@ def test_run_wasm_uses_canonical_runtime_dir_when_no_sibling_exists(
         text=True,
         check=False,
     )
+    assert run.returncode != 0
+    assert "runtime wasm SHA-256 mismatch" in run.stderr
+
+
+def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script = tmp_path / "guard_runtime_custody.cjs"
+    script.write_text(
+        "const mod = require(%r);\n"
+        "const events = [];\n"
+        "const runtime = { exports: {\n"
+        "  molt_runtime_execution_enter: () => { events.push('enter'); return 41n; },\n"
+        "  molt_runtime_execution_leave: (token) => events.push(`leave:${token}`),\n"
+        "} };\n"
+        "try { mod.withRuntimeExecution(runtime, () => { events.push('body'); throw new Error('boom'); }); }\n"
+        "catch (error) { if (error.message !== 'boom') throw error; }\n"
+        "try { mod.withOwnedValue(99n, (value) => events.push(`release:${value}`), () => { throw new Error('decode'); }); }\n"
+        "catch (error) { if (error.message !== 'decode') throw error; }\n"
+        "console.log(JSON.stringify(events));\n"
+        % str(repo_root / "wasm" / "run_wasm.js"),
+        encoding="utf-8",
+    )
+    run = __import__("subprocess").run(
+        ["node", str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert run.returncode == 0, run.stderr
-    resolved = __import__("json").loads(run.stdout)
-    assert resolved["runtimePath"] == str(canonical_runtime)
+    assert json.loads(run.stdout) == [
+        "enter",
+        "body",
+        "leave:41",
+        "release:99",
+    ]

@@ -1,3 +1,4 @@
+pub(crate) mod execution;
 pub(crate) mod gil;
 pub(crate) mod isolates;
 pub(crate) mod locks;
@@ -8,6 +9,10 @@ mod panic_contract_tests;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+pub(crate) use execution::{
+    RuntimeExecutionGuard, ensure_persistent_runtime_execution,
+    release_persistent_runtime_execution,
+};
 pub(crate) use gil::{
     GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, gil_owned_by_current_thread, with_gil,
 };
@@ -74,9 +79,7 @@ pub(crate) fn current_thread_id() -> u64 {
 #[macro_export]
 macro_rules! with_gil_entry {
     ($py:ident, $body:block) => {{
-        // GilGuard::new() is cfg-dispatched: a real lock on non-wasm32,
-        // a zero-cost no-op struct on wasm32.
-        let _gil_guard = $crate::concurrency::GilGuard::new();
+        let _gil_guard = $crate::concurrency::RuntimeExecutionGuard::enter();
         let $py = _gil_guard.token();
         let $py = &$py;
 
@@ -117,7 +120,19 @@ macro_rules! with_gil_entry {
 #[macro_export]
 macro_rules! with_gil_entry_nopanic {
     ($py:ident, $body:block) => {{
-        let _gil_guard = $crate::concurrency::GilGuard::new();
+        let _gil_guard = $crate::concurrency::RuntimeExecutionGuard::enter();
+        let $py = _gil_guard.token();
+        let $py = &$py;
+        $body
+    }};
+}
+
+/// Raw ABI entry that needs lifecycle-safe GIL admission but must not
+/// bootstrap RuntimeState (for example, cold resource-allocation failures).
+#[macro_export]
+macro_rules! with_raw_gil_entry_nopanic {
+    ($py:ident, $body:block) => {{
+        let _gil_guard = $crate::concurrency::RuntimeExecutionGuard::enter_without_runtime();
         let $py = _gil_guard.token();
         let $py = &$py;
         $body

@@ -288,6 +288,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     self.current_func_name == "molt_main"
                     and target.id in self.module_elided_deleted_funcs
                 ):
+                    self._record_deleted_app_binding(target.id)
                     self.module_elided_deleted_funcs.discard(target.id)
                     return
                 self._emit_delete_name(target.id)
@@ -990,6 +991,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         if class_scope is not None:
             self._class_ns_delete(class_scope, name)
             return
+        self._record_deleted_app_binding(name)
         if self.current_func_name == "molt_main":
             if name in self.boxed_locals:
                 cell = self.boxed_locals[name]

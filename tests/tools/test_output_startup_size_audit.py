@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
+from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -158,6 +159,41 @@ def test_wasm_fresh_copy_preserves_linked_suffix(tmp_path: Path) -> None:
     copied = audit._fresh_copy_path(artifact, fresh_dir, 7)
 
     assert copied.name == "output.fresh-7_linked.wasm"
+
+
+def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = _load_audit()
+    artifact = tmp_path / "output_linked.wasm"
+    artifact.write_bytes(b"\0asm\x01\0\0\0")
+    write_wasm_execution_manifest(tmp_path, linked=artifact)
+    observed_modules: list[Path] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        manifest = Path(command[-1])
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        observed_modules.append(manifest.parent / payload["modules"]["linked"]["path"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="", elapsed_s=0.01)
+
+    monkeypatch.setattr(audit, "_run_guarded", fake_run)
+    result = audit._measure_artifact(
+        artifact,
+        samples=2,
+        env={},
+        timeout=1.0,
+        fresh_copies=True,
+        label="wasm-cold",
+        runner_factory=audit._node_runner_factory("node"),
+    )
+
+    assert result["ok"] is True
+    assert [path.name for path in observed_modules] == [
+        "output.fresh-0_linked.wasm",
+        "output.fresh-1_linked.wasm",
+    ]
+    assert not any((tmp_path / ".fresh_start_samples").iterdir())
 
 
 def test_build_molt_artifact_emits_progress_on_stderr(

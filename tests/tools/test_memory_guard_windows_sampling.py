@@ -297,6 +297,17 @@ def test_windows_process_snapshot_timeout_env_contract() -> None:
     assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "off"}) is None
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Win32 API bindings")
+def test_windows_snapshot_reuses_one_immutable_api_binding() -> None:
+    windows_snapshot._windows_snapshot_api.cache_clear()
+    first = windows_snapshot._windows_snapshot_api()
+    second = windows_snapshot._windows_snapshot_api()
+
+    assert first is second
+    assert first.ProcessEntry32W is second.ProcessEntry32W
+    assert first.counters_type is second.counters_type
+
+
 def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None:
     monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
     monkeypatch.setattr(
