@@ -426,6 +426,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     rc = 0
     for row in rows:
         payload = evidence._row_to_payload(row)
+        queued_env = json.loads(str(row["env_json"]))
+        if not isinstance(queued_env, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in queued_env.items()
+        ):
+            raise ValueError(f"queued proof {row['run_id']} has invalid env authority")
         if args.detach:
             dispatch = runner._dispatch_detached_runner(
                 args,
@@ -447,7 +453,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             resource_family=str(payload["resource_family"]),
             contention_key=str(payload["contention_key"]),
             scopes=list(payload["scopes"]),
-            env_overrides=dict(payload["env"]),
+            env_overrides=queued_env,
             timeout=args.timeout,
             existing_run_id=str(payload["run_id"]),
             existing_log_path=Path(str(payload["log_path"])),

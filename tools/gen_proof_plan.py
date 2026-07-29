@@ -72,6 +72,7 @@ def _json_projection(plan: ProofPlan) -> str:
         "receipt_schema": plan.receipt_schema,
         "executor": {
             "max_workers": plan.executor_max_workers,
+            "inventory_hash_workers": plan.inventory_hash_workers,
             "resource_policies": [
                 {"name": policy.name, "max_parallel": policy.max_parallel}
                 for policy in plan.resource_policies
@@ -158,6 +159,9 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "The canonical executor admits dependency-ready commands in manifest "
         "order, bounds global fanout at "
         f"{plan.executor_max_workers}, and enforces these per-resource limits:",
+        f"Installed Python custody uses {plan.inventory_hash_workers} bounded "
+        "hash workers over deterministic coarse file batches; prelaunch and "
+        "postcompletion both read the complete admitted byte inventory.",
         "",
         "| Resource | Max parallel commands |",
         "|---|---:|",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -25,20 +26,198 @@ from tools.proof_queue_pkg import (
 from tools.proof_queue_pkg import diagnostics as diagnostic_engine
 
 
+def _file_receipt_identity(path: Path) -> dict[str, object]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(chunk)
+            digest.update(chunk)
+    return {"path": str(path), "size_bytes": size, "sha256": digest.hexdigest()}
+
+
+def _validated_guard_receipt(
+    summary_json: Path,
+    *,
+    guarded_command: list[str],
+    returncode: int,
+    run_id: str,
+    execution_nonce: str,
+    guard_pid: int,
+) -> dict[str, object]:
+    payload = json.loads(summary_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("memory-guard receipt is not an object")
+    if payload.get("command") != guarded_command:
+        raise ValueError("memory-guard receipt command substitution detected")
+    if payload.get("returncode") != returncode:
+        raise ValueError("memory-guard receipt return-code substitution detected")
+    dirty_terminal_fields = {
+        "violation": payload.get("violation"),
+        "timed_out": payload.get("timed_out"),
+        "exit_signal": payload.get("exit_signal"),
+        "guard_signal": payload.get("guard_signal"),
+        "incident": payload.get("incident"),
+        "orphaned_process_groups": payload.get("orphaned_process_groups"),
+    }
+    if (
+        dirty_terminal_fields["violation"] is not None
+        or dirty_terminal_fields["timed_out"] is not False
+        or dirty_terminal_fields["exit_signal"] is not None
+        or dirty_terminal_fields["guard_signal"] is not None
+        or dirty_terminal_fields["incident"] is not None
+        or dirty_terminal_fields["orphaned_process_groups"] not in ([], ())
+    ):
+        raise ValueError(
+            "memory-guard receipt does not prove a clean terminal outcome: "
+            + json.dumps(dirty_terminal_fields, sort_keys=True)
+        )
+    windows_cleanup = payload.get("windows_job_cleanup")
+    if os.name == "nt" and not isinstance(windows_cleanup, dict):
+        raise ValueError("memory-guard Windows job cleanup is missing")
+    if isinstance(windows_cleanup, dict):
+        after_cleanup = windows_cleanup.get("after")
+        if (
+            windows_cleanup.get("completed") is not True
+            or not isinstance(after_cleanup, dict)
+            or after_cleanup.get("active_processes") != 0
+            or windows_cleanup.get("terminated_remaining_processes") is not False
+        ):
+            raise ValueError("memory-guard Windows job cleanup is incomplete")
+    sampling = payload.get("sampling_telemetry")
+    if (
+        not isinstance(sampling, dict)
+        or sampling.get("enforcement_complete") is not True
+        or not isinstance(sampling.get("attempts"), int)
+        or sampling.get("attempts") != sampling.get("successes")
+        or sampling.get("transient_failures") != 0
+    ):
+        raise ValueError("memory-guard sampling enforcement is incomplete")
+    receipt = _file_receipt_identity(summary_json)
+    receipt["identity_sha256"] = hashlib.sha256(
+        json.dumps(
+            {
+                **receipt,
+                "run_id": run_id,
+                "execution_nonce": execution_nonce,
+                "guard_pid": guard_pid,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    return receipt
+
+
+def _validated_execution_context(
+    context: dict[str, object],
+    *,
+    execution_path: Path,
+    envelope: dict[str, object],
+    run_id: str,
+    execution_nonce: str,
+    returncode: int,
+) -> None:
+    if context.get("run_id") != run_id:
+        raise ValueError("guarded receipt context run identity mismatch")
+    expected_nonce_hash = hashlib.sha256(execution_nonce.encode()).hexdigest()
+    if context.get("execution_nonce_sha256") != expected_nonce_hash:
+        raise ValueError("guarded receipt context nonce substitution detected")
+    if context.get("command_envelope") != envelope:
+        raise ValueError("guarded receipt context command substitution detected")
+    requested_toolchains = envelope.get("toolchains")
+    captured_toolchains = context.get("toolchains")
+    custody = context.get("toolchain_custody")
+    if (
+        not isinstance(requested_toolchains, list)
+        or not requested_toolchains
+        or not all(isinstance(name, str) and name for name in requested_toolchains)
+    ):
+        raise ValueError("guarded command envelope has no toolchain authority")
+    if (
+        not isinstance(captured_toolchains, dict)
+        or set(captured_toolchains) != set(requested_toolchains)
+        or any(
+            not isinstance(identity, dict)
+            or not isinstance(identity.get("identity_sha256"), str)
+            for identity in captured_toolchains.values()
+        )
+    ):
+        raise ValueError("guarded receipt toolchain closure is incomplete")
+    if (
+        not isinstance(custody, dict)
+        or custody.get("identical") is not True
+        or not isinstance(custody.get("prelaunch"), dict)
+        or not isinstance(custody.get("postcompletion"), dict)
+        or command_envelope._stable_toolchain_custody(custody["prelaunch"])
+        != command_envelope._stable_toolchain_custody(captured_toolchains)
+        or command_envelope._stable_toolchain_custody(custody["postcompletion"])
+        != command_envelope._stable_toolchain_custody(captured_toolchains)
+    ):
+        raise ValueError("guarded receipt toolchain closure is not stable")
+    expected_custody = command_envelope.execution_custody_sha256(
+        context,
+        run_id=run_id,
+        returncode=returncode,
+    )
+    if context.get("execution_custody_sha256") != expected_custody:
+        raise ValueError("guarded execution custody digest mismatch")
+    transcript = context.get("command_transcript")
+    if not isinstance(transcript, dict):
+        raise ValueError("guarded receipt context has no command transcript")
+    for stream_name in ("stdout", "stderr"):
+        expected_path = execution_path.with_suffix(f".{stream_name}.bin")
+        expected = transcript.get(stream_name)
+        if not isinstance(expected, dict) or expected.get("path") != str(expected_path):
+            raise ValueError(
+                f"guarded {stream_name} transcript path substitution detected"
+            )
+        actual = command_envelope._transcript_identity(expected_path)
+        if expected != actual:
+            raise ValueError(
+                f"guarded {stream_name} transcript content substitution detected"
+            )
+    transcript_material = {name: transcript[name] for name in ("stdout", "stderr")}
+    transcript_digest = hashlib.sha256(
+        json.dumps(
+            transcript_material,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    if transcript.get("identity_sha256") != transcript_digest:
+        raise ValueError("guarded command transcript digest mismatch")
+
+
 def _write_execution_request(
     *,
     row: sqlite3.Row,
     command: list[str],
     repo_root: Path,
     resource_family: str,
+    run_id: str,
+    env_override_names: list[str],
     log_path: Path,
-) -> tuple[Path, Path, dict[str, object]]:
+    summary_path: Path,
+) -> tuple[Path, Path, dict[str, object], str]:
     envelope = json.loads(str(row["command_envelope_json"]))
     if not isinstance(envelope, dict):
         raise ValueError("proof row command envelope is malformed")
     command_envelope.validate_envelope(envelope, command)
     request_path = log_path.with_suffix(".execution-request.json")
     result_path = log_path.with_suffix(".execution.json")
+    execution_nonce = uuid.uuid4().hex + uuid.uuid4().hex
+    for stale in (
+        request_path,
+        result_path,
+        result_path.with_suffix(".stdout.bin"),
+        result_path.with_suffix(".stderr.bin"),
+        summary_path,
+    ):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
     request = {
         "schema": command_envelope.EXECUTION_SCHEMA,
         "command": command,
@@ -46,19 +225,27 @@ def _write_execution_request(
         "cwd": str(repo_root),
         "resource_family": resource_family,
         "result_path": str(result_path),
+        "run_id": run_id,
+        "execution_nonce": execution_nonce,
+        "env_override_names": sorted(env_override_names, key=str.casefold),
     }
     request_path.write_text(
         json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    return request_path, result_path, envelope
+    return request_path, result_path, envelope, execution_nonce
 
 
 def _read_execution_record(path: Path) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"guarded proof execution record is unavailable: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != command_envelope.EXECUTION_SCHEMA:
+        raise ValueError(
+            f"guarded proof execution record is unavailable: {exc}"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != command_envelope.EXECUTION_SCHEMA
+    ):
         raise ValueError("guarded proof execution record schema mismatch")
     return payload
 
@@ -148,6 +335,11 @@ def _queue_one(
 ) -> tuple[int, str | None]:
     if not command:
         raise SystemExit("proof command is empty")
+    secret_error = command_envelope.command_secret_policy_error(command)
+    env_error = policy._proof_env_policy_error(env_overrides)
+    if secret_error is not None or env_error is not None:
+        print(secret_error or env_error, file=sys.stderr)
+        return 2, None
     if not initial_notes:
         print(
             "queued proof submissions require at least one append-only note; "
@@ -483,6 +675,11 @@ def _run_one(
 ) -> int:
     if not command:
         raise SystemExit("proof command is empty")
+    secret_error = command_envelope.command_secret_policy_error(command)
+    env_error = policy._proof_env_policy_error(env_overrides)
+    if secret_error is not None or env_error is not None:
+        print(secret_error or env_error, file=sys.stderr)
+        return 2
     db = state._db_path(args)
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
@@ -603,12 +800,17 @@ def _run_one(
         row = state._row_by_run_id(conn, run_id)
         if row is None:
             raise ValueError(f"proof run {run_id!r} disappeared before execution")
-        request_path, execution_path, envelope = _write_execution_request(
-            row=row,
-            command=command,
-            repo_root=repo_root,
-            resource_family=resource_family,
-            log_path=log_path,
+        request_path, execution_path, envelope, execution_nonce = (
+            _write_execution_request(
+                row=row,
+                command=command,
+                repo_root=repo_root,
+                resource_family=resource_family,
+                run_id=run_id,
+                env_override_names=list(env_overrides),
+                log_path=log_path,
+                summary_path=summary_json,
+            )
         )
         poll_interval = custody._proof_queue_memory_guard_poll_sec(env_overrides)
         env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
@@ -653,7 +855,9 @@ def _run_one(
         print(f"command={shlex.join(command)}", file=log)
         if env_overrides:
             print(
-                f"env_overrides={json.dumps(env_overrides, sort_keys=True)}", file=log
+                "env_override_names="
+                + json.dumps(sorted(env_overrides, key=str.casefold)),
+                file=log,
             )
         print(f"proof_session_id={session_id}", file=log)
         print(f"cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
@@ -714,6 +918,10 @@ def _run_one(
     execution_error: str | None = None
     try:
         execution_record = _read_execution_record(execution_path)
+        if execution_record.get("run_id") != run_id:
+            raise ValueError("guarded execution record run identity mismatch")
+        if execution_record.get("execution_nonce") != execution_nonce:
+            raise ValueError("guarded execution record nonce mismatch")
         if execution_record.get("envelope") != envelope:
             raise ValueError("guarded execution record changed the admitted envelope")
         raw_context = execution_record.get("receipt_context")
@@ -726,6 +934,41 @@ def _run_one(
                     "guard/command return-code custody mismatch: "
                     f"guard={rc!r} command={command_rc!r}"
                 )
+            if receipt_context is None:
+                raise ValueError("complete guarded execution has no receipt context")
+            _validated_execution_context(
+                receipt_context,
+                execution_path=execution_path,
+                envelope=envelope,
+                run_id=run_id,
+                execution_nonce=execution_nonce,
+                returncode=command_rc,
+            )
+            guard_receipt = _validated_guard_receipt(
+                summary_json,
+                guarded_command=guarded_command,
+                returncode=rc,
+                run_id=run_id,
+                execution_nonce=execution_nonce,
+                guard_pid=proc.pid,
+            )
+            receipt_context["guard_receipt"] = guard_receipt
+            receipt_context["terminal_evidence_sha256"] = (
+                command_envelope.terminal_evidence_sha256(
+                    receipt_context,
+                    run_id=run_id,
+                    returncode=command_rc,
+                )
+            )
+            execution_record["receipt_context"] = receipt_context
+            execution_temporary = execution_path.with_suffix(
+                execution_path.suffix + ".terminal.tmp"
+            )
+            execution_temporary.write_text(
+                json.dumps(execution_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(execution_temporary, execution_path)
             source_custody = (
                 receipt_context.get("source_custody")
                 if receipt_context is not None
@@ -761,7 +1004,9 @@ def _run_one(
         )
     if execution_error:
         with log_path.open("a", encoding="utf-8") as terminal_log:
-            print(f"proof_queue execution custody: {execution_error}", file=terminal_log)
+            print(
+                f"proof_queue execution custody: {execution_error}", file=terminal_log
+            )
     state._update_run(
         conn,
         run_id,

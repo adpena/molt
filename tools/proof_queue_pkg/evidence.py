@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import sqlite3
 import sys
@@ -191,6 +192,55 @@ def _queue_proof_receipt(
     context = json.loads(context_raw)
     if not isinstance(context, dict):
         raise ValueError("proof run receipt context is malformed")
+    if succeeded:
+        envelope_raw = state._row_value(row, "command_envelope_json")
+        envelope = json.loads(str(envelope_raw))
+        requested_toolchains = (
+            envelope.get("toolchains") if isinstance(envelope, dict) else None
+        )
+        captured_toolchains = context.get("toolchains")
+        toolchain_custody = context.get("toolchain_custody")
+        if (
+            not isinstance(requested_toolchains, list)
+            or not requested_toolchains
+            or not isinstance(captured_toolchains, dict)
+            or set(captured_toolchains) != set(requested_toolchains)
+            or not isinstance(toolchain_custody, dict)
+            or toolchain_custody.get("identical") is not True
+        ):
+            raise ValueError(
+                "passed proof run has no complete stable toolchain closure"
+            )
+        terminal_digest = context.get("terminal_evidence_sha256")
+        source_custody = context.get("source_custody")
+        guard_receipt = context.get("guard_receipt")
+        if not isinstance(terminal_digest, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", terminal_digest
+        ):
+            raise ValueError("passed proof run has no terminal evidence digest")
+        if context.get("run_id") != row["run_id"]:
+            raise ValueError("passed proof run receipt has a substituted run identity")
+        nonce_hash = context.get("execution_nonce_sha256")
+        if not isinstance(nonce_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", nonce_hash
+        ):
+            raise ValueError("passed proof run has no execution nonce digest")
+        if (
+            not isinstance(source_custody, dict)
+            or source_custody.get("evidence_eligible") is not True
+        ):
+            raise ValueError("passed proof run is not source-custody eligible")
+        if not isinstance(guard_receipt, dict) or not isinstance(
+            guard_receipt.get("sha256"), str
+        ):
+            raise ValueError("passed proof run has no guard receipt identity")
+        expected_terminal = command_envelope.terminal_evidence_sha256(
+            context,
+            run_id=str(row["run_id"]),
+            returncode=int(returncode),
+        )
+        if terminal_digest != expected_terminal:
+            raise ValueError("passed proof run terminal evidence digest mismatch")
     environment = context.get("environment")
     if not isinstance(environment, dict):
         raise ValueError("proof run receipt environment is malformed")
@@ -225,6 +275,12 @@ def _queue_proof_receipt(
 def _row_to_payload(
     row: sqlite3.Row,
 ) -> dict[str, object]:
+    env_overrides = json.loads(row["env_json"])
+    if not isinstance(env_overrides, dict) or any(
+        not isinstance(name, str) or not isinstance(value, str)
+        for name, value in env_overrides.items()
+    ):
+        raise ValueError(f"proof run {row['run_id']} has invalid env authority")
     payload = {
         "run_id": row["run_id"],
         "logical_id": row["logical_id"],
@@ -236,7 +292,7 @@ def _row_to_payload(
         "resource_family": row["resource_family"],
         "contention_key": row["contention_key"],
         "scopes": json.loads(row["scopes_json"]),
-        "env": json.loads(row["env_json"]),
+        "env_override_names": sorted(env_overrides, key=str.casefold),
         "git": json.loads(row["git_json"]),
         "log_path": row["log_path"],
         "summary_json": row["summary_json"],
@@ -328,7 +384,8 @@ def _write_queued_submission_log(
             print(f"scopes={json.dumps(list(scopes), sort_keys=True)}", file=log)
         if env_overrides:
             print(
-                f"env_overrides={json.dumps(dict(env_overrides), sort_keys=True)}",
+                "env_override_names="
+                + json.dumps(sorted(env_overrides, key=str.casefold)),
                 file=log,
             )
         if depends_on:

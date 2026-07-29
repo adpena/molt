@@ -106,7 +106,7 @@ command.
 Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
 `cargo ...` through `exec`, the TOML DSL, shell backgrounding, or a Codex-held
 interactive session. The cargo lane builds the canonical command envelope:
-active uv with `--no-sync` for the internal runner,
+active uv with `--no-sync --no-config` for the internal runner,
 `tools/guarded_exec.py --prefix MOLT_TEST_SUITE`, queue contention, memory
 guard, timeout, logs, optional detached runner, and a Cargo contention key
 inferred from `-p/--package` when one is present. A cargo row that spends its
@@ -156,7 +156,7 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --scope runtime/molt-runtime/src/object/memoryview.rs `
   --note "Moved buffer descriptor authority beside TypedStridedStorage; proving C API and ABI layout stay aligned." `
   --timeout 900 `
-  -- uv run --active --project . --python 3.12 pytest tests/path.py -q
+  -- uv run --active --project . --python 3.12 --no-sync --no-config pytest tests/path.py -q
 ```
 
 Use `--depends-on RUN_ID` when a proof is not valid until earlier evidence has
@@ -173,7 +173,7 @@ row.
 Queue commands that invoke Python must use:
 
 ```powershell
-uv run --active --project . --python 3.12 ...
+uv run --active --project . --python 3.12 --no-sync --no-config ...
 ```
 
 Non-active `uv run` is rejected because it creates throwaway environments and
@@ -182,29 +182,71 @@ destroys proof latency.
 ### Command, Toolchain, Environment, and Source Custody
 
 Each row persists one typed command envelope at admission. It contains the
-exact argv, an explicit `python` or `none` kind, the complete interpreter-
-affecting `uv run` prefix, Windows `py` selector, and declared toolchains. The
-queue never invents project Python for a non-Python command. Opaque shells,
-unmodeled `uv` options, ambiguous console scripts, and noncanonical Rust
-wrappers are rejected before execution.
+exact argv, a closed Python, toolchain, or generated-proof-plan kind, the complete
+interpreter-affecting `uv run` prefix, Windows `py` selector, and non-empty
+declared toolchains. The generated command registry covers every proof-plan
+argv; identical matrix argv retain every owning command ID and must agree on
+one toolchain set. There is no untyped or empty-toolchain executable lane:
+unknown binaries reject before execution. Opaque shells, unmodeled `uv`
+options, ambiguous console scripts, and noncanonical Rust wrappers are also
+rejected before execution. The same recursive parser recognizes
+relative and absolute `tools/guarded_exec.py` plus
+`python -m tools.guarded_exec`, binds the delegated executable and every
+requested toolchain, and rejects a second delegation layer. `uv --with`,
+`--with-editable`, environment files, indexes, and find-links are forbidden;
+the Pact witness lanes use the checked-in, offline, hash-locked
+`config/proof_requirements/pact_witness.txt` authority instead.
 
 One queue-owned memory guard contains interpreter/tool identity probes,
 toolchain preflight, the proof command, and both source snapshots. The guarded
-child resolves the exact outer executable and records its path, size, and
-content hash; validates Python, Cargo, and rustc versions and hashes against the
-proof plan; attests the normalized PATH/Rust/Cargo-wrapper environment; and
-records the normalized Python distribution inventory selected by any `uv`
-overlay. `--with-requirements` files are resolved inside the admitted source
-root and content-hashed before and after execution. `--directory` and
-`--project` may not escape that root.
+child resolves the exact outer and payload executables and records their paths,
+sizes, and content hashes. Every declared proof-plan toolchain binds its policy,
+version, launcher, resolved content executable, configuration files, and PATH
+child closure as applicable. Rustup shims bind the selected binary, Node binds
+its runtime versions/configuration/global paths, Quint binds the resolved npm
+package tree, and environment-selected compiler/linker/wrapper executables are
+content-hashed. All toolchains are re-captured after the command; a missing,
+empty, changed, or extra closure cannot become evidence.
 
-Receipts bind row cwd, effective command cwd, Git root, commit, cleanliness,
-status digest, overlay inputs, and command executable at both prelaunch and
-postcompletion. A dirty, unavailable, or changed source; changed overlay; or
-changed executable is terminal `non-evidence`, even if the command returned
-zero. Terminal projections read the persisted context and never re-probe an
-ambient host. Legacy rows are marked `legacy-unattested`; migration derives an
-admission envelope but never fabricates historical execution evidence.
+Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
+CPython executable and shared libraries, stdlib and native-extension byte
+manifest, resolved runtime/import roots, and installed distributions. Every
+RECORD path retains its lexical and resolved path, owning root, relative path,
+symlink state, and containment classification. A RECORD path must resolve under
+the interpreter install prefix or an explicitly admitted editable/source root;
+path traversal and external symlink escapes reject before hashing. Declared
+RECORD hashes and sizes are verified, and editable source bytes, commit, and
+tree are bound. The deterministic sorted
+file worklist uses the proof-plan worker bound and one streaming read per unique
+resolved identity; prelaunch and postcompletion both read the complete byte
+inventory. `--with-requirements` files must contain only exact, SHA-256-locked
+requirements, run offline, resolve inside the admitted source root, and remain
+byte-identical. `--directory` and `--project` may not escape that root.
+
+The proof command receives only classified host/runtime, compiler, and Molt
+environment names. Ambient pytest injection, package-index controls,
+unclassified overrides, URL credentials, and secret-bearing names are rejected
+or omitted. Queue-owned `PYTHONDONTWRITEBYTECODE`, `PYTHONNOUSERSITE`, and the
+Node global-search-path policy are canonical inputs; `uv --no-config` prevents
+user or host configuration from silently changing resolution. Receipts store
+names, classes, and keyed fingerprints for every
+passed value, never plaintext values; queued logs and notebooks expose override
+names only.
+
+Receipts bind run ID, a fresh execution nonce, row and effective cwd, Git root,
+commit and tree, cleanliness/status digest, overlay inputs, environment,
+toolchains, and executable identities at both prelaunch and postcompletion.
+Stdout and stderr are streamed to byte-hashed artifacts and recognized test
+commands must publish structured result counts. A passed row additionally
+binds the exact terminal memory-guard receipt and clean cleanup outcome into one
+terminal-evidence digest; sampler enforcement must be complete with no transient
+gaps. Stale execution JSON or guard summaries, substituted receipts, child
+signals, or missing counts cannot become evidence. A dirty, unavailable, or changed source;
+changed overlay, editable distribution, toolchain, environment, or executable
+is terminal `non-evidence`, even if the command returned zero. Terminal
+projections read the persisted context and never re-probe an ambient host.
+Legacy rows are marked `legacy-unattested`; migration derives an admission
+envelope but never fabricates historical execution evidence.
 
 ## Detached Long Runs
 

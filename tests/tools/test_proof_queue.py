@@ -2,14 +2,17 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+import venv
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools import proof_plan
 from molt import scientific_stack_versions as scientific_versions
 from molt.file_hashing import _sha256_file
 from molt.cli.source_build_environment import canonical_source_marker_environment
@@ -64,13 +68,31 @@ def _terminalize_synthetic_run(
     phase: str = "synthetic fixture",
 ) -> None:
     if executed:
+        row = conn.execute(
+            "SELECT command_envelope_json FROM proof_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        assert row is not None
+        envelope = json.loads(row[0])
+        requested_toolchains = envelope["toolchains"]
+        toolchains = {
+            name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
+            for name in requested_toolchains
+        }
         receipt_context: dict[str, object] = {
             "schema": "molt.proof-receipt.v2",
             "authority_sha256": "a" * 64,
+            "run_id": run_id,
+            "execution_nonce_sha256": "9" * 64,
             "source_commit": "b" * 40,
+            "source_tree": "d" * 40,
             "source_tree_state": "clean",
             "environment": {"os": "test", "arch": "test", "python": "3.12"},
-            "toolchains": {"python": {"identity_sha256": "c" * 64}},
+            "toolchains": toolchains,
+            "toolchain_custody": {
+                "prelaunch": toolchains,
+                "postcompletion": toolchains,
+                "identical": True,
+            },
             "python_interpreters": {
                 "queue_control_plane": {
                     "executable": sys.executable,
@@ -85,7 +107,19 @@ def _terminalize_synthetic_run(
                     "role": "proof-command-envelope",
                 },
             },
+            "source_custody": {
+                "evidence_eligible": True,
+                "ineligible_reasons": [],
+            },
+            "guard_receipt": {"sha256": "e" * 64},
         }
+        receipt_context["terminal_evidence_sha256"] = (
+            command_envelope.terminal_evidence_sha256(
+                receipt_context,
+                run_id=run_id,
+                returncode=returncode,
+            )
+        )
     else:
         receipt_context = state._unattested_receipt_context(
             status="not-executed",
@@ -105,14 +139,47 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
     request_path = Path(command[command.index("--request") + 1])
     request = json.loads(request_path.read_text(encoding="utf-8"))
     result_path = Path(request["result_path"])
+    summary_path = Path(command[command.index("--summary-json") + 1])
+    guarded_command = command[command.index("--") + 1 :]
+    stdout_path = result_path.with_suffix(".stdout.bin")
+    stderr_path = result_path.with_suffix(".stderr.bin")
+    stdout_path.write_bytes(b"synthetic proof output\n")
+    stderr_path.write_bytes(b"")
+    transcript = {
+        "stdout": command_envelope._transcript_identity(stdout_path),
+        "stderr": command_envelope._transcript_identity(stderr_path),
+    }
+    transcript["identity_sha256"] = hashlib.sha256(
+        json.dumps(
+            transcript,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    requested_toolchains = request["envelope"]["toolchains"]
+    toolchains = {
+        name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
+        for name in requested_toolchains
+    }
     receipt_context = {
         "schema": "molt.proof-receipt.v2",
         "authority_sha256": "a" * 64,
+        "run_id": request["run_id"],
+        "execution_nonce_sha256": hashlib.sha256(
+            request["execution_nonce"].encode()
+        ).hexdigest(),
         "source_commit": "b" * 40,
+        "source_tree": "d" * 40,
         "source_tree_state": "clean",
         "environment": {"os": "test", "arch": "test", "python": "3.12"},
-        "toolchains": {"python": {"identity_sha256": "c" * 64}},
+        "toolchains": toolchains,
+        "toolchain_custody": {
+            "prelaunch": toolchains,
+            "postcompletion": toolchains,
+            "identical": True,
+        },
         "command_envelope": request["envelope"],
+        "command_transcript": transcript,
         "source_custody": {
             "prelaunch": {"available": True, "clean": True, "commit": "b" * 40},
             "postcompletion": {"available": True, "clean": True, "commit": "b" * 40},
@@ -121,15 +188,50 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
             "ineligible_reasons": [],
         },
     }
+    receipt_context["execution_custody_sha256"] = (
+        command_envelope.execution_custody_sha256(
+            receipt_context,
+            run_id=request["run_id"],
+            returncode=returncode,
+        )
+    )
     result_path.write_text(
         json.dumps(
             {
                 "schema": command_envelope.EXECUTION_SCHEMA,
+                "run_id": request["run_id"],
+                "execution_nonce": request["execution_nonce"],
                 "envelope": request["envelope"],
                 "phase": "complete",
                 "command_started": True,
                 "command_returncode": returncode,
                 "receipt_context": receipt_context,
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(
+            {
+                "command": guarded_command,
+                "returncode": returncode,
+                "violation": None,
+                "timed_out": False,
+                "exit_signal": None,
+                "guard_signal": None,
+                "incident": None,
+                "orphaned_process_groups": [],
+                "windows_job_cleanup": {
+                    "completed": True,
+                    "after": {"active_processes": 0},
+                    "terminated_remaining_processes": False,
+                },
+                "sampling_telemetry": {
+                    "attempts": 1,
+                    "successes": 1,
+                    "transient_failures": 0,
+                    "enforcement_complete": True,
+                },
             }
         ),
         encoding="utf-8",
@@ -169,8 +271,6 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
                 ".",
                 "--python",
                 "3.12",
-                "--with",
-                "numpy==2.3.1",
                 "--with-requirements=requirements/proof.txt",
                 "--isolated",
                 "--directory",
@@ -197,11 +297,6 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
             ["C:\\Windows\\py.exe", "-V:PythonCore/3.12", "-m", "pytest"],
             "python",
             "py-launcher",
-        ),
-        (
-            ["C:\\bin\\compiled-native-binary.exe", "--check"],
-            "none",
-            None,
         ),
     ],
 )
@@ -281,27 +376,31 @@ def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -
 
 
 def test_guarded_exec_delegation_is_exact_and_generic_binary_is_typed() -> None:
-    generic = command_envelope.envelope_for_command(
-        [
-            "python",
-            "tools/guarded_exec.py",
-            "--",
-            "C:/artifacts/native-proof.exe",
-            "--self-test",
-        ]
-    )
-    assert generic["delegated"] == {
-        "schema": command_envelope.ENVELOPE_SCHEMA,
-        "kind": "none",
-        "argv": ["C:/artifacts/native-proof.exe", "--self-test"],
-        "python": None,
-        "toolchains": [],
-        "delegated": None,
-    }
-    disguised = command_envelope.envelope_for_command(
-        ["python", "eviltools/guarded_exec.py", "--", "bash", "-lc", "whoami"]
-    )
-    assert disguised["delegated"] is None
+    with pytest.raises(ValueError, match="unknown proof executable kind"):
+        command_envelope.envelope_for_command(
+            [
+                "python",
+                "tools/guarded_exec.py",
+                "--",
+                "C:/artifacts/native-proof.exe",
+                "--self-test",
+            ]
+        )
+    disguised_command = [
+        "python",
+        "eviltools/guarded_exec.py",
+        "--",
+        "node",
+        "--version",
+    ]
+    disguised = command_envelope.envelope_for_command(disguised_command)
+    with pytest.raises(ValueError, match="relative guarded_exec path is not canonical"):
+        command_envelope._bind_delegated_command(
+            disguised,
+            list(disguised_command),
+            cwd=state.ROOT,
+            env=os.environ,
+        )
 
 
 def test_guarded_exec_rejects_opaque_delegated_shell() -> None:
@@ -341,13 +440,13 @@ def test_guarded_exec_rejects_two_delegation_layers() -> None:
 
 
 def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -> None:
-    git = shutil.which("git")
-    assert git is not None
+    node = shutil.which("node")
+    assert node is not None
     command = [
         sys.executable,
         "tools/guarded_exec.py",
         "--",
-        git,
+        node,
         "--version",
     ]
     envelope = command_envelope.envelope_for_command(command)
@@ -359,7 +458,7 @@ def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -
         env=os.environ,
     )
     assert exact[1] == str((state.ROOT / "tools" / "guarded_exec.py").resolve())
-    assert exact[3] == str(Path(git).resolve())
+    assert os.path.normcase(exact[3]) == os.path.normcase(os.path.abspath(node))
     assert guarded_exec is not None and command_envelope._content_identity_available(
         guarded_exec
     )
@@ -368,7 +467,50 @@ def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -
     )
 
 
-def test_uv_console_script_binds_to_exact_overlay_interpreter_prefix() -> None:
+@pytest.mark.parametrize("mode", ["relative", "absolute", "module"])
+def test_guarded_exec_spellings_share_one_recursive_binding_authority(
+    mode: str,
+) -> None:
+    node = shutil.which("node")
+    assert node is not None
+    canonical = (state.ROOT / "tools" / "guarded_exec.py").resolve()
+    if mode == "module":
+        target = ["-m", "tools.guarded_exec"]
+    elif mode == "absolute":
+        target = [str(canonical)]
+    else:
+        target = ["tools/guarded_exec.py"]
+    command = [sys.executable, *target, "--", node, "--version"]
+    envelope = command_envelope.envelope_for_command(command)
+    assert envelope["guarded_exec"]["mode"] == (
+        "module" if mode == "module" else "script"
+    )
+    exact = command_envelope._exact_command(envelope, cwd=state.ROOT, env=os.environ)
+    guarded, delegated = command_envelope._bind_delegated_command(
+        envelope, exact, cwd=state.ROOT, env=os.environ
+    )
+    assert str(canonical) in exact
+    assert os.path.normcase(exact[-2]) == os.path.normcase(os.path.abspath(node))
+    assert command_envelope._content_identity_available(guarded or {})
+    assert command_envelope._content_identity_available(delegated or {})
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "other.guarded_exec", "--", "git", "--version"],
+        ["python", "tools/guarded_exec.py", "git", "--version"],
+        ["python", "-c", "print('guarded_exec delegation')"],
+    ],
+)
+def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
+    command: list[str],
+) -> None:
+    with pytest.raises(ValueError):
+        command_envelope.envelope_for_command(command)
+
+
+def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
     command = [
         "uv",
         "run",
@@ -377,8 +519,7 @@ def test_uv_console_script_binds_to_exact_overlay_interpreter_prefix() -> None:
         ".",
         "--python",
         "3.12",
-        "--with",
-        "pytest==8.4.1",
+        "--no-sync",
         "--isolated",
         "pytest",
         "tests/tools/test_proof_queue.py",
@@ -391,30 +532,70 @@ def test_uv_console_script_binds_to_exact_overlay_interpreter_prefix() -> None:
     }
 
 
-def test_non_python_command_has_no_fabricated_python_or_toolchain() -> None:
-    envelope = command_envelope.envelope_for_command(
-        ["C:/artifacts/native-proof.exe", "--self-test"]
-    )
-    assert envelope == {
-        "schema": command_envelope.ENVELOPE_SCHEMA,
-        "kind": "none",
-        "argv": ["C:/artifacts/native-proof.exe", "--self-test"],
-        "python": None,
-        "toolchains": [],
-        "delegated": None,
-    }
-
-
-def test_exact_uv_prefix_probe_preserves_every_interpreter_affecting_option(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--default-index=https://example.invalid/simple",
+        "--env-file=.env",
+        "--find-links=wheelhouse",
+        "--index=https://example.invalid/simple",
+        "--with=pytest==8.4.1",
+        "--with-editable=../other",
+    ],
+)
+def test_uv_input_escape_options_are_rejected_by_one_semantics_authority(
+    option: str,
 ) -> None:
+    with pytest.raises(ValueError, match="non-hermetic"):
+        command_envelope.envelope_for_command(["uv", "run", option, "python", "-V"])
+
+
+def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
+    with pytest.raises(ValueError, match="unknown proof executable kind"):
+        command_envelope.envelope_for_command(
+            ["C:/artifacts/native-proof.exe", "--self-test"]
+        )
+
+
+def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
+    plan = proof_plan.ProofPlan.load()
+    assert len(plan.commands) == 75
+    for command in plan.commands:
+        envelope = command_envelope.envelope_for_command(command.argv)
+        assert envelope["kind"] == "proof-plan", command.id
+        assert command.id in envelope["proof_plan_command_ids"]
+        assert envelope["toolchains"] == list(command.toolchains)
+        assert envelope["toolchains"], command.id
+
+
+@pytest.mark.parametrize(
+    ("executable", "toolchain"), [("node", "node"), ("wasm-tools", "wasm-tools")]
+)
+def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
+    executable: str, toolchain: str
+) -> None:
+    envelope = command_envelope.envelope_for_command([executable, "--version"])
+    assert envelope["kind"] == "toolchain"
+    assert envelope["toolchains"] == [toolchain]
+    assert envelope["proof_plan_command_ids"] == []
+
+
+def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    requirements_dir = runtime / "requirements"
+    requirements_dir.mkdir(parents=True)
+    requirements = requirements_dir / "proof.txt"
+    requirements.write_text(
+        "numpy==2.3.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
+    )
     command = [
         "uv",
         "run",
-        "--with",
-        "numpy==2.3.1",
         "--with-requirements",
         "requirements/proof.txt",
+        "--offline",
         "--isolated",
         "--directory=runtime",
         "--python",
@@ -424,12 +605,18 @@ def test_exact_uv_prefix_probe_preserves_every_interpreter_affecting_option(
         "pytest",
     ]
     envelope = command_envelope.envelope_for_command(command)
-    exact = ["C:/Tools/uv.exe", *command[1:]]
-    probe = command_envelope._python_probe_command(envelope, exact)
+    prefix, effective, overlays = command_envelope._canonical_uv_prefix(
+        envelope, cwd=tmp_path
+    )
+    exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
+    probe = command_envelope._python_probe_command(
+        envelope, exact, source_root=effective
+    )
     assert probe is not None
-    assert probe[: command.index("python")] == ["C:/Tools/uv.exe", *command[1:command.index("python")]]
-    assert probe[-3:-1] == ["python", "-c"]
-    del monkeypatch
+    assert overlays == [requirements.resolve()]
+    assert probe[: len(prefix)] == exact[: len(prefix)]
+    assert probe[-4] == "python"
+    assert probe[-3] == str(command_envelope._PYTHON_IDENTITY_PROBE)
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -454,6 +641,25 @@ def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
         command_envelope._execution_source_paths(escaped, cwd=root)
 
 
+def test_uv_symlinked_source_selector_cannot_escape_admitted_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    link = root / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    envelope = command_envelope.envelope_for_command(
+        ["uv", "run", "--directory", "linked", "python", "-V"]
+    )
+    with pytest.raises(ValueError, match="escapes admitted source root"):
+        command_envelope._canonical_uv_prefix(envelope, cwd=root)
+
+
 def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
     tmp_path: Path,
 ) -> None:
@@ -461,7 +667,9 @@ def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
     runtime = root / "runtime"
     runtime.mkdir(parents=True)
     requirements = runtime / "proof-requirements.txt"
-    requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
+    requirements.write_text(
+        "pytest==8.4.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
+    )
     envelope = command_envelope.envelope_for_command(
         [
             "uv",
@@ -470,6 +678,7 @@ def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
             "runtime",
             "--with-requirements",
             "proof-requirements.txt",
+            "--offline",
             "python",
             "-V",
         ]
@@ -480,6 +689,38 @@ def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
     identity = command_envelope._file_identity(overlays[0])
     assert identity["size_bytes"] == len(requirements.read_bytes())
     assert len(identity["sha256"]) == 64
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "pytest>=8",
+        "pytest==8.4.1",
+        "-e ../editable",
+        "--index-url https://example.invalid/simple",
+        "-r nested.txt",
+        "demo @ file:///tmp/demo.whl",
+        "demo==https://example.invalid/demo.whl --hash=sha256:" + "a" * 64,
+    ],
+)
+def test_uv_requirements_custody_rejects_unlocked_or_nested_inputs(
+    tmp_path: Path, requirement: str
+) -> None:
+    path = tmp_path / "proof.txt"
+    path.write_text(requirement + "\n", encoding="utf-8")
+    envelope = command_envelope.envelope_for_command(
+        [
+            "uv",
+            "run",
+            "--offline",
+            "--with-requirements",
+            "proof.txt",
+            "python",
+            "-V",
+        ]
+    )
+    with pytest.raises(ValueError, match="exact name==version"):
+        command_envelope._execution_source_paths(envelope, cwd=tmp_path)
 
 
 def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
@@ -523,6 +764,144 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version() -> None:
         )
 
 
+def test_environment_selected_executable_inputs_are_content_bound(
+    tmp_path: Path,
+) -> None:
+    wrapper = tmp_path / Path(sys.executable).name
+    shutil.copy2(sys.executable, wrapper)
+    environment = {
+        "RUSTC_WRAPPER": f'"{wrapper}" --wrapper-argument',
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": str(wrapper),
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": str(wrapper),
+    }
+    before = command_envelope._execution_environment_executable_identities(
+        environment, cwd=tmp_path
+    )
+    assert before["RUSTC_WRAPPER"]["argument_count"] == 1
+    assert set(before) == set(environment)
+    assert before["RUSTC_WRAPPER"]["executable"]["path"] == str(wrapper.resolve())
+    wrapper.write_bytes(wrapper.read_bytes() + b"custody-mutation")
+    after = command_envelope._execution_environment_executable_identities(
+        environment, cwd=tmp_path
+    )
+    assert (
+        before["RUSTC_WRAPPER"]["executable"]["sha256"]
+        != after["RUSTC_WRAPPER"]["executable"]["sha256"]
+    )
+
+
+def test_node_tool_identity_binds_runtime_versions_configuration_and_global_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_payload = {
+        "execPath": str(Path(sys.executable).resolve()),
+        "versions": {"node": "24.16.0", "modules": "137"},
+        "config": {"variables": {"node_module_version": 137}},
+        "globalPaths": [],
+    }
+
+    monkeypatch.setattr(
+        command_envelope,
+        "_which_in_command_environment",
+        lambda *_args, **_kwargs: Path(sys.executable).resolve(),
+    )
+
+    def fake_run(
+        command: object, *, cwd: Path, env: dict[str, str], timeout: float = 30.0
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout
+        argv = list(command)
+        if "-e" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(runtime_payload), "")
+        return subprocess.CompletedProcess(argv, 0, "v24.16.0", "")
+
+    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
+    plan = proof_plan.ProofPlan.load()
+    identity = command_envelope._tool_identity(
+        plan,
+        "node",
+        {"python": None},
+        [sys.executable],
+        cwd=Path.cwd(),
+        env={},
+    )
+    command_envelope._validate_toolchain_identity(plan, "node", identity)
+    assert identity["runtime"] == runtime_payload
+    assert re.fullmatch(r"[0-9a-f]{64}", identity["runtime_sha256"])
+
+
+def test_quint_tool_identity_binds_resolved_node_package_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "node_modules" / "@informalsystems" / "quint"
+    package.mkdir(parents=True)
+    manifest = package / "package.json"
+    entry = package / "cli.js"
+    manifest.write_text(
+        json.dumps({"name": "@informalsystems/quint", "version": "0.32.0"}),
+        encoding="utf-8",
+    )
+    entry.write_text("console.log('quint')\n", encoding="utf-8")
+    observed: list[str] = []
+
+    def fake_which(
+        name: str,
+        _envelope: object,
+        _exact: object,
+        *,
+        cwd: Path,
+        env: dict[str, str],
+    ) -> Path:
+        del cwd, env
+        observed.append(name)
+        return Path(sys.executable).resolve()
+
+    def fake_run(
+        command: object, *, cwd: Path, env: dict[str, str], timeout: float = 30.0
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout
+        argv = list(command)
+        if "@informalsystems/quint" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "entry": str(entry),
+                        "manifest": str(manifest),
+                        "root": str(package),
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(argv, 0, "Quint 0.32.0", "")
+
+    monkeypatch.setattr(command_envelope, "_which_in_command_environment", fake_which)
+    monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
+    plan = proof_plan.ProofPlan.load()
+    before = command_envelope._tool_identity(
+        plan,
+        "quint",
+        {"python": None},
+        [sys.executable],
+        cwd=tmp_path,
+        env={},
+    )
+    assert observed == ["quint", "node"]
+    assert before["node_package"]["package"]["file_count"] == 2
+    entry.write_text("console.log('mutated')\n", encoding="utf-8")
+    observed.clear()
+    after = command_envelope._tool_identity(
+        plan,
+        "quint",
+        {"python": None},
+        [sys.executable],
+        cwd=tmp_path,
+        env={},
+    )
+    assert before["identity_sha256"] != after["identity_sha256"]
+
+
 def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -> None:
     base = {
         "PATH": "C:\\Tools;C:\\Rust\\bin",
@@ -540,13 +919,21 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         "UNRELATED_SECRET_TOKEN": "must-not-appear",
     }
     normalized, policies = command_envelope.normalize_cargo_environment(base)
+    execution_env, contract = command_envelope._deterministic_execution_environment(
+        normalized, override_names=[]
+    )
+    fingerprint_key = b"k" * 32
     authority = command_envelope._execution_environment_authority(
-        normalized, applied_cargo_policies=policies
+        execution_env,
+        applied_cargo_policies=policies,
+        fingerprint_key=fingerprint_key,
+        contract=contract,
     )
     variables = authority["variables"]
     assert variables["PATH"]["redacted"] is True
     assert "value" not in variables["PATH"]
-    assert variables["CARGO_INCREMENTAL"]["value"] == "0"
+    assert variables["CARGO_INCREMENTAL"]["redacted"] is True
+    assert "value" not in variables["CARGO_INCREMENTAL"]
     for name in (
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
@@ -556,26 +943,603 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
     ):
         assert name in variables
     assert "UNRELATED_SECRET_TOKEN" not in variables
-    assert variables["UV_INDEX_URL"]["redacted"] is True
-    assert "value" not in variables["UV_INDEX_URL"]
-    assert "entry_count" not in variables["UV_INDEX_URL"]
+    assert "UV_INDEX_URL" not in variables
     assert variables["UV_CACHE_DIR"]["redacted"] is True
+    changed_env = {**execution_env, "RUSTUP_TOOLCHAIN": "nightly"}
     changed = command_envelope._execution_environment_authority(
-        {**normalized, "RUSTUP_TOOLCHAIN": "nightly"},
+        changed_env,
         applied_cargo_policies=policies,
+        fingerprint_key=fingerprint_key,
+        contract=contract,
     )
     assert changed["identity_sha256"] != authority["identity_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("UNCLASSIFIED_BEHAVIOR", "1"),
+        ("MOLT_BAD-NAME", "1"),
+        ("PYTHONPATH", "C:/untracked/source"),
+        ("PYTHONHOME", "C:/untracked/python"),
+        ("PYTHONSTARTUP", "C:/untracked/startup.py"),
+        ("PYTHONBREAKPOINT", "untracked.debugger"),
+        ("PYTEST_ADDOPTS", "-p malicious"),
+        ("UV_INDEX_URL", "https://example.invalid/simple"),
+        ("MOLT_API_TOKEN", "super-secret-value"),
+        ("MOLT_ENDPOINT", "https://user:password@example.invalid"),
+        ("MOLT_ENDPOINT", "https://bearer-token@example.invalid"),
+    ],
+)
+def test_environment_override_policy_rejects_unbound_or_secret_behavior(
+    name: str, value: str
+) -> None:
+    assert command_envelope.environment_override_policy_error({name: value}) is not None
+
+
+def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed() -> (
+    None
+):
+    inherited = {
+        "PATH": "C:/tools",
+        "MOLT_TRACE_IMPORT_STAGE": "1",
+        "PYTHONPATH": "C:/untracked/source",
+        "PYTHONHOME": "C:/untracked/python",
+        "PYTEST_ADDOPTS": "-p attacker",
+        "UNCLASSIFIED_BEHAVIOR": "active",
+        "MOLT_AUTH_TOKEN": "secret",
+    }
+    selected, contract = command_envelope._deterministic_execution_environment(
+        inherited, override_names=["MOLT_TRACE_IMPORT_STAGE"]
+    )
+    assert selected == {"PATH": "C:/tools", "MOLT_TRACE_IMPORT_STAGE": "1"}
+    assert contract["passed_names"] == ["MOLT_TRACE_IMPORT_STAGE", "PATH"]
+    assert contract["override_names"] == ["MOLT_TRACE_IMPORT_STAGE"]
+    assert contract["omitted_names"] == [
+        "MOLT_AUTH_TOKEN",
+        "PYTEST_ADDOPTS",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "UNCLASSIFIED_BEHAVIOR",
+    ]
+    authority = command_envelope._execution_environment_authority(
+        selected,
+        applied_cargo_policies=(),
+        fingerprint_key=b"z" * 32,
+        contract=contract,
+    )
+    serialized = json.dumps(authority, sort_keys=True)
+    assert "C:/tools" not in serialized
+    assert '"1"' not in serialized
+    assert "attacker" not in serialized
+    assert "secret" not in serialized
+
+
+def test_environment_override_policy_rejects_case_ambiguous_names() -> None:
+    error = command_envelope.environment_override_policy_error(
+        {"MOLT_TRACE_CAPI": "1", "molt_trace_capi": "0"}
+    )
+    assert error is not None
+    assert "case-ambiguous" in error
+
+
+@pytest.mark.parametrize(
+    "pairs",
+    [
+        ["MOLT_TRACE_CAPI=1", "MOLT_TRACE_CAPI=0"],
+        ["MOLT_TRACE_CAPI=1", "molt_trace_capi=0"],
+    ],
+)
+def test_environment_pair_parser_rejects_duplicate_names_before_collapsing(
+    pairs: list[str],
+) -> None:
+    with pytest.raises(SystemExit, match="duplicate environment override names"):
+        policy._env_overrides_from_pairs(pairs)
+
+
+def test_uv_custody_flags_cannot_be_spoofed_by_payload_arguments() -> None:
+    command = [
+        "uv",
+        "run",
+        "python",
+        "-c",
+        "pass",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+    ]
+    error = policy._proof_command_policy_error(command)
+    assert error is not None
+    assert (
+        "missing --active, --project ., --python 3.12, --no-sync, --no-config" in error
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "env_overrides"),
+    [
+        ([sys.executable, "-c", "pass"], {"MOLT_API_TOKEN": "do-not-persist"}),
+        ([sys.executable, "--token", "do-not-persist"], {}),
+        ([sys.executable, "https://bearer-token@example.invalid"], {}),
+    ],
+)
+def test_secret_input_is_rejected_before_database_log_or_evidence_projection(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    env_overrides: dict[str, str],
+) -> None:
+    args = argparse.Namespace(
+        db=tmp_path / "proof.sqlite3",
+        logs_root=tmp_path / "runs",
+        repo_root=state.ROOT,
+    )
+    rc, run_id = runner._queue_one(
+        args,
+        logical_id="secret-rejection",
+        reason="prove secrets never enter custody storage",
+        command=command,
+        resource_family="python-tests",
+        contention_key="secret-rejection",
+        scopes=["tools/proof_queue_pkg/command_envelope.py"],
+        env_overrides=env_overrides,
+        initial_notes=["secret rejection fixture"],
+    )
+    assert rc == 2
+    assert run_id is None
+    assert not args.db.exists()
+    assert not args.logs_root.exists()
+    output = capsys.readouterr()
+    assert "do-not-persist" not in output.out + output.err
+
+
+def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    executable = environment / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    purelib = Path(
+        subprocess.check_output(
+            [
+                str(executable),
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+            ],
+            text=True,
+        ).strip()
+    )
+    module = purelib / "custody_demo.py"
+    module.write_bytes(b"original\n")
+    dist_info = purelib / "custody_demo-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: custody-demo\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    declared = (
+        base64.urlsafe_b64encode(hashlib.sha256(module.read_bytes()).digest())
+        .decode()
+        .rstrip("=")
+    )
+    (dist_info / "RECORD").write_text(
+        f"custody_demo.py,sha256={declared},{module.stat().st_size}\n"
+        "custody_demo-1.0.dist-info/METADATA,,\n"
+        "custody_demo-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    probe_env = {
+        name: value for name, value in os.environ.items() if name != "PYTHONPATH"
+    }
+    identities = []
+    for workers in (1, 4):
+        clean = subprocess.run(
+            [
+                str(executable),
+                str(command_envelope._PYTHON_IDENTITY_PROBE),
+                str(tmp_path),
+                str(workers),
+            ],
+            check=False,
+            env=probe_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert clean.returncode == 0, clean.stderr
+        payload = json.loads(clean.stdout)
+        identities.append(payload["distribution_inventory_sha256"])
+        assert payload["inventory_profile"]["hash_workers"] == workers
+        runtime = payload["runtime"]
+        assert runtime["runtime_file_count"] > 0
+        assert runtime["runtime_unique_file_count"] > 0
+        authorities = {row["authority"] for row in runtime["explicit_authority_files"]}
+        assert {"venv-executable", "base-executable", "pyvenv-config"} <= authorities
+        assert runtime["native_extension_files"]
+        distribution = next(
+            row for row in payload["distributions"] if row["name"] == "custody-demo"
+        )
+        assert distribution["installed_files"]
+        assert all(
+            row["escape_classification"] == "install-prefix-contained"
+            for row in distribution["installed_files"]
+        )
+        assert all(row["resolved_path"] for row in distribution["installed_files"])
+    assert len(set(identities)) == 1
+
+    pyvenv_config = environment / "pyvenv.cfg"
+    original_config = pyvenv_config.read_bytes()
+    pyvenv_config.write_bytes(original_config + b"\n# custody mutation\n")
+    changed_runtime = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert changed_runtime.returncode == 0, changed_runtime.stderr
+    assert (
+        json.loads(changed_runtime.stdout)["runtime_closure_sha256"]
+        != payload["runtime_closure_sha256"]
+    )
+    pyvenv_config.write_bytes(original_config)
+
+    outside = tmp_path.parent / f"{tmp_path.name}-record-escape.py"
+    outside.write_bytes(b"original\n")
+    escaped_relative = os.path.relpath(outside, purelib).replace(os.sep, "/")
+    (dist_info / "RECORD").write_text(
+        f"{escaped_relative},,\n"
+        "custody_demo-1.0.dist-info/METADATA,,\n"
+        "custody_demo-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    escaped = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert escaped.returncode != 0
+    assert "RECORD path has no admitted owner" in escaped.stderr
+    assert str(outside.resolve()) in escaped.stderr
+
+    (dist_info / "RECORD").write_text(
+        f"custody_demo.py,sha256={declared},{module.stat().st_size}\n"
+        "custody_demo-1.0.dist-info/METADATA,,\n"
+        "custody_demo-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    module.write_bytes(b"tampered\n")
+    completed = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "installed distribution RECORD hash mismatch" in completed.stderr
+
+    module.write_bytes(b"original\n")
+    (dist_info / "RECORD").unlink()
+    missing_inventory = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert missing_inventory.returncode != 0
+    assert "has no installed file inventory" in missing_inventory.stderr
+
+
+def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_escape(
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    executable = environment / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    purelib = Path(
+        subprocess.check_output(
+            [
+                str(executable),
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+            ],
+            text=True,
+        ).strip()
+    )
+    target = purelib / "custody_symlink_target.py"
+    target.write_bytes(b"owned\n")
+    linked = purelib / "custody_symlink.py"
+    try:
+        os.symlink(target, linked)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    dist_info = purelib / "custody_symlink-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: custody-symlink\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    declared = (
+        base64.urlsafe_b64encode(hashlib.sha256(target.read_bytes()).digest())
+        .decode()
+        .rstrip("=")
+    )
+    (dist_info / "RECORD").write_text(
+        f"custody_symlink.py,sha256={declared},{target.stat().st_size}\n"
+        "custody_symlink-1.0.dist-info/METADATA,,\n"
+        "custody_symlink-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    probe_env = {
+        name: value for name, value in os.environ.items() if name != "PYTHONPATH"
+    }
+    owned = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert owned.returncode == 0, owned.stderr
+    distribution = next(
+        row
+        for row in json.loads(owned.stdout)["distributions"]
+        if row["name"] == "custody-symlink"
+    )
+    assert distribution["symlink_files"] == [
+        next(
+            row
+            for row in distribution["installed_files"]
+            if row["relative"] == "custody_symlink.py"
+        )
+    ]
+    assert distribution["symlink_files"][0]["owner"] == "install-prefix"
+    assert distribution["symlink_files"][0]["resolved_path"] == str(target.resolve())
+
+    linked.unlink()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-symlink.py"
+    outside.write_bytes(target.read_bytes())
+    os.symlink(outside, linked)
+    escaped = subprocess.run(
+        [
+            str(executable),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(tmp_path),
+            "1",
+        ],
+        check=False,
+        env=probe_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert escaped.returncode != 0
+    assert "RECORD path has no admitted owner" in escaped.stderr
+    assert f"resolved={outside.resolve()}" in escaped.stderr
+
+
+def test_python_probe_rejects_ambiguous_source_distribution_ownership(
+    tmp_path: Path,
+) -> None:
+    environment_root = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment_root)
+    custody_python = environment_root / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    project = tmp_path / "source-project"
+    _initialize_clean_git_repo(project)
+    source = project / "src"
+    metadata_root = source / "custody_ambiguous.egg-info"
+    metadata_root.mkdir(parents=True)
+    (metadata_root / "PKG-INFO").write_text(
+        "Metadata-Version: 2.1\nName: custody-ambiguous\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (metadata_root / "top_level.txt").write_text(
+        "custody_ambiguous\n", encoding="utf-8"
+    )
+    (project / "custody_ambiguous.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "custody_ambiguous.py").write_text("VALUE = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "ambiguous source metadata"],
+        cwd=project,
+        check=True,
+    )
+    environment = {**os.environ, "PYTHONPATH": str(source)}
+    completed = subprocess.run(
+        [
+            str(custody_python),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(project),
+            "1",
+        ],
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "has 2 top-level owners for 'custody_ambiguous'" in completed.stderr
+
+    shutil.rmtree(metadata_root)
+    purelib = Path(
+        subprocess.check_output(
+            [
+                str(custody_python),
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+            ],
+            text=True,
+        ).strip()
+    )
+    direct_metadata = purelib / "custody_ambiguous-1.0.dist-info"
+    direct_metadata.mkdir()
+    (direct_metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: custody-ambiguous\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (direct_metadata / "top_level.txt").write_text(
+        "custody_ambiguous\n", encoding="utf-8"
+    )
+    (direct_metadata / "direct_url.json").write_text(
+        json.dumps(
+            {
+                "url": project.resolve().as_uri(),
+                "dir_info": {"editable": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (direct_metadata / "RECORD").write_text(
+        "custody_ambiguous-1.0.dist-info/METADATA,,\n"
+        "custody_ambiguous-1.0.dist-info/top_level.txt,,\n"
+        "custody_ambiguous-1.0.dist-info/direct_url.json,,\n"
+        "custody_ambiguous-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    direct = subprocess.run(
+        [
+            str(custody_python),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(project),
+            "1",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert direct.returncode != 0
+    assert (
+        "editable distribution custody-ambiguous has 2 top-level owners "
+        "for 'custody_ambiguous'"
+    ) in direct.stderr
+
+
+def test_python_probe_rejects_source_metadata_symlink_escape(
+    tmp_path: Path, custody_python: Path
+) -> None:
+    project = tmp_path / "source-project"
+    _initialize_clean_git_repo(project)
+    source = project / "src"
+    (source / "custody_symlink.py").parent.mkdir(parents=True, exist_ok=True)
+    (source / "custody_symlink.py").write_text("VALUE = 1\n", encoding="utf-8")
+    metadata_root = source / "custody_symlink.egg-info"
+    metadata_root.mkdir()
+    (metadata_root / "PKG-INFO").write_text(
+        "Metadata-Version: 2.1\nName: custody-symlink\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (metadata_root / "top_level.txt").write_text("custody_symlink\n", encoding="utf-8")
+    external = project / "external-metadata.txt"
+    external.write_text("outside metadata root\n", encoding="utf-8")
+    try:
+        os.symlink(external, metadata_root / "escaped.txt")
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    environment = {**os.environ, "PYTHONPATH": str(source)}
+    completed = subprocess.run(
+        [
+            str(custody_python),
+            str(command_envelope._PYTHON_IDENTITY_PROBE),
+            str(project),
+            "1",
+        ],
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "source-owned distribution metadata file escapes" in completed.stderr
+
+
+def test_editable_source_manifest_change_is_an_explicit_ineligibility_reason() -> None:
+    before = {
+        "distributions": [
+            {
+                "name": "molt",
+                "editable_source": {"root": "C:/Molt", "content_sha256": "a" * 64},
+            }
+        ]
+    }
+    after = {
+        "distributions": [
+            {
+                "name": "molt",
+                "editable_source": {"root": "C:/Molt", "content_sha256": "b" * 64},
+            }
+        ]
+    }
+    assert command_envelope._python_editable_change_reasons(before, after) == [
+        "python-editable-source-changed:molt"
+    ]
 
 
 def _initialize_clean_git_repo(path: Path) -> str:
     path.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "proof@example.invalid"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "proof@example.invalid"], cwd=path, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Proof Queue"], cwd=path, check=True)
     (path / "tracked.txt").write_text("initial\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True)
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=path, text=True
+    ).strip()
+
+
+@pytest.fixture(scope="module")
+def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    environment = tmp_path_factory.mktemp("proof-custody-python") / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def _execute_request(
@@ -591,6 +1555,9 @@ def _execute_request(
         json.dumps(
             {
                 "schema": command_envelope.EXECUTION_SCHEMA,
+                "run_id": "unit-run",
+                "execution_nonce": "a" * 64,
+                "env_override_names": [],
                 "command": command,
                 "envelope": envelope,
                 "cwd": str(repo),
@@ -602,6 +1569,260 @@ def _execute_request(
     )
     rc = command_envelope.execute_guarded_request(request)
     return rc, json.loads(result.read_text(encoding="utf-8"))
+
+
+def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
+    tmp_path: Path,
+) -> None:
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_envelope.envelope_for_command(command)
+    row = {"command_envelope_json": json.dumps(envelope)}
+    log = tmp_path / "run.log"
+    stale_paths = [
+        log.with_suffix(".execution-request.json"),
+        log.with_suffix(".execution.json"),
+        log.with_suffix(".execution.stdout.bin"),
+        log.with_suffix(".execution.stderr.bin"),
+        log.with_suffix(".memory_guard.json"),
+    ]
+    for path in stale_paths:
+        path.write_text("stale", encoding="utf-8")
+    request_path, result_path, persisted, first_nonce = runner._write_execution_request(
+        row=row,  # type: ignore[arg-type]
+        command=command,
+        repo_root=tmp_path,
+        resource_family="python-tests",
+        run_id="run-one",
+        env_override_names=[],
+        log_path=log,
+        summary_path=log.with_suffix(".memory_guard.json"),
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert persisted == envelope
+    assert request["execution_nonce"] == first_nonce
+    assert not result_path.exists()
+    assert not result_path.with_suffix(".stdout.bin").exists()
+    assert not result_path.with_suffix(".stderr.bin").exists()
+    _, _, _, second_nonce = runner._write_execution_request(
+        row=row,  # type: ignore[arg-type]
+        command=command,
+        repo_root=tmp_path,
+        resource_family="python-tests",
+        run_id="run-one",
+        env_override_names=[],
+        log_path=log,
+        summary_path=log.with_suffix(".memory_guard.json"),
+    )
+    assert second_nonce != first_nonce
+
+
+def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "guard.json"
+    guarded_command = [
+        sys.executable,
+        "command_envelope.py",
+        "--request",
+        "request.json",
+    ]
+    base = {
+        "command": guarded_command,
+        "returncode": 0,
+        "violation": None,
+        "timed_out": False,
+        "exit_signal": None,
+        "guard_signal": None,
+        "incident": None,
+        "orphaned_process_groups": [],
+        "windows_job_cleanup": {
+            "completed": True,
+            "after": {"active_processes": 0},
+            "terminated_remaining_processes": False,
+        },
+        "sampling_telemetry": {
+            "attempts": 1,
+            "successes": 1,
+            "transient_failures": 0,
+            "enforcement_complete": True,
+        },
+    }
+    summary.write_text(json.dumps(base), encoding="utf-8")
+    receipt = runner._validated_guard_receipt(
+        summary,
+        guarded_command=guarded_command,
+        returncode=0,
+        run_id="run-one",
+        execution_nonce="a" * 64,
+        guard_pid=123,
+    )
+    assert len(receipt["identity_sha256"]) == 64
+    for mutation, message in [
+        ({"command": ["substituted"]}, "command substitution"),
+        ({"returncode": 1}, "return-code substitution"),
+        ({"timed_out": True}, "clean terminal outcome"),
+        ({"exit_signal": 9}, "clean terminal outcome"),
+        ({"orphaned_process_groups": [42]}, "clean terminal outcome"),
+        ({"windows_job_cleanup": {"completed": False}}, "cleanup is incomplete"),
+        (
+            {
+                "windows_job_cleanup": {
+                    "completed": True,
+                    "after": {"active_processes": 1},
+                    "terminated_remaining_processes": False,
+                }
+            },
+            "cleanup is incomplete",
+        ),
+        (
+            {
+                "sampling_telemetry": {
+                    "attempts": 1,
+                    "successes": 0,
+                    "transient_failures": 1,
+                    "enforcement_complete": False,
+                }
+            },
+            "sampling enforcement is incomplete",
+        ),
+    ]:
+        summary.write_text(json.dumps({**base, **mutation}), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            runner._validated_guard_receipt(
+                summary,
+                guarded_command=guarded_command,
+                returncode=0,
+                run_id="run-one",
+                execution_nonce="a" * 64,
+                guard_pid=123,
+            )
+
+
+def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
+    tmp_path: Path,
+) -> None:
+    execution_path = tmp_path / "run.execution.json"
+    stdout_path = execution_path.with_suffix(".stdout.bin")
+    stderr_path = execution_path.with_suffix(".stderr.bin")
+    stdout_path.write_bytes(b"1 passed in 0.01s\n")
+    stderr_path.write_bytes(b"")
+    transcript = {
+        "stdout": command_envelope._transcript_identity(stdout_path),
+        "stderr": command_envelope._transcript_identity(stderr_path),
+    }
+    transcript["identity_sha256"] = hashlib.sha256(
+        json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    envelope = command_envelope.envelope_for_command([sys.executable, "-c", "pass"])
+    context: dict[str, object] = {
+        "run_id": "run-one",
+        "execution_nonce_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
+        "command_envelope": envelope,
+        "command_transcript": transcript,
+        "toolchains": {"python": {"identity_sha256": "b" * 64}},
+        "toolchain_custody": {
+            "prelaunch": {"python": {"identity_sha256": "b" * 64}},
+            "postcompletion": {"python": {"identity_sha256": "b" * 64}},
+            "identical": True,
+        },
+    }
+    context["execution_custody_sha256"] = command_envelope.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
+    runner._validated_execution_context(
+        context,
+        execution_path=execution_path,
+        envelope=envelope,
+        run_id="run-one",
+        execution_nonce="a" * 64,
+        returncode=0,
+    )
+    stdout_path.write_bytes(b"substituted\n")
+    with pytest.raises(ValueError, match="transcript content substitution"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    stdout_path.write_bytes(b"1 passed in 0.01s\n")
+    context["execution_custody_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="custody digest mismatch"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+
+
+def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -> None:
+    transcript = tmp_path / "stdout.bin"
+    transcript.write_bytes(b"alpha\n12 passed, 2 skipped in 1.00s\nomega\n")
+    identity = command_envelope._transcript_identity(transcript)
+    assert identity["test_counts"] == {"passed": 12, "skipped": 2}
+    assert identity["structured_test_output"] is True
+    assert identity["sha256"] == hashlib.sha256(transcript.read_bytes()).hexdigest()
+
+
+def test_postexecution_toolchain_and_executable_mutation_are_ineligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "mutated-toolchain-repo"
+    _initialize_clean_git_repo(repo)
+    captures = 0
+
+    def python_identity(digest: str) -> dict[str, object]:
+        identity: dict[str, object] = {
+            "executable": sys.executable,
+            "implementation": "CPython",
+            "version": "3.12.13",
+            "executable_sha256": "a" * 64,
+            "runtime_closure_sha256": "f" * 64,
+            "runtime": {"runtime_file_count": 1},
+            "distribution_inventory_sha256": digest,
+            "distributions": [],
+        }
+        identity["identity_sha256"] = hashlib.sha256(
+            json.dumps(identity, sort_keys=True).encode()
+        ).hexdigest()
+        return identity
+
+    def capture(
+        *_args: object, **_kwargs: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        nonlocal captures
+        captures += 1
+        identity = python_identity(("b" if captures == 1 else "c") * 64)
+        return identity, {"python": identity}
+
+    executable_captures = 0
+    real_executable_identity = command_envelope._executable_identity
+
+    def executable_identity(path: Path) -> dict[str, object]:
+        nonlocal executable_captures
+        executable_captures += 1
+        identity = real_executable_identity(path)
+        if executable_captures > 1:
+            identity["sha256"] = "d" * 64
+            identity["identity_sha256"] = "e" * 64
+        return identity
+
+    monkeypatch.setattr(command_envelope, "_capture_toolchains", capture)
+    monkeypatch.setattr(command_envelope, "_executable_identity", executable_identity)
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "mutated-toolchain.json",
+        [sys.executable, "-c", "print('proof')"],
+    )
+    assert rc == 0
+    reasons = record["receipt_context"]["source_custody"]["ineligible_reasons"]
+    assert "toolchain-or-python-distribution-changed" in reasons
+    assert "command-executable-changed" in reasons
 
 
 def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
@@ -617,7 +1838,16 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     assert rc == 0
     context = record["receipt_context"]
     assert context["source_commit"] == commit
-    assert context["source_custody"]["evidence_eligible"] is True
+    assert context["source_tree"]
+    assert context["source_custody"]["evidence_eligible"] is False
+    assert any(
+        reason.startswith("python-editable-source-outside:")
+        for reason in context["source_custody"]["ineligible_reasons"]
+    )
+    assert any(
+        reason.startswith("python-source-metadata-outside:")
+        for reason in context["source_custody"]["ineligible_reasons"]
+    )
     executable = context["command_executable"]
     assert executable["identical"] is True
     assert executable["prelaunch"]["path"] == str(Path(sys.executable).resolve())
@@ -631,6 +1861,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
         "file_manifest_sha256",
         "direct_url_sha256",
         "installer_sha256",
+        "installed_file_count",
     } <= python_identity["distributions"][0].keys()
 
 
@@ -641,21 +1872,32 @@ def test_guarded_receipt_rejects_stable_dirty_source(tmp_path: Path) -> None:
     rc, record = _execute_request(
         repo,
         tmp_path / "dirty-execution.json",
-        [sys.executable, "-c", "pass"],
+        [sys.executable, "-c", "print('proof')"],
     )
     assert rc == 0
     custody_payload = record["receipt_context"]["source_custody"]
     assert custody_payload["identical"] is True
     assert custody_payload["evidence_eligible"] is False
-    assert custody_payload["ineligible_reasons"] == [
-        "source-dirty-prelaunch",
-        "source-dirty-postcompletion",
-    ]
+    assert "source-dirty-prelaunch" in custody_payload["ineligible_reasons"]
+    assert "source-dirty-postcompletion" in custody_payload["ineligible_reasons"]
 
 
 def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) -> None:
     repo = tmp_path / "mutated-repo"
     _initialize_clean_git_repo(repo)
+    patch = repo / "mutation.patch"
+    patch.write_text(
+        "diff --git a/tracked.txt b/tracked.txt\n"
+        "index e79c5e8..2e09960 100644\n"
+        "--- a/tracked.txt\n"
+        "+++ b/tracked.txt\n"
+        "@@ -1 +1 @@\n"
+        "-initial\n"
+        "+mutated\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "mutation.patch"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add mutation"], cwd=repo, check=True)
     rc, record = _execute_request(
         repo,
         tmp_path / "mutated-execution.json",
@@ -690,6 +1932,9 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
         json.dumps(
             {
                 "schema": command_envelope.EXECUTION_SCHEMA,
+                "run_id": "timeout-unit-run",
+                "execution_nonce": "b" * 64,
+                "env_override_names": [],
                 "command": command,
                 "envelope": envelope,
                 "cwd": str(repo),
@@ -748,7 +1993,7 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
     monkeypatch.setattr(command_envelope, "_which_in_command_environment", fake_which)
     monkeypatch.setattr(command_envelope, "_run_captured", fake_run)
     identity = command_envelope._tool_identity(
-        "cargo",
+        proof_plan.ProofPlan.load(),
         "cargo",
         {"python": None},
         [sys.executable],
@@ -967,10 +2212,12 @@ def _rows(db: Path) -> list[sqlite3.Row]:
 
 
 def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, custody_python: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
 
     def reject_wasm_toolchain_load():
         raise AssertionError("non-WASM queue commands must stay import-light")
@@ -984,7 +2231,7 @@ def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "python-import-light",
@@ -995,7 +2242,7 @@ def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
             "--contention-key",
             "python:import-light",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
             "print('ran')",
         ]
@@ -1144,11 +2391,13 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
 
 
 def test_proof_queue_exec_records_passed_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custody_python: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_POLL_SEC", "0.1")
 
     rc = cli.main(
@@ -1160,7 +2409,7 @@ def test_proof_queue_exec_records_passed_run(
             "--notebooks-root",
             str(notebooks),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "queue-smoke",
@@ -1171,15 +2420,15 @@ def test_proof_queue_exec_records_passed_run(
             "--contention-key",
             "python:queue-smoke",
             "--env",
-            "PROOF_QUEUE_TEST=queue-ok",
+            "MOLT_PROOF_QUEUE_TEST=queue-ok",
             "--note",
             "changed queue smoke to verify note capture",
             "--timeout",
             "30",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
-            "import os; print(os.environ['PROOF_QUEUE_TEST'])",
+            "import os; print(os.environ['MOLT_PROOF_QUEUE_TEST'])",
         ]
     )
 
@@ -1190,9 +2439,8 @@ def test_proof_queue_exec_records_passed_run(
     assert rows[0]["returncode"] == 0
     receipt_context = json.loads(rows[0]["receipt_context_json"])
     assert receipt_context["environment"]["python"] == "3.12"
-    assert (
-        receipt_context["python_interpreters"]["proof_command"]["executable"]
-        == sys.executable
+    assert receipt_context["python_interpreters"]["proof_command"]["executable"] == str(
+        custody_python
     )
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "queue-ok" in log_text
@@ -1272,10 +2520,12 @@ def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -
 
 
 def test_proof_queue_exec_preserves_command_help_after_delimiter(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], custody_python: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
 
     assert (
         cli.main(
@@ -1285,7 +2535,7 @@ def test_proof_queue_exec_preserves_command_help_after_delimiter(
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "exec",
                 "--id",
                 "command-help",
@@ -1302,7 +2552,7 @@ def test_proof_queue_exec_preserves_command_help_after_delimiter(
                 "--timeout",
                 "30",
                 "--",
-                sys.executable,
+                str(custody_python),
                 "-c",
                 "import sys; print(sys.argv[1])",
                 "--help",
@@ -1389,10 +2639,12 @@ def test_proof_queue_exec_rejects_pre_delimiter_residue(
 
 
 def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
-    tmp_path: Path,
+    tmp_path: Path, custody_python: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
 
     rc = cli.main(
         [
@@ -1401,7 +2653,7 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "queue-poll-override",
@@ -1418,7 +2670,7 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
             "--timeout",
             "30",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
             "import os; print(os.environ['MOLT_MEMORY_GUARD_POLL_SEC'])",
         ]
@@ -1488,27 +2740,22 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
         ]
     )
 
-    rows = _rows(db)
     assert rc == 2
-    assert len(rows) == 1
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["returncode"] == 2
-    receipt_state = json.loads(rows[0]["receipt_context_json"])
-    assert receipt_state["status"] == "not-executed"
-    assert receipt_state["phase"] == "command policy rejection"
     assert launched == []
-    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
-    assert "proof queue refuses invalid environment override" in log_text
-    assert "MOLT_MEMORY_GUARD_POLL_SEC" in log_text
+    assert not db.exists()
+    assert not logs.exists()
 
 
 def test_proof_queue_evidence_accepts_positional_run_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    custody_python: Path,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
     base_args = [
         "--db",
         str(db),
@@ -1517,7 +2764,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
         "--notebooks-root",
         str(notebooks),
         "--repo-root",
-        str(state.ROOT),
+        str(repo),
     ]
     assert (
         cli.main(
@@ -1535,7 +2782,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
                 "--timeout",
                 "30",
                 "--",
-                sys.executable,
+                str(custody_python),
                 "-c",
                 "print('ok')",
             ]
@@ -1564,10 +2811,13 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    custody_python: Path,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     marker = tmp_path / "proof-ran.txt"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
 
     def fail_notebook(*_args: object, **_kwargs: object) -> Path:
         raise RuntimeError("notebook projection exploded")
@@ -1581,7 +2831,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "projection-warning",
@@ -1594,7 +2844,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
             "--note",
             "trigger projection before command execution but still run",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
             "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
             str(marker),
@@ -1625,7 +2875,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "evidence",
                 "--run-id",
                 rows[0]["run_id"],
@@ -1643,11 +2893,14 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    custody_python: Path,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     marker = tmp_path / "should-not-run.txt"
     followup_marker = tmp_path / "followup-ran.txt"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
 
     def fail_insert_note(*_args: object, **_kwargs: object) -> int:
         raise RuntimeError("note insert exploded")
@@ -1661,7 +2914,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "metadata-crash",
@@ -1674,7 +2927,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--note",
             "trigger metadata failure before command execution",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
             "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
             str(marker),
@@ -1706,7 +2959,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "evidence",
                 "--run-id",
                 rows[0]["run_id"],
@@ -1727,7 +2980,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "exec",
             "--id",
             "metadata-followup",
@@ -1738,7 +2991,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
             "--contention-key",
             "python:metadata-crash",
             "--",
-            sys.executable,
+            str(custody_python),
             "-c",
             "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
             str(followup_marker),
@@ -1775,7 +3028,7 @@ def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
             "--note",
             "the commanded executable must be attested before proof execution",
             "--",
-            str(tmp_path / "missing-proof-executable"),
+            str(tmp_path / "node"),
             str(marker),
         ]
     )
@@ -3917,9 +5170,13 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     assert not marker.exists()
 
 
-def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) -> None:
+def test_proof_queue_run_id_executes_only_selected_queued_row(
+    tmp_path: Path, custody_python: Path
+) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
     conn = state._connect(db)
     for run_id, marker in (("queued-a", "A"), ("queued-b", "B")):
         scheduling._insert_run(
@@ -3927,8 +5184,8 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
-            command=[sys.executable, "-c", f"print('{marker}')"],
-            cwd=state.ROOT,
+            command=[str(custody_python), "-c", f"print('{marker}')"],
+            cwd=repo,
             resource_family="python",
             contention_key=f"python:{marker}",
             scopes=[],
@@ -3943,7 +5200,7 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "run",
             "--run-id",
             "queued-b",
@@ -3957,9 +5214,13 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
 
 
-def test_proof_queue_run_id_executes_selected_dispatched_row(tmp_path: Path) -> None:
+def test_proof_queue_run_id_executes_selected_dispatched_row(
+    tmp_path: Path, custody_python: Path
+) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
     conn = state._connect(db)
     for run_id, marker in (("queued-a", "A"), ("dispatched-b", "B")):
         scheduling._insert_run(
@@ -3967,8 +5228,8 @@ def test_proof_queue_run_id_executes_selected_dispatched_row(tmp_path: Path) -> 
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
-            command=[sys.executable, "-c", f"print('{marker}')"],
-            cwd=state.ROOT,
+            command=[str(custody_python), "-c", f"print('{marker}')"],
+            cwd=repo,
             resource_family="python",
             contention_key=f"python:{marker}",
             scopes=[],
@@ -3989,7 +5250,7 @@ def test_proof_queue_run_id_executes_selected_dispatched_row(tmp_path: Path) -> 
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(state.ROOT),
+            str(repo),
             "run",
             "--run-id",
             "dispatched-b",
@@ -5015,7 +6276,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert rows[0]["contention_key"] == "cargo:molt-runtime"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
     command = json.loads(rows[0]["command_json"])
-    assert command[:9] == [
+    assert command[:10] == [
         "uv",
         "run",
         "--active",
@@ -5024,9 +6285,10 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "--python",
         "3.12",
         "--no-sync",
+        "--no-config",
         "python",
     ]
-    assert command[9:15] == [
+    assert command[10:16] == [
         "tools/guarded_exec.py",
         "--prefix",
         "MOLT_TEST_SUITE",
@@ -5034,7 +6296,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "cargo",
         "test",
     ]
-    assert command[15:17] == ["-p", "molt-runtime"]
+    assert command[16:18] == ["-p", "molt-runtime"]
     assert command[-1] == "--lib"
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
     notebook = tmp_path / "notebooks" / f"{rows[0]['run_id']}.py"
@@ -5050,14 +6312,27 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     }
 
     requested_toolchains = tuple(authority["toolchains"])
+    run_id = str(rows[0]["run_id"])
     receipt_context = {
         "schema": "molt.proof-receipt.v2",
         "authority_sha256": "a" * 64,
+        "run_id": run_id,
+        "execution_nonce_sha256": "9" * 64,
         "source_commit": "b" * 40,
+        "source_tree": "d" * 40,
         "source_tree_state": "clean",
         "environment": {"os": "windows", "arch": "x86_64", "python": "3.12"},
         "toolchains": {
             name: {"identity_sha256": name} for name in requested_toolchains
+        },
+        "toolchain_custody": {
+            "prelaunch": {
+                name: {"identity_sha256": name} for name in requested_toolchains
+            },
+            "postcompletion": {
+                name: {"identity_sha256": name} for name in requested_toolchains
+            },
+            "identical": True,
         },
         "python_interpreters": {
             "queue_control_plane": {
@@ -5074,7 +6349,19 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
                 "role": "proof-command-envelope",
             },
         },
+        "source_custody": {
+            "evidence_eligible": True,
+            "ineligible_reasons": [],
+        },
+        "guard_receipt": {"sha256": "e" * 64},
     }
+    receipt_context["terminal_evidence_sha256"] = (
+        command_envelope.terminal_evidence_sha256(
+            receipt_context,
+            run_id=run_id,
+            returncode=0,
+        )
+    )
     conn = state._connect(db)
     state._update_run(
         conn,
@@ -5292,6 +6579,10 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
 def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
+    rustc = shutil.which("rustc")
+    assert rustc is not None
     dsl = tmp_path / "proof.toml"
     dsl.write_text(
         "\n".join(
@@ -5301,8 +6592,8 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
                 'reason = "prove queued row"',
                 'resource_family = "python"',
                 'contention_key = "python:queued"',
-                'env = { PROOF_QUEUE_TEST = "queued-ok" }',
-                f'command = [{sys.executable!r}, "-c", "import os; print(os.environ[\'PROOF_QUEUE_TEST\'])"]',
+                'env = { MOLT_PROOF_QUEUE_TEST = "queued-ok", RUSTUP_TOOLCHAIN = "1.96.1" }',
+                f'command = [{rustc!r}, "--version"]',
             ]
         ),
         encoding="utf-8",
@@ -5316,7 +6607,7 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "submit",
                 str(dsl),
             ]
@@ -5327,7 +6618,11 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     queued_log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "status=queued" in queued_log_text
     assert "logical_id=queued-proof" in queued_log_text
-    assert "env_overrides=" in queued_log_text
+    assert (
+        'env_override_names=["MOLT_PROOF_QUEUE_TEST", "RUSTUP_TOOLCHAIN"]'
+        in queued_log_text
+    )
+    assert "queued-ok" not in queued_log_text
     assert "No proof command has launched for this queued row." in queued_log_text
     assert (
         cli.main(
@@ -5337,10 +6632,10 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "run",
                 "--timeout",
-                "30",
+                "90",
             ]
         )
         == 0
@@ -5349,7 +6644,9 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     rows = _rows(db)
     assert len(rows) == 1
     assert rows[0]["status"] == "passed"
-    assert "queued-ok" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    terminal_log = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "rustc 1.96.1" in terminal_log
+    assert "queued-ok" not in terminal_log
 
 
 def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
@@ -5409,11 +6706,13 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
 
 
 def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
-    tmp_path: Path,
+    tmp_path: Path, custody_python: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
     dsl = tmp_path / "proof.toml"
     dsl.write_text(
         "\n".join(
@@ -5428,14 +6727,14 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 # (derives_from etc.) record provenance without gating.
                 'edge_kind = "depends_on"',
                 'edge_note = "Child narrows the parent proof result."',
-                f'command = [{sys.executable!r}, "-c", "print(\'child\')"]',
+                f'command = [{str(custody_python)!r}, "-c", "print(\'child\')"]',
                 "",
                 "[[proof]]",
                 'id = "parent-proof"',
                 'reason = "prove parent first"',
                 'resource_family = "python"',
                 'contention_key = "python:parent-child"',
-                f'command = [{sys.executable!r}, "-c", "print(\'parent\')"]',
+                f'command = [{str(custody_python)!r}, "-c", "print(\'parent\')"]',
             ]
         ),
         encoding="utf-8",
@@ -5451,7 +6750,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "submit",
                 str(dsl),
             ]
@@ -5479,7 +6778,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "run",
                 "--timeout",
                 "30",
@@ -5505,7 +6804,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(state.ROOT),
+                str(repo),
                 "run",
                 "--timeout",
                 "30",
@@ -9819,7 +11118,7 @@ def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
                 'env = { MOLT_MEMORY_GUARD_POLL_SEC = "0" }',
                 "command = [",
                 '  "uv", "run", "--active", "--project", ".",',
-                '  "--python", "3.12", "python", "-c", "print(1)",',
+                '  "--python", "3.12", "--no-sync", "--no-config", "python", "-c", "print(1)",',
                 "]",
             ]
         ),
@@ -9852,7 +11151,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:7] == [
+    assert command[:12] == [
         "uv",
         "run",
         "--active",
@@ -9860,14 +11159,18 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         ".",
         "--python",
         "3.12",
+        "--no-sync",
+        "--no-config",
+        "--offline",
+        "--with-requirements",
+        pact._PACT_WITNESS_REQUIREMENTS,
     ]
     stack = resolve_scientific_stack()
-    assert command[7:11] == [
-        "--with",
-        stack.numpy_requirement,
-        "--with",
-        stack.scipy_requirement,
-    ]
+    requirements = state.ROOT / pact._PACT_WITNESS_REQUIREMENTS
+    command_envelope._validate_requirements_file(requirements)
+    requirements_text = requirements.read_text(encoding="utf-8")
+    assert stack.numpy_requirement in requirements_text
+    assert stack.scipy_requirement in requirements_text
     python_index = command.index("python")
     assert command[python_index : python_index + 2] == [
         "python",
@@ -9875,6 +11178,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     ]
     assert "tmp/pact_witness_acceptance_queue" in command
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
+    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
         state.ROOT.resolve()
     )
@@ -9893,17 +11197,17 @@ def test_proof_queue_named_spec_locked_environment_authority_is_generic(
 ) -> None:
     spec = {
         "logical_id": "generic-locked-environment",
-        "env_overrides": {"LOCKED_INPUT": "attested"},
-        "locked_env": ["LOCKED_INPUT"],
+        "env_overrides": {"MOLT_LOCKED_INPUT": "attested"},
+        "locked_env": ["MOLT_LOCKED_INPUT"],
     }
-    args = SimpleNamespace(env=["locked_input=user"], print_spec=True)
+    args = SimpleNamespace(env=["molt_locked_input=user"], print_spec=True)
 
     with pytest.raises(SystemExit) as exc:
         pact._run_named_spec(args, spec)
 
     assert exc.value.code == (
         "named proof 'generic-locked-environment' rejects --env overrides for "
-        "locked environment custody: LOCKED_INPUT"
+        "locked environment custody: MOLT_LOCKED_INPUT"
     )
     assert capsys.readouterr().out == ""
 
@@ -10122,7 +11426,7 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     assert spec["resource_family"] == "python"
     assert spec["contention_key"] == "python:r6-target-version-py312"
     command = list(spec["command"])
-    assert command[:7] == [
+    assert command[:9] == [
         "uv",
         "run",
         "--active",
@@ -10130,8 +11434,10 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
         ".",
         "--python",
         "3.12",
+        "--no-sync",
+        "--no-config",
     ]
-    assert command[7:9] == ["python", "tests/molt_diff.py"]
+    assert command[9:11] == ["python", "tests/molt_diff.py"]
     assert command[command.index("--python-version") + 1] == "3.12"
     assert command[command.index("--jobs") + 1] == "1"
     assert "--fail-fast" in command
@@ -10219,7 +11525,7 @@ def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
     assert spec["resource_family"] == "python-native"
     assert spec["contention_key"] == "python:native-molt-run:tmp-probe-py"
     command = list(spec["command"])
-    assert command[:9] == [
+    assert command[:10] == [
         "uv",
         "run",
         "--active",
@@ -10228,9 +11534,10 @@ def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
         "--python",
         "3.12",
         "--no-sync",
+        "--no-config",
         "python",
     ]
-    assert command[9:13] == ["-m", "molt.cli", "run", "tmp/probe.py"]
+    assert command[10:14] == ["-m", "molt.cli", "run", "tmp/probe.py"]
     assert command[-1] == "--flag"
     assert spec["scopes"] == ["tmp/probe.py"]
     assert any("foreground Codex control plane" in note for note in spec["notes"])
@@ -11208,7 +12515,7 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:7] == [
+    assert command[:12] == [
         "uv",
         "run",
         "--active",
@@ -11216,13 +12523,22 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
         ".",
         "--python",
         "3.12",
+        "--no-sync",
+        "--no-config",
+        "--offline",
+        "--with-requirements",
+        pact._PACT_WITNESS_REQUIREMENTS,
     ]
-    assert "--with" in command
+    assert "--with" not in command
     stack = resolve_scientific_stack()
-    assert stack.numpy_requirement in command
-    assert stack.scipy_requirement in command
+    requirements_text = (state.ROOT / pact._PACT_WITNESS_REQUIREMENTS).read_text(
+        encoding="utf-8"
+    )
+    assert stack.numpy_requirement in requirements_text
+    assert stack.scipy_requirement in requirements_text
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
+    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
     assert policy._proof_command_policy_error(command) is None
 
 
