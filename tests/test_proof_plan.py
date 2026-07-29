@@ -95,7 +95,7 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
     assert projection["schema"] == "molt.proof-plan-projection.v4"
-    assert projection["receipt_schema"] == "molt.proof-receipt.v2"
+    assert projection["receipt_schema"] == "molt.proof-receipt.v3"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
     assert projection["toolchain_policies"] == [

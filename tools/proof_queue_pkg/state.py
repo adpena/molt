@@ -186,8 +186,8 @@ def _connect(db: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    # WAL serializes writers, so a slow write (e.g. the OneDrive-backed
-    # checkout under concurrent detached runners) can hold the write lock for
+    # WAL serializes writers, so a slow write under concurrent detached
+    # runners and host I/O pressure can hold the write lock for
     # seconds. Without a busy timeout SQLite returns SQLITE_BUSY immediately
     # ("database is locked"), which strands the terminal status write and loses
     # the run result. Wait up to 30s (in milliseconds per PRAGMA busy_timeout)
@@ -907,16 +907,14 @@ def _db_path(args: argparse.Namespace) -> Path:
     if args.db:
         return Path(args.db)
     custody = checkout_custody(ROOT, os.environ)
-    state_root = custody.custody_root if custody.ephemeral else custody.source_root
-    return state_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
+    return custody.custody_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
 
 
 def _logs_root(args: argparse.Namespace) -> Path:
     if args.logs_root:
         return Path(args.logs_root)
     custody = checkout_custody(ROOT, os.environ)
-    state_root = custody.custody_root if custody.ephemeral else custody.source_root
-    return state_root / "logs" / "proof_queue" / "runs"
+    return custody.custody_root / "logs" / "proof_queue" / "runs"
 
 
 def _repo_root(args: argparse.Namespace) -> Path:

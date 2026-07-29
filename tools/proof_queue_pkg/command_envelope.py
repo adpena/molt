@@ -9,6 +9,7 @@ non-Python command and no identity subprocess runs outside memory-guard custody.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import functools
 import hashlib
 import hmac
@@ -21,22 +22,39 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Mapping, Sequence
 
-_SOURCE_ROOT = Path(__file__).resolve().parents[2]
-if str(_SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SOURCE_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PYTHON_SOURCE_ROOT = _REPO_ROOT / "src"
+# The guarded child is launched by absolute script path from an arbitrary proof
+# cwd. Bootstrap both import authorities explicitly: the repository root owns
+# `tools`, while the src-layout root owns `molt`. Ambient editable-install or
+# caller PYTHONPATH state must not decide whether custody can start.
+for _import_root in (_REPO_ROOT, _PYTHON_SOURCE_ROOT):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+# Editable installs may import `molt` from another canonical worktree during
+# interpreter startup. Once a regular package is loaded, changing sys.path does
+# not change its submodule search path, so bind the package itself to this
+# envelope's source tree before importing custody authorities.
+_loaded_molt = sys.modules.get("molt")
+if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
+    _local_molt_root = str(_PYTHON_SOURCE_ROOT / "molt")
+    if _local_molt_root not in _loaded_molt.__path__:
+        _loaded_molt.__path__.insert(0, _local_molt_root)
 _PYTHON_IDENTITY_PROBE = (
-    _SOURCE_ROOT / "tools" / "proof_queue_pkg" / "python_identity_probe.py"
+    _REPO_ROOT / "tools" / "proof_queue_pkg" / "python_identity_probe.py"
 )
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
 from tools import proof_plan  # noqa: E402
-from tools.proof_queue_pkg import execution_custody  # noqa: E402
+from tools.proof_queue_pkg import custody_cas, execution_custody, toolchain_capture  # noqa: E402
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
-EXECUTION_SCHEMA = "molt.proof-command-execution.v2"
+EXECUTION_SCHEMA = "molt.proof-command-execution.v3"
 
 _PYTHON_COMMAND = re.compile(r"^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$", re.IGNORECASE)
 _PY_LAUNCHERS = frozenset({"py", "py.exe"})
@@ -44,6 +62,122 @@ _PY_SELECTOR = re.compile(
     r"(?:-\d+(?:\.\d+)?(?:-(?:32|64))?|-V:[^\s/:]+(?:/[^\s/:]+)?)",
     re.IGNORECASE,
 )
+_PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
+_PYTHON_TOOLCHAIN_LOCATOR = Path(__file__).with_name("python_toolchain_locator.py")
+
+
+@dataclass(frozen=True)
+class PythonInvocation:
+    """Canonical CPython command-line split at the payload boundary.
+
+    Interpreter options remain interpreter options when the payload is routed
+    through the custody bootstrap.  Payload arguments are never reparsed, so
+    values beginning with ``-`` retain their ordinary ``sys.argv`` meaning.
+    """
+
+    interpreter_options: tuple[str, ...]
+    mode: str
+    target: str | None
+    arguments: tuple[str, ...]
+
+
+_PYTHON_FLAG_CHARACTERS = frozenset("bBdEhiIOPqRsSuvVx?")
+_PYTHON_TERMINAL_OPTIONS = frozenset(
+    {
+        "-h",
+        "-?",
+        "-V",
+        "--help",
+        "--help-all",
+        "--help-env",
+        "--help-xoptions",
+        "--version",
+    }
+)
+
+
+def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
+    """Parse CPython's interpreter options once for admission and execution."""
+    if not argv:
+        raise ValueError("Python invocation has no interpreter")
+    values = [str(value) for value in argv]
+    options: list[str] = []
+    index = 1
+    while index < len(values):
+        value = values[index]
+        if value == "--":
+            index += 1
+            break
+        if value == "-":
+            return PythonInvocation(tuple(options), "stdin", None, tuple(values[index + 1 :]))
+        if value == "-c" or value.startswith("-c"):
+            if value == "-c":
+                if index + 1 >= len(values):
+                    raise ValueError("Python -c requires a command")
+                target = values[index + 1]
+                arguments = values[index + 2 :]
+            else:
+                target = value[2:]
+                arguments = values[index + 1 :]
+            return PythonInvocation(tuple(options), "command", target, tuple(arguments))
+        if value == "-m" or value.startswith("-m"):
+            if value == "-m":
+                if index + 1 >= len(values):
+                    raise ValueError("Python -m requires a module")
+                target = values[index + 1]
+                arguments = values[index + 2 :]
+            else:
+                target = value[2:]
+                arguments = values[index + 1 :]
+            if not target:
+                raise ValueError("Python -m requires a non-empty module")
+            return PythonInvocation(tuple(options), "module", target, tuple(arguments))
+        if not value.startswith("-") or value == "-":
+            break
+        if value in _PYTHON_TERMINAL_OPTIONS or (
+            value.startswith("-")
+            and not value.startswith("--")
+            and value[1:]
+            and set(value[1:]) <= _PYTHON_FLAG_CHARACTERS
+            and any(character in "hV?" for character in value[1:])
+        ):
+            return PythonInvocation(tuple((*options, value)), "terminal", None, ())
+        if value == "--check-hash-based-pycs":
+            if index + 1 >= len(values):
+                raise ValueError("Python --check-hash-based-pycs requires a value")
+            option_value = values[index + 1]
+            if option_value not in {"always", "default", "never"}:
+                raise ValueError(
+                    "Python --check-hash-based-pycs requires always, default, or never"
+                )
+            options.extend((value, option_value))
+            index += 2
+            continue
+        if value in {"-W", "-X"}:
+            if index + 1 >= len(values):
+                raise ValueError(f"Python {value} requires a value")
+            options.extend((value, values[index + 1]))
+            index += 2
+            continue
+        if value.startswith(("-W", "-X")) and len(value) > 2:
+            options.append(value)
+            index += 1
+            continue
+        if (
+            value.startswith("-")
+            and not value.startswith("--")
+            and value[1:]
+            and set(value[1:]) <= _PYTHON_FLAG_CHARACTERS
+        ):
+            options.append(value)
+            index += 1
+            continue
+        raise ValueError(f"unsupported Python interpreter option {value!r}")
+    if index < len(values):
+        return PythonInvocation(
+            tuple(options), "script", values[index], tuple(values[index + 1 :])
+        )
+    return PythonInvocation(tuple(options), "stdin", None, ())
 _SHELL_LAUNCHERS = frozenset(
     {
         "bash",
@@ -112,889 +246,6 @@ _UV_VALUE_OPTIONS = frozenset(
     for option, (shape, _role) in _UV_OPTION_SEMANTICS.items()
     if shape in {"value", "reject"}
 )
-_PROBE_SCRIPT = r"""
-import base64
-import concurrent.futures
-import hashlib
-import hmac
-import importlib.machinery
-import importlib.metadata as metadata
-import json
-import os
-import pathlib
-import platform
-import re
-import site
-import stat as stat_module
-import subprocess
-import sys
-import sysconfig
-import time
-import urllib.parse
-import urllib.request
-
-hash_workers = int(sys.argv[2])
-if hash_workers < 1 or hash_workers > 32:
-    raise RuntimeError(f"invalid proof hash worker custody: {hash_workers}")
-
-def file_key(path, stat):
-    if stat.st_ino:
-        return f"inode:{stat.st_dev}:{stat.st_ino}"
-    return "path:" + os.path.normcase(str(path))
-
-def resolve_file(path, *, label):
-    resolved = pathlib.Path(path).resolve(strict=True)
-    stat = resolved.stat()
-    if not stat_module.S_ISREG(stat.st_mode):
-        raise RuntimeError(f"{label} is not a file: {resolved}")
-    return resolved, stat, file_key(resolved, stat)
-
-def hash_work(item):
-    key, path_text, algorithms = item
-    path = pathlib.Path(path_text)
-    before = path.stat()
-    hashers = {algorithm: hashlib.new(algorithm) for algorithm in algorithms}
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            for digest in hashers.values():
-                digest.update(chunk)
-    after = path.stat()
-    before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    if before_identity != after_identity:
-        raise RuntimeError(f"file changed while proof custody hashed it: {path}")
-    return key, {
-        "path": str(path),
-        "size": after.st_size,
-        "hashes": {name: digest.digest() for name, digest in hashers.items()},
-    }
-
-def hash_worklist(work):
-    items = [
-        (key, str(value["path"]), tuple(sorted(value["algorithms"])))
-        for key, value in sorted(
-            work.items(),
-            key=lambda item: (os.path.normcase(str(item[1]["path"])), item[0]),
-        )
-    ]
-    batch_size = max(1, (len(items) + hash_workers - 1) // hash_workers)
-    batches = [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=hash_workers) as executor:
-        results = executor.map(lambda batch: [hash_work(item) for item in batch], batches)
-        return dict(item for batch in results for item in batch)
-
-def fused_hash_work(item):
-    preliminary, path_text, label, algorithms = item
-    resolve_started = time.perf_counter()
-    path, before, identity = resolve_file(path_text, label=label)
-    resolve_elapsed = time.perf_counter() - resolve_started
-    hash_started = time.perf_counter()
-    hashers = {algorithm: hashlib.new(algorithm) for algorithm in algorithms}
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            for digest in hashers.values():
-                digest.update(chunk)
-    after = path.stat()
-    hash_elapsed = time.perf_counter() - hash_started
-    before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    if before_identity != after_identity:
-        raise RuntimeError(f"file changed while proof custody hashed it: {path}")
-    return preliminary, identity, {
-        "path": str(path),
-        "size": after.st_size,
-        "hashes": {name: digest.digest() for name, digest in hashers.items()},
-        "resolve_stat_s": resolve_elapsed,
-        "hash_s": hash_elapsed,
-    }
-
-def fused_hash_worklist(work):
-    items = [
-        (
-            preliminary,
-            str(value["path"]),
-            value["label"],
-            tuple(sorted(value["algorithms"])),
-        )
-        for preliminary, value in sorted(
-            work.items(),
-            key=lambda item: (os.path.normcase(str(item[1]["path"])), item[0]),
-        )
-    ]
-    batch_size = max(1, (len(items) + hash_workers - 1) // hash_workers)
-    batches = [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=hash_workers) as executor:
-        results = executor.map(
-            lambda batch: [fused_hash_work(item) for item in batch], batches
-        )
-        flat = [item for batch in results for item in batch]
-    references = {}
-    identities = {}
-    for preliminary, identity, payload in flat:
-        references[preliminary] = identity
-        existing = identities.get(identity)
-        if existing is None:
-            identities[identity] = payload
-            continue
-        if (
-            existing["size"] != payload["size"]
-            or existing["hashes"]["sha256"] != payload["hashes"]["sha256"]
-        ):
-            raise RuntimeError(
-                f"resolved file identity collision changed bytes: {identity}"
-            )
-        for algorithm, digest in payload["hashes"].items():
-            prior = existing["hashes"].get(algorithm)
-            if prior is not None and not hmac.compare_digest(prior, digest):
-                raise RuntimeError(
-                    f"resolved file identity collision changed {algorithm}: {identity}"
-                )
-            existing["hashes"][algorithm] = digest
-        if os.path.normcase(payload["path"]) < os.path.normcase(existing["path"]):
-            existing["path"] = payload["path"]
-    return references, identities
-
-def editable_path(payload):
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict) or not parsed.get("dir_info", {}).get("editable"):
-        return None
-    parsed_url = urllib.parse.urlparse(str(parsed.get("url", "")))
-    if parsed_url.scheme != "file" or parsed_url.netloc not in {"", "localhost"}:
-        raise RuntimeError("editable distribution must use a local file URL")
-    raw = urllib.request.url2pathname(urllib.parse.unquote(parsed_url.path))
-    if os.name == "nt" and re.match(r"^/[A-Za-z]:", raw):
-        raw = raw[1:]
-    return pathlib.Path(raw).resolve(strict=True)
-
-def resolve_contained_path(path, root, *, label):
-    resolved = pathlib.Path(path).resolve(strict=True)
-    canonical_root = pathlib.Path(root).resolve(strict=True)
-    try:
-        relative = resolved.relative_to(canonical_root)
-    except ValueError as exc:
-        raise RuntimeError(f"{label} escapes {canonical_root}: {path}") from exc
-    return resolved, relative
-
-def contained_relative(path, root):
-    try:
-        return pathlib.Path(path).relative_to(pathlib.Path(root))
-    except ValueError:
-        return None
-
-def python_runtime_manifest(admitted_root, admitted_import_roots):
-    # Bind the CPython launcher, base runtime, stdlib, native modules, and import roots.
-    started = time.perf_counter()
-    admitted_root = pathlib.Path(admitted_root).resolve(strict=True)
-    prefix = pathlib.Path(sys.prefix).resolve(strict=True)
-    base_prefix = pathlib.Path(sys.base_prefix).resolve(strict=True)
-    base_executable = pathlib.Path(
-        getattr(sys, "_base_executable", None) or sys.executable
-    ).resolve(strict=True)
-    implementation = platform.python_implementation()
-    if implementation != "CPython":
-        raise RuntimeError(
-            f"proof Python runtime must be CPython, got {implementation!r}"
-        )
-
-    declared_roots = {
-        "admitted-source": admitted_root,
-        "python-prefix": prefix,
-        "python-base-prefix": base_prefix,
-    }
-    for index, (name, raw_root) in enumerate(admitted_import_roots):
-        editable_root = pathlib.Path(raw_root).resolve(strict=True)
-        declared_roots[f"editable-source:{index}:{name}"] = editable_root
-    runtime_roots = {}
-    for label, raw in (
-        ("stdlib", sysconfig.get_path("stdlib")),
-        ("platstdlib", sysconfig.get_path("platstdlib")),
-        ("base-dlls", str(base_prefix / "DLLs")),
-        (
-            "base-lib-dynload",
-            str(
-                base_prefix
-                / "lib"
-                / f"python{sys.version_info.major}.{sys.version_info.minor}"
-                / "lib-dynload"
-            ),
-        ),
-    ):
-        if not raw:
-            continue
-        candidate = pathlib.Path(raw)
-        if not candidate.exists():
-            continue
-        resolved = candidate.resolve(strict=True)
-        if not resolved.is_dir():
-            raise RuntimeError(f"Python runtime root is not a directory: {resolved}")
-        if label == "platstdlib" and not (resolved / "os.py").is_file():
-            # Windows venvs report <venv>/Lib as platstdlib even though it only
-            # owns site-packages; the base stdlib remains the runtime authority.
-            continue
-        runtime_roots[label] = resolved
-        declared_roots[f"runtime:{label}"] = resolved
-
-    entries = []
-    work = {}
-    seen_lexical = set()
-
-    def owner_for(path):
-        matches = []
-        for owner, root in declared_roots.items():
-            relative = contained_relative(path, root)
-            if relative is not None:
-                matches.append((len(root.parts), owner, root, relative))
-        if not matches:
-            raise RuntimeError(f"Python runtime input has no declared owner: {path}")
-        _depth, owner, root, relative = max(matches)
-        return owner, root, relative
-
-    def add_file(raw, *, authority, allow_declared_external=False):
-        lexical = pathlib.Path(raw).absolute()
-        lexical_key = os.path.normcase(str(lexical))
-        if lexical_key in seen_lexical:
-            return
-        seen_lexical.add(lexical_key)
-        resolved, _stat, identity = resolve_file(
-            lexical, label=f"Python runtime {authority}"
-        )
-        try:
-            owner, owner_root, owner_relative = owner_for(resolved)
-        except RuntimeError:
-            if not allow_declared_external:
-                raise
-            owner = f"declared-runtime-file:{authority}"
-            owner_root = resolved.parent
-            owner_relative = pathlib.Path(resolved.name)
-        existing = work.get(identity)
-        if existing is None:
-            work[identity] = {"path": resolved, "algorithms": {"sha256"}}
-        elif os.path.normcase(str(resolved)) < os.path.normcase(str(existing["path"])):
-            existing["path"] = resolved
-        entries.append(
-            {
-                "authority": authority,
-                "lexical_path": str(lexical),
-                "resolved_path": str(resolved),
-                "owner": owner,
-                "owner_root": str(owner_root),
-                "owner_relative": owner_relative.as_posix(),
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
-                "identity": identity,
-            }
-        )
-
-    add_file(sys.executable, authority="venv-executable")
-    add_file(base_executable, authority="base-executable", allow_declared_external=True)
-    for cfg in dict.fromkeys(
-        (
-            prefix / "pyvenv.cfg",
-            pathlib.Path(sys.executable).resolve(strict=True).parent.parent / "pyvenv.cfg",
-        )
-    ):
-        if cfg.is_file():
-            add_file(cfg, authority="pyvenv-config")
-
-    shared_library_names = {
-        str(value)
-        for value in (
-            sysconfig.get_config_var("LDLIBRARY"),
-            sysconfig.get_config_var("LIBRARY"),
-            sysconfig.get_config_var("INSTSONAME"),
-        )
-        if value
-    }
-    shared_search_roots = {
-        base_prefix,
-        pathlib.Path(base_executable).parent,
-        pathlib.Path(sys.executable).resolve(strict=True).parent,
-    }
-    libdir = sysconfig.get_config_var("LIBDIR")
-    if libdir:
-        shared_search_roots.add(pathlib.Path(str(libdir)))
-    for directory in sorted(shared_search_roots, key=lambda path: os.path.normcase(str(path))):
-        if not directory.is_dir():
-            continue
-        patterns = ["python*.dll"] if os.name == "nt" else ["libpython*.so*", "libpython*.dylib"]
-        for name in shared_library_names:
-            candidate = directory / name
-            if candidate.is_file():
-                add_file(candidate, authority="python-shared-library", allow_declared_external=True)
-        for pattern in patterns:
-            for candidate in sorted(directory.glob(pattern)):
-                if candidate.is_file():
-                    add_file(candidate, authority="python-shared-library", allow_declared_external=True)
-
-    excluded_runtime_parts = {"site-packages", "dist-packages"}
-    for authority, root in sorted(runtime_roots.items()):
-        for candidate in sorted(root.rglob("*")):
-            relative = candidate.relative_to(root)
-            if excluded_runtime_parts.intersection(relative.parts):
-                continue
-            if candidate.is_symlink() and candidate.is_dir():
-                raise RuntimeError(
-                    f"Python runtime directory symlink is not admitted: {candidate}"
-                )
-            if not candidate.is_file():
-                continue
-            resolved = candidate.resolve(strict=True)
-            resolved_relative = contained_relative(resolved, root)
-            if resolved_relative is not None and excluded_runtime_parts.intersection(
-                resolved_relative.parts
-            ):
-                raise RuntimeError(
-                    f"Python runtime file redirects into package installation state: {candidate}"
-                )
-            add_file(candidate, authority=f"runtime-root:{authority}")
-
-    import_paths = []
-    for raw in sys.path:
-        lexical = admitted_root if raw == "" else pathlib.Path(raw).absolute()
-        if lexical.exists():
-            resolved = lexical.resolve(strict=True)
-            owner, owner_root, relative = owner_for(resolved)
-            if resolved.is_file():
-                add_file(resolved, authority="python-import-path")
-            kind = "file" if resolved.is_file() else "directory"
-            exists = True
-        else:
-            resolved = lexical.resolve(strict=False)
-            owner, owner_root, relative = owner_for(resolved)
-            kind = "absent"
-            exists = False
-        import_paths.append(
-            {
-                "lexical_path": str(lexical),
-                "resolved_path": str(resolved),
-                "owner": owner,
-                "owner_root": str(owner_root),
-                "owner_relative": relative.as_posix(),
-                "kind": kind,
-                "exists": exists,
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
-            }
-        )
-
-    hashed = hash_worklist(work)
-    manifest_rows = []
-    symlinks = []
-    ownership_counts = {}
-    for entry in sorted(entries, key=lambda item: (item["authority"], os.path.normcase(item["lexical_path"]))):
-        payload = hashed[entry["identity"]]
-        row = {
-            key: value for key, value in entry.items() if key != "identity"
-        }
-        row.update(
-            {
-                "size": payload["size"],
-                "sha256": payload["hashes"]["sha256"].hex(),
-            }
-        )
-        manifest_rows.append(row)
-        ownership_counts[row["owner"]] = ownership_counts.get(row["owner"], 0) + 1
-        if row["symlinked"]:
-            symlinks.append(row)
-    manifest = json.dumps(manifest_rows, separators=(",", ":"), sort_keys=True)
-    import_manifest = json.dumps(import_paths, separators=(",", ":"), sort_keys=True)
-    explicit_authorities = [
-        row for row in manifest_rows
-        if not str(row["authority"]).startswith("runtime-root:")
-    ]
-    extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
-    native_extensions = [
-        row for row in manifest_rows
-        if str(row["resolved_path"]).endswith(extension_suffixes)
-    ]
-    return {
-        "implementation": implementation,
-        "version": platform.python_version(),
-        "cache_tag": getattr(sys.implementation, "cache_tag", None),
-        "soabi": sysconfig.get_config_var("SOABI"),
-        "platform": sysconfig.get_platform(),
-        "prefix": str(prefix),
-        "base_prefix": str(base_prefix),
-        "base_executable": str(base_executable),
-        "runtime_roots": {
-            name: str(root) for name, root in sorted(runtime_roots.items())
-        },
-        "runtime_file_count": len(manifest_rows),
-        "runtime_unique_file_count": len(hashed),
-        "runtime_bytes": sum(value["size"] for value in hashed.values()),
-        "runtime_manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
-        "explicit_authority_files": explicit_authorities,
-        "native_extension_files": native_extensions,
-        "ownership_counts": {
-            name: ownership_counts[name] for name in sorted(ownership_counts)
-        },
-        "symlink_inputs": symlinks,
-        "import_paths": import_paths,
-        "import_path_manifest_sha256": hashlib.sha256(import_manifest.encode()).hexdigest(),
-        "elapsed_s": time.perf_counter() - started,
-    }
-
-def top_level_source_owners(distribution, root, *, label):
-    top_level = distribution.read_text("top_level.txt") or ""
-    names = sorted({line.strip() for line in top_level.splitlines() if line.strip()})
-    if not names:
-        raise RuntimeError(f"{label} has no top_level.txt custody")
-    owners = []
-    for name in names:
-        matches = []
-        for candidate in (
-            root / name,
-            root / f"{name}.py",
-            root / "src" / name,
-            root / "src" / f"{name}.py",
-        ):
-            if candidate.exists():
-                resolved, _relative = resolve_contained_path(
-                    candidate, root, label=f"{label} top-level owner {name!r}"
-                )
-                matches.append(resolved)
-        matches = list(dict.fromkeys(matches))
-        if len(matches) != 1:
-            raise RuntimeError(
-                f"{label} has {len(matches)} top-level owners for {name!r}"
-            )
-        owners.append(matches[0])
-    return owners
-
-def source_distribution_root(distribution, metadata_root):
-    git_root = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=metadata_root,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if git_root.returncode != 0:
-        raise RuntimeError(
-            f"source-owned distribution at {metadata_root} has no Git source root"
-        )
-    root = pathlib.Path(git_root.stdout.strip()).resolve(strict=True)
-    resolve_contained_path(
-        metadata_root, root, label="source-owned distribution metadata"
-    )
-    top_level_source_owners(
-        distribution,
-        root,
-        label=f"source-owned distribution {metadata_root}",
-    )
-    return root
-
-def editable_manifest(distribution, root, admitted_root):
-    scan_started = time.perf_counter()
-    file_rows = []
-    work = {}
-    candidates = top_level_source_owners(
-        distribution,
-        root,
-        label=f"editable distribution {distribution.metadata.get('Name')}",
-    )
-    for metadata_name in ("pyproject.toml", "uv.lock", "setup.cfg", "setup.py"):
-        candidate = root / metadata_name
-        if candidate.is_file():
-            candidates.append(candidate.resolve(strict=True))
-    seen = set()
-    for candidate in candidates:
-        paths = [candidate] if candidate.is_file() else sorted(candidate.rglob("*"))
-        for path in paths:
-            if not path.is_file() or "__pycache__" in path.parts:
-                continue
-            resolved, relative = resolve_contained_path(
-                path, root, label="editable source input"
-            )
-            relative_key = relative.as_posix()
-            if relative_key in seen:
-                continue
-            seen.add(relative_key)
-            resolved, _stat, identity = resolve_file(
-                resolved, label="editable source input"
-            )
-            existing = work.get(identity)
-            if existing is None:
-                work[identity] = {"path": resolved, "algorithms": {"sha256"}}
-            elif os.path.normcase(str(resolved)) < os.path.normcase(str(existing["path"])):
-                existing["path"] = resolved
-            file_rows.append((relative_key, identity))
-    if not file_rows:
-        raise RuntimeError(f"editable distribution has no source files under {root}")
-    resolve_elapsed = time.perf_counter() - scan_started
-    hash_started = time.perf_counter()
-    hashed = hash_worklist(work)
-    hash_elapsed = time.perf_counter() - hash_started
-    files = [
-        (
-            relative,
-            hashed[identity]["size"],
-            hashed[identity]["hashes"]["sha256"].hex(),
-        )
-        for relative, identity in sorted(file_rows)
-    ]
-    git_started = time.perf_counter()
-    git = subprocess.run(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
-        cwd=root, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=False,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    tree = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, check=False,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    git_elapsed = time.perf_counter() - git_started
-    manifest = json.dumps(files, separators=(",", ":"), sort_keys=True)
-    try:
-        root.relative_to(admitted_root)
-        inside = True
-    except ValueError:
-        inside = False
-    return {
-        "root": str(root),
-        "inside_admitted_source": inside,
-        "files": len(files),
-        "content_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
-        "git_available": git.returncode == 0 and head.returncode == 0 and tree.returncode == 0,
-        "git_clean": git.returncode == 0 and not git.stdout,
-        "git_status_sha256": hashlib.sha256(git.stdout if git.returncode == 0 else git.stderr).hexdigest(),
-        "git_commit": head.stdout.strip().lower() if head.returncode == 0 else None,
-        "git_tree": tree.stdout.strip().lower() if tree.returncode == 0 else None,
-        "_profile": {
-            "scan_resolve_stat_s": resolve_elapsed,
-            "hash_s": hash_elapsed,
-            "git_s": git_elapsed,
-            "file_references": len(file_rows),
-            "unique_files": len(work),
-            "bytes": sum(value["size"] for value in hashed.values()),
-        },
-    }
-
-executable = sys.executable
-admitted_root = pathlib.Path(sys.argv[1]).resolve(strict=True)
-total_started = time.perf_counter()
-discovery_started = time.perf_counter()
-raw_distributions = list(metadata.distributions())
-discovery_elapsed = time.perf_counter() - discovery_started
-resolve_started = time.perf_counter()
-distribution_rows = []
-installed_work = {}
-installed_references = 0
-install_prefix = pathlib.Path(sys.prefix).resolve(strict=True)
-for distribution in raw_distributions:
-    name = re.sub(r"[-_.]+", "-", distribution.metadata.get("Name", "")).lower()
-    rows = []
-    source_owned_root = None
-    source_metadata_root = None
-    direct_url = distribution.read_text("direct_url.json") or ""
-    direct_editable_root = editable_path(direct_url)
-    distribution_files = list(distribution.files or ())
-    if distribution_files:
-        candidates = [
-            (
-                str(item).replace("\\", "/"),
-                pathlib.Path(distribution.locate_file(item)).absolute(),
-                item.hash.mode if item.hash is not None else None,
-                item.hash.value.rstrip("=") if item.hash is not None else None,
-                int(item.size) if item.size is not None else None,
-            )
-            for item in sorted(distribution_files, key=lambda value: str(value))
-        ]
-    else:
-        metadata_root_raw = getattr(distribution, "_path", None)
-        try:
-            metadata_root = pathlib.Path(metadata_root_raw).resolve(strict=True)
-        except (TypeError, OSError, ValueError) as exc:
-            raise RuntimeError(
-                f"installed distribution {name or '<unnamed>'} has no installed file inventory"
-            ) from exc
-        try:
-            metadata_root.relative_to(pathlib.Path(sys.prefix).resolve(strict=True))
-        except ValueError:
-            pass
-        else:
-            raise RuntimeError(
-                f"installed distribution {name or '<unnamed>'} has no installed file inventory"
-            )
-        source_owned_root = source_distribution_root(distribution, metadata_root)
-        source_metadata_root = metadata_root
-        metadata_files = sorted(
-            path for path in metadata_root.rglob("*") if path.is_file()
-        )
-        if not metadata_files:
-            raise RuntimeError(
-                f"source-owned distribution {name or '<unnamed>'} has no metadata files"
-            )
-        candidates = []
-        for path in metadata_files:
-            resolved, relative = resolve_contained_path(
-                path, metadata_root, label="source-owned distribution metadata file"
-            )
-            candidates.append(
-                (
-                    "@source-metadata/" + relative.as_posix(),
-                    resolved,
-                    None,
-                    None,
-                    None,
-                )
-            )
-    for relative, candidate, algorithm, expected, declared_size in candidates:
-        lexical = pathlib.Path(candidate).absolute()
-        resolved = lexical.resolve(strict=True)
-        owner = None
-        owner_root = None
-        owner_relative = None
-        allowed_roots = [("install-prefix", install_prefix)]
-        if direct_editable_root is not None:
-            allowed_roots.append(("editable-source", direct_editable_root))
-        if source_owned_root is not None:
-            allowed_roots.append(("source-owned", source_owned_root))
-        for candidate_owner, candidate_root in allowed_roots:
-            relative_to_owner = contained_relative(resolved, candidate_root)
-            if relative_to_owner is None:
-                continue
-            if owner_root is None or len(candidate_root.parts) > len(owner_root.parts):
-                owner = candidate_owner
-                owner_root = candidate_root
-                owner_relative = relative_to_owner
-        if owner is None or owner_root is None or owner_relative is None:
-            raise RuntimeError(
-                "installed distribution RECORD path has no admitted owner: "
-                f"{name}:{relative} lexical={lexical} resolved={resolved} "
-                f"install_prefix={install_prefix}"
-            )
-        preliminary = os.path.normcase(str(candidate))
-        algorithms = {"sha256"}
-        if algorithm is not None:
-            algorithms.add(algorithm)
-        existing = installed_work.get(preliminary)
-        if existing is None:
-            installed_work[preliminary] = {
-                "path": candidate,
-                "label": f"installed distribution file {name}:{relative}",
-                "algorithms": algorithms,
-            }
-        else:
-            existing["algorithms"].update(algorithms)
-        rows.append(
-            {
-                "relative": relative,
-                "preliminary": preliminary,
-                "declared_algorithm": algorithm,
-                "declared_hash": expected,
-                "declared_size": declared_size,
-                "lexical_path": str(lexical),
-                "resolved_path": str(resolved),
-                "owner": owner,
-                "owner_root": str(owner_root),
-                "owner_relative": owner_relative.as_posix(),
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
-            }
-        )
-        installed_references += 1
-    distribution_rows.append(
-        (
-            distribution,
-            name,
-            rows,
-            source_owned_root,
-            source_metadata_root,
-            direct_url,
-            direct_editable_root,
-        )
-    )
-installed_references_by_path, installed_hashed = fused_hash_worklist(installed_work)
-resolve_hash_elapsed = time.perf_counter() - resolve_started
-validation_started = time.perf_counter()
-distributions = []
-editable_pending = []
-for (
-    distribution,
-    name,
-    rows,
-    source_owned_root,
-    source_metadata_root,
-    direct_url,
-    direct_editable_root,
-) in distribution_rows:
-    files = []
-    ownership_counts = {}
-    symlink_files = []
-    for row in rows:
-        identity = installed_references_by_path[row["preliminary"]]
-        hashed = installed_hashed[identity]
-        actual_sha256 = hashed["hashes"]["sha256"].hex()
-        declared = None
-        algorithm = row["declared_algorithm"]
-        expected = row["declared_hash"]
-        if algorithm is not None:
-            actual_digest = hashed["hashes"][algorithm]
-            actual_declared = base64.urlsafe_b64encode(actual_digest).decode().rstrip("=")
-            if not hmac.compare_digest(expected, actual_declared):
-                raise RuntimeError(
-                    f"installed distribution RECORD hash mismatch: {name}:{row['relative']}"
-                )
-            declared = f"{algorithm}={expected}"
-        size = hashed["size"]
-        if row["declared_size"] is not None and row["declared_size"] != size:
-            raise RuntimeError(
-                f"installed distribution RECORD size mismatch: {name}:{row['relative']}"
-            )
-        file_row = {
-            "relative": row["relative"],
-            "lexical_path": row["lexical_path"],
-            "resolved_path": row["resolved_path"],
-            "owner": row["owner"],
-            "owner_root": row["owner_root"],
-            "owner_relative": row["owner_relative"],
-            "symlinked": row["symlinked"],
-            "escape_classification": f"{row['owner']}-contained",
-            "size": size,
-            "sha256": actual_sha256,
-            "declared": declared,
-        }
-        files.append(file_row)
-        ownership_counts[row["owner"]] = ownership_counts.get(row["owner"], 0) + 1
-        if row["symlinked"]:
-            symlink_files.append(file_row)
-    file_manifest = json.dumps(files, separators=(",", ":"), sort_keys=True)
-    record = distribution.read_text("RECORD") or ""
-    installer = distribution.read_text("INSTALLER") or ""
-    editable_root = direct_editable_root
-    if editable_root is None:
-        editable_root = source_owned_root
-    payload = {
-            "name": name,
-            "version": distribution.version,
-            "record_sha256": hashlib.sha256(record.encode()).hexdigest(),
-            "file_manifest_sha256": hashlib.sha256(file_manifest.encode()).hexdigest(),
-            "installed_file_count": len(files),
-            "install_prefix": str(install_prefix),
-            "ownership_counts": {
-                owner: ownership_counts[owner] for owner in sorted(ownership_counts)
-            },
-            "installed_files": files,
-            "symlink_files": symlink_files,
-            "direct_url_sha256": hashlib.sha256(direct_url.encode()).hexdigest(),
-            "installer_sha256": hashlib.sha256(installer.encode()).hexdigest(),
-            "editable_source": None,
-        }
-    distributions.append(payload)
-    if editable_root is not None:
-        editable_pending.append(
-            (
-                len(distributions) - 1,
-                distribution,
-                editable_root,
-                source_metadata_root,
-            )
-        )
-validation_elapsed = time.perf_counter() - validation_started
-editable_scan_elapsed = 0.0
-editable_hash_elapsed = 0.0
-editable_git_elapsed = 0.0
-editable_references = 0
-editable_unique = 0
-editable_bytes = 0
-editable_cache = {}
-editable_reused_roots = 0
-for index, distribution, editable_root, source_metadata_root in editable_pending:
-    cache_key = (
-        os.path.normcase(str(editable_root)),
-        distribution.read_text("top_level.txt") or "",
-    )
-    editable = editable_cache.get(cache_key)
-    if editable is None:
-        editable = editable_manifest(distribution, editable_root, admitted_root)
-        editable_profile = editable.pop("_profile")
-        editable_scan_elapsed += editable_profile["scan_resolve_stat_s"]
-        editable_hash_elapsed += editable_profile["hash_s"]
-        editable_git_elapsed += editable_profile["git_s"]
-        editable_references += editable_profile["file_references"]
-        editable_unique += editable_profile["unique_files"]
-        editable_bytes += editable_profile["bytes"]
-        editable_cache[cache_key] = editable
-    else:
-        editable_reused_roots += 1
-    editable = dict(editable)
-    if source_metadata_root is not None:
-        editable["source_metadata_root"] = str(source_metadata_root)
-        try:
-            source_metadata_root.relative_to(admitted_root)
-            metadata_inside = True
-        except ValueError:
-            metadata_inside = False
-        editable["source_metadata_inside_admitted_source"] = metadata_inside
-    distributions[index]["editable_source"] = editable
-distributions.sort(key=lambda item: (item["name"], item["version"], item["file_manifest_sha256"]))
-inventory = json.dumps(distributions, separators=(",", ":"), sort_keys=True)
-runtime_import_roots = []
-for distribution in distributions:
-    editable_source = distribution.get("editable_source")
-    if isinstance(editable_source, dict) and editable_source.get("root"):
-        runtime_import_roots.append((distribution["name"], editable_source["root"]))
-runtime = python_runtime_manifest(admitted_root, runtime_import_roots)
-runtime_elapsed = runtime.pop("elapsed_s")
-runtime_closure = json.dumps(runtime, separators=(",", ":"), sort_keys=True)
-executable_path, _executable_stat, executable_key = resolve_file(
-    executable, label="proof Python executable"
-)
-executable_hashed = hash_worklist(
-    {executable_key: {"path": executable_path, "algorithms": {"sha256"}}}
-)
-executable_sha256 = executable_hashed[executable_key]["hashes"]["sha256"].hex()
-profile = {
-    "hash_workers": hash_workers,
-    "distribution_discovery_s": discovery_elapsed,
-    "installed_resolve_stat_hash_wall_s": resolve_hash_elapsed,
-    "installed_resolve_stat_cpu_s": sum(
-        value["resolve_stat_s"] for value in installed_hashed.values()
-    ),
-    "installed_hash_cpu_s": sum(
-        value["hash_s"] for value in installed_hashed.values()
-    ),
-    "record_validation_s": validation_elapsed,
-    "editable_scan_resolve_stat_s": editable_scan_elapsed,
-    "editable_hash_s": editable_hash_elapsed,
-    "editable_git_s": editable_git_elapsed,
-    "installed_file_references": installed_references,
-    "installed_unique_paths": len(installed_work),
-    "installed_unique_files": len(installed_hashed),
-    "installed_deduplicated_references": installed_references - len(installed_hashed),
-    "installed_bytes": sum(value["size"] for value in installed_hashed.values()),
-    "editable_file_references": editable_references,
-    "editable_unique_files": editable_unique,
-    "editable_reused_roots": editable_reused_roots,
-    "editable_bytes": editable_bytes,
-    "runtime_closure_s": runtime_elapsed,
-    "runtime_file_count": runtime["runtime_file_count"],
-    "runtime_unique_file_count": runtime["runtime_unique_file_count"],
-    "runtime_bytes": runtime["runtime_bytes"],
-    "total_s": time.perf_counter() - total_started,
-}
-print(
-    json.dumps(
-        {
-            "executable": executable,
-            "implementation": platform.python_implementation(),
-            "version": platform.python_version(),
-            "executable_sha256": executable_sha256,
-            "runtime": runtime,
-            "runtime_closure_sha256": hashlib.sha256(runtime_closure.encode()).hexdigest(),
-            "distributions": distributions,
-            "distribution_inventory_sha256": hashlib.sha256(inventory.encode()).hexdigest(),
-            "inventory_profile": profile,
-        },
-        sort_keys=True,
-    )
-)
-"""
 _WHICH_SCRIPT = (
     "import json,pathlib,shutil,sys;"
     "v=sys.argv[1];c=pathlib.Path(v);"
@@ -1071,7 +322,7 @@ def _normalized_entrypoint_target(value: str) -> str:
     if candidate.is_absolute():
         try:
             normalized = (
-                candidate.resolve(strict=False).relative_to(_SOURCE_ROOT).as_posix()
+                candidate.resolve(strict=False).relative_to(_REPO_ROOT).as_posix()
             )
         except ValueError:
             pass
@@ -1258,6 +509,51 @@ def _command_registration(
     return "toolchain", toolchains, []
 
 
+_CARGO_LEAF_SUBCOMMANDS = frozenset(
+    {
+        "help",
+        "locate-project",
+        "metadata",
+        "pkgid",
+        "search",
+        "tree",
+        "version",
+        "--help",
+        "-h",
+        "--version",
+        "-V",
+    }
+)
+_TOOLCHAIN_LEAF_PROBES = frozenset({"--help", "-h", "--version", "-V", "-vV"})
+
+
+def _registered_toolchain_descendants(argv: Sequence[str]) -> str:
+    """Classify exact capability probes separately from process-spawning tools."""
+    arguments = [str(value) for value in argv[1:]]
+    if not arguments:
+        return "forbidden"
+    executable = _basename(str(argv[0]))
+    if executable in {"cargo", "cargo.exe"}:
+        command_index = 0
+        if arguments[0].startswith("+"):
+            command_index = 1
+        if command_index >= len(arguments):
+            return "forbidden"
+        return (
+            "forbidden"
+            if arguments[command_index] in _CARGO_LEAF_SUBCOMMANDS
+            else "declared-toolchains"
+        )
+    if arguments[0] in _TOOLCHAIN_LEAF_PROBES:
+        return "forbidden"
+    if executable in {"rustc", "rustc.exe"} and arguments[0] in {
+        "--print",
+        "--explain",
+    }:
+        return "forbidden"
+    return "declared-toolchains"
+
+
 def _uv_option_values(prefix: Sequence[str], name: str) -> list[str]:
     values: list[str] = []
     index = 2
@@ -1395,6 +691,23 @@ def _execution_source_paths(
     return effective, overlay_inputs
 
 
+def _require_external_execution_outputs(
+    *, result_path: Path, effective_source: Path
+) -> None:
+    """Reject proof output authorities that overlap the consumed source tree."""
+    if not result_path.is_absolute():
+        raise ValueError("proof execution result path must be absolute")
+    source = effective_source.resolve(strict=True)
+    output_parent = result_path.parent.resolve(strict=True)
+    if output_parent == source or output_parent.is_relative_to(source):
+        raise ValueError("proof execution outputs must be outside effective source")
+    cas_root = output_parent / "custody-cas"
+    if cas_root.exists():
+        resolved_cas = cas_root.resolve(strict=True)
+        if resolved_cas == source or resolved_cas.is_relative_to(source):
+            raise ValueError("proof custody CAS must be outside effective source")
+
+
 def _canonical_uv_prefix(
     envelope: Mapping[str, object], *, cwd: Path
 ) -> tuple[list[str], Path, list[Path]]:
@@ -1501,6 +814,124 @@ def _nested_command(argv: Sequence[str]) -> list[str] | None:
     return [str(value) for value in nested]
 
 
+def _python_invocation_argv(
+    argv: Sequence[str], python: Mapping[str, object]
+) -> list[str]:
+    """Return one interpreter-shaped argv for every admitted Python spelling."""
+    kind = python.get("kind")
+    if kind in {"uv", "uv-console-script"}:
+        _prefix, payload = _uv_prefix_and_payload(argv)
+        if kind == "uv-console-script":
+            module = _PYTHON_CONSOLE_MODULES.get(_basename(str(python["console_script"])))
+            if module is not None:
+                return ["python", "-m", module, *payload[1:]]
+        return [str(value) for value in payload]
+    if kind == "py-launcher":
+        selector_offset = 2 if python.get("selector") else 1
+        return ["python", *[str(value) for value in argv[selector_offset:]]]
+    if kind == "direct":
+        return [str(value) for value in argv]
+    raise ValueError(f"unknown proof Python envelope kind {kind!r}")
+
+
+def _python_bootstrap_command(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    supervised_executable: str | None = None,
+) -> list[str]:
+    """Route Python payload execution through the absolute custody authority."""
+    python = envelope.get("python")
+    if not isinstance(python, Mapping):
+        return [str(value) for value in exact]
+    kind = python.get("kind")
+    exact_values = [str(value) for value in exact]
+    if kind in {"uv", "uv-console-script"}:
+        prefix = python.get("prefix")
+        if not isinstance(prefix, list):
+            raise ValueError("uv proof envelope has no exact prefix")
+        payload_index = len(prefix)
+        invocation_argv = exact_values[payload_index:]
+        outer = exact_values[: payload_index + 1]
+    elif kind == "py-launcher":
+        selector_offset = 2 if python.get("selector") else 1
+        invocation_argv = [exact_values[0], *exact_values[selector_offset:]]
+        outer = exact_values[:selector_offset]
+    elif kind == "direct":
+        invocation_argv = exact_values
+        outer = exact_values[:1]
+    else:
+        raise ValueError(f"unknown proof Python envelope kind {kind!r}")
+    invocation = parse_python_invocation(invocation_argv)
+    if invocation.mode == "terminal":
+        # Interpreter-owned terminal actions execute no user payload and cannot
+        # launch descendants, so retain CPython's own early-exit semantics.
+        if supervised_executable is not None:
+            return [supervised_executable, *invocation.interpreter_options]
+        return exact_values
+    bootstrap = _PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
+    skip_first_line = any(
+        option.startswith("-")
+        and not option.startswith("-X")
+        and "x" in option[1:]
+        for option in invocation.interpreter_options
+    )
+    arguments = list(invocation.arguments)
+    if invocation.mode == "module" and invocation.target == "pytest":
+        cache_disabled = any(
+            argument == "-pno:cacheprovider"
+            or (
+                argument == "-p"
+                and index + 1 < len(arguments)
+                and arguments[index + 1] == "no:cacheprovider"
+            )
+            for index, argument in enumerate(arguments)
+        )
+        if not cache_disabled:
+            arguments[:0] = ["-p", "no:cacheprovider"]
+    payload = [str(bootstrap), invocation.mode, "1" if skip_first_line else "0"]
+    if invocation.target is not None:
+        payload.append(invocation.target)
+    payload.extend(arguments)
+    if supervised_executable is not None:
+        return [supervised_executable, *invocation.interpreter_options, *payload]
+    return [*outer, *invocation.interpreter_options, *payload]
+
+
+def _supervised_execution_command(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    located_toolchains: Mapping[str, object],
+) -> tuple[list[str], dict[str, str]]:
+    """Collapse a Windows Python launcher into its captured runtime image.
+
+    Windows virtual-environment and ``py``/``uv`` launchers create a second
+    process before Python code can install custody.  A leaf proof therefore
+    executes the selected interpreter's captured base image directly and gives
+    CPython its standard launcher identity variable.  This preserves
+    ``sys.executable`` and ordinary venv discovery while making the kernel root
+    the process that actually executes user code.
+    """
+    if os.name != "nt" or not isinstance(envelope.get("python"), Mapping):
+        return _python_bootstrap_command(envelope, exact), {}
+    python = located_toolchains.get("python")
+    if not isinstance(python, Mapping):
+        raise ValueError("proof Python execution has no located runtime")
+    selected_raw = python.get("executable")
+    base_raw = python.get("base_executable")
+    if not isinstance(selected_raw, str) or not isinstance(base_raw, str):
+        raise ValueError("proof Python execution has no captured launcher chain")
+    selected = Path(selected_raw).resolve(strict=True)
+    base = Path(base_raw).resolve(strict=True)
+    if os.path.normcase(str(selected)) == os.path.normcase(str(base)):
+        return _python_bootstrap_command(
+            envelope, exact, supervised_executable=str(base)
+        ), {}
+    return _python_bootstrap_command(
+        envelope, exact, supervised_executable=str(base)
+    ), {"__PYVENV_LAUNCHER__": str(selected)}
+
+
 def _envelope_for_command(
     command: Sequence[str], *, typed_delegation: bool
 ) -> dict[str, object]:
@@ -1521,10 +952,7 @@ def _envelope_for_command(
         payload_first = _basename(payload[0])
         if _PYTHON_COMMAND.fullmatch(payload_first):
             python = {"kind": "uv", "prefix": prefix, "payload_executable": payload[0]}
-        elif (
-            payload_first in _PYTHON_CONSOLE_SCRIPTS
-            or _registered_console_toolchains(payload_first) is not None
-        ):
+        elif payload_first in _PYTHON_CONSOLE_SCRIPTS:
             python = {
                 "kind": "uv-console-script",
                 "prefix": prefix,
@@ -1539,7 +967,7 @@ def _envelope_for_command(
                 "direct Rust payloads under uv bypass canonical queue custody; use "
                 "the queue Cargo command family or a direct typed rustc argv"
             )
-        else:
+        elif _registered_console_toolchains(payload_first) is None:
             raise ValueError(
                 f"uv payload {payload[0]!r} may be an interpreter-bound console "
                 "script; invoke it as `python -m ...` or declare a typed command family"
@@ -1548,9 +976,7 @@ def _envelope_for_command(
         python = {"kind": "direct", "executable": argv[0]}
     elif first in _PY_LAUNCHERS:
         selector: str | None = None
-        if len(argv) > 1 and (argv[1].startswith("-") or argv[1].startswith("/")):
-            if not _PY_SELECTOR.fullmatch(argv[1]):
-                raise ValueError(f"unsupported Windows py selector {argv[1]!r}")
+        if len(argv) > 1 and _PY_SELECTOR.fullmatch(argv[1]):
             selector = argv[1]
         python = {"kind": "py-launcher", "launcher": argv[0], "selector": selector}
     elif first in _PYTHON_CONSOLE_SCRIPTS:
@@ -1558,6 +984,9 @@ def _envelope_for_command(
             "raw Python console scripts do not identify an interpreter; use "
             "`python -m pytest` or an exact `uv run ... pytest` envelope"
         )
+
+    if python is not None:
+        parse_python_invocation(_python_invocation_argv(argv, python))
 
     registration_kind, toolchains, proof_plan_command_ids = _command_registration(
         argv,
@@ -1601,6 +1030,14 @@ def _envelope_for_command(
         process_closure = {
             "kind": "typed-delegation",
             "descendants": "declared-toolchains",
+            "toolchains": list(toolchains),
+        }
+    elif registration_kind == "toolchain" and (
+        descendants := _registered_toolchain_descendants(argv)
+    ) == "declared-toolchains":
+        process_closure = {
+            "kind": "registered-toolchain",
+            "descendants": descendants,
             "toolchains": list(toolchains),
         }
     else:
@@ -1894,35 +1331,25 @@ def _bind_delegated_command(
     return _file_identity(guarded_exec_path), _executable_identity(delegated_path)
 
 
-def _python_probe_command(
+def _python_auxiliary_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
     *,
-    source_root: Path,
-    hash_workers: int = 1,
+    authority: Path,
+    arguments: Sequence[str],
 ) -> list[str] | None:
     python = envelope.get("python")
     if not isinstance(python, Mapping):
         return None
     kind = python.get("kind")
     if kind == "direct":
-        return [
-            exact[0],
-            str(_PYTHON_IDENTITY_PROBE),
-            str(source_root),
-            str(hash_workers),
-        ]
+        return [exact[0], str(authority), *arguments]
     if kind == "py-launcher":
         command = [exact[0]]
         selector = python.get("selector")
         if isinstance(selector, str) and selector:
             command.append(selector)
-        return [
-            *command,
-            str(_PYTHON_IDENTITY_PROBE),
-            str(source_root),
-            str(hash_workers),
-        ]
+        return [*command, str(authority), *arguments]
     if kind in {"uv", "uv-console-script"}:
         prefix = python.get("prefix")
         if not isinstance(prefix, list) or len(prefix) < 2:
@@ -1930,11 +1357,25 @@ def _python_probe_command(
         return [
             *exact[: len(prefix)],
             "python",
-            str(_PYTHON_IDENTITY_PROBE),
-            str(source_root),
-            str(hash_workers),
+            str(authority),
+            *arguments,
         ]
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
+
+
+def _python_probe_command(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    source_root: Path,
+    hash_workers: int = 1,
+) -> list[str] | None:
+    return _python_auxiliary_command(
+        envelope,
+        exact,
+        authority=_PYTHON_IDENTITY_PROBE,
+        arguments=(str(source_root), str(hash_workers)),
+    )
 
 
 def _parse_json_output(
@@ -1972,7 +1413,8 @@ def _python_identity(
     if command is None:
         return None
     payload = _parse_json_output(
-        _run_captured(command, cwd=cwd, env=env), purpose="proof Python identity probe"
+        _run_captured(command, cwd=cwd, env=env, timeout=120.0),
+        purpose="proof Python identity probe",
     )
     required = (
         "executable",
@@ -2134,6 +1576,34 @@ def _tool_configuration_identities(
     return sorted(identities, key=lambda item: os.path.normcase(str(item["path"])))
 
 
+def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
+    selected_command = _nested_command(exact) or [str(value) for value in exact]
+    selected: list[str] = []
+    before_separator = True
+    index = 1
+    while index < len(selected_command) and before_separator:
+        value = str(selected_command[index])
+        if value == "--":
+            before_separator = False
+            break
+        if value == "--target":
+            if index + 1 >= len(selected_command):
+                raise ValueError("Rust --target requires a value")
+            selected.append(str(selected_command[index + 1]))
+            index += 2
+            continue
+        if value.startswith("--target="):
+            selected.append(value.split("=", 1)[1])
+        index += 1
+    environment_target = env.get("CARGO_BUILD_TARGET", "").strip()
+    if environment_target:
+        selected.append(environment_target)
+    unique = list(dict.fromkeys(selected))
+    if len(unique) > 1:
+        raise ValueError(f"Rust target selection is ambiguous: {unique!r}")
+    return unique[0] if unique else None
+
+
 def _tool_identity(
     plan: proof_plan.ProofPlan,
     name: str,
@@ -2228,6 +1698,46 @@ def _tool_identity(
     }
     if content_resolver_identity is not None:
         material["content_resolver"] = content_resolver_identity
+    process_images: list[dict[str, object]] = []
+    for role, image_path, digest in (
+        (f"{name}-launcher", path, material["launcher_sha256"]),
+        (name, content_path, material["executable_sha256"]),
+    ):
+        if any(
+            os.path.normcase(str(existing["path"]))
+            == os.path.normcase(str(image_path))
+            for existing in process_images
+        ):
+            continue
+        process_images.append(
+            {
+                "schema": toolchain_capture.PROCESS_IMAGE_SCHEMA,
+                "role": role,
+                "path": str(image_path),
+                "sha256": digest,
+                "size_bytes": image_path.stat().st_size,
+            }
+        )
+    if name == "rustc":
+        requested_toolchains = envelope.get("toolchains")
+        cargo_path = None
+        if isinstance(requested_toolchains, list) and "cargo" in requested_toolchains:
+            cargo_path = _which_in_command_environment(
+                "cargo", envelope, exact, cwd=probe_cwd, env=env
+            )
+        linker_images, linker_telemetry = (
+            toolchain_capture.capture_rust_link_process_images(
+                rustc=content_path,
+                cargo=cargo_path,
+                cwd=probe_cwd,
+                env=env,
+                target=_rust_target(exact, env),
+                command_argv=_nested_command(exact) or exact,
+            )
+        )
+        process_images.extend(linker_images)
+        material["link_selection"] = linker_telemetry
+    material["process_images"] = process_images
     if name == "node":
         node_probe = (
             "const m=require('module');"
@@ -2413,17 +1923,31 @@ _ENVIRONMENT_BUILD_NAMES = frozenset(
         "CFLAGS",
         "CL",
         "CLANG",
+        "CMAKE",
         "CXX",
         "CXXFLAGS",
+        "DLLTOOL",
         "INCLUDE",
         "LDFLAGS",
         "LIB",
         "LINK",
         "LLVM_CONFIG",
+        "MAKE",
         "MAKEFLAGS",
+        "MESON",
+        "NASM",
         "NINJAFLAGS",
+        "NINJA",
+        "NM",
+        "OBJCOPY",
+        "PERL",
+        "PKG_CONFIG",
+        "RANLIB",
+        "RC",
         "RUSTC",
         "RUSTFLAGS",
+        "STRIP",
+        "YASM",
     }
 )
 _NONDETERMINISTIC_ENV_NAMES = frozenset(
@@ -2452,17 +1976,28 @@ _CANONICAL_EXECUTION_ENV = {
 _QUEUE_CUSTODY_ENV_NAMES = frozenset(
     {
         "MOLT_PROOF_CHILD_CUSTODY_JSON",
-        "MOLT_PROOF_CHILD_CUSTODY_JOURNAL",
-        "PYTHONPATH",
-        "PYTHONSAFEPATH",
+        "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT",
+        "MOLT_PROOF_CHILD_CUSTODY_TOKEN",
     }
 )
 _EXECUTABLE_ENV_NAMES = frozenset(
     {
         "AR",
         "CC",
+        "CMAKE",
         "CXX",
+        "DLLTOOL",
         "LINK",
+        "MAKE",
+        "MESON",
+        "NASM",
+        "NINJA",
+        "NM",
+        "OBJCOPY",
+        "PERL",
+        "PKG_CONFIG",
+        "RANLIB",
+        "RC",
         "RUSTC",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
@@ -2472,12 +2007,14 @@ _EXECUTABLE_ENV_NAMES = frozenset(
         "CARGO_BUILD_RUNNER",
         "CLANG",
         "LLVM_CONFIG",
+        "STRIP",
         "WASM_BINDGEN",
         "WASM_OPT",
+        "YASM",
     }
 )
 _EXECUTABLE_ENV_PATTERNS = (
-    re.compile(r"(?:AR|CC|CXX)_[A-Z0-9_]+"),
+    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_]+"),
     re.compile(r"CARGO_TARGET_[A-Z0-9_]+_(?:LINKER|RUNNER)"),
     re.compile(r"CMAKE_(?:C|CXX)_COMPILER"),
 )
@@ -2622,11 +2159,20 @@ def _execution_environment_authority(
         "variables": values,
         "cargo_policies": list(applied_cargo_policies),
         "fingerprint_key_id": hashlib.sha256(fingerprint_key).hexdigest(),
+        "canonical_values_sha256": _canonical_environment_sha256(env),
     }
     payload["identity_sha256"] = hashlib.sha256(
         json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()
     return payload
+
+
+def _canonical_environment_sha256(env: Mapping[str, str]) -> str:
+    """Bind every admitted environment value without publishing those values."""
+    canonical = {name: str(env[name]) for name in sorted(env, key=str.casefold)}
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _execution_environment_executable_identities(
@@ -2667,6 +2213,7 @@ def _capture_toolchains(
     env: Mapping[str, str],
     source_root: Path,
     hash_workers: int,
+    located_toolchains: Mapping[str, object],
 ) -> tuple[dict[str, object] | None, dict[str, object]]:
     plan = proof_plan.ProofPlan.load()
     requested_raw = envelope.get("toolchains")
@@ -2709,7 +2256,28 @@ def _capture_toolchains(
     for name in requested:
         if name == "python":
             continue
-        toolchains[name] = _tool_identity(plan, name, envelope, exact, cwd=cwd, env=env)
+        located = located_toolchains.get(name)
+        if not isinstance(located, Mapping):
+            raise ValueError(f"located {name} toolchain identity is unavailable")
+        if name == "rustc":
+            toolchain_capture.revalidate_rust_link_process_images(
+                located,
+                target=_rust_target(exact, env),
+                command_argv=_nested_command(exact) or exact,
+            )
+        for frozen in toolchain_capture.frozen_files({name: located}):
+            path = Path(frozen.path)
+            if (
+                _hash_file(path) != frozen.sha256
+                or (
+                    frozen.size is not None
+                    and path.stat().st_size != frozen.size
+                )
+            ):
+                raise ValueError(
+                    f"{name} toolchain file changed while live custody armed: {path}"
+                )
+        toolchains[name] = dict(located)
     if set(toolchains) != set(requested):
         raise ValueError(
             "proof command toolchain capture is incomplete: "
@@ -2718,14 +2286,86 @@ def _capture_toolchains(
     return proof_python, toolchains
 
 
-def _stable_toolchain_custody(
-    toolchains: Mapping[str, object],
-) -> dict[str, object]:
-    stable = json.loads(json.dumps(toolchains, sort_keys=True))
-    python = stable.get("python")
-    if isinstance(python, dict):
-        python.pop("inventory_profile", None)
-    return stable
+def _locate_toolchain_watch_roots(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> tuple[list[Path], dict[str, object], dict[str, object]]:
+    """Locate broad roots and child executables without a full inventory."""
+    started = time.perf_counter()
+    plan = proof_plan.ProofPlan.load()
+    requested_raw = envelope.get("toolchains")
+    if not isinstance(requested_raw, list) or not all(
+        isinstance(name, str) and name for name in requested_raw
+    ):
+        raise ValueError("proof command envelope has no toolchain authority")
+    requested = [str(name) for name in requested_raw]
+    roots: list[Path] = []
+    policy_identities: dict[str, object] = {}
+    if "python" in requested:
+        python_envelope = envelope
+        python_exact = list(exact)
+        if envelope.get("python") is None:
+            python_envelope = envelope_for_command(
+                [sys.executable, "-c", "raise SystemExit('location-only')"]
+            )
+            python_exact = [sys.executable, "-c", "raise SystemExit('location-only')"]
+        command = _python_auxiliary_command(
+            python_envelope,
+            python_exact,
+            authority=_PYTHON_TOOLCHAIN_LOCATOR,
+            arguments=(),
+        )
+        if command is None:
+            raise ValueError("proof Python locator has no selected interpreter")
+        located = _parse_json_output(
+            _run_captured(command, cwd=cwd, env=env),
+            purpose="proof Python toolchain locator",
+        )
+        if located.get("schema") != "molt.proof-python-toolchain-location.v1":
+            raise ValueError("proof Python toolchain locator schema mismatch")
+        executable_raw = located.get("executable")
+        base_executable_raw = located.get("base_executable")
+        if not isinstance(executable_raw, str) or not isinstance(
+            base_executable_raw, str
+        ):
+            raise ValueError("proof Python toolchain locator has no executable chain")
+        executable = Path(executable_raw).resolve(strict=True)
+        base_executable = Path(base_executable_raw).resolve(strict=True)
+        policy_identities["python"] = {
+            "executable": str(executable),
+            "executable_sha256": _hash_file(executable),
+            "base_executable": str(base_executable),
+            "base_executable_sha256": _hash_file(base_executable),
+        }
+        for field in ("roots", "editable_roots"):
+            values = located.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) for value in values
+            ):
+                raise ValueError(f"proof Python locator has malformed {field}")
+            for value in values:
+                path = Path(value)
+                if path.is_dir():
+                    roots.append(path.resolve(strict=True))
+    for name in requested:
+        if name == "python":
+            continue
+        identity = _tool_identity(plan, name, envelope, exact, cwd=cwd, env=env)
+        policy_identities[name] = identity
+        roots.extend(_broad_toolchain_roots({name: identity}))
+    roots = list(dict.fromkeys(roots))
+    telemetry = {
+        "schema": "molt.proof-toolchain-location-telemetry.v1",
+        "non_python_selection_capture_count": sum(
+            name != "python" for name in requested
+        ),
+        "root_count": len(roots),
+        "locate_s": time.perf_counter() - started,
+    }
+    return roots, policy_identities, telemetry
 
 
 def _python_editable_ineligible_reasons(
@@ -2765,32 +2405,6 @@ def _python_editable_ineligible_reasons(
     return reasons
 
 
-def _python_editable_change_reasons(
-    before: Mapping[str, object] | None,
-    after: Mapping[str, object] | None,
-) -> list[str]:
-    def manifests(identity: Mapping[str, object] | None) -> dict[str, object]:
-        if identity is None or not isinstance(identity.get("distributions"), list):
-            return {}
-        result: dict[str, object] = {}
-        for distribution in identity["distributions"]:  # type: ignore[index]
-            if not isinstance(distribution, Mapping):
-                continue
-            editable = distribution.get("editable_source")
-            if isinstance(editable, Mapping):
-                result[str(distribution.get("name") or "unknown")] = dict(editable)
-        return result
-
-    before_manifests = manifests(before)
-    after_manifests = manifests(after)
-    names = sorted(set(before_manifests) | set(after_manifests))
-    return [
-        f"python-editable-source-changed:{name}"
-        for name in names
-        if before_manifests.get(name) != after_manifests.get(name)
-    ]
-
-
 def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
     head = _run_captured(("git", "rev-parse", "HEAD"), cwd=cwd, env=env)
     if head.returncode != 0 or not re.fullmatch(
@@ -2825,6 +2439,7 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
     status = subprocess.run(
         [
             "git",
+            "--no-optional-locks",
             "status",
             "--porcelain=v1",
             "-z",
@@ -2894,6 +2509,20 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
             for raw in runtime_roots.values():
                 if isinstance(raw, str) and Path(raw).is_dir():
                     roots.append(Path(raw).resolve(strict=True))
+        if isinstance(runtime, Mapping):
+            for key in ("base_prefix", "prefix"):
+                raw = runtime.get(key)
+                if isinstance(raw, str) and Path(raw).is_dir():
+                    roots.append(Path(raw).resolve(strict=True))
+        distributions = python.get("distributions")
+        if isinstance(distributions, list):
+            for distribution in distributions:
+                if not isinstance(distribution, Mapping):
+                    continue
+                for key in ("install_prefix", "editable_source"):
+                    raw = distribution.get(key)
+                    if isinstance(raw, str) and Path(raw).is_dir():
+                        roots.append(Path(raw).resolve(strict=True))
     for identity in toolchains.values():
         if not isinstance(identity, Mapping):
             continue
@@ -2908,12 +2537,326 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
 
 
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    custody_cas.atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(),
     )
-    os.replace(temporary, path)
+
+
+def _provision_proof_supervisor(
+    *, cwd: Path, env: Mapping[str, str]
+) -> tuple[Path, dict[str, object]]:
+    started = time.perf_counter()
+    build = _REPO_ROOT / "tools" / "proof_supervisor" / "build.py"
+    completed = _run_captured(
+        (sys.executable, str(build), "--release"),
+        cwd=cwd,
+        env=env,
+        timeout=600.0,
+    )
+    if completed.returncode != 0:
+        raise ValueError(
+            "native proof supervisor provisioning failed: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        )
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("native proof supervisor build returned no binary")
+    binary = Path(lines[-1]).resolve(strict=True)
+    if not binary.is_file():
+        raise ValueError("native proof supervisor binary is unavailable")
+    binary_identity = _file_identity(binary)
+    return binary, {
+        "schema": "molt.proof-supervisor-provision-telemetry.v1",
+        "build_s": time.perf_counter() - started,
+        "build_target_dir": str(Path(env["CARGO_TARGET_DIR"]).resolve(strict=True)),
+        "build_output_sha256": binary_identity["sha256"],
+        "build_output_size_bytes": binary_identity["size_bytes"],
+    }
+
+
+def _supervisor_fixed_images(
+    toolchains: Mapping[str, object],
+    environment_executables: Mapping[str, object],
+    execution_command: Sequence[str],
+) -> tuple[str, list[dict[str, str]]]:
+    root = os.path.normcase(os.path.abspath(execution_command[0]))
+    images: dict[str, dict[str, str]] = {}
+
+    def add(role: str, raw_path: object, raw_digest: object) -> None:
+        if not isinstance(raw_path, str) or not isinstance(raw_digest, str):
+            return
+        if re.fullmatch(r"[0-9a-f]{64}", raw_digest) is None:
+            return
+        path = Path(raw_path)
+        if not path.is_absolute() or not path.is_file():
+            return
+        key = os.path.normcase(os.path.abspath(path))
+        row = {"role": role, "path": str(path), "sha256": raw_digest}
+        prior = images.get(key)
+        if prior is not None and prior["sha256"] != raw_digest:
+            raise ValueError(f"supervisor image has conflicting identities: {path}")
+        if prior is None:
+            images[key] = row
+
+    root_path = Path(os.path.abspath(execution_command[0]))
+    if not root_path.is_file():
+        raise ValueError("supervisor root executable is unavailable")
+    add("root-command", str(root_path), _hash_file(root_path))
+    for name, raw in toolchains.items():
+        if not isinstance(raw, Mapping):
+            continue
+        add(str(name), raw.get("executable"), raw.get("executable_sha256"))
+        add(str(name), raw.get("path"), raw.get("launcher_sha256"))
+        add(str(name), raw.get("content_path"), raw.get("executable_sha256"))
+        process_images = raw.get("process_images")
+        if isinstance(process_images, list):
+            for image in process_images:
+                if isinstance(image, Mapping):
+                    add(
+                        str(image.get("role") or name),
+                        image.get("path"),
+                        image.get("sha256"),
+                    )
+    for name, raw in environment_executables.items():
+        if not isinstance(raw, Mapping):
+            continue
+        executable = raw.get("executable")
+        if isinstance(executable, Mapping):
+            add(f"env:{name}", executable.get("path"), executable.get("sha256"))
+    root_image = images.get(root)
+    if root_image is None:
+        raise ValueError("supervisor policy has no captured root executable image")
+    return root_image["role"], [images[key] for key in sorted(images)]
+
+
+def _supervisor_derived_roots(
+    *, descendants: object, env: Mapping[str, str]
+) -> list[dict[str, str]]:
+    if descendants == "forbidden":
+        return []
+    roots: list[dict[str, str]] = []
+    for role, name in (("build-output", "CARGO_TARGET_DIR"),):
+        raw = env.get(name)
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError(f"declared-tree supervisor requires existing absolute {name}")
+        roots.append({"role": role, "path": str(path.resolve(strict=True))})
+    return roots
+
+
+def _derived_root_provenance(
+    *,
+    descendants: object,
+    env: Mapping[str, str],
+    source_root: Path,
+    result_path: Path,
+) -> list[dict[str, object]]:
+    roots = _supervisor_derived_roots(descendants=descendants, env=env)
+    source = source_root.resolve(strict=True)
+    cas_root = Path(os.path.abspath(result_path.parent / "custody-cas"))
+    admitted: list[dict[str, object]] = []
+    for row in roots:
+        path = Path(row["path"])
+        lexical = Path(os.path.abspath(path))
+        resolved = lexical.resolve(strict=True)
+        if os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)):
+            raise ValueError("derived executable root may not traverse a symlink")
+        if (
+            resolved == source
+            or resolved.is_relative_to(source)
+            or source.is_relative_to(resolved)
+        ):
+            raise ValueError("derived executable root overlaps admitted source")
+        if (
+            resolved == cas_root
+            or resolved.is_relative_to(cas_root)
+            or cas_root.is_relative_to(resolved)
+        ):
+            raise ValueError("derived executable root overlaps proof custody CAS")
+        if resolved == Path(os.path.abspath(result_path)):
+            raise ValueError("derived executable root overlaps terminal result")
+        entries = list(resolved.iterdir())
+        if entries:
+            raise ValueError(
+                f"derived executable root is not fresh and empty: {resolved}"
+            )
+        admitted.append(
+            {
+                **row,
+                "initial_entry_count": 0,
+                "initial_manifest_sha256": _canonical_payload_sha256([]),
+                "run_owned": True,
+            }
+        )
+    return admitted
+
+
+def _supervisor_policy(
+    *,
+    envelope: Mapping[str, object],
+    execution_command: Sequence[str],
+    execution_env: Mapping[str, str],
+    cwd: Path,
+    nonce: str,
+    toolchains: Mapping[str, object],
+    environment_executables: Mapping[str, object],
+) -> dict[str, object]:
+    closure = envelope.get("process_closure")
+    if not isinstance(closure, Mapping):
+        raise ValueError("proof envelope has no supervisor closure authority")
+    descendants = closure.get("descendants")
+    mode = "leaf" if descendants == "forbidden" else "declared-tree"
+    root_role, fixed_images = _supervisor_fixed_images(
+        toolchains, environment_executables, execution_command
+    )
+    return {
+        "schema": "molt.proof-process-closure.v1",
+        "nonce": nonce,
+        "mode": mode,
+        "cwd": str(cwd.resolve(strict=True)),
+        "command": [str(value) for value in execution_command],
+        "environment": dict(sorted(execution_env.items(), key=lambda item: item[0].casefold())),
+        "root_role": root_role,
+        "fixed_images": fixed_images,
+        "derived_roots": _supervisor_derived_roots(
+            descendants=descendants, env=execution_env
+        ),
+    }
+
+
+def _validated_supervisor_receipt(
+    *,
+    binary: Path,
+    policy_path: Path,
+    receipt_path: Path,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, object]:
+    verified = _run_captured(
+        (
+            str(binary),
+            "verify",
+            "--policy",
+            str(policy_path),
+            "--receipt",
+            str(receipt_path),
+        ),
+        cwd=cwd,
+        env=env,
+    )
+    if verified.returncode != 0:
+        raise ValueError(
+            "native proof supervisor receipt verification failed: "
+            + (verified.stderr.strip() or verified.stdout.strip())
+        )
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("native proof supervisor returned no readable receipt") from exc
+    if not isinstance(receipt, dict):
+        raise ValueError("native proof supervisor receipt is not an object")
+    return receipt
+
+
+def _publish_supervisor_event_artifact(
+    *, receipt_path: Path, receipt: Mapping[str, object], cas_root: Path
+) -> dict[str, object]:
+    event_log = receipt.get("event_log")
+    if not isinstance(event_log, Mapping):
+        raise ValueError("native proof supervisor receipt has no event artifact")
+    file_name = event_log.get("file")
+    expected_sha256 = event_log.get("sha256")
+    expected_bytes = event_log.get("bytes")
+    expected_count = event_log.get("count")
+    if (
+        not isinstance(file_name, str)
+        or Path(file_name).name != file_name
+        or not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        or not isinstance(expected_bytes, int)
+        or isinstance(expected_bytes, bool)
+        or expected_bytes < 0
+        or not isinstance(expected_count, int)
+        or isinstance(expected_count, bool)
+        or expected_count < 0
+    ):
+        raise ValueError("native proof supervisor event artifact descriptor is malformed")
+    event_path = receipt_path.with_name(file_name).resolve(strict=True)
+    if event_path.parent != receipt_path.parent.resolve(strict=True):
+        raise ValueError("native proof supervisor event artifact escaped its receipt directory")
+    digest = hashlib.sha256()
+    size = 0
+    count = 0
+    final_byte = None
+    with event_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+            count += chunk.count(b"\n")
+            final_byte = chunk[-1]
+    if (
+        digest.hexdigest() != expected_sha256
+        or size != expected_bytes
+        or count != expected_count
+        or (size > 0 and final_byte != ord("\n"))
+    ):
+        raise ValueError("native proof supervisor event artifact identity changed")
+    artifact = custody_cas.put_file(
+        cas_root, event_path, logical_name=file_name, executable=False
+    ).as_dict()
+    if (
+        artifact.get("sha256") != expected_sha256
+        or artifact.get("size_bytes") != expected_bytes
+    ):
+        raise ValueError("durable supervisor event artifact identity mismatch")
+    return {
+        "schema": "molt.proof-process-event-artifact.v1",
+        "artifact": artifact,
+        "count": expected_count,
+        "bytes": expected_bytes,
+        "sha256": expected_sha256,
+    }
+
+
+def _canonical_payload_sha256(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _publish_live_custody_receipt(
+    receipt: Mapping[str, object], *, cas_root: Path
+) -> dict[str, object]:
+    events = receipt.get("events")
+    errors = receipt.get("errors")
+    lifecycle = receipt.get("lifecycle")
+    state = receipt.get("state")
+    if not isinstance(events, list) or not isinstance(errors, list):
+        raise ValueError("live custody receipt event authority is malformed")
+    artifact_payload = {
+        "schema": custody_cas.ARTIFACT_SCHEMA,
+        "kind": "live-input-custody-events",
+        "events": events,
+        "errors": errors,
+    }
+    artifact = custody_cas.put_json(cas_root, artifact_payload).as_dict()
+    material = {
+        "events": events,
+        "errors": errors,
+        "state": state,
+        "lifecycle": lifecycle,
+    }
+    if receipt.get("identity_sha256") != _canonical_payload_sha256(material):
+        raise ValueError("live custody receipt identity is inconsistent")
+    return {
+        **{key: value for key, value in receipt.items() if key not in {"events", "errors"}},
+        "event_artifact": artifact,
+        "event_count": len(events),
+        "error_count": len(errors),
+    }
 
 
 def execution_custody_sha256(
@@ -2984,6 +2927,10 @@ def execute_guarded_request(request_path: Path) -> int:
     command = [str(value) for value in command]
     validate_envelope(envelope, command)
     execution_custody.require_enforceable_process_closure(envelope)
+    effective_cwd, overlay_paths = _execution_source_paths(envelope, cwd=cwd)
+    _require_external_execution_outputs(
+        result_path=result_path, effective_source=effective_cwd
+    )
     result: dict[str, object] = {
         "schema": EXECUTION_SCHEMA,
         "run_id": run_id,
@@ -2992,13 +2939,23 @@ def execute_guarded_request(request_path: Path) -> int:
         "phase": "identity",
         "command_started": False,
     }
+    custody_session: execution_custody.ExecutionCustodySession | None = None
     try:
         inherited_env = dict(os.environ)
+        ambient_cargo_target = inherited_env.get("CARGO_TARGET_DIR", "").strip()
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
             inherited_env, applied_cargo_policies = normalize_cargo_environment(
                 inherited_env
             )
+            # Proof-produced executables require run provenance. Ordinary developer
+            # builds keep the persistent target authority, while guarded proofs use
+            # a fresh target and retain shared compiler caches outside that tree.
+            run_target = (
+                result_path.parent / "derived" / execution_nonce / "cargo-target"
+            )
+            run_target.mkdir(parents=True, exist_ok=False)
+            inherited_env["CARGO_TARGET_DIR"] = str(run_target.resolve(strict=True))
         canonical_env = dict(_CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             node_hook = (
@@ -3017,27 +2974,15 @@ def execute_guarded_request(request_path: Path) -> int:
                 *sorted(canonical_env),
             ],
         )
-        if envelope.get("python") is not None:
-            custody_site = (
-                Path(execution_custody.__file__)
-                .with_name("custody_site")
-                .resolve(strict=True)
-            )
-            execution_env["PYTHONPATH"] = os.pathsep.join(
-                (str(custody_site), str(cwd.resolve(strict=True)))
-            )
-            execution_env["PYTHONSAFEPATH"] = "1"
-            passed_names = environment_contract["passed_names"]
-            override_names_contract = environment_contract["override_names"]
-            assert isinstance(passed_names, list)
-            assert isinstance(override_names_contract, list)
-            for name in ("PYTHONPATH", "PYTHONSAFEPATH"):
-                if name not in passed_names:
-                    passed_names.append(name)
-                if name not in override_names_contract:
-                    override_names_contract.append(name)
-            passed_names.sort(key=str.casefold)
-            override_names_contract.sort(key=str.casefold)
+        process_closure = envelope.get("process_closure")
+        if not isinstance(process_closure, Mapping):
+            raise ValueError("proof command envelope has no process closure")
+        derived_root_provenance = _derived_root_provenance(
+            descendants=process_closure.get("descendants"),
+            env=execution_env,
+            source_root=effective_cwd,
+            result_path=result_path,
+        )
         # Provisioning belongs before the custody snapshot.  No tool may change
         # after its bytes become the authority consumed by the proof command.
         from tools.proof_queue_pkg import policy
@@ -3047,10 +2992,43 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         if preflight:
             raise ValueError("toolchain preflight failed: " + "; ".join(preflight))
+        supervisor_build_env = dict(execution_env)
+        if ambient_cargo_target:
+            ambient_target = Path(ambient_cargo_target)
+            if not ambient_target.is_absolute():
+                ambient_target = cwd / ambient_target
+            supervisor_target = ambient_target.resolve().parent / "proof-supervisor"
+        else:
+            supervisor_target = (
+                Path(tempfile.gettempdir()).resolve()
+                / "molt-proof-supervisor-target"
+            )
+        source_root = effective_cwd.resolve(strict=True)
+        supervisor_target = Path(os.path.abspath(supervisor_target))
+        if (
+            supervisor_target == source_root
+            or supervisor_target.is_relative_to(source_root)
+        ):
+            raise ValueError("native proof supervisor target overlaps admitted source")
+        supervisor_target.mkdir(parents=True, exist_ok=True)
+        supervisor_build_env["CARGO_TARGET_DIR"] = str(
+            supervisor_target.resolve(strict=True)
+        )
+        built_supervisor, supervisor_provision_telemetry = _provision_proof_supervisor(
+            cwd=cwd, env=supervisor_build_env
+        )
+        supervisor_binary_artifact = custody_cas.put_file(
+            result_path.parent / "custody-cas",
+            built_supervisor,
+            logical_name=built_supervisor.name,
+            executable=True,
+        ).as_dict()
+        supervisor_binary = Path(str(supervisor_binary_artifact["path"])).resolve(
+            strict=True
+        )
         environment_fingerprint_key = secrets.token_bytes(32)
         exact = _exact_command(envelope, cwd=cwd, env=execution_env)
         payload_executable_pre = _payload_executable_identity(envelope, exact)
-        effective_cwd, overlay_paths = _execution_source_paths(envelope, cwd=cwd)
         guarded_exec_pre, delegated_pre = _bind_delegated_command(
             envelope,
             exact,
@@ -3074,35 +3052,60 @@ def execute_guarded_request(request_path: Path) -> int:
             )
         pre_source = _git_snapshot(effective_cwd, execution_env)
         plan = proof_plan.ProofPlan.load()
-        proof_python, toolchains = _capture_toolchains(
-            envelope,
-            exact,
-            cwd=cwd,
-            env=execution_env,
-            source_root=effective_cwd,
-            hash_workers=plan.inventory_hash_workers,
+        located_roots, policy_identities, location_telemetry = (
+            _locate_toolchain_watch_roots(
+                envelope,
+                exact,
+                cwd=cwd,
+                env=execution_env,
+            )
         )
-        for name, identity in toolchains.items():
-            assert isinstance(identity, Mapping)
-            _validate_toolchain_identity(plan, name, identity)
-        child_policy = execution_custody.child_policy(envelope, toolchains)
-        child_journal_path = result_path.with_suffix(".child-custody.jsonl")
-        try:
-            child_journal_path.unlink()
-        except FileNotFoundError:
-            pass
+        child_policy = execution_custody.child_policy(envelope, policy_identities)
+        python_authority = envelope.get("python")
+        python_has_payload = isinstance(python_authority, Mapping) and (
+            parse_python_invocation(
+                _python_invocation_argv(
+                    [str(value) for value in envelope["argv"]], python_authority
+                )
+            ).mode
+            != "terminal"
+        )
+        expected_child_runtime = (
+            "python"
+            if python_has_payload
+            else (
+                "node"
+                if _basename(str(envelope["argv"][0])) in {"node", "node.exe"}
+                else None
+            )
+        )
+        child_event_server = execution_custody.ChildCustodyEventServer(
+            expected_child_runtime, child_policy
+        )
         execution_env[execution_custody.CHILD_POLICY_ENV] = json.dumps(
             child_policy, sort_keys=True, separators=(",", ":")
         )
-        execution_env[execution_custody.CHILD_JOURNAL_ENV] = str(child_journal_path)
+        execution_env.update(child_event_server.environment())
         passed_names = environment_contract["passed_names"]
         override_names_contract = environment_contract["override_names"]
         assert isinstance(passed_names, list)
         assert isinstance(override_names_contract, list)
         for name in (
             execution_custody.CHILD_POLICY_ENV,
-            execution_custody.CHILD_JOURNAL_ENV,
+            execution_custody.CHILD_ENDPOINT_ENV,
+            execution_custody.CHILD_TOKEN_ENV,
         ):
+            if name not in passed_names:
+                passed_names.append(name)
+            if name not in override_names_contract:
+                override_names_contract.append(name)
+        passed_names.sort(key=str.casefold)
+        override_names_contract.sort(key=str.casefold)
+        execution_command, python_launcher_environment = _supervised_execution_command(
+            envelope, exact, policy_identities
+        )
+        execution_env.update(python_launcher_environment)
+        for name in sorted(python_launcher_environment):
             if name not in passed_names:
                 passed_names.append(name)
             if name not in override_names_contract:
@@ -3112,6 +3115,40 @@ def execute_guarded_request(request_path: Path) -> int:
         environment_executables_pre = _execution_environment_executable_identities(
             execution_env, cwd=cwd
         )
+        custody_authority_paths = [
+            Path(execution_custody.__file__).resolve(strict=True),
+            supervisor_binary,
+        ]
+        supervisor_source = _REPO_ROOT / "tools" / "proof_supervisor"
+        custody_authority_paths.extend(
+            path.resolve(strict=True)
+            for path in (
+                supervisor_source / "build.py",
+                supervisor_source / "Cargo.toml",
+                supervisor_source / "Cargo.lock",
+                *sorted((supervisor_source / "src").rglob("*.rs")),
+            )
+        )
+        if python_has_payload:
+            custody_authority_paths.append(
+                _PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
+            )
+        if "node" in envelope.get("toolchains", []):
+            custody_authority_paths.extend(
+                Path(execution_custody.__file__).with_name(name).resolve(strict=True)
+                for name in (
+                    "node_child_custody.cjs",
+                    "node_child_custody_worker.cjs",
+                )
+            )
+        custody_authorities_pre = [
+            _file_identity(path) for path in dict.fromkeys(custody_authority_paths)
+        ]
+        if not all(
+            _content_identity_available(identity)
+            for identity in custody_authorities_pre
+        ):
+            raise ValueError("proof custody authority has unavailable content identity")
         tracked_paths = _git_tracked_paths(effective_cwd, execution_env)
         source_root_raw = pre_source.get("root")
         if not isinstance(source_root_raw, str):
@@ -3119,8 +3156,9 @@ def execute_guarded_request(request_path: Path) -> int:
         watch_identities: list[object] = [
             executable_pre,
             *overlay_pre,
-            toolchains,
+            policy_identities,
             environment_executables_pre,
+            custody_authorities_pre,
         ]
         if payload_executable_pre is not None:
             watch_identities.append(payload_executable_pre)
@@ -3128,12 +3166,121 @@ def execute_guarded_request(request_path: Path) -> int:
             watch_identities.append(guarded_exec_pre)
         if delegated_pre is not None:
             watch_identities.append(delegated_pre)
+        source_root_path = Path(source_root_raw).resolve(strict=True)
+        broad_roots = [
+            root
+            for root in located_roots
+            if root != source_root_path and not root.is_relative_to(source_root_path)
+        ]
         live_watch_specs = execution_custody.watch_specs(
-            source_root=Path(source_root_raw),
+            source_root=source_root_path,
             tracked_paths=tracked_paths,
             identities=watch_identities,
-            broad_roots=_broad_toolchain_roots(toolchains),
+            broad_roots=broad_roots,
         )
+        monitor = execution_custody.LiveCustodyMonitor(live_watch_specs)
+        custody_session = execution_custody.ExecutionCustodySession(
+            monitor=monitor,
+            child_server=child_event_server,
+        )
+        custody_session.__enter__()
+
+        # Python's mutable package inventory is captured once after custody is
+        # armed. Non-Python selection ran exactly once pre-arm so its complete
+        # executable/config closure could itself be watched; only exact-path
+        # content revalidation is permitted here.
+        pre_source = _git_snapshot(effective_cwd, execution_env)
+        if pre_source.get("root") != source_root_raw:
+            raise ValueError("proof source root changed while live custody armed")
+        executable_pre = _executable_identity(Path(exact[0]))
+        payload_executable_pre = _payload_executable_identity(envelope, exact)
+        overlay_pre = [_file_identity(path) for path in overlay_paths]
+        guarded_exec_pre = (
+            _file_identity(Path(str(guarded_exec_pre["path"])))
+            if guarded_exec_pre is not None
+            else None
+        )
+        delegated_pre = (
+            _executable_identity(Path(str(delegated_pre["path"])))
+            if delegated_pre is not None
+            else None
+        )
+        _proof_python_full, toolchains_full = _capture_toolchains(
+            envelope,
+            exact,
+            cwd=cwd,
+            env=execution_env,
+            source_root=effective_cwd,
+            hash_workers=plan.inventory_hash_workers,
+            located_toolchains=policy_identities,
+        )
+        for name, identity in toolchains_full.items():
+            assert isinstance(identity, Mapping)
+            _validate_toolchain_identity(plan, name, identity)
+        if execution_custody.child_policy(envelope, toolchains_full) != child_policy:
+            raise ValueError("toolchain closure changed while live custody armed")
+        toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
+            result_path.parent / "custody-cas", toolchains_full
+        )
+        frozen = toolchain_capture.frozen_files(toolchains_full)
+        uncovered = [
+            row.path
+            for row in frozen
+            if not any(spec.owns(Path(row.path)) for spec in live_watch_specs)
+        ]
+        if uncovered:
+            raise ValueError(
+                "toolchain capture contains paths outside armed custody: "
+                + ", ".join(uncovered[:3])
+            )
+        proof_python = toolchains.get("python")
+        if proof_python is not None and not isinstance(proof_python, dict):
+            raise ValueError("compact Python toolchain summary is malformed")
+        supervisor_policy_path = result_path.with_suffix(".supervisor-policy.json")
+        supervisor_receipt_path = result_path.with_suffix(".supervisor-receipt.json")
+        for supervisor_output in (supervisor_policy_path, supervisor_receipt_path):
+            try:
+                supervisor_output.unlink()
+            except FileNotFoundError:
+                pass
+        supervisor_policy = _supervisor_policy(
+            envelope=envelope,
+            execution_command=execution_command,
+            execution_env=execution_env,
+            cwd=cwd,
+            nonce=execution_nonce,
+            toolchains=toolchains,
+            environment_executables=environment_executables_pre,
+        )
+        _atomic_json(supervisor_policy_path, supervisor_policy)
+        supervisor_policy_identity = _file_identity(supervisor_policy_path)
+        custody_session.mark_captured()
+        del _proof_python_full, toolchains_full, frozen
+        environment_executables_pre = _execution_environment_executable_identities(
+            execution_env, cwd=cwd
+        )
+        custody_authorities_pre = [
+            _file_identity(path) for path in custody_authority_paths
+        ]
+        authoritative_pre_identities = [
+            executable_pre,
+            *overlay_pre,
+            *custody_authorities_pre,
+        ]
+        for optional_identity in (
+            payload_executable_pre,
+            guarded_exec_pre,
+            delegated_pre,
+        ):
+            if optional_identity is not None:
+                authoritative_pre_identities.append(optional_identity)
+        if not all(
+            _content_identity_available(identity)
+            for identity in authoritative_pre_identities
+        ):
+            raise ValueError(
+                "proof execution input became unavailable after live custody armed"
+            )
         python_version = "none"
         if proof_python is not None:
             match = re.match(r"(\d+\.\d+)", str(proof_python["version"]))
@@ -3156,13 +3303,23 @@ def execute_guarded_request(request_path: Path) -> int:
                 "python": python_version,
             },
             "toolchains": toolchains,
-            "toolchain_custody": {"prelaunch": toolchains},
+            "toolchain_custody": {
+                "capture_semantic_sha256": capture_ref["semantic_sha256"],
+            },
+            "toolchain_capture": {
+                "schema": "molt.proof-toolchain-custody.v1",
+                "artifact": capture_ref,
+                "telemetry": {
+                    "location": location_telemetry,
+                    "capture": capture_telemetry,
+                },
+            },
             "command_envelope": envelope,
             "command_envelope_sha256": hashlib.sha256(
                 json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
             "exact_command_sha256": hashlib.sha256(
-                json.dumps(exact, separators=(",", ":")).encode()
+                json.dumps(execution_command, separators=(",", ":")).encode()
             ).hexdigest(),
             "command_executable": {"prelaunch": executable_pre},
             "payload_command_executable": (
@@ -3195,7 +3352,18 @@ def execute_guarded_request(request_path: Path) -> int:
                     "role": "queue-runner-and-memory-guard",
                 },
                 "proof_command": (
-                    {**proof_python, "role": "proof-command-envelope"}
+                    {
+                        **{
+                            key: proof_python.get(key)
+                            for key in (
+                                "executable",
+                                "implementation",
+                                "version",
+                                "identity_sha256",
+                            )
+                        },
+                        "role": "proof-command-envelope",
+                    }
                     if proof_python is not None
                     else {"kind": "none", "role": "proof-command-envelope"}
                 ),
@@ -3208,10 +3376,25 @@ def execute_guarded_request(request_path: Path) -> int:
             },
             "child_process_custody": {
                 "policy": child_policy,
-                "journal_path": str(child_journal_path),
+                "transport": "parent-owned-authenticated-loopback",
             },
+            "derived_root_custody": {
+                "prelaunch": derived_root_provenance,
+                "policy_roots": [
+                    {"role": row["role"], "path": row["path"]}
+                    for row in derived_root_provenance
+                ],
+            },
+            "process_supervisor": {
+                "schema": "molt.proof-process-supervision.v1",
+                "binary": _file_identity(supervisor_binary),
+                "binary_artifact": supervisor_binary_artifact,
+                "policy": supervisor_policy_identity,
+                "provision_telemetry": supervisor_provision_telemetry,
+            },
+            "custody_authorities": {"prelaunch": custody_authorities_pre},
             "live_input_custody": {
-                "state": "armed",
+                "state": custody_session.state,
                 "watch_roots": len(live_watch_specs),
             },
         }
@@ -3231,35 +3414,69 @@ def execute_guarded_request(request_path: Path) -> int:
                 transcript_path.unlink()
             except FileNotFoundError:
                 pass
-        monitor = execution_custody.LiveCustodyMonitor(live_watch_specs)
-        with monitor:
-            with (
-                stdout_path.open("xb") as stdout_handle,
-                stderr_path.open("xb") as stderr_handle,
-            ):
-                completed = subprocess.run(
-                    exact,
-                    cwd=cwd,
-                    env=execution_env,
-                    check=False,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                )
-                stdout_handle.flush()
-                stderr_handle.flush()
-                os.fsync(stdout_handle.fileno())
-                os.fsync(stderr_handle.fileno())
-        live_custody_receipt = monitor.receipt()
-        child_custody_receipt = execution_custody.child_journal_receipt(
-            child_journal_path
+        custody_session.mark_running()
+        supervisor_started = time.perf_counter()
+        with (
+            stdout_path.open("xb") as stdout_handle,
+            stderr_path.open("xb") as stderr_handle,
+        ):
+            supervisor_completed = subprocess.run(
+                [
+                    str(supervisor_binary),
+                    "run",
+                    "--policy",
+                    str(supervisor_policy_path),
+                    "--receipt",
+                    str(supervisor_receipt_path),
+                ],
+                cwd=cwd,
+                env=execution_env,
+                check=False,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+            )
+            stdout_handle.flush()
+            stderr_handle.flush()
+            os.fsync(stdout_handle.fileno())
+            os.fsync(stderr_handle.fileno())
+        supervisor_run_s = time.perf_counter() - supervisor_started
+        supervisor_receipt = _validated_supervisor_receipt(
+            binary=supervisor_binary,
+            policy_path=supervisor_policy_path,
+            receipt_path=supervisor_receipt_path,
+            cwd=cwd,
+            env=execution_env,
         )
-        context["live_input_custody"] = live_custody_receipt
-        child_process_custody = context["child_process_custody"]
-        assert isinstance(child_process_custody, dict)
-        child_process_custody["receipt"] = child_custody_receipt
+        supervisor_event_artifact = _publish_supervisor_event_artifact(
+            receipt_path=supervisor_receipt_path,
+            receipt=supervisor_receipt,
+            cas_root=result_path.parent / "custody-cas",
+        )
+        root_exit_code = supervisor_receipt.get("root_exit_code")
+        if not isinstance(root_exit_code, int):
+            root_exit_code = (
+                int(supervisor_completed.returncode)
+                if supervisor_completed.returncode != 0
+                else 2
+            )
+        completed = subprocess.CompletedProcess(
+            execution_command, int(root_exit_code)
+        )
+        custody_session.mark_quiescent()
         _replay_transcript(stdout_path, sys.stdout)
         _replay_transcript(stderr_path, sys.stderr)
         result["command_returncode"] = int(completed.returncode)
+        process_supervisor = context["process_supervisor"]
+        assert isinstance(process_supervisor, dict)
+        process_supervisor.update(
+            {
+                "receipt": supervisor_receipt,
+                "receipt_file": _file_identity(supervisor_receipt_path),
+                "event_artifact": supervisor_event_artifact,
+                "supervisor_returncode": int(supervisor_completed.returncode),
+                "run_s": supervisor_run_s,
+            }
+        )
         transcript = {
             "stdout": _transcript_identity(stdout_path),
             "stderr": _transcript_identity(stderr_path),
@@ -3280,6 +3497,7 @@ def execute_guarded_request(request_path: Path) -> int:
                     "successful test command produced no structured test-count authority"
                 )
         context["command_transcript"] = transcript
+        custody_session.mark_verifying()
         post_source = _git_snapshot(effective_cwd, execution_env)
         overlay_post = [_file_identity(path) for path in overlay_paths]
         executable_post = _executable_identity(Path(exact[0]))
@@ -3297,40 +3515,52 @@ def execute_guarded_request(request_path: Path) -> int:
             if delegated_pre is not None
             else None
         )
-        identity_env = dict(execution_env)
-        identity_env.pop(execution_custody.CHILD_POLICY_ENV, None)
-        identity_env.pop(execution_custody.CHILD_JOURNAL_ENV, None)
-        proof_python_post, toolchains_post = _capture_toolchains(
-            envelope,
-            exact,
-            cwd=cwd,
-            env=identity_env,
-            source_root=effective_cwd,
-            hash_workers=plan.inventory_hash_workers,
+        capture_verification = toolchain_capture.verify_capture(
+            capture_ref,
+            workers=plan.inventory_hash_workers,
+            cas_root=result_path.parent / "custody-cas",
         )
-        for name, identity in toolchains_post.items():
-            assert isinstance(identity, Mapping)
-            _validate_toolchain_identity(plan, name, identity)
         environment_post = _execution_environment_authority(
             execution_env,
             applied_cargo_policies=applied_cargo_policies,
             fingerprint_key=environment_fingerprint_key,
             contract=environment_contract,
         )
+        custody_authorities_post = [
+            _file_identity(path) for path in custody_authority_paths
+        ]
+        custody_session.drain()
+        session_receipt = custody_session.receipt()
+        live_custody_receipt = session_receipt["live_input_custody"]
+        child_custody_receipt = session_receipt["child_process_custody"]
+        assert isinstance(live_custody_receipt, dict)
+        assert isinstance(child_custody_receipt, dict)
+        context["execution_custody_session"] = {
+            "schema": session_receipt["schema"],
+            "state": session_receipt["state"],
+            "lifecycle": session_receipt["lifecycle"],
+        }
+        context["live_input_custody"] = _publish_live_custody_receipt(
+            live_custody_receipt, cas_root=result_path.parent / "custody-cas"
+        )
+        child_process_custody = context["child_process_custody"]
+        assert isinstance(child_process_custody, dict)
+        child_process_custody["receipt"] = child_custody_receipt
         source_identical = pre_source == post_source
         executable_identical = executable_pre == executable_post
         payload_executable_identical = payload_executable_pre == payload_executable_post
         guarded_exec_identical = guarded_exec_pre == guarded_exec_post
         delegated_identical = delegated_pre == delegated_post
-        toolchains_identical = _stable_toolchain_custody(
-            toolchains
-        ) == _stable_toolchain_custody(toolchains_post)
+        toolchains_identical = capture_verification.get("stable") is True
         environment_pre_container = context["execution_environment"]
         assert isinstance(environment_pre_container, dict)
         environment_pre = environment_pre_container["prelaunch"]
         environment_identical = environment_pre == environment_post
         environment_executables_identical = (
             environment_executables_pre == environment_executables_post
+        )
+        custody_authorities_identical = (
+            custody_authorities_pre == custody_authorities_post
         )
         ineligible_reasons: list[str] = []
         if not pre_source.get("available") or not post_source.get("available"):
@@ -3352,38 +3582,32 @@ def execute_guarded_request(request_path: Path) -> int:
         if not delegated_identical:
             ineligible_reasons.append("delegated-command-executable-changed")
         if not toolchains_identical:
-            ineligible_reasons.append("toolchain-or-python-distribution-changed")
+            ineligible_reasons.append("toolchain-frozen-manifest-changed")
         if not environment_identical:
             ineligible_reasons.append("execution-environment-changed")
         if not environment_executables_identical:
             ineligible_reasons.append("execution-environment-executable-changed")
+        if not custody_authorities_identical:
+            ineligible_reasons.append("execution-custody-authority-changed")
+        if not all(
+            _content_identity_available(identity)
+            for identity in custody_authorities_post
+        ):
+            ineligible_reasons.append("execution-custody-authority-unavailable")
         if live_custody_receipt.get("stable") is not True:
             if live_custody_receipt.get("events"):
                 ineligible_reasons.append("transient-input-mutation")
             if live_custody_receipt.get("errors"):
                 ineligible_reasons.append("live-input-monitor-incomplete")
-        if child_custody_receipt.get("complete") is not True:
-            ineligible_reasons.append("undeclared-child-process")
+        if child_custody_receipt.get("broker_complete") is not True:
+            ineligible_reasons.append("child-custody-broker-incomplete")
+        if supervisor_receipt.get("complete") is not True:
+            ineligible_reasons.append("native-process-supervision-incomplete")
         ineligible_reasons.extend(
             _python_editable_ineligible_reasons(
                 proof_python,
                 source_snapshot=pre_source,
             )
-        )
-        ineligible_reasons.extend(
-            reason
-            for reason in _python_editable_ineligible_reasons(
-                proof_python_post,
-                source_snapshot=post_source,
-            )
-            if reason not in ineligible_reasons
-        )
-        ineligible_reasons.extend(
-            reason
-            for reason in _python_editable_change_reasons(
-                proof_python, proof_python_post
-            )
-            if reason not in ineligible_reasons
         )
         if overlay_pre != overlay_post:
             ineligible_reasons.append("overlay-input-changed")
@@ -3444,13 +3668,20 @@ def execute_guarded_request(request_path: Path) -> int:
         assert isinstance(toolchain_custody, dict)
         toolchain_custody.update(
             {
-                "postcompletion": toolchains_post,
+                "verification_identity_sha256": capture_verification.get(
+                    "identity_sha256"
+                ),
                 "identical": toolchains_identical,
             }
         )
+        capture_context = context["toolchain_capture"]
+        assert isinstance(capture_context, dict)
+        capture_context["verification"] = capture_verification
         environment_pre_container.update(
             {
-                "postcompletion": environment_post,
+                "postcompletion_identity_sha256": environment_post.get(
+                    "identity_sha256"
+                ),
                 "identical": environment_identical,
             }
         )
@@ -3458,10 +3689,33 @@ def execute_guarded_request(request_path: Path) -> int:
         assert isinstance(executable_inputs, dict)
         executable_inputs.update(
             {
-                "postcompletion": environment_executables_post,
+                "postcompletion_sha256": _canonical_payload_sha256(
+                    environment_executables_post
+                ),
                 "identical": environment_executables_identical,
             }
         )
+        custody_authorities = context["custody_authorities"]
+        assert isinstance(custody_authorities, dict)
+        custody_authorities.update(
+            {
+                "postcompletion_sha256": _canonical_payload_sha256(
+                    custody_authorities_post
+                ),
+                "identical": custody_authorities_identical,
+            }
+        )
+        telemetry = capture_context["telemetry"]
+        assert isinstance(telemetry, dict)
+        # Reserve the fixed-width custody digest before measuring so telemetry
+        # reports the final serialized context size, not a pre-digest estimate.
+        context["execution_custody_sha256"] = "0" * 64
+        for _iteration in range(2):
+            telemetry["receipt_context_bytes"] = len(
+                json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
+            )
+        if int(telemetry["receipt_context_bytes"]) > 64 * 1024:
+            raise ValueError("compact proof receipt context exceeds 64 KiB")
         context["execution_custody_sha256"] = execution_custody_sha256(
             context,
             run_id=run_id,
@@ -3471,6 +3725,13 @@ def execute_guarded_request(request_path: Path) -> int:
         _atomic_json(result_path, result)
         return int(completed.returncode)
     except BaseException as exc:
+        if custody_session is not None and custody_session.state != "DRAINED":
+            try:
+                custody_session.__exit__(type(exc), exc, exc.__traceback__)
+            except BaseException as cleanup_exc:
+                result["custody_cleanup_error"] = (
+                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                )
         result.update(
             {
                 "phase": "failed",

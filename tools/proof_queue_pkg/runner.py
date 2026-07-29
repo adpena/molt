@@ -18,10 +18,12 @@ from molt.dx import development_artifact_env
 from tools.proof_queue_pkg import (
     command_envelope,
     custody,
+    custody_cas,
     evidence,
     policy,
     scheduling,
     state,
+    toolchain_capture,
 )
 from tools.proof_queue_pkg import diagnostics as diagnostic_engine
 
@@ -144,17 +146,67 @@ def _validated_execution_context(
         )
     ):
         raise ValueError("guarded receipt toolchain closure is incomplete")
+    capture = context.get("toolchain_capture")
+    artifact = capture.get("artifact") if isinstance(capture, dict) else None
+    verification = capture.get("verification") if isinstance(capture, dict) else None
+    telemetry = capture.get("telemetry") if isinstance(capture, dict) else None
+    capture_telemetry = (
+        telemetry.get("capture") if isinstance(telemetry, dict) else None
+    )
+    if (
+        not isinstance(capture, dict)
+        or capture.get("schema") != "molt.proof-toolchain-custody.v1"
+        or not isinstance(artifact, dict)
+        or not isinstance(verification, dict)
+        or verification.get("schema") != "molt.proof-toolchain-verification.v1"
+        or verification.get("stable") is not True
+        or verification.get("capture_semantic_sha256")
+        != artifact.get("semantic_sha256")
+        or not isinstance(capture_telemetry, dict)
+        or capture_telemetry.get("full_capture_count") != 1
+    ):
+        raise ValueError("guarded receipt has no compact single-capture authority")
     if (
         not isinstance(custody, dict)
         or custody.get("identical") is not True
-        or not isinstance(custody.get("prelaunch"), dict)
-        or not isinstance(custody.get("postcompletion"), dict)
-        or command_envelope._stable_toolchain_custody(custody["prelaunch"])
-        != command_envelope._stable_toolchain_custody(captured_toolchains)
-        or command_envelope._stable_toolchain_custody(custody["postcompletion"])
-        != command_envelope._stable_toolchain_custody(captured_toolchains)
+        or custody.get("capture_semantic_sha256")
+        != artifact.get("semantic_sha256")
+        or custody.get("verification_identity_sha256")
+        != verification.get("identity_sha256")
     ):
         raise ValueError("guarded receipt toolchain closure is not stable")
+    cas_root = execution_path.parent / "custody-cas"
+    custody_cas.verify_ref(artifact, expected_root=cas_root)
+    capture_payload = toolchain_capture.load_capture(artifact, cas_root=cas_root)
+    full_toolchains = capture_payload.get("toolchains")
+    if (
+        not isinstance(full_toolchains, dict)
+        or toolchain_capture.compact_toolchains(full_toolchains)
+        != captured_toolchains
+    ):
+        raise ValueError("guarded receipt compact toolchains disagree with full capture")
+    reverified_capture = toolchain_capture.verify_capture(
+        artifact, workers=1, cas_root=cas_root
+    )
+    verification_authority_fields = {
+        "schema",
+        "capture_semantic_sha256",
+        "verified_file_count",
+        "bytes_hashed",
+        "mismatches",
+        "stable",
+        "identity_sha256",
+    }
+    if any(
+        reverified_capture.get(field) != verification.get(field)
+        for field in verification_authority_fields
+    ):
+        raise ValueError("guarded receipt toolchain verification is not reproducible")
+    receipt_size = len(
+        json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
+    )
+    if receipt_size > 64 * 1024:
+        raise ValueError("guarded receipt context exceeds the 64 KiB compactness ceiling")
     live_custody = context.get("live_input_custody")
     if (
         not isinstance(live_custody, dict)
@@ -162,6 +214,31 @@ def _validated_execution_context(
         or live_custody.get("stable") is not True
     ):
         raise ValueError("guarded receipt has no stable live input custody")
+    live_event_artifact = live_custody.get("event_artifact")
+    if not isinstance(live_event_artifact, dict):
+        raise ValueError("guarded receipt has no durable live-custody event authority")
+    live_event_payload = custody_cas.read_ref(
+        live_event_artifact, expected_root=cas_root
+    )
+    live_events = live_event_payload.get("events")
+    live_errors = live_event_payload.get("errors")
+    if (
+        live_event_payload.get("kind") != "live-input-custody-events"
+        or not isinstance(live_events, list)
+        or not isinstance(live_errors, list)
+        or live_custody.get("event_count") != len(live_events)
+        or live_custody.get("error_count") != len(live_errors)
+        or live_custody.get("identity_sha256")
+        != command_envelope._canonical_payload_sha256(
+            {
+                "events": live_events,
+                "errors": live_errors,
+                "state": live_custody.get("state"),
+                "lifecycle": live_custody.get("lifecycle"),
+            }
+        )
+    ):
+        raise ValueError("guarded receipt live-custody event binding is invalid")
     child_custody = context.get("child_process_custody")
     closure = envelope.get("process_closure")
     child_policy = (
@@ -176,9 +253,233 @@ def _validated_execution_context(
         or not isinstance(child_policy, dict)
         or child_policy.get("descendants") != closure.get("descendants")
         or not isinstance(child_receipt, dict)
-        or child_receipt.get("complete") is not True
+        or child_receipt.get("broker_complete") is not True
     ):
         raise ValueError("guarded receipt has no complete child-process custody")
+    supervisor = context.get("process_supervisor")
+    supervisor_receipt = (
+        supervisor.get("receipt") if isinstance(supervisor, dict) else None
+    )
+    supervisor_binary = (
+        supervisor.get("binary") if isinstance(supervisor, dict) else None
+    )
+    supervisor_binary_artifact = (
+        supervisor.get("binary_artifact") if isinstance(supervisor, dict) else None
+    )
+    supervisor_policy = (
+        supervisor.get("policy") if isinstance(supervisor, dict) else None
+    )
+    supervisor_receipt_file = (
+        supervisor.get("receipt_file") if isinstance(supervisor, dict) else None
+    )
+    supervisor_event_artifact = (
+        supervisor.get("event_artifact") if isinstance(supervisor, dict) else None
+    )
+    if (
+        not isinstance(supervisor, dict)
+        or supervisor.get("schema") != "molt.proof-process-supervision.v1"
+        or supervisor.get("supervisor_returncode") != 0
+        or not isinstance(supervisor_receipt, dict)
+        or supervisor_receipt.get("schema")
+        != "molt.proof-process-closure-receipt.v2"
+        or supervisor_receipt.get("complete") is not True
+        or supervisor_receipt.get("state") != "COMPLETE"
+        or not isinstance(supervisor_binary, dict)
+        or not isinstance(supervisor_binary_artifact, dict)
+        or not isinstance(supervisor_policy, dict)
+        or not isinstance(supervisor_receipt_file, dict)
+        or not isinstance(supervisor_event_artifact, dict)
+    ):
+        raise ValueError("guarded receipt has no complete native process supervisor")
+    binary_path = Path(str(supervisor_binary.get("path")))
+    policy_path = Path(str(supervisor_policy.get("path")))
+    receipt_path = Path(str(supervisor_receipt_file.get("path")))
+    if (
+        command_envelope._file_identity(binary_path) != supervisor_binary
+        or command_envelope._file_identity(policy_path) != supervisor_policy
+        or command_envelope._file_identity(receipt_path) != supervisor_receipt_file
+    ):
+        raise ValueError("native process supervisor authority changed after execution")
+    custody_cas.verify_file_ref(supervisor_binary_artifact, expected_root=cas_root)
+    if (
+        supervisor_binary_artifact.get("path") != supervisor_binary.get("path")
+        or supervisor_binary_artifact.get("sha256") != supervisor_binary.get("sha256")
+        or supervisor_binary_artifact.get("size_bytes")
+        != supervisor_binary.get("size_bytes")
+        or supervisor_binary_artifact.get("executable") is not True
+    ):
+        raise ValueError("native process supervisor has no durable executable authority")
+    event_log = supervisor_receipt.get("event_log")
+    durable_event = supervisor_event_artifact.get("artifact")
+    if not isinstance(event_log, dict) or not isinstance(durable_event, dict):
+        raise ValueError("native process supervisor has no durable event authority")
+    custody_cas.verify_file_ref(durable_event, expected_root=cas_root)
+    if (
+        supervisor_event_artifact.get("schema")
+        != "molt.proof-process-event-artifact.v1"
+        or supervisor_event_artifact.get("count") != event_log.get("count")
+        or supervisor_event_artifact.get("bytes") != event_log.get("bytes")
+        or supervisor_event_artifact.get("sha256") != event_log.get("sha256")
+        or durable_event.get("sha256") != event_log.get("sha256")
+        or durable_event.get("size_bytes") != event_log.get("bytes")
+        or durable_event.get("executable") is not False
+    ):
+        raise ValueError("native process supervisor event artifact binding is invalid")
+    try:
+        policy_payload = json.loads(policy_path.read_text(encoding="utf-8"))
+        receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("native process supervisor authority is unreadable") from exc
+    expected_mode = (
+        "leaf" if closure.get("descendants") == "forbidden" else "declared-tree"
+    )
+    policy_command = (
+        policy_payload.get("command") if isinstance(policy_payload, dict) else None
+    )
+    fixed_images = (
+        policy_payload.get("fixed_images")
+        if isinstance(policy_payload, dict)
+        else None
+    )
+    policy_environment = (
+        policy_payload.get("environment") if isinstance(policy_payload, dict) else None
+    )
+    policy_derived_roots = (
+        policy_payload.get("derived_roots") if isinstance(policy_payload, dict) else None
+    )
+    source_custody = context.get("source_custody")
+    execution_environment = context.get("execution_environment")
+    environment_prelaunch = (
+        execution_environment.get("prelaunch")
+        if isinstance(execution_environment, dict)
+        else None
+    )
+    derived_root_custody = context.get("derived_root_custody")
+    derived_root_prelaunch = (
+        derived_root_custody.get("prelaunch")
+        if isinstance(derived_root_custody, dict)
+        else None
+    )
+    executable_inputs = (
+        execution_environment.get("executable_inputs")
+        if isinstance(execution_environment, dict)
+        else None
+    )
+    environment_executables = (
+        executable_inputs.get("prelaunch")
+        if isinstance(executable_inputs, dict)
+        else None
+    )
+    custody_authorities = context.get("custody_authorities")
+    custody_authorities_prelaunch = (
+        custody_authorities.get("prelaunch")
+        if isinstance(custody_authorities, dict)
+        else None
+    )
+    expected_root_role = None
+    expected_fixed_images = None
+    if (
+        isinstance(full_toolchains, dict)
+        and isinstance(environment_executables, dict)
+        and isinstance(policy_command, list)
+        and policy_command
+    ):
+        expected_root_role, expected_fixed_images = (
+            command_envelope._supervisor_fixed_images(
+                full_toolchains, environment_executables, policy_command
+            )
+        )
+    expected_derived_roots = None
+    if isinstance(policy_environment, dict):
+        expected_derived_roots = command_envelope._supervisor_derived_roots(
+            descendants=closure.get("descendants"),
+            env={str(key): str(value) for key, value in policy_environment.items()},
+        )
+    if (
+        receipt_payload != supervisor_receipt
+        or not isinstance(policy_payload, dict)
+        or policy_payload.get("schema") != "molt.proof-process-closure.v1"
+        or policy_payload.get("nonce") != execution_nonce
+        or policy_payload.get("mode") != expected_mode
+        or not isinstance(source_custody, dict)
+        or policy_payload.get("cwd") != source_custody.get("row_cwd")
+        or not isinstance(policy_command, list)
+        or not policy_command
+        or hashlib.sha256(
+            json.dumps(policy_command, separators=(",", ":")).encode()
+        ).hexdigest()
+        != context.get("exact_command_sha256")
+        or not Path(str(policy_command[0])).is_absolute()
+        or not isinstance(policy_environment, dict)
+        or not isinstance(environment_prelaunch, dict)
+        or not isinstance(execution_environment, dict)
+        or execution_environment.get("identical") is not True
+        or execution_environment.get("postcompletion_identity_sha256")
+        != environment_prelaunch.get("identity_sha256")
+        or not isinstance(executable_inputs, dict)
+        or executable_inputs.get("identical") is not True
+        or executable_inputs.get("postcompletion_sha256")
+        != command_envelope._canonical_payload_sha256(environment_executables)
+        or not isinstance(custody_authorities, dict)
+        or not isinstance(custody_authorities_prelaunch, list)
+        or custody_authorities.get("identical") is not True
+        or custody_authorities.get("postcompletion_sha256")
+        != command_envelope._canonical_payload_sha256(
+            custody_authorities_prelaunch
+        )
+        or set(policy_environment) != set(environment_prelaunch.get("passed_names", []))
+        or command_envelope._canonical_environment_sha256(
+            {str(key): str(value) for key, value in policy_environment.items()}
+        )
+        != environment_prelaunch.get("canonical_values_sha256")
+        or not isinstance(fixed_images, list)
+        or policy_payload.get("root_role") != expected_root_role
+        or fixed_images != expected_fixed_images
+        or policy_derived_roots != expected_derived_roots
+        or not isinstance(derived_root_custody, dict)
+        or not isinstance(derived_root_prelaunch, list)
+        or derived_root_custody.get("policy_roots") != policy_derived_roots
+        or any(
+            not isinstance(row, dict)
+            or row.get("run_owned") is not True
+            or row.get("initial_entry_count") != 0
+            or row.get("initial_manifest_sha256")
+            != command_envelope._canonical_payload_sha256([])
+            for row in derived_root_prelaunch
+        )
+        or [
+            {"role": row.get("role"), "path": row.get("path")}
+            for row in derived_root_prelaunch
+            if isinstance(row, dict)
+        ]
+        != policy_derived_roots
+        or not any(
+            isinstance(image, dict)
+            and os.path.normcase(os.path.abspath(str(image.get("path"))))
+            == os.path.normcase(os.path.abspath(str(policy_command[0])))
+            and image.get("sha256")
+            == command_envelope._hash_file(Path(str(policy_command[0])))
+            for image in fixed_images
+        )
+        or supervisor_receipt.get("nonce_sha256") != expected_nonce_hash
+    ):
+        raise ValueError("native process supervisor policy binding is invalid")
+    verified_supervisor = subprocess.run(
+        [
+            str(binary_path),
+            "verify",
+            "--policy",
+            str(policy_path),
+            "--receipt",
+            str(receipt_path),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if verified_supervisor.returncode != 0:
+        raise ValueError("native process supervisor receipt failed independent verification")
     expected_custody = command_envelope.execution_custody_sha256(
         context,
         run_id=run_id,
@@ -985,14 +1286,7 @@ def _run_one(
                 )
             )
             execution_record["receipt_context"] = receipt_context
-            execution_temporary = execution_path.with_suffix(
-                execution_path.suffix + ".terminal.tmp"
-            )
-            execution_temporary.write_text(
-                json.dumps(execution_record, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            os.replace(execution_temporary, execution_path)
+            command_envelope._atomic_json(execution_path, execution_record)
             source_custody = (
                 receipt_context.get("source_custody")
                 if receipt_context is not None
