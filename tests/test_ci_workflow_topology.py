@@ -981,7 +981,7 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     security_text = _read(".github/workflows/security_hardening.yml")
     release_text = _read(".github/workflows/release.yml")
 
-    assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 6
+    assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 7
     assert "run: cargo build -p molt-runtime --profile dev-fast" not in nightly_text
     assert "tools/ci_gate.py --tier" not in nightly_text
     assert "uses: ./.github/workflows/formal.yml" in nightly_text
