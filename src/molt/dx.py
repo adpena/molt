@@ -140,15 +140,23 @@ def stable_uv_project_env_dir(
     *,
     purpose: str,
     python: str,
+    source_root: Path,
 ) -> Path:
-    name = f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
+    source = source_root.expanduser().resolve()
+    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
+    source_name = uv_project_env_component(source.name)[:24]
+    name = (
+        f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
+        f"__src-{source_name}-{source_digest}"
+    )
     return (
         artifact_root.expanduser().resolve() / "tmp" / "uv-project-envs" / name
     ).resolve()
 
 
 # The uv project environment (installed deps + editable molt) is a pure function
-# of (project source, python) — NOT of the session — so it is stable and shared
+# of (project source, purpose, python) — NOT of the session — so it is stable
+# within one checkout and cannot be overwritten by a sibling worktree. It is shared
 # across sessions by default; only the Cargo target dir is session-scoped (build
 # isolation). Session-scoping the uv env too churns a fresh `.venv` per proof and
 # was the DX lock-churn source. `MOLT_UV_PROJECT_ENV_SESSION_SCOPED` is the opt-in
@@ -166,11 +174,14 @@ def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
     }
 
 
-def stable_uv_project_env_from_env(env: Mapping[str, str], artifact_root: Path) -> Path:
+def stable_uv_project_env_from_env(
+    env: Mapping[str, str], artifact_root: Path, source_root: Path
+) -> Path:
     return stable_uv_project_env_dir(
         artifact_root,
         purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
         python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
+        source_root=source_root,
     )
 
 
@@ -1641,7 +1652,7 @@ class RunContext:
         if uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
             return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, ext_root)
+        return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def canonical_env(
         self,
@@ -1837,6 +1848,12 @@ def ensure_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
         env["PYTHONPATH"] = str(src) if not existing else f"{src}{os.pathsep}{existing}"
 
 
+def bind_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
+    """Make one repository source tree the complete import-path authority."""
+
+    env["PYTHONPATH"] = str(repo_root.resolve() / "src")
+
+
 class DxProject:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -1881,7 +1898,7 @@ class DxProject:
         if uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
             return (artifact_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, artifact_root)
+        return stable_uv_project_env_from_env(env, artifact_root, self.root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
         if env is not None:
