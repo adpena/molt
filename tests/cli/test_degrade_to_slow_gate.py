@@ -144,6 +144,21 @@ def test_negative_control_unregistered_degrade_site_fails_then_passes(
     assert report_pass.discovered_site_count == 0
 
 
+def test_telemetry_dictionary_keys_are_not_degrade_decisions(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    cli_dir = tmp_path / "src" / "molt" / "cli"
+    cli_dir.mkdir(parents=True, exist_ok=True)
+    (cli_dir / "telemetry.py").write_text(
+        "COUNTERS = {\n"
+        '    "cache_hits": 0,\n'
+        '    "native_support_slice_cache_misses": 0,\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert gate.discover_sites(tmp_path, gate.SCAN_ROOTS) == []
+
+
 def test_negative_control_ratchet_regression_fails(tmp_path: Path) -> None:
     """A metabug_fix_pending row above the baseline fails the ratchet."""
     gate = _load_gate_module()
