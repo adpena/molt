@@ -687,6 +687,20 @@ class ProofPlan:
                 errors.append(
                     f"{family.name}: timeout_minutes must be a positive integer"
                 )
+            sharded_program = family.data.get("sharded_program")
+            shard_count = family.data.get("shard_count")
+            if sharded_program is None:
+                if shard_count is not None:
+                    errors.append(
+                        f"{family.name}: shard_count requires sharded_program"
+                    )
+            elif (
+                sharded_program not in {"conformance", "differential", "regrtest"}
+                or not isinstance(shard_count, int)
+                or isinstance(shard_count, bool)
+                or shard_count <= 1
+            ):
+                errors.append(f"{family.name}: invalid sharded program/count contract")
             workflow = ROOT / str(family.data.get("workflow", ""))
             if not workflow.is_file():
                 errors.append(f"{family.name}: workflow does not exist: {workflow}")
@@ -716,6 +730,53 @@ class ProofPlan:
                 errors.append(
                     f"{family.name}: workflow job does not enforce {timeout!r}"
                 )
+            if isinstance(sharded_program, str) and isinstance(shard_count, int):
+                shard_job = f"{sharded_program}-shard"
+                shard_block = _workflow_job_block(workflow_text, shard_job)
+                if shard_block is None:
+                    errors.append(f"{family.name}: shard job {shard_job!r} is missing")
+                else:
+                    for token in (
+                        "needs: nightly-prepare",
+                        f"max-parallel: {shard_count}",
+                        f"outputs.{sharded_program}_matrix",
+                        "tools/nightly_runtime_bundle.py verify-extract",
+                        'MOLT_STDLIB_PROFILE: "full"',
+                        "tools/nightly_sharding.py run-shard",
+                        f"--program {sharded_program}",
+                        "--shard '${{ matrix.shard }}'",
+                        "if: always()",
+                        "if-no-files-found: error",
+                    ):
+                        if token not in shard_block:
+                            errors.append(f"{family.name}: shard job omits {token!r}")
+                    if (
+                        sharded_program == "differential"
+                        and 'MOLT_DIFF_STDLIB_PROFILE: "full"' not in shard_block
+                    ):
+                        errors.append(
+                            f"{family.name}: differential shards must consume the "
+                            "shared full runtime profile"
+                        )
+                    if "continue-on-error" in shard_block:
+                        errors.append(
+                            f"{family.name}: shard job may not continue-on-error"
+                        )
+                try:
+                    aggregate_needs = _workflow_job_needs(block)
+                except ValueError as exc:
+                    errors.append(f"{family.name}: {exc}")
+                else:
+                    expected_needs = ("nightly-prepare", shard_job)
+                    if aggregate_needs != expected_needs:
+                        errors.append(
+                            f"{family.name}: aggregate needs {list(aggregate_needs)!r}; "
+                            f"authority requires {list(expected_needs)!r}"
+                        )
+                if "if: always()" not in block:
+                    errors.append(
+                        f"{family.name}: aggregate must run after failed shards"
+                    )
         known = set(names)
         dependency_graph: dict[str, tuple[str, ...]] = {}
         for family in self.families:
@@ -1756,6 +1817,10 @@ def _clear_evidence_outputs(command: ProofCommand) -> None:
 
 def _snapshot_evidence_output(relative: str) -> dict[str, Any]:
     path = _evidence_path(relative)
+    return _snapshot_evidence_at(relative, path)
+
+
+def _snapshot_evidence_at(relative: str, path: Path) -> dict[str, Any]:
     if path.is_symlink():
         raise ValueError(f"evidence output may not be a symlink: {relative}")
     if path.is_file():
@@ -1778,7 +1843,7 @@ def _snapshot_evidence_output(relative: str) -> dict[str, Any]:
         if candidate.is_symlink():
             raise ValueError(
                 f"evidence directory contains a symlink: "
-                f"{candidate.relative_to(ROOT).as_posix()}"
+                f"{candidate.relative_to(path).as_posix()}"
             )
         if not candidate.is_file():
             continue
@@ -1802,6 +1867,30 @@ def _snapshot_evidence_output(relative: str) -> dict[str, Any]:
         "total_size_bytes": sum(int(item["size"]) for item in files),
         "files": files,
     }
+
+
+def _downloaded_evidence_path(
+    receipt_root: Path, relative: str, kind: str
+) -> Path | None:
+    direct = receipt_root / Path(relative)
+    if (kind == "file" and direct.is_file()) or (
+        kind == "directory" and direct.is_dir()
+    ):
+        return direct
+    name = Path(relative).name
+    matches = [
+        candidate
+        for candidate in receipt_root.rglob(name)
+        if (kind == "file" and candidate.is_file())
+        or (kind == "directory" and candidate.is_dir())
+    ]
+    exact_suffix = [
+        candidate
+        for candidate in matches
+        if candidate.as_posix().endswith(relative.replace("\\", "/"))
+    ]
+    candidates = exact_suffix or matches
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _command_environment(
@@ -2014,6 +2103,57 @@ def _receipt_files(root: Path) -> list[Path]:
     return sorted(root.rglob("*.json")) if root.is_dir() else []
 
 
+def _verify_receipt_evidence(
+    command_id: str,
+    command: ProofCommand,
+    value: object,
+    receipt_root: Path,
+) -> list[str]:
+    if not isinstance(value, list):
+        return [f"{command_id}: receipt evidence_outputs must be a list"]
+    errors: list[str] = []
+    observed_paths = [
+        item.get("path") if isinstance(item, dict) else None for item in value
+    ]
+    if observed_paths != list(command.evidence_outputs):
+        errors.append(f"{command_id}: receipt evidence outputs do not match authority")
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or item.get("kind") not in {"file", "directory"}
+            or not isinstance(item.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+            or not isinstance(item.get("total_size_bytes"), int)
+            or item["total_size_bytes"] <= 0
+            or not isinstance(item.get("files"), list)
+            or not item["files"]
+        ):
+            errors.append(f"{command_id}: malformed evidence output receipt")
+            continue
+        materialized = _downloaded_evidence_path(
+            receipt_root,
+            str(item["path"]),
+            str(item["kind"]),
+        )
+        if materialized is None:
+            errors.append(
+                f"{command_id}: downloaded evidence output is missing or ambiguous: "
+                f"{item['path']}"
+            )
+            continue
+        try:
+            observed_evidence = _snapshot_evidence_at(str(item["path"]), materialized)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{command_id}: downloaded evidence output is invalid: {exc}")
+        else:
+            if observed_evidence != item:
+                errors.append(
+                    f"{command_id}: downloaded evidence bytes do not match receipt: "
+                    f"{item['path']}"
+                )
+    return errors
+
+
 def verify_receipts(
     plan: ProofPlan,
     selected_names: list[str] | tuple[str, ...],
@@ -2151,32 +2291,14 @@ def verify_receipts(
                 "not-applicable",
             }:
                 errors.append(f"{command_id}: receipt cache_disposition is invalid")
-            evidence_outputs = record.get("evidence_outputs")
-            if not isinstance(evidence_outputs, list):
-                errors.append(f"{command_id}: receipt evidence_outputs must be a list")
-            else:
-                observed_paths = [
-                    item.get("path") if isinstance(item, dict) else None
-                    for item in evidence_outputs
-                ]
-                if observed_paths != list(command.evidence_outputs):
-                    errors.append(
-                        f"{command_id}: receipt evidence outputs do not match authority"
-                    )
-                for item in evidence_outputs:
-                    if (
-                        not isinstance(item, dict)
-                        or item.get("kind") not in {"file", "directory"}
-                        or not isinstance(item.get("sha256"), str)
-                        or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
-                        or not isinstance(item.get("total_size_bytes"), int)
-                        or item["total_size_bytes"] <= 0
-                        or not isinstance(item.get("files"), list)
-                        or not item["files"]
-                    ):
-                        errors.append(
-                            f"{command_id}: malformed evidence output receipt"
-                        )
+            errors.extend(
+                _verify_receipt_evidence(
+                    command_id,
+                    command,
+                    record.get("evidence_outputs"),
+                    receipt_root,
+                )
+            )
             if isinstance(toolchains, dict):
                 for name in _required_toolchains(command):
                     if name not in toolchains:

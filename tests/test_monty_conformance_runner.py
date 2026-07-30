@@ -181,6 +181,45 @@ def test_selected_test_files_supports_smoke_and_full_suites(tmp_path: Path):
     assert [path.name for path in full] == ["alpha.py", "beta.py", "gamma.py"]
 
 
+def test_exact_test_files_requires_canonical_duplicate_free_corpus_subset(
+    tmp_path: Path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    corpus_dir = repo_root / "tests" / "harness" / "corpus" / "monty_compat"
+    corpus_dir.mkdir(parents=True)
+    for name in ("alpha.py", "beta.py"):
+        (corpus_dir / name).write_text("print('ok')\n", encoding="utf-8")
+    smoke_manifest = corpus_dir / "SMOKE.txt"
+    smoke_manifest.write_text("alpha.py\n", encoding="utf-8")
+    selection = tmp_path / "selection.txt"
+    selection.write_text(
+        "tests/harness/corpus/monty_compat/beta.py\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(run_molt_conformance, "REPO_ROOT", repo_root)
+
+    assert run_molt_conformance._exact_test_files(
+        selection,
+        corpus_dir=corpus_dir,
+        smoke_manifest=smoke_manifest,
+    ) == [corpus_dir / "beta.py"]
+
+    selection.write_text(
+        "tests/harness/corpus/monty_compat/alpha.py\n"
+        "tests/harness/corpus/monty_compat/alpha.py\n",
+        encoding="utf-8",
+    )
+    try:
+        run_molt_conformance._exact_test_files(
+            selection,
+            corpus_dir=corpus_dir,
+            smoke_manifest=smoke_manifest,
+        )
+    except ValueError as exc:
+        assert "duplicate corpus path" in str(exc)
+    else:  # pragma: no cover - exact-selection contract
+        raise AssertionError("duplicate exact selection was admitted")
+
+
 def test_stats_summary_contains_required_fields():
     summary = run_molt_conformance._stats_to_summary(
         run_molt_conformance.Stats(
@@ -213,6 +252,7 @@ def test_stats_summary_contains_required_fields():
         "failures": [{"path": "bad.py", "detail": "expected exit 0"}],
         "compile_errors": [{"path": "cerr.py", "detail": "compile failed"}],
         "timeouts": [],
+        "item_results": [],
     }
 
 

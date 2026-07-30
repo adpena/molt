@@ -67,6 +67,7 @@ class Stats:
     failures: list[tuple[str, str]] = field(default_factory=list)
     compile_errors: list[tuple[str, str]] = field(default_factory=list)
     timeouts: list[str] = field(default_factory=list)
+    items: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,61 @@ def _selected_test_files(
     return test_files
 
 
+def _exact_test_files(
+    selection_path: Path,
+    *,
+    corpus_dir: Path = CORPUS_DIR,
+    smoke_manifest: Path = SMOKE_MANIFEST,
+) -> list[Path]:
+    """Load an exact, duplicate-free subset of the canonical full corpus."""
+    canonical = {
+        path.resolve(): path
+        for path in load_molt_conformance_suite(corpus_dir, "full", smoke_manifest)
+    }
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for line_number, raw in enumerate(
+        selection_path.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        relative = raw.strip()
+        if not relative or relative.startswith("#"):
+            continue
+        candidate = Path(relative)
+        if (
+            candidate.is_absolute()
+            or ".." in candidate.parts
+            or candidate.as_posix() != relative.replace("\\", "/")
+        ):
+            raise ValueError(
+                f"{selection_path}:{line_number}: non-canonical corpus path {relative!r}"
+            )
+        resolved = (REPO_ROOT / candidate).resolve()
+        admitted = canonical.get(resolved)
+        if admitted is None:
+            raise ValueError(
+                f"{selection_path}:{line_number}: path is outside the canonical "
+                f"conformance corpus: {relative!r}"
+            )
+        if resolved in seen:
+            raise ValueError(
+                f"{selection_path}:{line_number}: duplicate corpus path {relative!r}"
+            )
+        seen.add(resolved)
+        selected.append(admitted)
+    if not selected:
+        raise ValueError(f"{selection_path}: exact conformance selection is empty")
+    return selected
+
+
+def _item_path(filepath: Path) -> str:
+    try:
+        return filepath.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        # Unit/integration harnesses may substitute an isolated corpus. Real
+        # committed Nightly inputs always take the repository-relative branch.
+        return filepath.name
+
+
 def _stats_to_summary(
     stats: Stats,
     *,
@@ -335,6 +391,7 @@ def _stats_to_summary(
             {"path": path, "detail": detail} for path, detail in stats.compile_errors
         ],
         "timeouts": list(stats.timeouts),
+        "item_results": list(stats.items),
     }
     if memory_guard is not None:
         summary["memory_guard"] = memory_guard
@@ -487,6 +544,12 @@ def check_result(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--files-from",
+        type=Path,
+        default=None,
+        help="Run exactly the canonical repo-relative paths listed in this file.",
+    )
+    parser.add_argument(
         "--suite",
         choices=("smoke", "full"),
         default="full",
@@ -524,13 +587,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Collect test files
-    test_files = _selected_test_files(
-        suite=args.suite,
-        category=args.category,
-        limit=args.limit,
-        corpus_dir=CORPUS_DIR,
-        smoke_manifest=SMOKE_MANIFEST,
-    )
+    if args.files_from is not None and (args.category or args.limit):
+        parser.error("--files-from is mutually exclusive with --category and --limit")
+    try:
+        test_files = (
+            _exact_test_files(args.files_from)
+            if args.files_from is not None
+            else _selected_test_files(
+                suite=args.suite,
+                category=args.category,
+                limit=args.limit,
+                corpus_dir=CORPUS_DIR,
+                smoke_manifest=SMOKE_MANIFEST,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     if not test_files:
         print("No test files match the selection criteria.", file=sys.stderr)
@@ -546,7 +618,6 @@ def main(argv: list[str] | None = None) -> int:
     with process_guard_common.guarded_temporary_directory(
         prefix="molt_conform_", dir=tmp_root
     ) as tmp:
-
         try:
             with harness_memory_guard.repo_process_sentinel(
                 repo_root=REPO_ROOT,
@@ -579,9 +650,18 @@ def main(argv: list[str] | None = None) -> int:
                     t0 = time.monotonic()
 
                     for i, filepath in enumerate(test_files, 1):
+                        item_started = time.monotonic()
+                        relative_path = _item_path(filepath)
                         kind, _ = parse_expectation(filepath)
                         if kind == "skip":
                             stats.skipped += 1
+                            stats.items.append(
+                                {
+                                    "path": relative_path,
+                                    "status": "skipped",
+                                    "duration_s": time.monotonic() - item_started,
+                                }
+                            )
                             if args.verbose:
                                 print(f"  [{i:3d}] SKIP   {filepath.name}")
                             continue
@@ -605,6 +685,15 @@ def main(argv: list[str] | None = None) -> int:
                                     print(
                                         f"  [{i:3d}] CERR   {filepath.name}: {detail}"
                                     )
+                            stats.items.append(
+                                {
+                                    "path": relative_path,
+                                    "status": "timeout"
+                                    if compile_result.timed_out
+                                    else "compile_error",
+                                    "duration_s": time.monotonic() - item_started,
+                                }
+                            )
                             continue
 
                         rc, stdout, stderr = run_binary(binary)
@@ -633,6 +722,20 @@ def main(argv: list[str] | None = None) -> int:
                                     print(
                                         f"  [{i:3d}] FAIL   {filepath.name}: {detail}"
                                     )
+
+                        stats.items.append(
+                            {
+                                "path": relative_path,
+                                "status": "skipped"
+                                if passed is None
+                                else "passed"
+                                if passed
+                                else "timeout"
+                                if rc is None
+                                else "failed",
+                                "duration_s": time.monotonic() - item_started,
+                            }
+                        )
 
                         # Clean up binary between runs to save disk space
                         binary.unlink(missing_ok=True)
@@ -676,7 +779,11 @@ def main(argv: list[str] | None = None) -> int:
     summary = _stats_to_summary(
         stats,
         suite=args.suite,
-        manifest_path=SMOKE_MANIFEST if args.suite == "smoke" else None,
+        manifest_path=args.files_from
+        if args.files_from is not None
+        else SMOKE_MANIFEST
+        if args.suite == "smoke"
+        else None,
         corpus_root=CORPUS_DIR,
         duration_s=elapsed,
         memory_guard=harness_memory_guard.limits_summary(limits),

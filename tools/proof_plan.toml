@@ -34,6 +34,9 @@ authority_inputs = [
   "src/molt/process_guard.py",
   "src/molt/llvm_toolchain.py",
   "tools/artifact_publish.py",
+  "tools/nightly_prepare.py",
+  "tools/nightly_runtime_bundle.py",
+  "tools/nightly_sharding.py",
   "tools/check_generator_manifest.py",
   "tools/check_cargo_test_truth.py",
   "tools/check_deterministic_runtime.py",
@@ -677,31 +680,46 @@ dependencies = []
 # but they are intentionally outside changed-path CI admission. The workflow owns
 # only setup and artifact transport; command spelling and DAG policy live here.
 [[scheduled_family]]
-name = "nightly_conformance"
-description = "Full Molt conformance corpus with machine-readable results."
+name = "nightly_shard_prepare"
+description = "One immutable native runtime, pinned CPython source, and digest-bound Nightly shard plan."
 workflow = ".github/workflows/nightly.yml"
-job = "molt-conformance-full"
+job = "nightly-prepare"
 tiers = ["nightly"]
 timeout_minutes = 60
 resource_class = "scheduled-suite"
+
+[[scheduled_family]]
+name = "nightly_conformance"
+description = "Full Molt conformance corpus aggregated from eight exact digest-bound shards."
+workflow = ".github/workflows/nightly.yml"
+job = "conformance-aggregate"
+tiers = ["nightly"]
+timeout_minutes = 15
+resource_class = "scheduled-suite"
+sharded_program = "conformance"
+shard_count = 8
 
 [[scheduled_family]]
 name = "nightly_differential"
-description = "Full basic and stdlib CPython differential correctness corpus."
+description = "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards."
 workflow = ".github/workflows/nightly.yml"
-job = "differential-basic-stdlib"
+job = "differential-aggregate"
 tiers = ["nightly"]
-timeout_minutes = 60
+timeout_minutes = 15
 resource_class = "scheduled-suite"
+sharded_program = "differential"
+shard_count = 16
 
 [[scheduled_family]]
 name = "nightly_regrtest"
-description = "CPython regrtest G5 closure after one canonical runtime build."
+description = "Pinned CPython regrtest closure aggregated from four exact digest-bound shards."
 workflow = ".github/workflows/nightly.yml"
-job = "regrtest"
+job = "regrtest-aggregate"
 tiers = ["nightly"]
-timeout_minutes = 120
+timeout_minutes = 15
 resource_class = "scheduled-suite"
+sharded_program = "regrtest"
+shard_count = 4
 
 [[scheduled_family]]
 name = "nightly_determinism"
@@ -725,56 +743,56 @@ resource_class = "scheduled-suite"
 # bounded timeout, resource class, and DAG parents. Workflows invoke these IDs;
 # command spelling is never duplicated in YAML.
 [[command]]
-id = "nightly.conformance.full"
+id = "nightly.shards.prepare"
+family = "nightly_shard_prepare"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 3300
+cache_domain = "cargo-workspace"
+dependencies = []
+evidence_outputs = ["proof-results/nightly/prepare"]
+argv = ["uv", "run", "python3", "tools/nightly_prepare.py", "--output-root", "proof-results/nightly/prepare"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.conformance.aggregate"
 family = "nightly_conformance"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["nightly"]
 resource_class = "scheduled-suite"
-timeout_seconds = 3300
-cache_domain = "cargo-workspace"
+timeout_seconds = 600
+cache_domain = "none"
 dependencies = []
-evidence_outputs = ["proof-results/nightly/conformance.json"]
-argv = ["uv", "run", "python3", "tests/harness/run_molt_conformance.py", "--suite", "full", "--json-out", "proof-results/nightly/conformance.json"]
-toolchains = ["python", "uv", "rustc", "cargo"]
+evidence_outputs = ["proof-results/nightly/conformance-aggregate.json"]
+argv = ["uv", "run", "python3", "tools/nightly_sharding.py", "aggregate", "--plan", "proof-results/nightly/prepare/shard-plan.json", "--program", "conformance", "--evidence-root", "proof-results/nightly/conformance", "--out", "proof-results/nightly/conformance-aggregate.json"]
+toolchains = ["python", "uv"]
 
 [[command]]
-id = "nightly.differential.basic-stdlib"
+id = "nightly.differential.aggregate"
 family = "nightly_differential"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["nightly"]
 resource_class = "scheduled-suite"
-timeout_seconds = 3300
-cache_domain = "cargo-workspace"
+timeout_seconds = 600
+cache_domain = "none"
 dependencies = []
-env = { MOLT_DIFF_MEASURE_RSS = "1" }
-evidence_outputs = ["proof-results/nightly/differential.json"]
-argv = ["uv", "run", "python3", "-u", "tests/molt_diff.py", "--build-profile", "dev", "--json-output", "proof-results/nightly/differential.json", "tests/differential/basic", "tests/differential/stdlib"]
-toolchains = ["python", "uv", "rustc", "cargo"]
+evidence_outputs = ["proof-results/nightly/differential-aggregate.json"]
+argv = ["uv", "run", "python3", "tools/nightly_sharding.py", "aggregate", "--plan", "proof-results/nightly/prepare/shard-plan.json", "--program", "differential", "--evidence-root", "proof-results/nightly/differential", "--out", "proof-results/nightly/differential-aggregate.json"]
+toolchains = ["python", "uv"]
 
 [[command]]
-id = "nightly.regrtest.runtime-build"
-family = "nightly_regrtest"
-cell = "linux-x86_64-py312-native-dev"
-tiers = ["nightly"]
-resource_class = "compiler-build-resource"
-timeout_budget = "cold"
-cache_domain = "cargo-workspace"
-dependencies = []
-argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
-toolchains = ["rustc", "cargo"]
-
-[[command]]
-id = "nightly.regrtest.g5"
+id = "nightly.regrtest.aggregate"
 family = "nightly_regrtest"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["nightly"]
 resource_class = "scheduled-suite"
-timeout_seconds = 5700
-cache_domain = "cargo-workspace"
-dependencies = ["nightly.regrtest.runtime-build"]
-evidence_outputs = ["proof-results/nightly/regrtest"]
-argv = ["uv", "run", "python3", "tools/cpython_regrtest.py", "--uv", "--clone", "--timeout", "600", "--output-dir", "proof-results/nightly/regrtest"]
-toolchains = ["python", "uv", "rustc", "cargo"]
+timeout_seconds = 600
+cache_domain = "none"
+dependencies = []
+evidence_outputs = ["proof-results/nightly/regrtest-aggregate.json"]
+argv = ["uv", "run", "python3", "tools/nightly_sharding.py", "aggregate", "--plan", "proof-results/nightly/prepare/shard-plan.json", "--program", "regrtest", "--evidence-root", "proof-results/nightly/regrtest", "--out", "proof-results/nightly/regrtest-aggregate.json"]
+toolchains = ["python", "uv"]
 
 [[command]]
 id = "nightly.determinism.runtime-build"

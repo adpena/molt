@@ -921,9 +921,18 @@ def test_nightly_contains_correctness_jobs() -> None:
 
     assert "schedule:" in nightly_text
     assert "workflow_dispatch:" in nightly_text
-    assert "molt-conformance-full:" in nightly_text
-    assert "differential-basic-stdlib:" in nightly_text
+    for job in (
+        "nightly-prepare:",
+        "conformance-shard:",
+        "differential-shard:",
+        "regrtest-shard:",
+        "conformance-aggregate:",
+        "differential-aggregate:",
+        "regrtest-aggregate:",
+    ):
+        assert job in nightly_text
     for family in (
+        "nightly_shard_prepare",
         "nightly_conformance",
         "nightly_differential",
         "nightly_regrtest",
@@ -940,6 +949,13 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "tests/harness/run_molt_conformance.py" not in nightly_text
     assert "tests/molt_diff.py" not in nightly_text
     assert "tools/cpython_regrtest.py" not in nightly_text
+    assert nightly_text.count("tools/nightly_sharding.py run-shard") == 3
+    assert nightly_text.count("tools/nightly_runtime_bundle.py verify-extract") == 3
+    assert nightly_text.count('MOLT_STDLIB_PROFILE: "full"') == 3
+    assert nightly_text.count('MOLT_DIFF_STDLIB_PROFILE: "full"') == 1
+    assert "max-parallel: 8" in nightly_text
+    assert "max-parallel: 16" in nightly_text
+    assert "max-parallel: 4" in nightly_text
     assert "tools/check_reproducible_build.py" not in nightly_text
     proof_plan_text = _read("tools/proof_plan.toml")
     assert 'id = "nightly.verification-t3.reproducibility"' in proof_plan_text
@@ -948,7 +964,7 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "tools/check_deterministic_runtime.py" not in nightly_text
     assert "proof-results/nightly/deterministic-runtime.json" in nightly_text
     assert "proof-results/nightly/ir-verification.json" in nightly_text
-    assert "name: nightly-determinism-proof-results" in nightly_text
+    assert "name: proof-receipt-nightly-determinism" in nightly_text
     assert "mkdir -p /tmp/repro_sweep" not in nightly_text
     assert "MOLT_CACHE=/tmp/repro_sweep" not in nightly_text
     assert "~/.molt/build/" not in nightly_text
@@ -965,7 +981,7 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     security_text = _read(".github/workflows/security_hardening.yml")
     release_text = _read(".github/workflows/release.yml")
 
-    assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 5
+    assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 6
     assert "run: cargo build -p molt-runtime --profile dev-fast" not in nightly_text
     assert "tools/ci_gate.py --tier" not in nightly_text
     assert "uses: ./.github/workflows/formal.yml" in nightly_text

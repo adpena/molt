@@ -17,10 +17,66 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  molt-conformance-full:
-    name: Molt Conformance Full
+  nightly-prepare:
+    name: Prepare immutable Nightly inputs
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      conformance_matrix: ${{ steps.prepare.outputs.conformance_matrix }}
+      differential_matrix: ${{ steps.prepare.outputs.differential_matrix }}
+      regrtest_matrix: ${{ steps.prepare.outputs.regrtest_matrix }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Nightly build toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          rust-toolchain: "1.96.1"
+          cache-cargo: "true"
+          sync: "true"
+          sync-groups: dev
+
+      - name: Build runtime, provision CPython, and plan exact shards
+        id: prepare
+        run: |
+          mkdir -p proof-receipts proof-results/nightly
+          python3 tools/proof_plan.py --run-family nightly_shard_prepare --receipt proof-receipts/nightly-shard-prepare.json
+
+      - name: Upload immutable shard inputs
+        if: always() && hashFiles('proof-results/nightly/prepare/shard-plan.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-shard-inputs
+          path: |
+            proof-results/nightly/prepare/**
+            third_party/cpython/**
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Upload preparation proof receipt
+        if: always() && hashFiles('proof-receipts/nightly-shard-prepare.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-nightly-prepare
+          path: |
+            proof-receipts/nightly-shard-prepare.json
+            proof-results/nightly/prepare/**
+          if-no-files-found: error
+
+  conformance-shard:
+    name: Molt conformance shard ${{ matrix.shard }}
+    needs: nightly-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MOLT_STDLIB_PROFILE: "full"
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.nightly-prepare.outputs.conformance_matrix) }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -35,28 +91,45 @@ jobs:
           sync: "true"
           sync-groups: dev
 
-      - name: Add local venv tools to PATH
-        run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Download immutable shard inputs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: nightly-shard-inputs
+          path: .
 
-      - name: Run Molt conformance full suite
+      - name: Verify and hydrate the shared runtime
+        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar --destination "${CARGO_TARGET_DIR:-target}"
+
+      - name: Run exact conformance shard
         run: |
-          mkdir -p proof-receipts proof-results/nightly
-          python3 tools/proof_plan.py --run-family nightly_conformance --receipt proof-receipts/nightly-conformance.json
+          SHARD=$(printf '%02d' '${{ matrix.shard }}')
+          mkdir -p proof-results/nightly/conformance
+          python3 tools/nightly_sharding.py run-shard \
+            --plan proof-results/nightly/prepare/shard-plan.json \
+            --program conformance --shard '${{ matrix.shard }}' \
+            --raw-out "proof-results/nightly/conformance/shard-${SHARD}.raw.json" \
+            --checkpoint-out "proof-results/nightly/conformance/shard-${SHARD}.checkpoint.json"
 
-      - name: Upload conformance artifact
-        if: always() && hashFiles('proof-receipts/nightly-conformance.json') != ''
+      - name: Upload conformance shard evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: molt-conformance-full
-          path: |
-            proof-receipts/nightly-conformance.json
-            proof-results/nightly/conformance.json
+          name: nightly-shard-conformance-${{ matrix.shard }}
+          path: proof-results/nightly/conformance/*
           if-no-files-found: error
 
-  differential-basic-stdlib:
-    name: Differential Basic And Stdlib
+  differential-shard:
+    name: Differential shard ${{ matrix.shard }}
+    needs: nightly-prepare
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MOLT_STDLIB_PROFILE: "full"
+      MOLT_DIFF_STDLIB_PROFILE: "full"
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix: ${{ fromJSON(needs.nightly-prepare.outputs.differential_matrix) }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -71,25 +144,46 @@ jobs:
           sync: "true"
           sync-groups: dev
 
-      - name: Run differential correctness lane
-        run: |
-          mkdir -p proof-receipts proof-results/nightly
-          python3 tools/proof_plan.py --run-family nightly_differential --receipt proof-receipts/nightly-differential.json
+      - name: Download immutable shard inputs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: nightly-shard-inputs
+          path: .
 
-      - name: Upload differential artifact
-        if: always() && hashFiles('proof-receipts/nightly-differential.json') != ''
+      - name: Verify and hydrate the shared runtime
+        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar --destination "${CARGO_TARGET_DIR:-target}"
+
+      - name: Run exact differential shard
+        env:
+          MOLT_DIFF_MEASURE_RSS: "1"
+        run: |
+          SHARD=$(printf '%02d' '${{ matrix.shard }}')
+          mkdir -p proof-results/nightly/differential
+          python3 tools/nightly_sharding.py run-shard \
+            --plan proof-results/nightly/prepare/shard-plan.json \
+            --program differential --shard '${{ matrix.shard }}' \
+            --raw-out "proof-results/nightly/differential/shard-${SHARD}.raw.json" \
+            --checkpoint-out "proof-results/nightly/differential/shard-${SHARD}.checkpoint.json"
+
+      - name: Upload differential shard evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-differential-basic-stdlib
-          path: |
-            proof-receipts/nightly-differential.json
-            proof-results/nightly/differential.json
+          name: nightly-shard-differential-${{ matrix.shard }}
+          path: proof-results/nightly/differential/*
           if-no-files-found: error
 
-  regrtest:
-    name: CPython Regrtest (G5)
+  regrtest-shard:
+    name: CPython regrtest shard ${{ matrix.shard }}
+    needs: nightly-prepare
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      MOLT_STDLIB_PROFILE: "full"
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.nightly-prepare.outputs.regrtest_matrix) }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -104,19 +198,120 @@ jobs:
           sync: "true"
           sync-frozen: "true"
 
-      - name: Run CPython regrtest (G5)
-        run: |
-          mkdir -p proof-receipts proof-results/nightly/regrtest
-          python3 tools/proof_plan.py --run-family nightly_regrtest --receipt proof-receipts/nightly-regrtest.json
+      - name: Download immutable shard inputs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: nightly-shard-inputs
+          path: .
 
-      - name: Upload regrtest results
+      - name: Verify and hydrate the shared runtime
+        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar --destination "${CARGO_TARGET_DIR:-target}"
+
+      - name: Run exact regrtest shard without duplicate differential work
+        run: |
+          SHARD=$(printf '%02d' '${{ matrix.shard }}')
+          mkdir -p proof-results/nightly/regrtest "proof-results/nightly/regrtest-artifacts/shard-${SHARD}"
+          python3 tools/nightly_sharding.py run-shard \
+            --plan proof-results/nightly/prepare/shard-plan.json \
+            --program regrtest --shard '${{ matrix.shard }}' \
+            --raw-out "proof-results/nightly/regrtest/shard-${SHARD}.raw.json" \
+            --checkpoint-out "proof-results/nightly/regrtest/shard-${SHARD}.checkpoint.json" \
+            --artifact-root "proof-results/nightly/regrtest-artifacts/shard-${SHARD}" \
+            --artifact-out "proof-results/nightly/regrtest/shard-${SHARD}.artifacts.zip"
+
+      - name: Upload regrtest shard evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-shard-regrtest-${{ matrix.shard }}
+          path: proof-results/nightly/regrtest/*
+          if-no-files-found: error
+
+  conformance-aggregate:
+    name: Molt Conformance Full
+    if: always()
+    needs: [nightly-prepare, conformance-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup-project
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: nightly-shard-inputs, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: nightly-shard-conformance-*
+          path: proof-results/nightly/conformance
+          merge-multiple: true
+      - name: Aggregate exact conformance closure
+        run: python3 tools/proof_plan.py --run-family nightly_conformance --receipt proof-receipts/nightly-conformance.json
+      - name: Upload conformance aggregate receipt
+        if: always() && hashFiles('proof-receipts/nightly-conformance.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-nightly-conformance
+          path: |
+            proof-receipts/nightly-conformance.json
+            proof-results/nightly/conformance-aggregate.json
+          if-no-files-found: error
+
+  differential-aggregate:
+    name: Differential Basic And Stdlib
+    if: always()
+    needs: [nightly-prepare, differential-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup-project
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: nightly-shard-inputs, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: nightly-shard-differential-*
+          path: proof-results/nightly/differential
+          merge-multiple: true
+      - name: Aggregate exact differential closure
+        run: python3 tools/proof_plan.py --run-family nightly_differential --receipt proof-receipts/nightly-differential.json
+      - name: Upload differential aggregate receipt
+        if: always() && hashFiles('proof-receipts/nightly-differential.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-nightly-differential
+          path: |
+            proof-receipts/nightly-differential.json
+            proof-results/nightly/differential-aggregate.json
+          if-no-files-found: error
+
+  regrtest-aggregate:
+    name: CPython Regrtest Closure
+    if: always()
+    needs: [nightly-prepare, regrtest-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup-project
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: nightly-shard-inputs, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: nightly-shard-regrtest-*
+          path: proof-results/nightly/regrtest
+          merge-multiple: true
+      - name: Aggregate exact regrtest closure
+        run: python3 tools/proof_plan.py --run-family nightly_regrtest --receipt proof-receipts/nightly-regrtest.json
+      - name: Upload regrtest aggregate receipt
         if: always() && hashFiles('proof-receipts/nightly-regrtest.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: regrtest-results
+          name: proof-receipt-nightly-regrtest
           path: |
             proof-receipts/nightly-regrtest.json
-            proof-results/nightly/regrtest/**
+            proof-results/nightly/regrtest-aggregate.json
           if-no-files-found: error
 
   determinism-sweep:
@@ -146,7 +341,7 @@ jobs:
         if: always() && hashFiles('proof-receipts/nightly-determinism.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-determinism-proof-results
+          name: proof-receipt-nightly-determinism
           path: |
             proof-receipts/nightly-determinism.json
             proof-results/nightly/deterministic-runtime.json
@@ -187,7 +382,7 @@ jobs:
         if: always() && hashFiles('proof-receipts/nightly-verification-t3.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: gate-tier3
+          name: proof-receipt-nightly-tier3
           path: |
             proof-receipts/nightly-verification-t3.json
             proof-results/reproducibility-tier3.json
@@ -200,9 +395,10 @@ jobs:
     name: Nightly receipt verdict
     if: always()
     needs:
-      - molt-conformance-full
-      - differential-basic-stdlib
-      - regrtest
+      - nightly-prepare
+      - conformance-aggregate
+      - differential-aggregate
+      - regrtest-aggregate
       - determinism-sweep
       - formal-verification
       - verification-gate-t3
@@ -223,6 +419,7 @@ jobs:
       - name: Download nightly proof artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
+          pattern: proof-receipt-*
           path: nightly-artifacts
           merge-multiple: true
 

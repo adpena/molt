@@ -56,7 +56,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 11
-    assert len(PLAN.scheduled_families) == 5
+    assert len(PLAN.scheduled_families) == 6
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
@@ -173,13 +173,10 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     }
     scheduled_envelopes = projection["executor"]["scheduled_job_timeout_envelopes"]
     assert scheduled_envelopes["nightly_regrtest"] == {
-        "budget_seconds": 7200,
-        "projected_makespan_seconds": 6900,
-        "critical_path_seconds": 6900,
-        "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 1200,
-            "scheduled-suite": 1425,
-        },
+        "budget_seconds": 900,
+        "projected_makespan_seconds": 600,
+        "critical_path_seconds": 600,
+        "resource_capacity_floor_seconds": {"scheduled-suite": 150},
         "headroom_seconds": 300,
     }
     assert scheduled_envelopes["nightly_verification_t3"] == {
@@ -421,10 +418,8 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     assert {command.family for command in rust_commands} == {
         "llvm",
         "native_integration",
-        "nightly_conformance",
         "nightly_determinism",
-        "nightly_differential",
-        "nightly_regrtest",
+        "nightly_shard_prepare",
         "nightly_verification_t3",
         "platform_portability",
         "rust",
@@ -818,7 +813,9 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         assert all(command.data["cell"] == entry["cell"] for command in commands)
 
 
-def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
+def _receipt_for(
+    command: proof_plan.ProofCommand, evidence_root: Path | None = None
+) -> dict[str, Any]:
     versions = {
         "python": "Python 3.12.13",
         "uv": "uv 0.11.24",
@@ -862,22 +859,29 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
                 ).encode()
             ).hexdigest(),
         }
+    evidence_bytes = b'{"schema":"test.evidence"}'
+    evidence_digest = hashlib.sha256(evidence_bytes).hexdigest()
     evidence_outputs = [
         {
             "path": relative,
             "kind": "file",
-            "sha256": "a" * 64,
-            "total_size_bytes": 1,
+            "sha256": evidence_digest,
+            "total_size_bytes": len(evidence_bytes),
             "files": [
                 {
                     "path": Path(relative).name,
-                    "sha256": "a" * 64,
-                    "size": 1,
+                    "sha256": evidence_digest,
+                    "size": len(evidence_bytes),
                 }
             ],
         }
         for relative in command.evidence_outputs
     ]
+    if evidence_root is not None:
+        for relative in command.evidence_outputs:
+            output = evidence_root / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(evidence_bytes)
     return {
         "schema": PLAN.receipt_schema,
         "authority_sha256": proof_plan._authority_sha256(PLAN),
@@ -940,7 +944,7 @@ def test_receipt_verdict_accepts_every_exact_selected_partition(tmp_path: Path) 
     ]
     for command in commands:
         (tmp_path / f"{command.id}.json").write_text(
-            json.dumps(_receipt_for(command)), encoding="utf-8"
+            json.dumps(_receipt_for(command, tmp_path)), encoding="utf-8"
         )
     assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
 
@@ -954,7 +958,7 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
     ]
     for command in scheduled_commands:
         (tmp_path / f"{command.id}.json").write_text(
-            json.dumps(_receipt_for(command)), encoding="utf-8"
+            json.dumps(_receipt_for(command, tmp_path)), encoding="utf-8"
         )
 
     assert proof_plan.verify_receipts(PLAN, scheduled_names, tmp_path) == []
@@ -974,7 +978,7 @@ def test_receipt_verdict_rejects_authority_and_command_drift(tmp_path: Path) -> 
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     receipt["authority_sha256"] = "0" * 64
     receipt["commands"][0]["argv"] = ["true"]  # type: ignore[index]
     (tmp_path / "drift.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -983,13 +987,32 @@ def test_receipt_verdict_rejects_authority_and_command_drift(tmp_path: Path) -> 
     assert any("required executable receipt is missing" in error for error in errors)
 
 
+def test_receipt_verdict_rehashes_downloaded_evidence_bytes(tmp_path: Path) -> None:
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.family == "nightly_conformance" and command.evidence_outputs
+    )
+    receipt = _receipt_for(command, tmp_path)
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    assert proof_plan.verify_receipts(PLAN, ["nightly_conformance"], tmp_path) == []
+
+    (tmp_path / command.evidence_outputs[0]).write_text(
+        '{"schema":"tampered"}', encoding="utf-8"
+    )
+    errors = proof_plan.verify_receipts(PLAN, ["nightly_conformance"], tmp_path)
+    assert any(
+        "downloaded evidence bytes do not match receipt" in error for error in errors
+    )
+
+
 def test_every_authority_input_mutation_invalidates_receipt(
     tmp_path: Path, monkeypatch
 ) -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     original = proof_plan._authority_sha256(PLAN)
     for relative in PLAN.authority_inputs:
@@ -1016,7 +1039,7 @@ def test_receipt_verdict_rejects_source_commit_replay(tmp_path: Path) -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     receipt["source_commit"] = "0" * 40
     (tmp_path / "replayed.json").write_text(json.dumps(receipt), encoding="utf-8")
     errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
@@ -1027,7 +1050,7 @@ def test_receipt_verdict_rejects_dirty_source_tree_attestation(tmp_path: Path) -
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     receipt["source_tree_state"] = "dirty"
     (tmp_path / "dirty.json").write_text(json.dumps(receipt), encoding="utf-8")
     errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
@@ -1038,7 +1061,7 @@ def test_receipt_verdict_enforces_toolchain_version_contract(tmp_path: Path) -> 
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     uv = receipt["toolchains"]["uv"]  # type: ignore[index]
     uv["version"] = "uv 999.0.0"  # type: ignore[index]
     uv["identity_sha256"] = hashlib.sha256(  # type: ignore[index]
@@ -1057,7 +1080,7 @@ def test_receipt_verdict_enforces_toolchain_probe_cwd_contract(tmp_path: Path) -
     command = next(
         command for command in PLAN.commands if command.id == "formal.lean.build"
     )
-    receipt = _receipt_for(command)
+    receipt = _receipt_for(command, tmp_path)
     lean = receipt["toolchains"]["lean"]  # type: ignore[index]
     lean["probe_cwd"] = "."  # type: ignore[index]
     lean["identity_sha256"] = hashlib.sha256(  # type: ignore[index]
@@ -1756,6 +1779,7 @@ def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
         "nightly_determinism",
         "nightly_differential",
         "nightly_regrtest",
+        "nightly_shard_prepare",
         "nightly_verification_t3",
     }
     workflow = (proof_plan.ROOT / ".github/workflows/nightly.yml").read_text(
@@ -1763,6 +1787,11 @@ def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
     )
     for name in scheduled:
         assert f"--run-family {name} --receipt" in workflow
+    for program, count in (("conformance", 8), ("differential", 16), ("regrtest", 4)):
+        assert f"max-parallel: {count}" in workflow
+        assert f"outputs.{program}_matrix" in workflow
+        assert f"--program {program}" in workflow
+    assert workflow.count("tools/nightly_runtime_bundle.py verify-extract") == 3
     for forbidden in (
         "tests/harness/run_molt_conformance.py",
         "tests/molt_diff.py",
