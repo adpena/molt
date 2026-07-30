@@ -4,11 +4,12 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
 
-from tools import nightly_sharding
+from tools import nightly_shard_profile, nightly_sharding
 
 
 SOURCE_COMMIT = "a" * 40
@@ -22,6 +23,26 @@ def _write(path: Path, text: str) -> None:
 
 def _repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
+    _write(
+        root / "config/nightly_shard_profile.json",
+        json.dumps(
+            {
+                "schema": nightly_shard_profile.PROFILE_SCHEMA,
+                "policy": {
+                    "algorithm": nightly_shard_profile.PROFILE_ALGORITHM,
+                    "bucket_count": nightly_shard_profile.BUCKET_COUNT,
+                    "duration_unit": "microseconds",
+                    "max_overrides_per_program": nightly_shard_profile.MAX_OVERRIDES,
+                    "max_serialized_bytes": nightly_shard_profile.MAX_SERIALIZED_BYTES,
+                },
+                "programs": {
+                    program: {"model": None}
+                    for program in nightly_sharding.SHARD_COUNTS
+                },
+            },
+            sort_keys=True,
+        ),
+    )
     _write(
         root / "config/cpython_regrtest_sources.toml",
         "\n".join(
@@ -102,6 +123,18 @@ def test_runtime_plan_is_deterministic_lpt_and_digest_bound(tmp_path: Path) -> N
     )
 
 
+def test_transported_plan_envelope_does_not_require_external_cpython_tree(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    shutil.rmtree(root / "third_party/cpython")
+
+    nightly_sharding.validate_plan_envelope(plan, root)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        nightly_sharding.validate_plan(plan, root)
+
+
 def test_plan_rejects_source_runtime_and_pinned_revision_drift(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     runtime_manifest = root / "runtime.json"
@@ -123,28 +156,54 @@ def test_plan_rejects_source_runtime_and_pinned_revision_drift(tmp_path: Path) -
         authority.read_text(encoding="utf-8").replace(CPYTHON_COMMIT, "c" * 40),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="authority input drift"):
+    with pytest.raises(ValueError, match="authority inputs drift"):
         nightly_sharding.validate_plan(fresh, root)
 
 
-def test_sparse_weights_are_bounded_and_feed_deterministic_lpt(tmp_path: Path) -> None:
+def test_checked_in_profile_is_bound_and_feeds_deterministic_lpt(
+    tmp_path: Path,
+) -> None:
     root = _repo(tmp_path)
     path = "tests/differential/basic/differential_00.py"
-    plan = nightly_sharding.build_plan(
-        root,
-        source_commit=SOURCE_COMMIT,
-        cpython_commit=CPYTHON_COMMIT,
-        sparse_weights={"differential": {path: 1_000_000}},
+    profile_path = root / "config/nightly_shard_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    source = root / path
+    contract_digest = nightly_sharding._measurement_contract_digest(
+        nightly_sharding._authority_inputs(root)
     )
+    profile["programs"]["differential"]["model"] = {
+        "baseline": {
+            "intercept_us": 1,
+            "slope_denominator": 1,
+            "slope_numerator": 0,
+        },
+        "overrides": [
+            {
+                "duration_us": 1_000_000,
+                "path": path,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        ],
+        "training": {
+            "aggregate_sha256": "c" * 64,
+            "cell": "linux-x86_64-py312-native-dev",
+            "corpus_sha256": "d" * 64,
+            "cpython_commit": CPYTHON_COMMIT,
+            "measurement_contract_sha256": contract_digest,
+            "plan_sha256": "f" * 64,
+            "samples": 16,
+            "source_commit": "a" * 40,
+        },
+    }
+    profile_path.write_text(json.dumps(profile, sort_keys=True), encoding="utf-8")
+    plan = _plan(root)
     assert plan["programs"]["differential"]["shards"][0]["entries"] == [path]
-
-    with pytest.raises(ValueError, match="unknown weight paths"):
-        nightly_sharding.build_plan(
-            root,
-            source_commit=SOURCE_COMMIT,
-            cpython_commit=CPYTHON_COMMIT,
-            sparse_weights={"differential": {"not-in-corpus.py": 1}},
-        )
+    assert (
+        plan["authority"]["weight_profile"]["programs"]["differential"][
+            "applied_overrides"
+        ]
+        == 1
+    )
 
 
 def test_command_construction_uses_exact_file_lists_and_regrtest_no_diff(
@@ -316,6 +375,22 @@ def test_aggregate_requires_exact_digest_and_corpus_closure(
     assert broken["ok"] is False
     assert any("entries mismatch" in error for error in broken["integrity_errors"])
     assert any("raw_sha256 mismatch" in error for error in broken["integrity_errors"])
+
+
+def test_aggregate_rejects_nonfinite_item_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    evidence = tmp_path / "evidence"
+    _run_program(root, plan, evidence, "conformance", monkeypatch)
+    aggregate = nightly_sharding.aggregate(
+        plan, root=root, program="conformance", evidence_root=evidence
+    )
+    path = next(iter(aggregate["item_durations_s"]))
+    aggregate["item_durations_s"][path] = float("inf")
+    with pytest.raises(ValueError, match="item telemetry is invalid"):
+        nightly_sharding.validate_aggregate(plan, aggregate)
 
 
 def test_regrtest_aggregate_requires_digest_bound_artifact_custody(

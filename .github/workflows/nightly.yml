@@ -56,6 +56,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+      - name: Upload compact shard plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-shard-plan
+          path: proof-results/nightly/prepare/shard-plan.json
+          if-no-files-found: error
+
       - name: Upload preparation proof receipt
         if: always() && hashFiles('proof-receipts/nightly-shard-prepare.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -314,6 +321,41 @@ jobs:
             proof-results/nightly/regrtest-aggregate.json
           if-no-files-found: error
 
+  shard-profile-feedback:
+    name: Fit measured Nightly shard profile
+    if: always()
+    needs:
+      - nightly-prepare
+      - conformance-aggregate
+      - differential-aggregate
+      - regrtest-aggregate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup-project
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: nightly-shard-plan, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: proof-receipt-nightly-conformance, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: proof-receipt-nightly-differential, path: . }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: proof-receipt-nightly-regrtest, path: . }
+      - name: Fit compact digest-bound cost authority
+        run: python3 tools/proof_plan.py --run-family nightly_shard_profile_feedback --receipt proof-receipts/nightly-shard-profile-feedback.json
+      - name: Upload measured profile candidate and receipt
+        if: always() && hashFiles('proof-receipts/nightly-shard-profile-feedback.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-nightly-shard-profile-feedback
+          path: |
+            proof-receipts/nightly-shard-profile-feedback.json
+            proof-results/nightly/shard-profile-candidate.json
+            proof-results/nightly/shard-profile-report.json
+          if-no-files-found: error
+
   determinism-sweep:
     name: Determinism Full Sweep
     runs-on: ubuntu-latest
@@ -399,6 +441,7 @@ jobs:
       - conformance-aggregate
       - differential-aggregate
       - regrtest-aggregate
+      - shard-profile-feedback
       - determinism-sweep
       - formal-verification
       - verification-gate-t3

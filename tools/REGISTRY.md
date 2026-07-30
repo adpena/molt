@@ -20,6 +20,15 @@ runner setup and artifact transport only. `tools/ci_gate.py` remains the local
 tier aggregator; its Tier 3 entry consumes `nightly_verification_t3` rather than
 redeclaring the five heavy commands.
 
+Nightly shard execution is one authority family: `tools/nightly_prepare.py`
+builds the immutable runtime and digest-bound plan, `tools/nightly_sharding.py`
+owns exact corpus closure/LPT execution/aggregation, and
+`tools/nightly_profile_feedback.py fit` reduces successful aggregate item
+timings into a compact next-run candidate. The checked-in
+`config/nightly_shard_profile.json` is promoted only through
+`tools/nightly_profile_feedback.py promote`; CI publishes candidates and never
+self-commits or invents an external scheduling authority.
+
 ## Catalog (by purpose)
 
 ### Verify / drift-gates (wired in ci_gate tier-1 — fail closed)

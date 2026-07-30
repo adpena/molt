@@ -1,0 +1,21 @@
+{
+  "policy": {
+    "algorithm": "robust-bucketed-affine-v1",
+    "bucket_count": 16,
+    "duration_unit": "microseconds",
+    "max_overrides_per_program": 64,
+    "max_serialized_bytes": 65536
+  },
+  "programs": {
+    "conformance": {
+      "model": null
+    },
+    "differential": {
+      "model": null
+    },
+    "regrtest": {
+      "model": null
+    }
+  },
+  "schema": "molt.nightly-shard-profile.v1"
+}

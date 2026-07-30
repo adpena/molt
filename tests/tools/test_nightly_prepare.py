@@ -54,6 +54,9 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
     plan = {
         "cpython_commit": "b" * 40,
         "plan_sha256": "c" * 64,
+        "authority": {
+            "weight_profile": {"profile_sha256": "d" * 64},
+        },
         "programs": {
             program: {"shards": [{"id": index} for index in range(count)]}
             for program, count in nightly_prepare.nightly_sharding.SHARD_COUNTS.items()
