@@ -2133,8 +2133,9 @@ def _diff_worker(
     python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
-) -> dict[str, str]:
+) -> dict[str, object]:
     _install_worker_orphan_guard()
+    started = time.monotonic()
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     with contextlib.redirect_stdout(buffer_out), contextlib.redirect_stderr(buffer_err):
@@ -2146,6 +2147,7 @@ def _diff_worker(
         "status": status,
         "stdout": buffer_out.getvalue(),
         "stderr": buffer_err.getvalue(),
+        "duration_s": time.monotonic() - started,
     }
 
 
@@ -2190,7 +2192,8 @@ def _diff_run_single(
     python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
-) -> dict[str, str]:
+) -> dict[str, object]:
+    started = time.monotonic()
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     out_stream = _TeeStream(sys.stdout, buffer_out)
@@ -2204,6 +2207,7 @@ def _diff_run_single(
         "status": status,
         "stdout": buffer_out.getvalue(),
         "stderr": buffer_err.getvalue(),
+        "duration_s": time.monotonic() - started,
     }
 
 
@@ -4358,6 +4362,7 @@ def run_diff(
     _prune_backend_daemons()
     _prune_stale_build_locks()
     results: list[tuple[str, str]] = []
+    duration_by_path: dict[str, float] = {}
     if isinstance(target, Path):
         test_files = _collect_test_files(target)
     else:
@@ -4439,6 +4444,8 @@ def run_diff(
                     )
                     path = payload["path"]
                     status = payload["status"]
+                    assert isinstance(path, str) and isinstance(status, str)
+                    duration_by_path[path] = float(payload["duration_s"])
                     results.append((path, status))
                     if log_handle is not None:
                         _emit_line(
@@ -4470,7 +4477,7 @@ def run_diff(
         requested_live = live
         if not live:
             live = True
-        outputs: dict[str, dict[str, str]] = {}
+        outputs: dict[str, dict[str, object]] = {}
         keep_full_payloads = (not requested_live) and log_dir is None
         keep_retry_payloads = retry_oom
         prune_every = _diff_prune_every()
@@ -4508,6 +4515,8 @@ def run_diff(
                         result = future.result()
                         path = result["path"]
                         status = result["status"]
+                        assert isinstance(path, str) and isinstance(status, str)
+                        duration_by_path[path] = float(result["duration_s"])
                         completed += 1
                         if keep_full_payloads or (
                             keep_retry_payloads and status == "oom"
@@ -4586,7 +4595,10 @@ def run_diff(
             )
         for path in oom_paths:
             retry_payload = _diff_run_single(path, python_exe, build_profile, targets)
-            status_by_path[path] = retry_payload["status"]
+            retry_status = retry_payload["status"]
+            assert isinstance(retry_status, str)
+            status_by_path[path] = retry_status
+            duration_by_path[path] = float(retry_payload["duration_s"])
             outputs[path] = retry_payload
     discovered = len(status_by_path)
     failed_files = [
@@ -4647,6 +4659,15 @@ def run_diff(
         "skipped": skipped,
         "failed_files": failed_files,
         "skipped_files": skipped_files,
+        "item_results": [
+            {
+                "path": _normalize_repo_relative(path),
+                "status": status,
+                "duration_s": duration_by_path[path],
+            }
+            for path, status in sorted(status_by_path.items())
+            if path in duration_by_path
+        ],
         "python_exe": _python_command_display(python_exe),
         "jobs": jobs,
         "run_id": run_id,

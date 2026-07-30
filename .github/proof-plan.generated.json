@@ -26,6 +26,9 @@
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
+    "tools/nightly_prepare.py",
+    "tools/nightly_runtime_bundle.py",
+    "tools/nightly_sharding.py",
     "tools/check_generator_manifest.py",
     "tools/check_cargo_test_truth.py",
     "tools/check_deterministic_runtime.py",
@@ -88,7 +91,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "845a4add8ff509836b534b6fe6bdcf4aa6a8deca7199134ae240f78c5c548da7",
+  "authority_sha256": "31c9b9ddf1916a5deead838ffb63dc6b7287f9e5b6559970c2e8c4a8ab23a554",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -500,30 +503,62 @@
         "uv",
         "run",
         "python3",
-        "tests/harness/run_molt_conformance.py",
-        "--suite",
-        "full",
-        "--json-out",
-        "proof-results/nightly/conformance.json"
+        "tools/nightly_prepare.py",
+        "--output-root",
+        "proof-results/nightly/prepare"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "evidence_outputs": [
-        "proof-results/nightly/conformance.json"
+        "proof-results/nightly/prepare"
+      ],
+      "family": "nightly_shard_prepare",
+      "id": "nightly.shards.prepare",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 3300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/nightly_sharding.py",
+        "aggregate",
+        "--plan",
+        "proof-results/nightly/prepare/shard-plan.json",
+        "--program",
+        "conformance",
+        "--evidence-root",
+        "proof-results/nightly/conformance",
+        "--out",
+        "proof-results/nightly/conformance-aggregate.json"
+      ],
+      "cache_domain": "none",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-results/nightly/conformance-aggregate.json"
       ],
       "family": "nightly_conformance",
-      "id": "nightly.conformance.full",
+      "id": "nightly.conformance.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
         "nightly"
       ],
-      "timeout_seconds": 3300,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv",
-        "rustc",
-        "cargo"
+        "uv"
       ]
     },
     {
@@ -531,62 +566,33 @@
         "uv",
         "run",
         "python3",
-        "-u",
-        "tests/molt_diff.py",
-        "--build-profile",
-        "dev",
-        "--json-output",
-        "proof-results/nightly/differential.json",
-        "tests/differential/basic",
-        "tests/differential/stdlib"
+        "tools/nightly_sharding.py",
+        "aggregate",
+        "--plan",
+        "proof-results/nightly/prepare/shard-plan.json",
+        "--program",
+        "differential",
+        "--evidence-root",
+        "proof-results/nightly/differential",
+        "--out",
+        "proof-results/nightly/differential-aggregate.json"
       ],
-      "cache_domain": "cargo-workspace",
+      "cache_domain": "none",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
-      "env": {
-        "MOLT_DIFF_MEASURE_RSS": "1"
-      },
       "evidence_outputs": [
-        "proof-results/nightly/differential.json"
+        "proof-results/nightly/differential-aggregate.json"
       ],
       "family": "nightly_differential",
-      "id": "nightly.differential.basic-stdlib",
+      "id": "nightly.differential.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
         "nightly"
       ],
-      "timeout_seconds": 3300,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv",
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "cargo",
-        "build",
-        "--locked",
-        "-p",
-        "molt-runtime",
-        "--profile",
-        "dev-fast"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-native-dev",
-      "dependencies": [],
-      "family": "nightly_regrtest",
-      "id": "nightly.regrtest.runtime-build",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "nightly"
-      ],
-      "timeout_budget": "cold",
-      "timeout_seconds": 1200,
-      "toolchains": [
-        "rustc",
-        "cargo"
+        "uv"
       ]
     },
     {
@@ -594,34 +600,33 @@
         "uv",
         "run",
         "python3",
-        "tools/cpython_regrtest.py",
-        "--uv",
-        "--clone",
-        "--timeout",
-        "600",
-        "--output-dir",
-        "proof-results/nightly/regrtest"
+        "tools/nightly_sharding.py",
+        "aggregate",
+        "--plan",
+        "proof-results/nightly/prepare/shard-plan.json",
+        "--program",
+        "regrtest",
+        "--evidence-root",
+        "proof-results/nightly/regrtest",
+        "--out",
+        "proof-results/nightly/regrtest-aggregate.json"
       ],
-      "cache_domain": "cargo-workspace",
+      "cache_domain": "none",
       "cell": "linux-x86_64-py312-native-dev",
-      "dependencies": [
-        "nightly.regrtest.runtime-build"
-      ],
+      "dependencies": [],
       "evidence_outputs": [
-        "proof-results/nightly/regrtest"
+        "proof-results/nightly/regrtest-aggregate.json"
       ],
       "family": "nightly_regrtest",
-      "id": "nightly.regrtest.g5",
+      "id": "nightly.regrtest.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
         "nightly"
       ],
-      "timeout_seconds": 5700,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv",
-        "rustc",
-        "cargo"
+        "uv"
       ]
     },
     {
@@ -3313,12 +3318,12 @@
     ],
     "scheduled_job_timeout_envelopes": {
       "nightly_conformance": {
-        "budget_seconds": 3600,
-        "critical_path_seconds": 3300,
+        "budget_seconds": 900,
+        "critical_path_seconds": 600,
         "headroom_seconds": 300,
-        "projected_makespan_seconds": 3300,
+        "projected_makespan_seconds": 600,
         "resource_capacity_floor_seconds": {
-          "scheduled-suite": 825
+          "scheduled-suite": 150
         }
       },
       "nightly_determinism": {
@@ -3332,22 +3337,30 @@
         }
       },
       "nightly_differential": {
+        "budget_seconds": 900,
+        "critical_path_seconds": 600,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 600,
+        "resource_capacity_floor_seconds": {
+          "scheduled-suite": 150
+        }
+      },
+      "nightly_regrtest": {
+        "budget_seconds": 900,
+        "critical_path_seconds": 600,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 600,
+        "resource_capacity_floor_seconds": {
+          "scheduled-suite": 150
+        }
+      },
+      "nightly_shard_prepare": {
         "budget_seconds": 3600,
         "critical_path_seconds": 3300,
         "headroom_seconds": 300,
         "projected_makespan_seconds": 3300,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 825
-        }
-      },
-      "nightly_regrtest": {
-        "budget_seconds": 7200,
-        "critical_path_seconds": 6900,
-        "headroom_seconds": 300,
-        "projected_makespan_seconds": 6900,
-        "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 1200,
-          "scheduled-suite": 1425
         }
       },
       "nightly_verification_t3": {
@@ -4439,36 +4452,53 @@
   "receipt_schema": "molt.proof-receipt.v4",
   "scheduled_families": [
     {
-      "description": "Full Molt conformance corpus with machine-readable results.",
-      "job": "molt-conformance-full",
+      "description": "One immutable native runtime, pinned CPython source, and digest-bound Nightly shard plan.",
+      "job": "nightly-prepare",
+      "name": "nightly_shard_prepare",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Full Molt conformance corpus aggregated from eight exact digest-bound shards.",
+      "job": "conformance-aggregate",
       "name": "nightly_conformance",
       "resource_class": "scheduled-suite",
+      "shard_count": 8,
+      "sharded_program": "conformance",
       "tiers": [
         "nightly"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
     },
     {
-      "description": "Full basic and stdlib CPython differential correctness corpus.",
-      "job": "differential-basic-stdlib",
+      "description": "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards.",
+      "job": "differential-aggregate",
       "name": "nightly_differential",
       "resource_class": "scheduled-suite",
+      "shard_count": 16,
+      "sharded_program": "differential",
       "tiers": [
         "nightly"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
     },
     {
-      "description": "CPython regrtest G5 closure after one canonical runtime build.",
-      "job": "regrtest",
+      "description": "Pinned CPython regrtest closure aggregated from four exact digest-bound shards.",
+      "job": "regrtest-aggregate",
       "name": "nightly_regrtest",
       "resource_class": "scheduled-suite",
+      "shard_count": 4,
+      "sharded_program": "regrtest",
       "tiers": [
         "nightly"
       ],
-      "timeout_minutes": 120,
+      "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
     },
     {

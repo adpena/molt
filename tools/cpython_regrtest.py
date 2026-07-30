@@ -104,6 +104,7 @@ class RegrtestSummary:
     errors: int
     skipped: int
     failed_modules: list[str]
+    module_results: list[dict[str, object]]
     returncode: int
 
 
@@ -421,11 +422,43 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         help="Print commands without executing.",
     )
     parser.add_argument(
+        "--tests-from",
+        type=Path,
+        default=None,
+        help="Run exactly the test modules listed in this newline-delimited file.",
+    )
+    parser.add_argument(
         "tests",
         nargs="*",
         help="Optional test modules to run (e.g., test_math).",
     )
     args = parser.parse_args(argv)
+
+    if args.tests_from is not None and args.core_only:
+        parser.error("--tests-from and --core-only are mutually exclusive")
+    tests = list(args.tests)
+    if args.tests_from is not None:
+        seen_tests: set[str] = set(tests)
+        try:
+            lines = args.tests_from.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            parser.error(f"failed to read --tests-from {args.tests_from}: {exc}")
+        for line_number, raw in enumerate(lines, 1):
+            module = raw.strip()
+            if not module or module.startswith("#"):
+                continue
+            if re.fullmatch(r"test_[A-Za-z0-9_]+", module) is None:
+                parser.error(
+                    f"{args.tests_from}:{line_number}: invalid test module {module!r}"
+                )
+            if module in seen_tests:
+                parser.error(
+                    f"{args.tests_from}:{line_number}: duplicate test module {module!r}"
+                )
+            seen_tests.add(module)
+            tests.append(module)
+        if not tests:
+            parser.error(f"{args.tests_from}: exact regrtest selection is empty")
 
     repo_root = args.repo_root.resolve()
     cpython_dir = args.cpython_dir.resolve()
@@ -495,7 +528,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         resources=args.resource,
         timeout=args.timeout,
         junit_xml=output_root / "junit.xml",
-        tests=args.tests,
+        tests=tests,
         regrtest_args=args.regrtest_arg,
         enable_coverage=args.coverage,
         coverage_source=args.coverage_source,
@@ -770,25 +803,43 @@ def parse_junit(path: Path) -> RegrtestSummary:
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     tests = failures = errors = skipped = 0
     failed_modules: set[str] = set()
+    module_state: dict[str, dict[str, object]] = {}
     for suite in suites:
         tests += int(suite.attrib.get("tests", 0))
         failures += int(suite.attrib.get("failures", 0))
         errors += int(suite.attrib.get("errors", 0))
         skipped += int(suite.attrib.get("skipped", 0))
         for case in suite.iter("testcase"):
-            if case.find("failure") is None and case.find("error") is None:
-                continue
             classname = case.attrib.get("classname", "")
             name = case.attrib.get("name", "")
-            module = classname.split(".")[0] if classname else name.split(".")[0]
-            if module:
+            match = re.search(
+                r"(?:^|\.)(test_[A-Za-z0-9_]+)(?:\.|$)",
+                f"{classname}.{name}",
+            )
+            module = match.group(1) if match else ""
+            if not module:
+                continue
+            state = module_state.setdefault(
+                module,
+                {"path": module, "status": "passed", "duration_s": 0.0},
+            )
+            try:
+                duration = float(case.attrib.get("time", "0"))
+            except ValueError:
+                duration = 0.0
+            state["duration_s"] = float(state["duration_s"]) + max(0.0, duration)
+            if case.find("failure") is not None or case.find("error") is not None:
+                state["status"] = "failed"
                 failed_modules.add(module)
+            elif case.find("skipped") is not None and state["status"] == "passed":
+                state["status"] = "skipped"
     return RegrtestSummary(
         tests=tests,
         failures=failures,
         errors=errors,
         skipped=skipped,
         failed_modules=sorted(failed_modules),
+        module_results=[module_state[name] for name in sorted(module_state)],
         returncode=1 if failures or errors else 0,
     )
 
@@ -1349,6 +1400,29 @@ def write_summary(
     rust_coverage: RustCoverageSummary | None,
     memory_guard: dict[str, object] | None = None,
 ) -> None:
+    observed_module_results = (
+        {
+            str(item["path"]): {
+                **item,
+                "duration_s": max(float(item["duration_s"]), 1e-6),
+            }
+            for item in summary.module_results
+        }
+        if summary
+        else {}
+    )
+    item_results = [
+        observed_module_results.get(
+            module,
+            {"path": module, "status": "error", "duration_s": 1e-6},
+        )
+        for module in config.tests
+    ]
+    if not config.tests:
+        item_results = [
+            observed_module_results[module]
+            for module in sorted(observed_module_results)
+        ]
     payload = {
         "python_version": python_version,
         "tests": summary.tests if summary else 0,
@@ -1356,6 +1430,7 @@ def write_summary(
         "errors": summary.errors if summary else 0,
         "skipped": summary.skipped if summary else 0,
         "failed_modules": summary.failed_modules if summary else [],
+        "item_results": item_results,
         "coverage_total": coverage.total_percent if coverage else None,
         "stdlib_matrix": {
             "json": str(stdlib_paths[0]) if stdlib_paths[0] else None,
@@ -1443,6 +1518,7 @@ def write_summary(
 def write_root_summary(output_root: Path, runs: list[dict]) -> None:
     payload = {
         "runs": runs,
+        "item_results": runs[0].get("item_results", []) if len(runs) == 1 else [],
     }
     summary_path = output_root / "summary.json"
     summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True))

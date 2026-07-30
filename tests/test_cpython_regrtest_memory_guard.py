@@ -35,7 +35,7 @@ def test_cpython_source_authority_is_commit_pinned() -> None:
     assert sources == {
         "3.12": module.CPythonSource(
             python="3.12",
-            revision="082755cdf017defd58f2ff7ff0341569946d30e0",
+            revision="3bb231a6a5dc02b95658877318bf61501a7209e9",
             tag="v3.12.13",
             git_url="https://github.com/python/cpython.git",
         )
