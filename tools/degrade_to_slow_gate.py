@@ -62,11 +62,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -133,7 +131,6 @@ _DEGRADE_DECISION_CONTEXT_RE = re.compile(
     r"""["']\s*[=!]=|"""        # comparison: "reason..." == x
     r"""\breturn\b|"""          # return "reason..."
     r"""(?:reason|mode|policy|serial_mode|policy_reason)\s*=|"""  # kwarg
-    r"""["']\s*:\s*|"""         # dict value key: "reason...":
     r"""\bif\b|\belif\b|\belse\b"""  # inline conditional / ternary branch
 )
 

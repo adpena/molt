@@ -78,28 +78,6 @@ fast_path_test = "test_analysis_reuse_across_sessions_hydrates_shared"
 
 
 # =============================================================================
-# make_loud -- degrade is acceptable because it emits a loud diagnostic first.
-# =============================================================================
-
-[[site]]
-file = "src/molt/cli/link_pipeline.py"
-symbol = "_prepare_native_link"
-signature = "def _prepare_native_link(..., warnings: list[str], ...) -> _PreparedNativeLink"
-classification = "make_loud"
-justification = """
-Native linker-hint fallback. When `-fuse-ld=<linker_hint>` fails, the pipeline
-retries with the default linker instead of hard-failing the build. This is a
-capability degrade (the requested fast/alternate linker was not used) but it is
-LOUD: it appends `Linker fallback: -fuse-ld=<hint> failed; retried default
-linker.` to the surfaced warnings list (and the Darwin validation path appends
-`Linker fallback: ...` as well). The gate statically verifies a
-`warnings.append("Linker fallback: ...")` (or logger/print of the same string)
-is reachable in this file before the fallback path. loud-verified.
-"""
-fast_path_test = "test_native_link_fuse_ld_fallback_is_loud"
-
-
-# =============================================================================
 # sound_keep -- correctness / genuine-cost bails. NOT metabugs. Frozen.
 # =============================================================================
 
