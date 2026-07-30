@@ -14,6 +14,7 @@
     ".python-version",
     "config/ci_resource_policy.toml",
     "config/actionlint.toml",
+    "config/cpython_regrtest_sources.toml",
     "config/reproducibility_corpus.toml",
     "config/scientific_stack_versions.toml",
     "config/proof_requirements/pact_witness.txt",
@@ -27,8 +28,14 @@
     "tools/artifact_publish.py",
     "tools/check_generator_manifest.py",
     "tools/check_cargo_test_truth.py",
+    "tools/check_deterministic_runtime.py",
+    "tools/check_reproducible_build.py",
+    "tools/ci_gate.py",
+    "tools/cpython_regrtest.py",
     "tools/ff_land.py",
+    "tools/fuzz_compiler.py",
     "tools/proof_plan.py",
+    "tools/proof_executor.py",
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
@@ -53,11 +60,16 @@
     "tools/memory_guard.py",
     "tools/memory_guard_core/payloads.py",
     "tools/memory_guard_core/process_custody.py",
+    "tools/mutation_test.py",
     "tools/process_sentinel.py",
     "tools/process_spawn.py",
     "tools/win_job.py",
     "tools/run_cargo_test_truth.py",
+    "tools/translation_validate.py",
     "tools/pytest_truth_plugin.py",
+    "tools/verify_ir_suite.py",
+    "tests/harness/run_molt_conformance.py",
+    "tests/molt_diff.py",
     "tests/test_proof_plan.py",
     "tests/test_harness_memory_guard.py",
     "tests/test_memory_guard_tool.py",
@@ -65,8 +77,10 @@
     "tests/native_process_guard.py",
     "tests/wasm_linked_runner.py",
     "tests/test_ci_workflow_topology.py",
+    "tests/test_cpython_regrtest_memory_guard.py",
     "tests/test_generator_manifest.py",
     "tests/tools/test_cargo_test_truth.py",
+    "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
     "tests/tools/test_proof_queue.py",
     "tests/tools/test_memory_guard_spawn_callback.py",
@@ -74,7 +88,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "bc95a722c6e0d7c8aed38a00764ebafe4f2f2c6496ea73f637be9cbb12d882da",
+  "authority_sha256": "845a4add8ff509836b534b6fe6bdcf4aa6a8deca7199134ae240f78c5c548da7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -481,6 +495,423 @@
     }
   ],
   "commands": [
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tests/harness/run_molt_conformance.py",
+        "--suite",
+        "full",
+        "--json-out",
+        "proof-results/nightly/conformance.json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-results/nightly/conformance.json"
+      ],
+      "family": "nightly_conformance",
+      "id": "nightly.conformance.full",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 3300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-u",
+        "tests/molt_diff.py",
+        "--build-profile",
+        "dev",
+        "--json-output",
+        "proof-results/nightly/differential.json",
+        "tests/differential/basic",
+        "tests/differential/stdlib"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "env": {
+        "MOLT_DIFF_MEASURE_RSS": "1"
+      },
+      "evidence_outputs": [
+        "proof-results/nightly/differential.json"
+      ],
+      "family": "nightly_differential",
+      "id": "nightly.differential.basic-stdlib",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 3300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "molt-runtime",
+        "--profile",
+        "dev-fast"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "nightly_regrtest",
+      "id": "nightly.regrtest.runtime-build",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/cpython_regrtest.py",
+        "--uv",
+        "--clone",
+        "--timeout",
+        "600",
+        "--output-dir",
+        "proof-results/nightly/regrtest"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.regrtest.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/nightly/regrtest"
+      ],
+      "family": "nightly_regrtest",
+      "id": "nightly.regrtest.g5",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 5700,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "molt-runtime",
+        "--profile",
+        "dev-fast"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "nightly_determinism",
+      "id": "nightly.determinism.runtime-build",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_deterministic_runtime.py",
+        "--corpus",
+        "full",
+        "--runs",
+        "3",
+        "--build-profile",
+        "dev",
+        "--json-out",
+        "proof-results/nightly/deterministic-runtime.json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.determinism.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/nightly/deterministic-runtime.json"
+      ],
+      "family": "nightly_determinism",
+      "id": "nightly.determinism.runtime",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/verify_ir_suite.py",
+        "--dir",
+        "tests/differential/basic",
+        "--examples",
+        "--json-out",
+        "proof-results/nightly/ir-verification.json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.determinism.runtime"
+      ],
+      "evidence_outputs": [
+        "proof-results/nightly/ir-verification.json"
+      ],
+      "family": "nightly_determinism",
+      "id": "nightly.determinism.ir",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "molt-runtime",
+        "--profile",
+        "dev-fast"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.runtime-build",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_reproducible_build.py",
+        "--corpus",
+        "full",
+        "--runs",
+        "5",
+        "--audit-ir",
+        "--json-out",
+        "proof-results/reproducibility-tier3.json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/reproducibility-tier3.json"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.reproducibility",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/fuzz_compiler.py",
+        "--count",
+        "100",
+        "--timeout",
+        "300",
+        "--json-out",
+        "proof-results/fuzz-compiler-extended.json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/fuzz-compiler-extended.json"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.fuzz-compiler",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/mutation_test.py",
+        "--max-mutations",
+        "50",
+        "--timeout",
+        "60",
+        "--json-out",
+        "proof-results/mutation-tier3.json"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/mutation-tier3.json"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.mutation",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 3600,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/translation_validate.py",
+        "--json-out",
+        "proof-results/translation-tier3.json",
+        "tests/differential"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.runtime-build"
+      ],
+      "evidence_outputs": [
+        "proof-results/translation-tier3.json"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.translation",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 1800,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "tests/model_based",
+        "-x",
+        "-q"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.verification-t3.runtime-build"
+      ],
+      "family": "nightly_verification_t3",
+      "id": "nightly.verification-t3.model-based",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
     {
       "argv": [
         "uv",
@@ -2872,10 +3303,64 @@
         "name": "repository-policy"
       },
       {
+        "max_parallel": 4,
+        "name": "scheduled-suite"
+      },
+      {
         "max_parallel": 2,
         "name": "wasm-runtime"
       }
-    ]
+    ],
+    "scheduled_job_timeout_envelopes": {
+      "nightly_conformance": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 3300,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 3300,
+        "resource_capacity_floor_seconds": {
+          "scheduled-suite": 825
+        }
+      },
+      "nightly_determinism": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 3300,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 3300,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 1200,
+          "scheduled-suite": 525
+        }
+      },
+      "nightly_differential": {
+        "budget_seconds": 3600,
+        "critical_path_seconds": 3300,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 3300,
+        "resource_capacity_floor_seconds": {
+          "scheduled-suite": 825
+        }
+      },
+      "nightly_regrtest": {
+        "budget_seconds": 7200,
+        "critical_path_seconds": 6900,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 6900,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 1200,
+          "scheduled-suite": 1425
+        }
+      },
+      "nightly_verification_t3": {
+        "budget_seconds": 5400,
+        "critical_path_seconds": 4800,
+        "headroom_seconds": 600,
+        "projected_makespan_seconds": 4800,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 1200,
+          "scheduled-suite": 1800
+        }
+      }
+    }
   },
   "local": {
     "always": [
@@ -3951,8 +4436,65 @@
       "target": "host"
     }
   ],
-  "receipt_schema": "molt.proof-receipt.v3",
-  "schema": "molt.proof-plan-projection.v4",
+  "receipt_schema": "molt.proof-receipt.v4",
+  "scheduled_families": [
+    {
+      "description": "Full Molt conformance corpus with machine-readable results.",
+      "job": "molt-conformance-full",
+      "name": "nightly_conformance",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Full basic and stdlib CPython differential correctness corpus.",
+      "job": "differential-basic-stdlib",
+      "name": "nightly_differential",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "CPython regrtest G5 closure after one canonical runtime build.",
+      "job": "regrtest",
+      "name": "nightly_regrtest",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 120,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Runtime determinism and typed IR verification after one runtime build.",
+      "job": "determinism-sweep",
+      "name": "nightly_determinism",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and model proof.",
+      "job": "verification-gate-t3",
+      "name": "nightly_verification_t3",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 90,
+      "workflow": ".github/workflows/nightly.yml"
+    }
+  ],
+  "schema": "molt.proof-plan-projection.v5",
   "toolchain_policies": [
     {
       "executable": "{python}",

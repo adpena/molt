@@ -6,17 +6,19 @@ molt's highest-signal tools. Agents kept rediscovering and rebuilding these
 (two agents independently re-authored `perf_authority.py`; the float and int
 repr cuts were built twice from opposite ends) — that waste ends here.
 
-## The one command
+## Canonical proof authority
 
 ```
-uv run --python 3.12 python3 tools/ci_gate.py            # run ALL gates (tier 1)
-uv run --python 3.12 python3 tools/ci_gate.py --tier all # + tier 2/3
+python3 tools/proof_plan.py --check
+python3 tools/proof_plan.py --run-family <family> --receipt proof-receipts/<family>.json
 ```
 
-`tools/ci_gate.py` is THE default verification entry point: it runs every wired
-gate below. If you want "is my change good?", run this — do not re-implement a
-checker it already runs. Its `_build_checks()` IS the live registry of gates;
-this file is the human/agent-readable index of the whole tool surface.
+`tools/proof_plan.toml` is the sole hosted command, dependency, timeout,
+resource, toolchain, and evidence authority. `tools/proof_plan.py` executes that
+typed DAG under guarded custody and writes hash-bound receipts. Workflows own
+runner setup and artifact transport only. `tools/ci_gate.py` remains the local
+tier aggregator; its Tier 3 entry consumes `nightly_verification_t3` rather than
+redeclaring the five heavy commands.
 
 ## Catalog (by purpose)
 

@@ -56,7 +56,8 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 11
-    assert len(PLAN.commands) >= 69
+    assert len(PLAN.scheduled_families) == 5
+    assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
     assert "src/molt/cargo_execution_policy.py" in PLAN.authority_inputs
@@ -69,6 +70,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
         "python-static": 1,
         "python-tests": 2,
         "repository-policy": 4,
+        "scheduled-suite": 4,
         "wasm-runtime": 2,
     }
     assert all("metadata_mode" not in family.data for family in PLAN.families)
@@ -94,8 +96,8 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v4"
-    assert projection["receipt_schema"] == "molt.proof-receipt.v3"
+    assert projection["schema"] == "molt.proof-plan-projection.v5"
+    assert projection["receipt_schema"] == "molt.proof-receipt.v4"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
     assert projection["toolchain_policies"] == [
@@ -131,6 +133,9 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         {"name": policy.name, "max_parallel": policy.max_parallel}
         for policy in PLAN.resource_policies
     ]
+    assert projection["scheduled_families"] == [
+        family.data for family in PLAN.scheduled_families
+    ]
     timeout_envelopes = projection["executor"]["github_job_timeout_envelopes"]
     assert timeout_envelopes["rust"] == {
         "budget_seconds": 3600,
@@ -165,6 +170,27 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
             "python-tests": 60,
         },
         "headroom_seconds": 300,
+    }
+    scheduled_envelopes = projection["executor"]["scheduled_job_timeout_envelopes"]
+    assert scheduled_envelopes["nightly_regrtest"] == {
+        "budget_seconds": 7200,
+        "projected_makespan_seconds": 6900,
+        "critical_path_seconds": 6900,
+        "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 1200,
+            "scheduled-suite": 1425,
+        },
+        "headroom_seconds": 300,
+    }
+    assert scheduled_envelopes["nightly_verification_t3"] == {
+        "budget_seconds": 5400,
+        "projected_makespan_seconds": 4800,
+        "critical_path_seconds": 4800,
+        "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 1200,
+            "scheduled-suite": 1800,
+        },
+        "headroom_seconds": 600,
     }
     local = projection["local"]
     assert local["commands"]["local.always.0"] == PLAN.always[0]
@@ -395,6 +421,11 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     assert {command.family for command in rust_commands} == {
         "llvm",
         "native_integration",
+        "nightly_conformance",
+        "nightly_determinism",
+        "nightly_differential",
+        "nightly_regrtest",
+        "nightly_verification_t3",
         "platform_portability",
         "rust",
         "rust_security",
@@ -831,6 +862,22 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
                 ).encode()
             ).hexdigest(),
         }
+    evidence_outputs = [
+        {
+            "path": relative,
+            "kind": "file",
+            "sha256": "a" * 64,
+            "total_size_bytes": 1,
+            "files": [
+                {
+                    "path": Path(relative).name,
+                    "sha256": "a" * 64,
+                    "size": 1,
+                }
+            ],
+        }
+        for relative in command.evidence_outputs
+    ]
     return {
         "schema": PLAN.receipt_schema,
         "authority_sha256": proof_plan._authority_sha256(PLAN),
@@ -851,6 +898,8 @@ def _receipt_for(command: proof_plan.ProofCommand) -> dict[str, Any]:
                 "timeout_seconds": command.data["timeout_seconds"],
                 "timeout_env": list(command.data.get("timeout_env", [])),
                 "environment_overrides": dict(command.data.get("env", {})),
+                "declared_evidence_outputs": list(command.evidence_outputs),
+                "evidence_outputs": evidence_outputs,
                 "duration_seconds": 0.1,
                 "peak_rss_bytes": 1024,
                 "cache_disposition": "cold",
@@ -894,6 +943,31 @@ def test_receipt_verdict_accepts_every_exact_selected_partition(tmp_path: Path) 
             json.dumps(_receipt_for(command)), encoding="utf-8"
         )
     assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
+
+
+def test_scheduled_verdict_requires_every_command_and_evidence_output(
+    tmp_path: Path,
+) -> None:
+    scheduled_names = [family.name for family in PLAN.scheduled_families]
+    scheduled_commands = [
+        command for command in PLAN.commands if command.family in scheduled_names
+    ]
+    for command in scheduled_commands:
+        (tmp_path / f"{command.id}.json").write_text(
+            json.dumps(_receipt_for(command)), encoding="utf-8"
+        )
+
+    assert proof_plan.verify_receipts(PLAN, scheduled_names, tmp_path) == []
+
+    terminal = next(
+        command for command in scheduled_commands if command.evidence_outputs
+    )
+    receipt_path = tmp_path / f"{terminal.id}.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["commands"][0]["evidence_outputs"] = []
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    errors = proof_plan.verify_receipts(PLAN, scheduled_names, tmp_path)
+    assert any("evidence outputs do not match authority" in error for error in errors)
 
 
 def test_receipt_verdict_rejects_authority_and_command_drift(tmp_path: Path) -> None:
@@ -1224,7 +1298,66 @@ def _successful_synthetic_record(
         "status": "success",
         "returncode": 0,
         "guard_metrics_schema": "molt.guarded-command-metrics.v1",
+        "evidence_outputs": [],
     }
+
+
+def test_executor_hashes_declared_evidence_and_rejects_zero_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    relative = f"proof-results/tests/{tmp_path.name}/result.json"
+    output = proof_plan.ROOT / relative
+    producer = _synthetic_executor_command("synthetic.evidence")
+    producer = replace(
+        producer,
+        data={
+            **producer.data,
+            "evidence_outputs": [relative],
+            "argv": [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; "
+                f"p=Path({str(output)!r}); p.parent.mkdir(parents=True, exist_ok=True); "
+                "p.write_text('{\"ok\":true}', encoding='utf-8')",
+            ],
+        },
+    )
+    plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    try:
+        receipt_path = tmp_path / "receipt.json"
+        assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
+        record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
+        assert record["declared_evidence_outputs"] == [relative]
+        assert record["evidence_outputs"][0]["path"] == relative
+        assert record["evidence_outputs"][0]["total_size_bytes"] > 0
+
+        missing = replace(
+            producer,
+            id="synthetic.missing-evidence",
+            data={
+                **producer.data,
+                "id": "synthetic.missing-evidence",
+                "argv": [sys.executable, "-c", "pass"],
+            },
+        )
+        missing_plan = _synthetic_executor_plan((missing,), limits={"resource-a": 1})
+        missing_receipt = tmp_path / "missing.json"
+        assert (
+            proof_plan.execute_commands(missing_plan, (missing,), missing_receipt) == 2
+        )
+        missing_record = json.loads(missing_receipt.read_text(encoding="utf-8"))[
+            "commands"
+        ][0]
+        assert missing_record["status"] == "failure"
+        assert "evidence output is missing" in missing_record["evidence_error"]
+    finally:
+        proof_plan._clear_evidence_outputs(producer)
 
 
 def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(
@@ -1603,6 +1736,42 @@ def test_formal_is_required_now_that_cross_workflow_receipts_are_aggregated() ->
         "formal.quint.models",
         "formal.correspondence",
     }
+
+
+def test_terminal_command_execution_closes_transitive_dependencies() -> None:
+    commands = proof_plan._topological_commands(
+        PLAN,
+        command_id="formal.lean.sorry-baseline",
+    )
+    assert [command.id for command in commands] == [
+        "formal.lean.build",
+        "formal.lean.sorry-baseline",
+    ]
+
+
+def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
+    scheduled = {family.name: family for family in PLAN.scheduled_families}
+    assert set(scheduled) == {
+        "nightly_conformance",
+        "nightly_determinism",
+        "nightly_differential",
+        "nightly_regrtest",
+        "nightly_verification_t3",
+    }
+    workflow = (proof_plan.ROOT / ".github/workflows/nightly.yml").read_text(
+        encoding="utf-8"
+    )
+    for name in scheduled:
+        assert f"--run-family {name} --receipt" in workflow
+    for forbidden in (
+        "tests/harness/run_molt_conformance.py",
+        "tests/molt_diff.py",
+        "tools/cpython_regrtest.py",
+        "tools/check_deterministic_runtime.py",
+        "tools/verify_ir_suite.py",
+        "tools/ci_gate.py --tier",
+    ):
+        assert forbidden not in workflow
 
 
 def test_replay_quantifies_avoided_launches(monkeypatch) -> None:
