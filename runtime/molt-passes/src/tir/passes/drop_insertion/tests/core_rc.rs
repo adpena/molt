@@ -1003,6 +1003,60 @@ fn state_machine_function_gets_no_drops() {
     assert_eq!(count_increfs(&func), 0);
 }
 
+#[test]
+fn generator_construction_does_not_disable_later_owned_temporary_drops() {
+    let mut func = TirFunction::new(
+        "ordinary_generator_constructor".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+    );
+    let object = ValueId(0);
+    let task = func.fresh_value();
+    let attr = func.fresh_value();
+    let call_result = func.fresh_value();
+    let none = func.fresh_value();
+    let compared = func.fresh_value();
+    for value in [task, attr, call_result, none] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    func.value_types.insert(compared, TirType::Bool);
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(op(OpCode::AllocTask, vec![], vec![task]));
+        block
+            .ops
+            .push(op(OpCode::LoadAttr, vec![object], vec![attr]));
+        block
+            .ops
+            .push(op(OpCode::Call, vec![attr], vec![call_result]));
+        block.ops.push(op(OpCode::ConstNone, vec![], vec![none]));
+        block
+            .ops
+            .push(op(OpCode::Is, vec![call_result, none], vec![compared]));
+        block.terminator = Terminator::Return { values: vec![] };
+    }
+
+    assert!(
+        !func.has_state_machine(),
+        "constructing a generator must not classify its ordinary caller as a re-entrant body",
+    );
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+    let dropped: Vec<ValueId> = func.blocks[&entry]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert!(dropped.contains(&task), "constructed task temporary leaked");
+    assert!(dropped.contains(&attr), "bound attribute temporary leaked");
+    assert!(
+        dropped.contains(&call_result),
+        "call/comparison temporary leaked"
+    );
+}
+
 /// Loop-carried phi `s` used on BOTH the loop body (new value computed, old
 /// `s` dead on the back-edge path) AND the exit path (a non-alias consumer),
 /// in the real-phi (LLVM) shape. The header phi must be dropped on the path

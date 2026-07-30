@@ -171,7 +171,7 @@ impl TirFunction {
     /// True iff the function is a lowered coroutine `_poll` **state machine** —
     /// it dispatches on a saved state via [`StateSwitch`](super::ops::OpCode::StateSwitch)
     /// (and friends: `StateTransition`/`StateYield`/`ChanSendYield`/
-    /// `ChanRecvYield`/`AllocTask`). Such a function's CFG is NOT
+    /// `ChanRecvYield`). Such a function's CFG is NOT
     /// dominator-structured: the state dispatch RE-ENTERS resume blocks, so a
     /// value defined in one state region is reachable (via the dispatch back-edge)
     /// in a resume block that a straight-line / dominator liveness walk does NOT
@@ -195,6 +195,8 @@ impl TirFunction {
             // The `state_switch` dispatch is now a first-class `StateDispatch`
             // terminator (not a body op), so detect it there; the suspend ops
             // (`StateYield`/`StateTransition`/`Chan*Yield`) remain body ops.
+            // AllocTask only constructs a generator/coroutine and is not
+            // evidence that the containing function itself is re-entrant.
             matches!(block.terminator, Terminator::StateDispatch { .. })
                 || block
                     .ops

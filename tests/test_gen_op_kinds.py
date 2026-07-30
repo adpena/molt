@@ -3184,7 +3184,6 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
     function = _read_rs_module_cluster(tir_path("function.rs"))
 
     expected = {
-        "AllocTask",
         "ChanRecvYield",
         "ChanSendYield",
         "StateSwitch",
