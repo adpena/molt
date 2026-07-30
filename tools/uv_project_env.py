@@ -30,7 +30,9 @@ def project_environment_path(
     repo_root: Path = ROOT,
     env: Mapping[str, str] | None = None,
 ) -> Path:
-    env_view = os.environ if env is None else env
+    env_view = dict(os.environ if env is None else env)
+    env_view["MOLT_UV_PROJECT_PURPOSE"] = purpose
+    env_view["MOLT_UV_PROJECT_PYTHON"] = python
     resolved = development_artifact_env(
         repo_root,
         env_view,
@@ -50,6 +52,8 @@ def uv_project_env(
     explicit: str | None = None,
 ) -> dict[str, str]:
     merged = dict(os.environ if env is None else env)
+    merged["MOLT_UV_PROJECT_PURPOSE"] = purpose
+    merged["MOLT_UV_PROJECT_PYTHON"] = python
     if explicit:
         explicit_path = Path(explicit).expanduser()
         if not explicit_path.is_absolute():
