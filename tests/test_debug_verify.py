@@ -107,10 +107,7 @@ def test_verify_result_payload_includes_function_pass_and_artifact_references() 
 
 def test_semantic_assertions_pass_on_repo_sources() -> None:
     module = _load_verify_module()
-    frontend_text = module.FRONTEND_PATH.read_text(encoding="utf-8")
-    native_text = module.NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_text = module.WASM_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_text += "\n" + module.WASM_ABI_PATH.read_text(encoding="utf-8")
+    _, frontend_text, native_text, wasm_text = module._read_backend_texts()
 
     failures = module.check_semantic_assertions(
         frontend_text=frontend_text,
@@ -122,10 +119,7 @@ def test_semantic_assertions_pass_on_repo_sources() -> None:
 
 def test_semantic_assertions_detect_regression_signal() -> None:
     module = _load_verify_module()
-    frontend_text = module.FRONTEND_PATH.read_text(encoding="utf-8")
-    native_text = module.NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_text = module.WASM_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_text += "\n" + module.WASM_ABI_PATH.read_text(encoding="utf-8")
+    _, frontend_text, native_text, wasm_text = module._read_backend_texts()
 
     regressed_frontend = frontend_text.replace(
         '"kind": "call_indirect"',
