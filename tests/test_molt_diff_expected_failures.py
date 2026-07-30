@@ -270,7 +270,13 @@ def test_run_diff_serial_emits_run_line_before_file_work(
 
     def _fake_run_single(file_path, *_args, **_kwargs):
         calls.append(file_path)
-        return {"path": file_path, "status": "pass", "stdout": "", "stderr": ""}
+        return {
+            "path": file_path,
+            "status": "pass",
+            "stdout": "",
+            "stderr": "",
+            "duration_s": 0.25,
+        }
 
     monkeypatch.setattr(module, "_diff_run_single", _fake_run_single)
     monkeypatch.setattr(module, "_memory_guard_trip_message", lambda: None)
@@ -278,7 +284,9 @@ def test_run_diff_serial_emits_run_line_before_file_work(
     monkeypatch.setattr(module, "_aggregate_rss_metrics", lambda _run_id: {})
     monkeypatch.setattr(module, "_print_rss_top", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "_emit_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "_memory_guard_scheduler_per_job_gb", lambda _config: 0.1)
+    monkeypatch.setattr(
+        module, "_memory_guard_scheduler_per_job_gb", lambda _config: 0.1
+    )
     monkeypatch.setattr(module, "_config_payload", lambda _config: {})
 
     module.run_diff(
@@ -1125,6 +1133,7 @@ def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
 ) -> None:
     module = _load_diff_module()
     repo_root = tmp_path / "repo"
+    repo_root.mkdir()
     monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
@@ -1184,6 +1193,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
 ) -> None:
     module = _load_diff_module()
     repo_root = tmp_path / "repo"
+    repo_root.mkdir()
     ext_root = tmp_path / "ext-root"
     target_file = tmp_path / "target.py"
     target_file.write_text("print('ok')\n", encoding="utf-8")
@@ -1222,7 +1232,13 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     monkeypatch.setattr(
         module,
         "_diff_run_single",
-        lambda *args, **kwargs: {"path": args[0], "status": "pass"},
+        lambda *args, **kwargs: {
+            "path": args[0],
+            "status": "pass",
+            "stdout": "",
+            "stderr": "",
+            "duration_s": 0.25,
+        },
     )
     monkeypatch.setattr(
         module, "_order_test_files", lambda test_files, jobs: test_files
@@ -1238,4 +1254,11 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     summary = module.run_diff(target_file, "python", warm_cache=True)
 
     assert summary["failed"] == 0
+    assert summary["item_results"] == [
+        {
+            "path": str(target_file).replace("\\", "/"),
+            "status": "pass",
+            "duration_s": 0.25,
+        }
+    ]
     assert seen_cache_roots == [str(ext_root / ".molt_cache")]

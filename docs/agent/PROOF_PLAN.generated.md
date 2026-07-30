@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 86 |
+| Hashed executable authority inputs | 1 | 89 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -55,9 +55,10 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 
 | Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |
 |---|---|---:|---:|---:|---|---:|
-| `nightly_conformance` | `molt-conformance-full` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_differential` | `differential-basic-stdlib` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_regrtest` | `regrtest` | 7200 s | 6900 s | 300 s | `scheduled-suite` | 2 |
+| `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 3 |
 | `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
 
@@ -128,10 +129,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Command ID | Family | Cell | Budget | Timeout | Resource | Parents |
 |---|---|---|---|---:|---|---:|
-| `nightly.conformance.full` | `nightly_conformance` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
-| `nightly.differential.basic-stdlib` | `nightly_differential` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
-| `nightly.regrtest.runtime-build` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `nightly.regrtest.g5` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `explicit` | 5700 s | `scheduled-suite` | 1 |
+| `nightly.shards.prepare` | `nightly_shard_prepare` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
+| `nightly.conformance.aggregate` | `nightly_conformance` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
+| `nightly.differential.aggregate` | `nightly_differential` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
+| `nightly.regrtest.aggregate` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.determinism.runtime-build` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
 | `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 900 s | `scheduled-suite` | 1 |
