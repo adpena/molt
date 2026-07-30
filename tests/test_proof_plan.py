@@ -56,7 +56,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 11
-    assert len(PLAN.scheduled_families) == 6
+    assert len(PLAN.scheduled_families) == 7
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
@@ -1779,6 +1779,7 @@ def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
         "nightly_determinism",
         "nightly_differential",
         "nightly_regrtest",
+        "nightly_shard_profile_feedback",
         "nightly_shard_prepare",
         "nightly_verification_t3",
     }

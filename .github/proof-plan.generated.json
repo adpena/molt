@@ -15,6 +15,7 @@
     "config/ci_resource_policy.toml",
     "config/actionlint.toml",
     "config/cpython_regrtest_sources.toml",
+    "config/nightly_shard_profile.json",
     "config/reproducibility_corpus.toml",
     "config/scientific_stack_versions.toml",
     "config/proof_requirements/pact_witness.txt",
@@ -27,6 +28,8 @@
     "src/molt/llvm_toolchain.py",
     "tools/artifact_publish.py",
     "tools/nightly_prepare.py",
+    "tools/nightly_profile_feedback.py",
+    "tools/nightly_shard_profile.py",
     "tools/nightly_runtime_bundle.py",
     "tools/nightly_sharding.py",
     "tools/check_generator_manifest.py",
@@ -82,6 +85,11 @@
     "tests/test_ci_workflow_topology.py",
     "tests/test_cpython_regrtest_memory_guard.py",
     "tests/test_generator_manifest.py",
+    "tests/tools/test_nightly_prepare.py",
+    "tests/tools/test_nightly_profile_feedback.py",
+    "tests/tools/test_nightly_runtime_bundle.py",
+    "tests/tools/test_nightly_shard_profile.py",
+    "tests/tools/test_nightly_sharding.py",
     "tests/tools/test_cargo_test_truth.py",
     "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
@@ -91,7 +99,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "31c9b9ddf1916a5deead838ffb63dc6b7287f9e5b6559970c2e8c4a8ab23a554",
+  "authority_sha256": "2976e81473b8f009d4a0ade9c72635bb931f9f559a147c8be6ac5845f8d2c20e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -624,6 +632,45 @@
         "nightly"
       ],
       "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/nightly_profile_feedback.py",
+        "fit",
+        "--plan",
+        "proof-results/nightly/prepare/shard-plan.json",
+        "--conformance-aggregate",
+        "proof-results/nightly/conformance-aggregate.json",
+        "--differential-aggregate",
+        "proof-results/nightly/differential-aggregate.json",
+        "--regrtest-aggregate",
+        "proof-results/nightly/regrtest-aggregate.json",
+        "--out",
+        "proof-results/nightly/shard-profile-candidate.json",
+        "--report-out",
+        "proof-results/nightly/shard-profile-report.json"
+      ],
+      "cache_domain": "none",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-results/nightly/shard-profile-candidate.json",
+        "proof-results/nightly/shard-profile-report.json"
+      ],
+      "family": "nightly_shard_profile_feedback",
+      "id": "nightly.shards.profile-feedback",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -3363,6 +3410,15 @@
           "scheduled-suite": 825
         }
       },
+      "nightly_shard_profile_feedback": {
+        "budget_seconds": 600,
+        "critical_path_seconds": 300,
+        "headroom_seconds": 300,
+        "projected_makespan_seconds": 300,
+        "resource_capacity_floor_seconds": {
+          "scheduled-suite": 75
+        }
+      },
       "nightly_verification_t3": {
         "budget_seconds": 5400,
         "critical_path_seconds": 4800,
@@ -3413,7 +3469,7 @@
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_reproducible_build_truth.py",
+      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python3 tools/gen_codecs.py --check",
       "local.codec-tables.1": "uv run python -m pytest -q tests/test_gen_codecs.py",
       "local.dev-tooling.0": "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
@@ -4117,7 +4173,7 @@
         "description": "CI workflows or pyproject: the CI-topology contract test.",
         "gates": [
           "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_reproducible_build_truth.py"
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py"
         ],
         "globs": [
           ".github/actions/**",
@@ -4135,6 +4191,13 @@
           "tools/bootstrap_actionlint.py",
           "tools/check_github_actions.py",
           "config/actionlint.toml",
+          "config/cpython_regrtest_sources.toml",
+          "config/nightly_shard_profile.json",
+          "tools/nightly_prepare.py",
+          "tools/nightly_profile_feedback.py",
+          "tools/nightly_runtime_bundle.py",
+          "tools/nightly_shard_profile.py",
+          "tools/nightly_sharding.py",
           "tools/check_reproducible_build.py",
           "config/reproducibility_corpus.toml",
           "tools/verify_ir_suite.py",
@@ -4148,6 +4211,11 @@
           "tools/ci_resource_env.py",
           "tools/resource_pressure.py",
           "tests/test_generator_manifest.py",
+          "tests/tools/test_nightly_prepare.py",
+          "tests/tools/test_nightly_profile_feedback.py",
+          "tests/tools/test_nightly_runtime_bundle.py",
+          "tests/tools/test_nightly_shard_profile.py",
+          "tests/tools/test_nightly_sharding.py",
           "tests/test_proof_plan.py",
           "tests/test_ci_workflow_topology.py",
           "tests/test_resource_pressure.py",
@@ -4499,6 +4567,23 @@
         "nightly"
       ],
       "timeout_minutes": 15,
+      "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Fit one compact digest-bound cost model from complete measured Nightly item telemetry.",
+      "job": "shard-profile-feedback",
+      "name": "nightly_shard_profile_feedback",
+      "needs": [
+        "nightly-prepare",
+        "conformance-aggregate",
+        "differential-aggregate",
+        "regrtest-aggregate"
+      ],
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "nightly"
+      ],
+      "timeout_minutes": 10,
       "workflow": ".github/workflows/nightly.yml"
     },
     {

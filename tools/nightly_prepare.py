@@ -116,6 +116,7 @@ def prepare(
         "source_commit": identity.source_commit,
         "cpython_commit": plan["cpython_commit"],
         "plan_sha256": plan["plan_sha256"],
+        "weight_profile_sha256": plan["authority"]["weight_profile"]["profile_sha256"],
         "runtime_bundle": archive.name,
         "runtime_manifest": manifest,
     }

@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 89 |
+| Hashed executable authority inputs | 1 | 97 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -59,6 +59,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 3 |
 | `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
 
@@ -133,6 +134,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.conformance.aggregate` | `nightly_conformance` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.differential.aggregate` | `nightly_differential` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.regrtest.aggregate` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
+| `nightly.shards.profile-feedback` | `nightly_shard_profile_feedback` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `scheduled-suite` | 0 |
 | `nightly.determinism.runtime-build` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
 | `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 900 s | `scheduled-suite` | 1 |
@@ -254,7 +256,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 8 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 37 | 2 | no |
+| `ci-wiring` | 49 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

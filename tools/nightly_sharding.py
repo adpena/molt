@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -31,32 +32,33 @@ from tools.artifact_publish import (
     staged_output_path,
 )
 from tools.command_execution import CommandExecutor
+from tools import nightly_shard_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = CommandExecutor.for_file(__file__)
-PLAN_SCHEMA = "molt.nightly-shard-plan.v1"
+PLAN_SCHEMA = "molt.nightly-shard-plan.v2"
 EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v1"
-AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v1"
+AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v2"
 SHARD_COUNTS = {"conformance": 8, "differential": 16, "regrtest": 4}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
-# A compact, checked-in policy.  Source bytes are a useful cold-compile cost
-# proxy for Python files; CPython modules use their total source tree bytes.
-# Observed sparse overrides may be supplied by a later profiled run without
-# checking in a corpus-sized duration table.
 WEIGHT_POLICY = {
-    "schema": "molt.nightly-shard-weight-policy.v1",
+    "schema": "molt.nightly-shard-weight-policy.v2",
     "algorithm": "deterministic-lpt-v1",
-    "weight": "source-bytes-min-one",
+    "weight": "compact-measured-profile-with-source-bytes-fallback",
     "tie_break": "weight-descending-then-path; bin-weight-then-id",
     "shards": SHARD_COUNTS,
+    "training_cell": "linux-x86_64-py312-native-dev",
 }
 AUTHORITY_INPUTS = (
     ".github/workflows/nightly.yml",
     "tools/nightly_prepare.py",
+    "tools/nightly_profile_feedback.py",
+    "tools/nightly_shard_profile.py",
     "tools/nightly_sharding.py",
     "tools/nightly_runtime_bundle.py",
+    "config/nightly_shard_profile.json",
     "tests/harness/run_molt_conformance.py",
     "tests/molt_diff.py",
     "tools/cpython_regrtest.py",
@@ -129,6 +131,7 @@ def _file_entry(root: Path, path: Path) -> dict[str, Any]:
     return {
         "path": relative,
         "sha256": _file_digest(path),
+        "source_bytes": max(1, size),
         "weight": max(1, size),
     }
 
@@ -176,6 +179,7 @@ def _discover_regrtest(root: Path) -> list[dict[str, Any]]:
             {
                 "path": name,
                 "sha256": _json_digest(source_rows),
+                "source_bytes": max(1, sum(int(row["size"]) for row in source_rows)),
                 "weight": max(1, sum(int(row["size"]) for row in source_rows)),
                 "sources": source_rows,
             }
@@ -247,32 +251,10 @@ def _current_corpus_paths(root: Path, program: str) -> list[str]:
     return sorted(names)
 
 
-def _apply_sparse_weights(
-    corpora: dict[str, list[dict[str, Any]]],
-    overrides: Mapping[str, Mapping[str, int]] | None,
-) -> None:
-    if overrides is None:
-        return
-    unknown_programs = set(overrides).difference(corpora)
-    if unknown_programs:
-        raise ValueError(f"unknown weight programs: {sorted(unknown_programs)}")
-    for program, rows in overrides.items():
-        known = {str(entry["path"]): entry for entry in corpora[program]}
-        unknown = set(rows).difference(known)
-        if unknown:
-            raise ValueError(
-                f"{program} has unknown weight paths: {sorted(unknown)[:3]}"
-            )
-        for path, weight in rows.items():
-            if isinstance(weight, bool) or not isinstance(weight, int) or weight <= 0:
-                raise ValueError(f"{program}:{path} weight must be a positive integer")
-            known[path]["weight"] = weight
-
-
 def lpt_shards(
     entries: Sequence[Mapping[str, Any]], count: int
 ) -> list[dict[str, Any]]:
-    """Partition *entries* using deterministic longest-processing-time first."""
+    """Partition entries using deterministic longest-processing-time first."""
 
     if count <= 0:
         raise ValueError("shard count must be positive")
@@ -292,27 +274,51 @@ def lpt_shards(
         {
             "id": shard_id,
             "weight": weights[shard_id],
-            "entries": sorted([str(entry["path"]) for entry in bins[shard_id]]),
+            "entries": sorted(str(entry["path"]) for entry in bins[shard_id]),
         }
         for shard_id in range(count)
     ]
 
 
-def _authority_payload(
-    root: Path,
-    overrides: Mapping[str, Mapping[str, int]] | None,
-) -> dict[str, Any]:
+def _authority_inputs(root: Path) -> list[dict[str, str]]:
     inputs = []
     for relative in AUTHORITY_INPUTS:
         path = root / relative
         if not path.is_file():
             raise ValueError(f"nightly shard authority input is missing: {relative}")
         inputs.append({"path": relative, "sha256": _file_digest(path)})
+    return inputs
+
+
+def _measurement_contract_digest(inputs: Sequence[Mapping[str, str]]) -> str:
+    measured_inputs = [
+        dict(row)
+        for row in inputs
+        if row["path"] != "config/nightly_shard_profile.json"
+    ]
+    return _json_digest({"policy": WEIGHT_POLICY, "inputs": measured_inputs})
+
+
+def _authority_payload(
+    inputs: Sequence[Mapping[str, str]],
+    profile_summary: Mapping[str, Any],
+    measurement_contract_sha256: str,
+) -> dict[str, Any]:
     return {
         "policy": WEIGHT_POLICY,
-        "inputs": inputs,
-        "sparse_weights": overrides or {},
+        "inputs": list(inputs),
+        "measurement_contract_sha256": measurement_contract_sha256,
+        "weight_profile": profile_summary,
     }
+
+
+def load_weight_profile(root: Path) -> dict[str, Any]:
+    path = root / "config" / "nightly_shard_profile.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("nightly shard profile must be a JSON object")
+    nightly_shard_profile.validate_profile(payload, tuple(SHARD_COUNTS))
+    return payload
 
 
 def build_plan(
@@ -321,7 +327,6 @@ def build_plan(
     source_commit: str | None = None,
     cpython_commit: str | None = None,
     runtime_artifact_manifest: Path | None = None,
-    sparse_weights: Mapping[str, Mapping[str, int]] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     source_commit = (source_commit or _git_commit(root)).lower()
@@ -334,8 +339,16 @@ def build_plan(
     if cpython_commit != _pinned_cpython_commit(root):
         raise ValueError("CPython checkout does not match the pinned 3.12 revision")
     corpora = discover_corpora(root)
-    _apply_sparse_weights(corpora, sparse_weights)
-    authority = _authority_payload(root, sparse_weights)
+    authority_inputs = _authority_inputs(root)
+    measurement_contract_sha256 = _measurement_contract_digest(authority_inputs)
+    profile_summary = nightly_shard_profile.apply_profile(
+        corpora,
+        load_weight_profile(root),
+        measurement_contract_sha256=measurement_contract_sha256,
+    )
+    authority = _authority_payload(
+        authority_inputs, profile_summary, measurement_contract_sha256
+    )
     runtime_manifest = None
     if runtime_artifact_manifest is not None:
         manifest_path = runtime_artifact_manifest.resolve()
@@ -370,13 +383,9 @@ def _expected_plan_digest(plan: Mapping[str, Any]) -> str:
     return _json_digest(unsigned)
 
 
-def validate_plan(
-    plan: Mapping[str, Any],
-    root: Path = ROOT,
-    *,
-    expected_source_commit: str | None = None,
-    expected_cpython_commit: str | None = None,
-) -> None:
+def validate_plan_envelope(plan: Mapping[str, Any], root: Path = ROOT) -> None:
+    """Validate a transported plan without requiring its external corpus tree."""
+
     if plan.get("schema") != PLAN_SCHEMA:
         raise ValueError("nightly shard plan schema is invalid")
     if plan.get("plan_sha256") != _expected_plan_digest(plan):
@@ -387,33 +396,27 @@ def validate_plan(
     if not isinstance(authority, dict) or authority.get("policy") != WEIGHT_POLICY:
         raise ValueError("nightly shard policy authority mismatch")
     authority_inputs = authority.get("inputs")
-    if not isinstance(authority_inputs, list):
-        raise ValueError("nightly shard authority inputs are invalid")
-    for row in authority_inputs:
-        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
-            raise ValueError("nightly shard authority input row is invalid")
-        path = root / str(row["path"])
-        if not path.is_file() or _file_digest(path) != row.get("sha256"):
-            raise ValueError(f"nightly shard authority input drift: {row['path']}")
-    if (
-        expected_source_commit is not None
-        and plan.get("source_commit") != expected_source_commit
-    ):
-        raise ValueError("nightly shard plan source commit mismatch")
-    if (
-        expected_cpython_commit is not None
-        and plan.get("cpython_commit") != expected_cpython_commit
-    ):
-        raise ValueError("nightly shard plan CPython commit mismatch")
+    current_inputs = _authority_inputs(root)
+    if authority_inputs != current_inputs:
+        raise ValueError("nightly shard authority inputs drift")
+    contract_digest = _measurement_contract_digest(current_inputs)
+    if authority.get("measurement_contract_sha256") != contract_digest:
+        raise ValueError("nightly shard measurement contract mismatch")
+    current_profile = load_weight_profile(root)
+    weight_profile = authority.get("weight_profile")
+    if not isinstance(weight_profile, dict) or weight_profile.get(
+        "profile_sha256"
+    ) != nightly_shard_profile.profile_digest(current_profile):
+        raise ValueError("nightly shard weight profile authority mismatch")
     if plan.get("cpython_commit") != _pinned_cpython_commit(root):
         raise ValueError("nightly shard plan CPython commit is not pinned authority")
-    runtime_manifest = plan.get("runtime_artifact_manifest")
-    if runtime_manifest is not None:
-        if not isinstance(runtime_manifest, dict):
-            raise ValueError("runtime artifact manifest identity is invalid")
-        path = root / str(runtime_manifest.get("path", ""))
-        if not path.is_file() or _file_digest(path) != runtime_manifest.get("sha256"):
-            raise ValueError("runtime artifact manifest digest mismatch")
+    source_commit = plan.get("source_commit")
+    if (
+        not isinstance(source_commit, str)
+        or len(source_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit)
+    ):
+        raise ValueError("nightly shard source commit is invalid")
     programs = plan.get("programs")
     if not isinstance(programs, dict) or set(programs) != set(SHARD_COUNTS):
         raise ValueError("nightly shard plan program closure mismatch")
@@ -424,10 +427,75 @@ def validate_plan(
         shards = program.get("shards")
         if not isinstance(entries, list) or not isinstance(shards, list):
             raise ValueError(f"{name} program entries or shards are invalid")
-        paths: list[str] = []
+        paths = []
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
                 raise ValueError(f"{name} corpus entry is invalid")
+            path = str(entry["path"])
+            digest = entry.get("sha256")
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"{name}:{path} source digest is invalid")
+            for field in ("source_bytes", "weight"):
+                value = entry.get(field)
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise ValueError(f"{name}:{path} {field} is invalid")
+            if name == "regrtest" and not isinstance(entry.get("sources"), list):
+                raise ValueError(f"{name}:{path} source custody is missing")
+            paths.append(path)
+        if paths != sorted(paths) or len(paths) != len(set(paths)) or not paths:
+            raise ValueError(f"{name} corpus paths are not exact and ordered")
+        if program.get("selected") != len(entries):
+            raise ValueError(f"{name} selected count mismatch")
+        if program.get("total_weight") != sum(int(row["weight"]) for row in entries):
+            raise ValueError(f"{name} total weight mismatch")
+        if shards != lpt_shards(entries, SHARD_COUNTS[name]):
+            raise ValueError(f"{name} LPT shard projection mismatch")
+
+
+def validate_plan(
+    plan: Mapping[str, Any],
+    root: Path = ROOT,
+    *,
+    expected_source_commit: str | None = None,
+    expected_cpython_commit: str | None = None,
+) -> None:
+    validate_plan_envelope(plan, root)
+    authority = plan["authority"]
+    current_profile = load_weight_profile(root)
+    expected_corpora = discover_corpora(root)
+    expected_profile_summary = nightly_shard_profile.apply_profile(
+        expected_corpora,
+        current_profile,
+        measurement_contract_sha256=authority["measurement_contract_sha256"],
+    )
+    if authority.get("weight_profile") != expected_profile_summary:
+        raise ValueError("nightly shard weight profile authority mismatch")
+    if (
+        expected_source_commit is not None
+        and plan.get("source_commit") != expected_source_commit
+    ):
+        raise ValueError("nightly shard plan source commit mismatch")
+    if (
+        expected_cpython_commit is not None
+        and plan.get("cpython_commit") != expected_cpython_commit
+    ):
+        raise ValueError("nightly shard plan CPython commit mismatch")
+    runtime_manifest = plan.get("runtime_artifact_manifest")
+    if runtime_manifest is not None:
+        if not isinstance(runtime_manifest, dict):
+            raise ValueError("runtime artifact manifest identity is invalid")
+        path = root / str(runtime_manifest.get("path", ""))
+        if not path.is_file() or _file_digest(path) != runtime_manifest.get("sha256"):
+            raise ValueError("runtime artifact manifest digest mismatch")
+    programs = plan["programs"]
+    for name, program in programs.items():
+        entries = program["entries"]
+        paths: list[str] = []
+        for entry in entries:
             path = str(entry["path"])
             if name == "regrtest":
                 sources = entry.get("sources")
@@ -459,20 +527,11 @@ def validate_plan(
                     "sha256"
                 ):
                     raise ValueError(f"{name}:{path} source digest mismatch")
-            weight = entry.get("weight")
-            if isinstance(weight, bool) or not isinstance(weight, int) or weight <= 0:
-                raise ValueError(f"{name}:{path} weight is invalid")
             paths.append(path)
-        if paths != sorted(paths) or len(paths) != len(set(paths)) or not paths:
-            raise ValueError(f"{name} corpus paths are not exact and ordered")
         if paths != _current_corpus_paths(root, name):
             raise ValueError(f"{name} corpus discovery closure mismatch")
-        if program.get("selected") != len(entries):
-            raise ValueError(f"{name} selected count mismatch")
-        if program.get("total_weight") != sum(int(row["weight"]) for row in entries):
-            raise ValueError(f"{name} total weight mismatch")
-        if shards != lpt_shards(entries, SHARD_COUNTS[name]):
-            raise ValueError(f"{name} LPT shard projection mismatch")
+        if entries != expected_corpora[name]:
+            raise ValueError(f"{name} measured weight projection mismatch")
 
 
 def _load_plan(path: Path, root: Path = ROOT) -> dict[str, Any]:
@@ -775,7 +834,7 @@ def run_shard(
             returncode = 124
             stdout_tail = str(exc.stdout or "")[-16_000:]
             stderr_tail = str(exc.stderr or "")[-16_000:]
-        duration = time.monotonic() - started
+        duration = max(time.monotonic() - started, 1e-9)
         summary_error = None
         if program == "regrtest" and artifact_root is not None and command is None:
             summary_path = artifact_root / "summary.json"
@@ -1049,9 +1108,20 @@ def aggregate(
                     )
         elif artifact is not None or checkpoint.get("artifact_sha256") is not None:
             integrity_errors.append(f"shard {shard_id}: unexpected artifact custody")
+        shard_duration = raw.get("duration_s")
+        if (
+            isinstance(shard_duration, bool)
+            or not isinstance(shard_duration, (int, float))
+            or not math.isfinite(float(shard_duration))
+            or float(shard_duration) <= 0
+        ):
+            integrity_errors.append(f"shard {shard_id}: invalid wall duration")
+            shard_duration = 0.0
         records.append(
             {
+                "duration_s": float(shard_duration),
                 "id": shard_id,
+                "planned_weight": shard["weight"],
                 "raw_sha256": _digest_bytes(raw_bytes),
                 "returncode": raw.get("returncode"),
             }
@@ -1114,26 +1184,38 @@ def validate_aggregate(plan: Mapping[str, Any], payload: Mapping[str, Any]) -> N
         or set(statuses) != expected_paths
     ):
         raise ValueError("nightly aggregate contract is invalid")
+    for path in expected_paths:
+        duration = durations[path]
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or float(duration) <= 0
+            or statuses[path] not in {"passed", "failed", "errors", "skipped"}
+        ):
+            raise ValueError(f"nightly aggregate item telemetry is invalid: {path}")
     if payload.get("ok") is not True:
         raise RuntimeError(
             f"nightly {program} failed: failures={payload.get('failed')} "
             f"errors={payload.get('errors')} integrity={payload.get('integrity_errors')}"
         )
-
-
-def _read_sparse_weights(path: Path | None) -> Mapping[str, Mapping[str, int]] | None:
-    if path is None:
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != "molt.nightly-sparse-weights.v1"
-    ):
-        raise ValueError("nightly sparse weight schema is invalid")
-    programs = payload.get("programs")
-    if not isinstance(programs, dict):
-        raise ValueError("nightly sparse weight programs are missing")
-    return programs
+    for expected_id, shard in enumerate(payload["shards"]):
+        if (
+            not isinstance(shard, dict)
+            or shard.get("id") != expected_id
+            or shard.get("returncode") != 0
+            or not isinstance(shard.get("raw_sha256"), str)
+            or len(shard["raw_sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef" for character in shard["raw_sha256"]
+            )
+            or shard.get("planned_weight") != expected["shards"][expected_id]["weight"]
+            or isinstance(shard.get("duration_s"), bool)
+            or not isinstance(shard.get("duration_s"), (int, float))
+            or not math.isfinite(float(shard["duration_s"]))
+            or float(shard["duration_s"]) <= 0
+        ):
+            raise ValueError("nightly aggregate shard telemetry is invalid")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1142,7 +1224,6 @@ def parser() -> argparse.ArgumentParser:
     plan = commands.add_parser("plan")
     plan.add_argument("--out", type=Path, required=True)
     plan.add_argument("--runtime-artifact-manifest", type=Path)
-    plan.add_argument("--sparse-weights", type=Path)
     run = commands.add_parser("run-shard")
     run.add_argument("--plan", type=Path, required=True)
     run.add_argument("--program", choices=tuple(SHARD_COUNTS), required=True)
@@ -1170,7 +1251,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "plan":
             payload = build_plan(
                 runtime_artifact_manifest=args.runtime_artifact_manifest,
-                sparse_weights=_read_sparse_weights(args.sparse_weights),
             )
             atomic_write_json(args.out, payload, sort_keys=True)
         elif args.command == "run-shard":

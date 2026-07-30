@@ -725,6 +725,24 @@ class ProofPlan:
                 errors.append(
                     f"{family.name}: scheduled correctness job may not continue-on-error"
                 )
+            declared_needs = family.data.get("needs")
+            if declared_needs is not None:
+                if not isinstance(declared_needs, list) or not all(
+                    isinstance(need, str) for need in declared_needs
+                ):
+                    errors.append(f"{family.name}: needs must be a list of job names")
+                else:
+                    try:
+                        actual_needs = _workflow_job_needs(block)
+                    except ValueError as exc:
+                        errors.append(f"{family.name}: {exc}")
+                    else:
+                        if actual_needs != tuple(declared_needs):
+                            errors.append(
+                                f"{family.name}: workflow needs "
+                                f"{list(actual_needs)!r}; authority requires "
+                                f"{declared_needs!r}"
+                            )
             timeout = f"timeout-minutes: {timeout_minutes}"
             if timeout not in block:
                 errors.append(
