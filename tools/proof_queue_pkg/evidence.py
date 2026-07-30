@@ -228,6 +228,8 @@ def _queue_proof_receipt(
         terminal_digest = context.get("terminal_evidence_sha256")
         source_custody = context.get("source_custody")
         guard_receipt = context.get("guard_receipt")
+        process_closure = envelope.get("process_closure")
+        platform_custody = context.get("platform_process_custody")
         if not isinstance(terminal_digest, str) or not re.fullmatch(
             r"[0-9a-f]{64}", terminal_digest
         ):
@@ -248,6 +250,20 @@ def _queue_proof_receipt(
             guard_receipt.get("sha256"), str
         ):
             raise ValueError("passed proof run has no guard receipt identity")
+        if (
+            sys.platform == "win32"
+            and isinstance(process_closure, dict)
+            and process_closure.get("descendants") == "declared-toolchains"
+            and (
+                not isinstance(platform_custody, dict)
+                or platform_custody.get("identical") is not True
+                or not isinstance(platform_custody.get("prelaunch"), list)
+                or not platform_custody["prelaunch"]
+            )
+        ):
+            raise ValueError(
+                "passed proof run has no stable platform process-image custody"
+            )
         expected_terminal = command_envelope.terminal_evidence_sha256(
             context,
             run_id=str(row["run_id"]),

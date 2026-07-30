@@ -34,6 +34,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
+from memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -47,7 +48,7 @@ SCHEMA_PATH = (
 DEFAULT_OUTPUT = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "latest.json"
 )
-CAPSULE_ACTIVE_DIR = REPO_ROOT / "tmp" / "memory_guard" / "active"
+CAPSULE_ACTIVE_DIR = active_guard_marker_dir(REPO_ROOT)
 CAPSULE_ARCHIVE_DIR = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "custody"
 )

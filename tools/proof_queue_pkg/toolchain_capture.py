@@ -16,11 +16,14 @@ from typing import Mapping, Sequence
 
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
+from tools.proof_queue_pkg.process_image_capture import (
+    capture_image,
+    revalidate_images,
+)
 
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
 VERIFICATION_SCHEMA = "molt.proof-toolchain-verification.v1"
-PROCESS_IMAGE_SCHEMA = "molt.proof-process-image-capture.v1"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -77,20 +80,6 @@ def _selected_command_lines(output: str) -> list[list[str]]:
         if tokens:
             commands.append(tokens)
     return commands
-
-
-def _process_image(role: str, path: Path) -> dict[str, object]:
-    resolved = path.resolve(strict=True)
-    stat = resolved.stat()
-    with resolved.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    return {
-        "schema": PROCESS_IMAGE_SCHEMA,
-        "role": role,
-        "path": str(resolved),
-        "sha256": digest,
-        "size_bytes": stat.st_size,
-    }
 
 
 def capture_rust_link_process_images(
@@ -324,11 +313,15 @@ def capture_rust_link_process_images(
         images = []
         auxiliary_keys = {os.path.normcase(str(path)) for path in selected_helpers}
         for index, path in enumerate(unique_paths):
-            image = _process_image(
-                "rust-linker" if index == 0 else "rust-link-helper", path
+            image = capture_image(
+                "rust-linker" if index == 0 else "rust-link-helper",
+                path,
+                root_exit_disposition=(
+                    "terminate"
+                    if os.path.normcase(str(path)) in auxiliary_keys
+                    else "require-exit"
+                ),
             )
-            if os.path.normcase(str(path)) in auxiliary_keys:
-                image["root_exit_disposition"] = "terminate"
             images.append(image)
         telemetry = {
             "schema": "molt.proof-rust-link-selection-telemetry.v1",
@@ -389,27 +382,20 @@ def revalidate_rust_link_process_images(
     raw_images = selected_identity.get("process_images")
     if not isinstance(raw_images, list):
         raise ValueError("pre-arm Rust process-image selection is unavailable")
-    selected: list[dict[str, object]] = []
+    selected_rows: list[Mapping[str, object]] = []
     for raw in raw_images:
         if not isinstance(raw, Mapping):
             raise ValueError("pre-arm Rust process-image row is malformed")
         role = raw.get("role")
         if role not in {"rust-linker", "rust-link-helper"}:
             continue
-        path_raw = raw.get("path")
-        if not isinstance(path_raw, str) or not Path(path_raw).is_absolute():
-            raise ValueError("pre-arm Rust linker image has no absolute path")
-        current = _process_image(str(role), Path(path_raw))
-        disposition = raw.get("root_exit_disposition")
-        if disposition is not None:
-            if disposition != "terminate":
-                raise ValueError("Rust linker image has invalid root-exit disposition")
-            current["root_exit_disposition"] = disposition
-        if current != dict(raw):
-            raise ValueError(
-                f"Rust linker process image changed while live custody armed: {path_raw}"
-            )
-        selected.append(current)
+        selected_rows.append(raw)
+    try:
+        selected = revalidate_images(selected_rows)
+    except ValueError as exc:
+        raise ValueError(
+            f"Rust linker process image changed while live custody armed: {exc}"
+        ) from exc
     if not selected:
         raise ValueError("pre-arm Rust linker selection captured no process image")
     if telemetry.get("selected_process_count") != len(selected):

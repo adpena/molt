@@ -45,6 +45,7 @@ from tools.proof_queue_pkg import (
     execution_custody,
     pact,
     policy,
+    process_image_capture,
     runner,
     scheduling,
     state,
@@ -246,6 +247,20 @@ def _terminalize_synthetic_run(
                 "ineligible_reasons": [],
             },
             "guard_receipt": {"sha256": "e" * 64},
+        }
+        platform_images = process_image_capture.platform_auxiliary_images(
+            envelope["process_closure"]["descendants"]
+        )
+        receipt_context["platform_process_custody"] = {
+            "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+            "prelaunch": platform_images,
+            "prelaunch_sha256": command_envelope._canonical_payload_sha256(
+                platform_images
+            ),
+            "postcompletion_sha256": command_envelope._canonical_payload_sha256(
+                platform_images
+            ),
+            "identical": True,
         }
         receipt_context["terminal_evidence_sha256"] = (
             command_envelope.terminal_evidence_sha256(
@@ -799,6 +814,35 @@ def test_registered_process_spawning_toolchain_owns_declared_closure(
         "toolchains": envelope["toolchains"],
     }
     execution_custody.require_enforceable_process_closure(envelope)
+
+
+def test_supervisor_admits_exact_platform_image_without_directory_authority(
+    tmp_path: Path,
+) -> None:
+    root = Path(sys.executable).resolve(strict=True)
+    broker = tmp_path / "conhost.exe"
+    shutil.copy2(root, broker)
+    platform_image = process_image_capture.capture_image(
+        "windows-console-broker", broker, root_exit_disposition="terminate"
+    )
+
+    root_role, images = command_envelope._supervisor_fixed_images(
+        {}, {}, [str(root)], [platform_image]
+    )
+    derived = command_envelope._supervisor_derived_roots(
+        descendants="declared-toolchains", env={}
+    )
+
+    assert root_role == "root-command"
+    assert [row for row in images if row["role"] == "windows-console-broker"] == [
+        {
+            "role": "windows-console-broker",
+            "path": str(broker),
+            "sha256": platform_image["sha256"],
+            "root_exit_disposition": "terminate",
+        }
+    ]
+    assert derived == []
 
 
 @pytest.mark.parametrize(
@@ -2572,11 +2616,15 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     persistent_target.mkdir()
     (persistent_target / "prior-run-marker").write_text("occupied\n", encoding="utf-8")
     monkeypatch.setenv("CARGO_TARGET_DIR", str(persistent_target))
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
 
     started = time.perf_counter()
+    execution_path = tmp_path / "minimal-cargo-link-execution.json"
     rc, record = _execute_request(
         repo,
-        tmp_path / "minimal-cargo-link-execution.json",
+        execution_path,
         ["cargo", "build", "--offline"],
         resource_family="rust",
     )
@@ -2584,6 +2632,14 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
 
     assert rc == 0, record
     context = record["receipt_context"]
+    runner._validated_execution_context(
+        context,
+        execution_path=execution_path,
+        envelope=record["envelope"],
+        run_id="unit-run",
+        execution_nonce=record["execution_nonce"],
+        returncode=0,
+    )
     assert context["source_custody"]["evidence_eligible"] is True
     assert context["live_input_custody"]["event_count"] == 0
     provision_target = Path(
@@ -2605,6 +2661,35 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
         event["artifact"], expected_root=tmp_path / "custody-cas"
     )
     assert event["bytes"] == event["artifact"]["size_bytes"]
+    supervisor_receipt = context["process_supervisor"]["receipt"]
+    assert supervisor_receipt["state"] == "COMPLETE"
+    assert supervisor_receipt["complete"] is True
+    assert supervisor_receipt["violations"] == []
+    if sys.platform == "win32":
+        [broker] = context["platform_process_custody"]["prelaunch"]
+        assert broker["role"] == "windows-console-broker"
+        assert broker["root_exit_disposition"] == "terminate"
+        supervisor_policy = json.loads(
+            Path(context["process_supervisor"]["policy"]["path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert [
+            image
+            for image in supervisor_policy["fixed_images"]
+            if image["role"] == "windows-console-broker"
+        ] == [
+            {
+                "role": broker["role"],
+                "path": broker["path"],
+                "sha256": broker["sha256"],
+                "root_exit_disposition": "terminate",
+            }
+        ]
+        assert all(
+            Path(root["path"]) != Path(broker["path"]).parent
+            for root in supervisor_policy["derived_roots"]
+        )
     assert elapsed < 120.0
 
 
@@ -3037,6 +3122,51 @@ def test_terminal_export_rejects_row_envelope_drift_from_digested_receipt(
     with pytest.raises(ValueError, match="differs from immutable admission"):
         evidence_module._queue_proof_receipt(substituted)
     conn.close()
+
+
+def test_passed_windows_declared_tree_requires_platform_process_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "platform-custody.sqlite3"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="platform-custody-run",
+        logical_id="platform-custody",
+        reason="platform process custody is part of passed evidence",
+        command=["cargo", "build"],
+        cwd=tmp_path,
+        resource_family="rust",
+        contention_key="rust:platform-custody",
+        scopes=["tools/proof_queue_pkg/process_image_capture.py"],
+        log_path=tmp_path / "platform.log",
+        summary_json=tmp_path / "platform.json",
+        git_snapshot=_TEST_GIT_SNAPSHOT,
+    )
+    _terminalize_synthetic_run(
+        conn, "platform-custody-run", status="passed", returncode=0
+    )
+    raw_context = conn.execute(
+        "SELECT receipt_context_json FROM proof_runs WHERE run_id = ?",
+        ("platform-custody-run",),
+    ).fetchone()
+    assert raw_context is not None
+    context = json.loads(raw_context[0])
+    context.pop("platform_process_custody")
+    state._update_run(
+        conn,
+        "platform-custody-run",
+        receipt_context_json=json.dumps(context, sort_keys=True),
+    )
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?", ("platform-custody-run",)
+    ).fetchone()
+    assert row is not None
+    monkeypatch.setattr(evidence_module.sys, "platform", "win32")
+
+    with pytest.raises(ValueError, match="stable platform process-image custody"):
+        evidence_module._queue_proof_receipt(row)
 
 
 def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
@@ -4942,6 +5072,72 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     assert "audit-memory-guard-summary-incomplete run=failed-run" in out
     assert "frontier:" not in out
     assert "audit-unclassified-failure" not in out
+
+
+def test_proof_queue_diagnoses_unadmitted_native_image_before_custody_noise(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "failed.log"
+    summary_path = tmp_path / "failed.memory_guard.json"
+    log_path.write_text(
+        "proof_queue execution custody: ValueError: guarded receipt has no stable "
+        "live input custody\n",
+        encoding="utf-8",
+    )
+    receipt_path = tmp_path / "supervisor-receipt.json"
+    receipt_context = {
+        "source_custody": {
+            "ineligible_reasons": ["native-process-supervision-incomplete"]
+        },
+        "process_supervisor": {
+            "receipt": {
+                "violations": [
+                    r"unadmitted executable image \\?\C:\Windows\System32\conhost.exe "
+                    "in process 33840"
+                ]
+            },
+            "receipt_file": {"path": str(receipt_path)},
+        },
+    }
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="native-image-failed",
+        logical_id="native-image",
+        reason="classify native process-image custody before secondary noise",
+        command=[sys.executable, "-c", "print('failed')"],
+        cwd=state.ROOT,
+        resource_family="python",
+        contention_key="python-proof",
+        scopes=["tools/proof_queue_pkg/command_envelope.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    state._update_run(
+        conn,
+        "native-image-failed",
+        status="failed",
+        returncode=126,
+        receipt_context_json=json.dumps(receipt_context, sort_keys=True),
+    )
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?", ("native-image-failed",)
+    ).fetchone()
+    assert row is not None
+
+    signals = diagnostics_module._run_diagnostics(row)
+
+    assert signals[0]["signal_id"] == "native-process-image-unadmitted"
+    assert "conhost.exe" in str(signals[0]["evidence"])
+    assert str(receipt_path) in signals[0]["artifacts"]
+    assert "queue-execution-custody-failure" not in {
+        signal["signal_id"] for signal in signals
+    }
+    assert "unclassified-failed-proof" not in {
+        signal["signal_id"] for signal in signals
+    }
 
 
 def test_proof_queue_diagnoses_worker_exit_without_final_summary(
