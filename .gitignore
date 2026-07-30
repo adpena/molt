@@ -67,6 +67,7 @@ main_stub.c
 *.exe
 logs/
 proof-receipts/
+proof-results/
 tests/harness/reports/
 docs/python_documentation/
 third_party/

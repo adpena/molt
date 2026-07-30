@@ -8,7 +8,7 @@ local gate commands live only in ``tools/proof_plan.toml``.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import fnmatch
 import hashlib
@@ -29,8 +29,13 @@ from typing import Any, Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+for import_root in (ROOT, SRC):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+from tools.command_execution import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
@@ -40,9 +45,9 @@ from molt.cargo_execution_policy import (  # noqa: E402
 )
 
 try:
-    from tools.artifact_publish import atomic_write_json
+    from tools.proof_executor import execute_commands as _execute_commands
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from artifact_publish import atomic_write_json
+    from proof_executor import execute_commands as _execute_commands
 
 DEFAULT_MANIFEST = ROOT / "tools" / "proof_plan.toml"
 NULL_SHA = "0" * 40
@@ -59,6 +64,14 @@ REQUIRED_FAMILY_FIELDS = (
     "required",
     "timeout_minutes",
     "dependencies",
+    "resource_class",
+)
+REQUIRED_SCHEDULED_FAMILY_FIELDS = (
+    "description",
+    "workflow",
+    "job",
+    "tiers",
+    "timeout_minutes",
     "resource_class",
 )
 REQUIRED_COMMAND_FIELDS = (
@@ -78,7 +91,7 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "setup_value",
     "setup_evidence",
 )
-RECEIPT_SCHEMA = "molt.proof-receipt.v3"
+RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +102,12 @@ class ProofFamily:
     @property
     def inputs(self) -> tuple[str, ...]:
         return tuple(self.data["inputs"])
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledFamily:
+    name: str
+    data: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +136,10 @@ class ProofCommand:
     @property
     def toolchains(self) -> tuple[str, ...]:
         return tuple(self.data["toolchains"])
+
+    @property
+    def evidence_outputs(self) -> tuple[str, ...]:
+        return tuple(self.data.get("evidence_outputs", ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +176,7 @@ class ProofPlan:
     receipt_schema: str
     matrix_cells: tuple[MatrixCell, ...]
     families: tuple[ProofFamily, ...]
+    scheduled_families: tuple[ScheduledFamily, ...]
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
     executor_max_workers: int
@@ -277,8 +301,8 @@ class ProofPlan:
     @classmethod
     def load(cls, path: Path = DEFAULT_MANIFEST) -> "ProofPlan":
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != "molt.proof-plan.v3":
-            raise ValueError(f"{path}: expected schema molt.proof-plan.v3")
+        if data.get("schema") != "molt.proof-plan.v4":
+            raise ValueError(f"{path}: expected schema molt.proof-plan.v4")
         families = tuple(
             ProofFamily(str(entry.get("name", "")), dict(entry))
             for entry in data.get("ci_family", [])
@@ -307,6 +331,10 @@ class ProofPlan:
                 for entry in data.get("matrix_cell", [])
             ),
             families=families,
+            scheduled_families=tuple(
+                ScheduledFamily(str(entry.get("name", "")), dict(entry))
+                for entry in data.get("scheduled_family", [])
+            ),
             commands=tuple(commands),
             toolchain_policies=tuple(
                 ToolchainPolicy(str(entry.get("name", "")), dict(entry))
@@ -630,6 +658,64 @@ class ProofPlan:
                             f"{family.name}: claimed correctness admission may not "
                             "continue-on-error"
                         )
+        scheduled_names = [family.name for family in self.scheduled_families]
+        if len(scheduled_names) != len(set(scheduled_names)):
+            errors.append("scheduled_family names must be unique")
+        overlap = set(names).intersection(scheduled_names)
+        if overlap:
+            errors.append(
+                f"CI and scheduled families must be disjoint: {sorted(overlap)!r}"
+            )
+        for family in self.scheduled_families:
+            if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", family.name) is None:
+                errors.append(f"{family.name}: scheduled family name is not canonical")
+            for field in REQUIRED_SCHEDULED_FAMILY_FIELDS:
+                if field not in family.data:
+                    errors.append(f"{family.name}: missing {field}")
+            if family.data.get("resource_class") not in set(resource_names):
+                errors.append(
+                    f"{family.name}: unknown resource class "
+                    f"{family.data.get('resource_class')!r}"
+                )
+            tiers = family.data.get("tiers")
+            if tiers != ["nightly"]:
+                errors.append(
+                    f"{family.name}: scheduled family tiers must be ['nightly']"
+                )
+            timeout_minutes = family.data.get("timeout_minutes")
+            if not isinstance(timeout_minutes, int) or timeout_minutes <= 0:
+                errors.append(
+                    f"{family.name}: timeout_minutes must be a positive integer"
+                )
+            workflow = ROOT / str(family.data.get("workflow", ""))
+            if not workflow.is_file():
+                errors.append(f"{family.name}: workflow does not exist: {workflow}")
+                continue
+            job = str(family.data.get("job", ""))
+            workflow_text = workflow.read_text(encoding="utf-8")
+            block = _workflow_job_block(workflow_text, job)
+            if block is None:
+                errors.append(f"{family.name}: workflow job {job!r} is missing")
+                continue
+            invocation = f"--run-family {family.name} --receipt"
+            if invocation not in block:
+                errors.append(
+                    f"{family.name}: workflow job does not execute {invocation!r}"
+                )
+            for token in ("actions/upload-artifact@", "if-no-files-found: error"):
+                if token not in block:
+                    errors.append(
+                        f"{family.name}: workflow job does not enforce {token!r}"
+                    )
+            if "continue-on-error" in block:
+                errors.append(
+                    f"{family.name}: scheduled correctness job may not continue-on-error"
+                )
+            timeout = f"timeout-minutes: {timeout_minutes}"
+            if timeout not in block:
+                errors.append(
+                    f"{family.name}: workflow job does not enforce {timeout!r}"
+                )
         known = set(names)
         dependency_graph: dict[str, tuple[str, ...]] = {}
         for family in self.families:
@@ -675,17 +761,22 @@ class ProofPlan:
         known_cells = set(cell_ids)
         known_toolchains = set(policy_names)
         known_resources = set(resource_names)
-        commands_by_family: dict[str, int] = {name: 0 for name in names}
+        execution_families = {
+            **{family.name: family.data for family in self.families},
+            **{family.name: family.data for family in self.scheduled_families},
+        }
+        commands_by_family: dict[str, int] = {name: 0 for name in execution_families}
         referenced_cells: set[str] = set()
         command_shapes: set[tuple[str, tuple[str, ...], str]] = set()
         command_graph: dict[str, tuple[str, ...]] = {}
+        evidence_owners: dict[str, str] = {}
         for command in self.commands:
             if re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*", command.id) is None:
                 errors.append(f"{command.id}: command ID is not canonical")
             for field in REQUIRED_COMMAND_FIELDS:
                 if field not in command.data:
                     errors.append(f"{command.id}: missing {field}")
-            if command.family not in known:
+            if command.family not in execution_families:
                 errors.append(f"{command.id}: unknown family {command.family!r}")
             else:
                 commands_by_family[command.family] += 1
@@ -737,21 +828,54 @@ class ProofPlan:
                 errors.append(
                     f"{command.id}: env cannot override {PROOF_COMMAND_TIMEOUT_ENV}"
                 )
+            evidence_outputs = command.data.get("evidence_outputs", [])
+            if not isinstance(evidence_outputs, list) or not all(
+                isinstance(relative, str) and relative for relative in evidence_outputs
+            ):
+                errors.append(f"{command.id}: evidence_outputs must be a string list")
+            elif len(evidence_outputs) != len(set(evidence_outputs)):
+                errors.append(f"{command.id}: evidence_outputs must be unique")
+            else:
+                for relative in evidence_outputs:
+                    normalized = _normalize_path(relative)
+                    path = Path(relative)
+                    if (
+                        normalized != relative
+                        or path.is_absolute()
+                        or ".." in path.parts
+                        or not relative.startswith(
+                            ("proof-results/", "proof-receipts/evidence/")
+                        )
+                    ):
+                        errors.append(
+                            f"{command.id}: evidence output is not a canonical "
+                            f"ephemeral path: {relative!r}"
+                        )
+                        continue
+                    for owned_path, owner in evidence_owners.items():
+                        if (
+                            relative == owned_path
+                            or relative.startswith(f"{owned_path}/")
+                            or owned_path.startswith(f"{relative}/")
+                        ):
+                            errors.append(
+                                f"{command.id}: evidence output {relative!r} "
+                                f"overlaps {owner}:{owned_path}"
+                            )
+                    evidence_owners[relative] = command.id
             timeout = command.data.get("timeout_seconds")
             if not isinstance(timeout, int) or timeout <= 0:
                 errors.append(f"{command.id}: timeout_seconds must be positive")
-            elif command.family in known:
-                family = next(
-                    item for item in self.families if item.name == command.family
-                )
-                if timeout > int(family.data["timeout_minutes"]) * 60:
+            elif command.family in execution_families:
+                family_data = execution_families[command.family]
+                if timeout > int(family_data["timeout_minutes"]) * 60:
                     errors.append(
                         f"{command.id}: command timeout exceeds family job timeout"
                     )
                 tiers = command.data.get("tiers")
                 if not isinstance(tiers, list) or not tiers:
                     errors.append(f"{command.id}: tiers must be a non-empty list")
-                elif not set(tiers).issubset(set(family.data["tiers"])):
+                elif not set(tiers).issubset(set(family_data["tiers"])):
                     errors.append(f"{command.id}: command tiers escape family tiers")
             timeout_budget = command.data.get("timeout_budget")
             is_compiler_build = resource_class == "compiler-build-resource"
@@ -802,6 +926,32 @@ class ProofPlan:
         for family, count in commands_by_family.items():
             if count == 0:
                 errors.append(f"{family}: selected family has no executable commands")
+        for family in self.scheduled_families:
+            outputs = tuple(
+                output
+                for command in self.commands
+                if command.family == family.name
+                for output in command.evidence_outputs
+            )
+            if not outputs:
+                errors.append(
+                    f"{family.name}: scheduled family has no declared evidence outputs"
+                )
+                continue
+            workflow = ROOT / str(family.data["workflow"])
+            if not workflow.is_file():
+                continue
+            block = _workflow_job_block(
+                workflow.read_text(encoding="utf-8"),
+                str(family.data["job"]),
+            )
+            if block is None:
+                continue
+            for output in outputs:
+                if output not in block:
+                    errors.append(
+                        f"{family.name}: workflow artifact transport omits {output!r}"
+                    )
         used_resources = {
             str(command.data.get("resource_class", "")) for command in self.commands
         }
@@ -843,13 +993,15 @@ class ProofPlan:
                     and command.family == dependency_command.family
                 ):
                     family = next(
-                        item for item in self.families if item.name == command.family
+                        (item for item in self.families if item.name == command.family),
+                        None,
                     )
-                    if family.data.get(
-                        "executor"
-                    ) == "github-matrix" and command.data.get(
-                        "cell"
-                    ) != dependency_command.data.get("cell"):
+                    if (
+                        family is not None
+                        and family.data.get("executor") == "github-matrix"
+                        and command.data.get("cell")
+                        != dependency_command.data.get("cell")
+                    ):
                         errors.append(
                             f"{command_id}: matrix command dependency {dependency!r} "
                             "crosses runner cells"
@@ -877,6 +1029,19 @@ class ProofPlan:
                         f"{envelope.projected_makespan_seconds}s exceeds GitHub job "
                         f"budget {job_budget}s"
                     )
+            for family in self.scheduled_families:
+                try:
+                    envelope = self.timeout_envelope(family.name)
+                except (KeyError, TypeError, ValueError) as exc:
+                    errors.append(str(exc))
+                    continue
+                job_budget = int(family.data["timeout_minutes"]) * 60
+                if envelope.projected_makespan_seconds > job_budget:
+                    errors.append(
+                        f"{family.name}: projected resource-aware timeout envelope "
+                        f"{envelope.projected_makespan_seconds}s exceeds scheduled "
+                        f"job budget {job_budget}s"
+                    )
         for family in self.families:
             if family.data.get("executor") != "github-workflow":
                 continue
@@ -884,17 +1049,26 @@ class ProofPlan:
             if not workflow.is_file():
                 continue
             text = workflow.read_text(encoding="utf-8")
-            for command in self.commands:
-                if command.family != family.name:
-                    continue
+            family_commands = tuple(
+                command for command in self.commands if command.family == family.name
+            )
+            dependency_ids = {
+                dependency
+                for command in family_commands
+                for dependency in command.dependencies
+            }
+            terminal_commands = tuple(
+                command
+                for command in family_commands
+                if command.id not in dependency_ids
+            )
+            for command in terminal_commands:
                 invocation = f"--run-command {command.id} --receipt"
                 if invocation not in text:
                     errors.append(
                         f"{family.name}: workflow does not execute {invocation!r}"
                     )
-            expected_receipts = sum(
-                1 for command in self.commands if command.family == family.name
-            )
+            expected_receipts = len(terminal_commands)
             for token in ("actions/upload-artifact@", "if-no-files-found: error"):
                 if text.count(token) < expected_receipts:
                     errors.append(
@@ -1510,33 +1684,35 @@ def _topological_commands(
 ) -> tuple[ProofCommand, ...]:
     by_id = {command.id: command for command in plan.commands}
     if family is not None:
-        selected = {
+        roots = {
             command.id
             for command in plan.commands
             if command.family == family
             and (matrix_cell is None or command.data["cell"] == matrix_cell)
         }
-        if not selected:
+        if not roots:
             suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
             raise ValueError(f"unknown or empty proof family {family!r}{suffix}")
     elif command_id is not None:
         if command_id not in by_id:
             raise ValueError(f"unknown proof command {command_id!r}")
-        selected = {command_id}
+        roots = {command_id}
     else:
         raise ValueError("one of family or command_id is required")
     ordered: list[ProofCommand] = []
     emitted: set[str] = set()
 
     def emit(current: str) -> None:
-        if current in emitted or current not in selected:
+        if current in emitted:
             return
+        if current not in by_id:
+            raise ValueError(f"unknown proof dependency {current!r}")
         for dependency in by_id[current].dependencies:
             emit(dependency)
         ordered.append(by_id[current])
         emitted.add(current)
 
-    for current in (command.id for command in plan.commands if command.id in selected):
+    for current in (command.id for command in plan.commands if command.id in roots):
         emit(current)
     return tuple(ordered)
 
@@ -1555,6 +1731,76 @@ def _base_command_record(command: ProofCommand) -> dict[str, Any]:
         "timeout_seconds": int(command.data["timeout_seconds"]),
         "timeout_env": list(command.data.get("timeout_env", [])),
         "environment_overrides": dict(command.data.get("env", {})),
+        "declared_evidence_outputs": list(command.evidence_outputs),
+    }
+
+
+def _evidence_path(relative: str) -> Path:
+    path = (ROOT / relative).resolve()
+    try:
+        path.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError(f"evidence output escapes repository: {relative!r}") from exc
+    return path
+
+
+def _clear_evidence_outputs(command: ProofCommand) -> None:
+    for relative in command.evidence_outputs:
+        path = _evidence_path(relative)
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _snapshot_evidence_output(relative: str) -> dict[str, Any]:
+    path = _evidence_path(relative)
+    if path.is_symlink():
+        raise ValueError(f"evidence output may not be a symlink: {relative}")
+    if path.is_file():
+        size = path.stat().st_size
+        if size <= 0:
+            raise ValueError(f"evidence output is empty: {relative}")
+        with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        return {
+            "path": relative,
+            "kind": "file",
+            "sha256": digest,
+            "total_size_bytes": size,
+            "files": [{"path": Path(relative).name, "sha256": digest, "size": size}],
+        }
+    if not path.is_dir():
+        raise ValueError(f"evidence output is missing: {relative}")
+    files: list[dict[str, Any]] = []
+    for candidate in sorted(path.rglob("*")):
+        if candidate.is_symlink():
+            raise ValueError(
+                f"evidence directory contains a symlink: "
+                f"{candidate.relative_to(ROOT).as_posix()}"
+            )
+        if not candidate.is_file():
+            continue
+        size = candidate.stat().st_size
+        with candidate.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        files.append(
+            {
+                "path": candidate.relative_to(path).as_posix(),
+                "sha256": digest,
+                "size": size,
+            }
+        )
+    if not files or sum(int(item["size"]) for item in files) <= 0:
+        raise ValueError(f"evidence directory is empty: {relative}")
+    manifest = json.dumps(files, separators=(",", ":"), sort_keys=True).encode()
+    return {
+        "path": relative,
+        "kind": "directory",
+        "sha256": hashlib.sha256(manifest).hexdigest(),
+        "total_size_bytes": sum(int(item["size"]) for item in files),
+        "files": files,
     }
 
 
@@ -1627,6 +1873,23 @@ def _run_command(
             "cancelled_by_fail_fast": True,
             "termination_escalated": False,
             "environment_policies_applied": list(applied_environment_policies),
+            "evidence_outputs": [],
+        }
+    try:
+        _clear_evidence_outputs(command)
+    except OSError as exc:
+        return {
+            **_base_command_record(command),
+            "started_at": started_at,
+            "duration_seconds": 0.0,
+            "peak_rss_bytes": None,
+            "cache_disposition": cache,
+            "status": "failure",
+            "returncode": 2,
+            "guard_metrics_schema": None,
+            "evidence_outputs": [],
+            "evidence_error": f"cannot clear stale evidence: {exc}",
+            "environment_policies_applied": list(applied_environment_policies),
         }
     wrapped = [
         sys.executable,
@@ -1685,7 +1948,18 @@ def _run_command(
         if returncode == 0 and metrics_valid
         else "failure"
     )
-    return {
+    evidence_outputs: list[dict[str, Any]] = []
+    evidence_error: str | None = None
+    for relative in command.evidence_outputs:
+        try:
+            evidence_outputs.append(_snapshot_evidence_output(relative))
+        except (OSError, ValueError) as exc:
+            if status == "success":
+                status = "failure"
+                returncode = 2
+                evidence_error = str(exc)
+            break
+    record = {
         **_base_command_record(command),
         "started_at": started_at,
         "duration_seconds": (
@@ -1705,7 +1979,11 @@ def _run_command(
         "cancelled_by_fail_fast": cancelled,
         "termination_escalated": termination_escalated,
         "environment_policies_applied": list(applied_environment_policies),
+        "evidence_outputs": evidence_outputs,
     }
+    if evidence_error is not None:
+        record["evidence_error"] = evidence_error
+    return record
 
 
 def execute_commands(
@@ -1713,273 +1991,21 @@ def execute_commands(
     commands: Iterable[ProofCommand],
     receipt_path: Path,
 ) -> int:
-    command_list = tuple(commands)
-    if not command_list:
-        raise ValueError("receipt execution requires at least one command")
-    source_tree_state = _source_tree_state()
-    if source_tree_state != "clean":
-        raise ValueError(
-            "executable proof receipts require a clean source tree; commit or "
-            "remove every staged, unstaged, and untracked input first"
-        )
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    command_ids = [command.id for command in command_list]
-    if len(command_ids) != len(set(command_ids)):
-        raise ValueError("receipt execution command IDs must be unique")
-    command_by_id = {command.id: command for command in command_list}
-    command_index = {command.id: index for index, command in enumerate(command_list)}
-    resource_limits = {
-        policy.name: policy.max_parallel for policy in plan.resource_policies
-    }
-    unknown_resources = {
-        str(command.data["resource_class"])
-        for command in command_list
-        if str(command.data["resource_class"]) not in resource_limits
-    }
-    if unknown_resources:
-        raise ValueError(
-            f"receipt execution has unknown resources {sorted(unknown_resources)!r}"
-        )
-    records_by_id: dict[str, dict[str, Any]] = {}
-    requested_toolchains = tuple(
-        dict.fromkeys(
-            name for command in command_list for name in _required_toolchains(command)
-        )
+    return _execute_commands(
+        plan,
+        commands,
+        receipt_path,
+        _source_tree_state=_source_tree_state,
+        toolchain_fingerprints=toolchain_fingerprints,
+        _authority_sha256=_authority_sha256,
+        _source_commit=_source_commit,
+        _normalized_os=_normalized_os,
+        _normalized_arch=_normalized_arch,
+        _required_toolchains=_required_toolchains,
+        _run_command=_run_command,
+        _cache_disposition=_cache_disposition,
+        _base_command_record=_base_command_record,
     )
-    toolchain_error: str | None = None
-    try:
-        toolchains = toolchain_fingerprints(plan, requested_toolchains)
-    except ValueError as exc:
-        toolchains = {}
-        toolchain_error = str(exc)
-    execution: dict[str, Any] = {
-        "schema": "molt.proof-plan-dag-executor.v1",
-        "max_workers": plan.executor_max_workers,
-        "resource_limits": resource_limits,
-        "declared_timeout_seconds": sum(
-            int(command.data["timeout_seconds"]) for command in command_list
-        ),
-        "scheduled_commands": 0,
-        "peak_active_commands": 0,
-        "peak_active_by_resource": {name: 0 for name in sorted(resource_limits)},
-        "fail_fast_triggered": False,
-    }
-    receipt_errors: list[str] = []
-    receipt: dict[str, Any] = {
-        "schema": plan.receipt_schema,
-        "authority_sha256": _authority_sha256(plan),
-        "source_commit": _source_commit(),
-        "source_tree_state": source_tree_state,
-        "family": command_list[0].family,
-        "environment": {
-            "os": _normalized_os(),
-            "arch": _normalized_arch(),
-            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        },
-        "toolchains": toolchains,
-        "commands": [],
-        "executed_partitions": [],
-        "status": "failure" if toolchain_error else "running",
-        "execution": execution,
-    }
-    if toolchain_error:
-        receipt_errors.append(toolchain_error)
-        receipt["errors"] = receipt_errors
-    atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
-    if toolchain_error:
-        return 2
-    scheduler_started = time.monotonic()
-    pending_ids = set(command_ids)
-    dependents: dict[str, list[str]] = {command_id: [] for command_id in command_ids}
-    remaining_dependencies: dict[str, int] = {}
-    for command in command_list:
-        included_dependencies = tuple(
-            dependency
-            for dependency in command.dependencies
-            if dependency in command_by_id
-        )
-        remaining_dependencies[command.id] = len(included_dependencies)
-        for dependency in included_dependencies:
-            dependents[dependency].append(command.id)
-    ready_by_resource: dict[str, list[tuple[int, str]]] = {
-        name: [] for name in resource_limits
-    }
-    for command in command_list:
-        if remaining_dependencies[command.id] == 0:
-            resource = str(command.data["resource_class"])
-            heapq.heappush(
-                ready_by_resource[resource], (command_index[command.id], command.id)
-            )
-    active_by_resource = {name: 0 for name in resource_limits}
-    active: dict[Future[dict[str, Any]], ProofCommand] = {}
-    cancel_event = threading.Event()
-    failed = False
-
-    def record_error(message: str) -> None:
-        receipt_errors.append(message)
-        receipt["errors"] = receipt_errors
-
-    def refresh_receipt() -> None:
-        ordered_records = [
-            records_by_id[command.id]
-            for command in command_list
-            if command.id in records_by_id
-        ]
-        receipt["commands"] = ordered_records
-        receipt["executed_partitions"] = [
-            command.id
-            for command in command_list
-            if records_by_id.get(command.id, {}).get("status") == "success"
-        ]
-        execution["duration_seconds"] = round(time.monotonic() - scheduler_started, 6)
-        atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
-
-    with ThreadPoolExecutor(
-        max_workers=plan.executor_max_workers,
-        thread_name_prefix="proof-plan",
-    ) as executor:
-        while pending_ids or active:
-            if not failed:
-                if _source_tree_state() != "clean":
-                    failed = True
-                    cancel_event.set()
-                    receipt["status"] = "failure"
-                    execution["fail_fast_triggered"] = True
-                    record_error(
-                        "source tree changed before executable scheduling wave"
-                    )
-                while not failed and len(active) < plan.executor_max_workers:
-                    available_resources = tuple(
-                        resource
-                        for resource, ready in ready_by_resource.items()
-                        if ready
-                        and active_by_resource[resource] < resource_limits[resource]
-                    )
-                    if not available_resources:
-                        break
-                    resource = min(
-                        available_resources,
-                        key=lambda name: ready_by_resource[name][0][0],
-                    )
-                    _, command_id = heapq.heappop(ready_by_resource[resource])
-                    command = command_by_id[command_id]
-                    pending_ids.remove(command.id)
-                    metrics_path = receipt_path.with_name(
-                        f".{receipt_path.name}.{command.id}.metrics.json"
-                    )
-                    future = executor.submit(
-                        _run_command, plan, command, metrics_path, cancel_event
-                    )
-                    active[future] = command
-                    active_by_resource[resource] += 1
-                    execution["scheduled_commands"] = (
-                        int(execution["scheduled_commands"]) + 1
-                    )
-                    execution["peak_active_commands"] = max(
-                        int(execution["peak_active_commands"]),
-                        len(active),
-                    )
-                    peaks: dict[str, int] = execution["peak_active_by_resource"]
-                    peaks[resource] = max(peaks[resource], active_by_resource[resource])
-
-            if not active:
-                if pending_ids and not failed:
-                    blocked = ", ".join(
-                        command.id
-                        for command in command_list
-                        if command.id in pending_ids
-                    )
-                    record_error(f"executor dependency deadlock: {blocked}")
-                    receipt["status"] = "failure"
-                    execution["fail_fast_triggered"] = True
-                    failed = True
-                break
-
-            completed, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
-            for future in sorted(
-                completed, key=lambda item: command_index[active[item].id]
-            ):
-                command = active.pop(future)
-                resource = str(command.data["resource_class"])
-                active_by_resource[resource] -= 1
-                try:
-                    record = future.result()
-                except Exception as exc:
-                    record = {
-                        **_base_command_record(command),
-                        "started_at": dt.datetime.now(dt.UTC).isoformat(),
-                        "duration_seconds": None,
-                        "peak_rss_bytes": None,
-                        "cache_disposition": _cache_disposition(command),
-                        "status": "failure",
-                        "returncode": 2,
-                        "guard_metrics_schema": None,
-                        "executor_error": f"{type(exc).__name__}: {exc}",
-                    }
-                if _source_tree_state() != "clean":
-                    record["status"] = "failure"
-                    record["returncode"] = 2
-                    record["source_tree_state_after"] = "dirty"
-                    record_error(
-                        f"{command.id}: executable partition mutated the source tree"
-                    )
-                records_by_id[command.id] = record
-                if record["status"] == "success":
-                    for dependent in dependents[command.id]:
-                        remaining_dependencies[dependent] -= 1
-                        if remaining_dependencies[dependent] == 0:
-                            dependent_command = command_by_id[dependent]
-                            dependent_resource = str(
-                                dependent_command.data["resource_class"]
-                            )
-                            heapq.heappush(
-                                ready_by_resource[dependent_resource],
-                                (command_index[dependent], dependent),
-                            )
-                elif record["status"] != "cancelled":
-                    failed = True
-                    cancel_event.set()
-                    execution["fail_fast_triggered"] = True
-                receipt["status"] = "failure" if failed else "running"
-                refresh_receipt()
-
-    if pending_ids:
-        for command in command_list:
-            if command.id not in pending_ids:
-                continue
-            records_by_id[command.id] = {
-                **_base_command_record(command),
-                "started_at": None,
-                "duration_seconds": 0.0,
-                "peak_rss_bytes": None,
-                "cache_disposition": _cache_disposition(command),
-                "status": "skipped",
-                "returncode": None,
-                "guard_metrics_schema": None,
-                "skip_reason": "fail-fast dependency cancellation",
-            }
-    failures = [
-        records_by_id[command.id]
-        for command in command_list
-        if command.id in records_by_id
-        and records_by_id[command.id]["status"]
-        not in {"success", "cancelled", "skipped"}
-    ]
-    if failures or failed:
-        receipt["status"] = "failure"
-        returncode = int(failures[0].get("returncode") or 2) if failures else 2
-    else:
-        receipt["status"] = "success"
-        returncode = 0
-    execution["completed_commands"] = len(records_by_id)
-    execution["cancelled_commands"] = sum(
-        record["status"] == "cancelled" for record in records_by_id.values()
-    )
-    execution["skipped_commands"] = sum(
-        record["status"] == "skipped" for record in records_by_id.values()
-    )
-    refresh_receipt()
-    return returncode
 
 
 def _receipt_files(root: Path) -> list[Path]:
@@ -1993,7 +2019,10 @@ def verify_receipts(
     selected_names: list[str] | tuple[str, ...],
     receipt_root: Path,
 ) -> list[str]:
-    known_families = {family.name for family in plan.families}
+    known_families = {
+        *(family.name for family in plan.families),
+        *(family.name for family in plan.scheduled_families),
+    }
     selected = set(selected_names)
     errors = [
         f"unknown selected proof family {name!r}"
@@ -2081,6 +2110,7 @@ def verify_receipts(
                 "timeout_seconds": command.data["timeout_seconds"],
                 "timeout_env": list(command.data.get("timeout_env", [])),
                 "environment_overrides": dict(command.data.get("env", {})),
+                "declared_evidence_outputs": list(command.evidence_outputs),
                 "guard_metrics_schema": "molt.guarded-command-metrics.v1",
             }
             for field, expected in exact_fields.items():
@@ -2121,6 +2151,32 @@ def verify_receipts(
                 "not-applicable",
             }:
                 errors.append(f"{command_id}: receipt cache_disposition is invalid")
+            evidence_outputs = record.get("evidence_outputs")
+            if not isinstance(evidence_outputs, list):
+                errors.append(f"{command_id}: receipt evidence_outputs must be a list")
+            else:
+                observed_paths = [
+                    item.get("path") if isinstance(item, dict) else None
+                    for item in evidence_outputs
+                ]
+                if observed_paths != list(command.evidence_outputs):
+                    errors.append(
+                        f"{command_id}: receipt evidence outputs do not match authority"
+                    )
+                for item in evidence_outputs:
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("kind") not in {"file", "directory"}
+                        or not isinstance(item.get("sha256"), str)
+                        or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+                        or not isinstance(item.get("total_size_bytes"), int)
+                        or item["total_size_bytes"] <= 0
+                        or not isinstance(item.get("files"), list)
+                        or not item["files"]
+                    ):
+                        errors.append(
+                            f"{command_id}: malformed evidence output receipt"
+                        )
             if isinstance(toolchains, dict):
                 for name in _required_toolchains(command):
                     if name not in toolchains:
@@ -2248,6 +2304,11 @@ def main(argv: list[str] | None = None) -> int:
         "--verify-selected",
         help="JSON array of selected family names whose required results must pass.",
     )
+    parser.add_argument(
+        "--verify-scheduled",
+        action="store_true",
+        help="Verify receipts for every scheduled family.",
+    )
     parser.add_argument("--receipt-dir", type=Path)
     parser.add_argument("--run-family")
     parser.add_argument("--run-command")
@@ -2326,6 +2387,24 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"proof-plan verdict: OK selected={len(selected)} "
             f"required={sum(1 for family in plan.families if family.name in selected and family.data['required'])}"
+        )
+        return 0
+    if args.verify_scheduled:
+        if args.receipt_dir is None:
+            print(
+                "proof-plan scheduled verdict: --receipt-dir is required",
+                file=sys.stderr,
+            )
+            return 2
+        selected = [family.name for family in plan.scheduled_families]
+        errors = verify_receipts(plan, selected, args.receipt_dir)
+        if errors:
+            for error in errors:
+                print(f"proof-plan scheduled verdict: {error}", file=sys.stderr)
+            return 1
+        print(
+            f"proof-plan scheduled verdict: OK families={len(selected)} "
+            f"commands={sum(command.family in selected for command in plan.commands)}"
         )
         return 0
     selection = (

@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 72 |
+| Hashed executable authority inputs | 1 | 86 |
 | Local path rules | 35 | 37 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -30,6 +30,7 @@ Installed Python custody uses 4 bounded hash workers over deterministic coarse f
 | `python-static` | 1 |
 | `python-tests` | 2 |
 | `repository-policy` | 4 |
+| `scheduled-suite` | 4 |
 | `wasm-runtime` | 2 |
 
 GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity.
@@ -47,6 +48,18 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
 | `platform_portability` | pr, main | yes | `github-matrix` | 20 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 36 |
+
+## Scheduled families
+
+Scheduled workflows consume the same typed command DAG and receipt executor without entering changed-path CI admission.
+
+| Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |
+|---|---|---:|---:|---:|---|---:|
+| `nightly_conformance` | `molt-conformance-full` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_differential` | `differential-basic-stdlib` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
+| `nightly_regrtest` | `regrtest` | 7200 s | 6900 s | 300 s | `scheduled-suite` | 2 |
+| `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 3 |
+| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
 
 ## Matrix cells
 
@@ -115,6 +128,19 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Command ID | Family | Cell | Budget | Timeout | Resource | Parents |
 |---|---|---|---|---:|---|---:|
+| `nightly.conformance.full` | `nightly_conformance` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
+| `nightly.differential.basic-stdlib` | `nightly_differential` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
+| `nightly.regrtest.runtime-build` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `nightly.regrtest.g5` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `explicit` | 5700 s | `scheduled-suite` | 1 |
+| `nightly.determinism.runtime-build` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
+| `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 900 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.runtime-build` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `nightly.verification-t3.reproducibility` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
 | `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
 | `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |

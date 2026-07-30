@@ -63,6 +63,14 @@ def _bind_repo_import_authority(root: Path) -> None:
         loaded_molt.__path__ = [str(source_root / "molt")]
 
 
+def bind_repository_imports(source_file: str | Path) -> Path:
+    """Bind imports to the repository that owns *source_file* and return its root."""
+
+    root = _repo_root(source_file)
+    _bind_repo_import_authority(root)
+    return root
+
+
 @lru_cache(maxsize=None)
 def _process_guard_authority(repo_root: str) -> Any:
     path = Path(repo_root) / "src" / "molt" / "process_guard.py"
@@ -112,8 +120,7 @@ class CommandExecutor:
 
     @classmethod
     def for_file(cls, source_file: str | Path) -> "CommandExecutor":
-        root = _repo_root(source_file)
-        _bind_repo_import_authority(root)
+        root = bind_repository_imports(source_file)
         return cls(prefix=_prefix(source_file, root), repo_root=root)
 
     def run(

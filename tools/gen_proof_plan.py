@@ -40,6 +40,25 @@ def _timeout_envelope_projection(plan: ProofPlan) -> dict[str, dict[str, object]
     return projection
 
 
+def _scheduled_timeout_envelope_projection(
+    plan: ProofPlan,
+) -> dict[str, dict[str, object]]:
+    projection: dict[str, dict[str, object]] = {}
+    for family in plan.scheduled_families:
+        envelope = plan.timeout_envelope(family.name)
+        budget = int(family.data["timeout_minutes"]) * 60
+        projection[family.name] = {
+            "budget_seconds": budget,
+            "projected_makespan_seconds": envelope.projected_makespan_seconds,
+            "critical_path_seconds": envelope.critical_path_seconds,
+            "resource_capacity_floor_seconds": (
+                envelope.resource_capacity_floor_seconds
+            ),
+            "headroom_seconds": budget - envelope.projected_makespan_seconds,
+        }
+    return projection
+
+
 def _json_projection(plan: ProofPlan) -> str:
     shared_cargo_policy = load_ci_cargo_policy()
     cargo_policy = shared_cargo_policy.execution_budgets
@@ -65,7 +84,7 @@ def _json_projection(plan: ProofPlan) -> str:
         for rule in plan.local_rules
     ]
     payload = {
-        "schema": "molt.proof-plan-projection.v4",
+        "schema": "molt.proof-plan-projection.v5",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
         "authority_inputs": list(plan.authority_inputs),
         "authority_sha256": _authority_sha256(plan),
@@ -78,8 +97,12 @@ def _json_projection(plan: ProofPlan) -> str:
                 for policy in plan.resource_policies
             ],
             "github_job_timeout_envelopes": _timeout_envelope_projection(plan),
+            "scheduled_job_timeout_envelopes": (
+                _scheduled_timeout_envelope_projection(plan)
+            ),
         },
         "ci_families": [family.data for family in plan.families],
+        "scheduled_families": [family.data for family in plan.scheduled_families],
         "matrix_cells": [cell.data for cell in plan.matrix_cells],
         "commands": [command.data for command in plan.commands],
         "toolchain_policies": [policy.data for policy in plan.toolchain_policies],
@@ -196,6 +219,29 @@ def _markdown_projection(plan: ProofPlan) -> str:
             f"`{data['admission_job']}` needs "
             f"{', '.join(f'`{name}`' for name in data['admission_needs']) or 'none'} | "
             f"{len(data['inputs'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Scheduled families",
+            "",
+            "Scheduled workflows consume the same typed command DAG and receipt "
+            "executor without entering changed-path CI admission.",
+            "",
+            "| Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |",
+            "|---|---|---:|---:|---:|---|---:|",
+        ]
+    )
+    for family in plan.scheduled_families:
+        data = family.data
+        envelope = plan.timeout_envelope(family.name)
+        budget = int(data["timeout_minutes"]) * 60
+        command_count = sum(command.family == family.name for command in plan.commands)
+        lines.append(
+            f"| `{family.name}` | `{data['job']}` | {budget} s | "
+            f"{envelope.projected_makespan_seconds} s | "
+            f"{budget - envelope.projected_makespan_seconds} s | "
+            f"`{data['resource_class']}` | {command_count} |"
         )
     lines.extend(
         [

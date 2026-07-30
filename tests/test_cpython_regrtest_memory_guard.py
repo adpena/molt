@@ -6,8 +6,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import molt.dx as molt_dx
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +26,48 @@ def _load_regrtest_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_cpython_source_authority_is_commit_pinned() -> None:
+    module = _load_regrtest_module()
+    sources = module.load_cpython_sources()
+
+    assert sources == {
+        "3.12": module.CPythonSource(
+            python="3.12",
+            revision="082755cdf017defd58f2ff7ff0341569946d30e0",
+            tag="v3.12.13",
+            git_url="https://github.com/python/cpython.git",
+        )
+    }
+
+
+def test_existing_cpython_checkout_fails_closed_on_revision_drift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_regrtest_module()
+    checkout = tmp_path / "cpython"
+    checkout.mkdir()
+    source = next(iter(module.load_cpython_sources().values()))
+    monkeypatch.setattr(
+        module,
+        "COMMANDS",
+        SimpleNamespace(
+            run=lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                ["git"], 0, "f" * 40 + "\n", ""
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="source revision drift"):
+        module.ensure_cpython_checkout(
+            checkout,
+            source,
+            allow_clone=False,
+            log_handle=io.StringIO(),
+            dry_run=False,
+        )
 
 
 def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
@@ -96,7 +140,12 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     config = module.RegrtestConfig(
         repo_root=tmp_path,
         cpython_dir=tmp_path / "cpython",
-        cpython_branch="v3.12.x",
+        cpython_source=module.CPythonSource(
+            python="3.12",
+            revision="0" * 40,
+            tag="v3.12.13",
+            git_url="https://github.com/python/cpython.git",
+        ),
         host_python="python",
         use_uv=False,
         uv_project=None,
@@ -161,7 +210,12 @@ def test_write_summary_records_memory_guard(tmp_path: Path) -> None:
     config = module.RegrtestConfig(
         repo_root=tmp_path,
         cpython_dir=tmp_path / "cpython",
-        cpython_branch="v3.12.x",
+        cpython_source=module.CPythonSource(
+            python="3.12",
+            revision="0" * 40,
+            tag="v3.12.13",
+            git_url="https://github.com/python/cpython.git",
+        ),
         host_python="python",
         use_uv=False,
         uv_project=None,

@@ -6,7 +6,7 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v3"
+schema = "molt.proof-plan.v4"
 
 authority_inputs = [
   ".gitattributes",
@@ -22,6 +22,7 @@ authority_inputs = [
   ".python-version",
   "config/ci_resource_policy.toml",
   "config/actionlint.toml",
+  "config/cpython_regrtest_sources.toml",
   "config/reproducibility_corpus.toml",
   "config/scientific_stack_versions.toml",
   "config/proof_requirements/pact_witness.txt",
@@ -35,8 +36,14 @@ authority_inputs = [
   "tools/artifact_publish.py",
   "tools/check_generator_manifest.py",
   "tools/check_cargo_test_truth.py",
+  "tools/check_deterministic_runtime.py",
+  "tools/check_reproducible_build.py",
+  "tools/ci_gate.py",
+  "tools/cpython_regrtest.py",
   "tools/ff_land.py",
+  "tools/fuzz_compiler.py",
   "tools/proof_plan.py",
+  "tools/proof_executor.py",
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
@@ -61,11 +68,16 @@ authority_inputs = [
   "tools/memory_guard.py",
   "tools/memory_guard_core/payloads.py",
   "tools/memory_guard_core/process_custody.py",
+  "tools/mutation_test.py",
   "tools/process_sentinel.py",
   "tools/process_spawn.py",
   "tools/win_job.py",
   "tools/run_cargo_test_truth.py",
+  "tools/translation_validate.py",
   "tools/pytest_truth_plugin.py",
+  "tools/verify_ir_suite.py",
+  "tests/harness/run_molt_conformance.py",
+  "tests/molt_diff.py",
   "tests/test_proof_plan.py",
   "tests/test_harness_memory_guard.py",
   "tests/test_memory_guard_tool.py",
@@ -73,8 +85,10 @@ authority_inputs = [
   "tests/native_process_guard.py",
   "tests/wasm_linked_runner.py",
   "tests/test_ci_workflow_topology.py",
+  "tests/test_cpython_regrtest_memory_guard.py",
   "tests/test_generator_manifest.py",
   "tests/tools/test_cargo_test_truth.py",
+  "tests/tools/test_ci_gate.py",
   "tests/tools/test_guarded_exec.py",
   "tests/tools/test_proof_queue.py",
   "tests/tools/test_memory_guard_spawn_callback.py",
@@ -91,7 +105,7 @@ always = [
   "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
 ]
 
-receipt_schema = "molt.proof-receipt.v3"
+receipt_schema = "molt.proof-receipt.v4"
 
 # One deterministic DAG executor owns command admission. The global ceiling
 # bounds process fanout; each resource policy additionally serializes or limits
@@ -125,6 +139,10 @@ max_parallel = 2
 
 [[resource_policy]]
 name = "repository-policy"
+max_parallel = 4
+
+[[resource_policy]]
+name = "scheduled-suite"
 max_parallel = 4
 
 [[resource_policy]]
@@ -655,9 +673,223 @@ timeout_minutes = 20
 resource_class = "python-tests"
 dependencies = []
 
+# Scheduled families are complete workflow jobs with typed commands and receipts,
+# but they are intentionally outside changed-path CI admission. The workflow owns
+# only setup and artifact transport; command spelling and DAG policy live here.
+[[scheduled_family]]
+name = "nightly_conformance"
+description = "Full Molt conformance corpus with machine-readable results."
+workflow = ".github/workflows/nightly.yml"
+job = "molt-conformance-full"
+tiers = ["nightly"]
+timeout_minutes = 60
+resource_class = "scheduled-suite"
+
+[[scheduled_family]]
+name = "nightly_differential"
+description = "Full basic and stdlib CPython differential correctness corpus."
+workflow = ".github/workflows/nightly.yml"
+job = "differential-basic-stdlib"
+tiers = ["nightly"]
+timeout_minutes = 60
+resource_class = "scheduled-suite"
+
+[[scheduled_family]]
+name = "nightly_regrtest"
+description = "CPython regrtest G5 closure after one canonical runtime build."
+workflow = ".github/workflows/nightly.yml"
+job = "regrtest"
+tiers = ["nightly"]
+timeout_minutes = 120
+resource_class = "scheduled-suite"
+
+[[scheduled_family]]
+name = "nightly_determinism"
+description = "Runtime determinism and typed IR verification after one runtime build."
+workflow = ".github/workflows/nightly.yml"
+job = "determinism-sweep"
+tiers = ["nightly"]
+timeout_minutes = 60
+resource_class = "scheduled-suite"
+
+[[scheduled_family]]
+name = "nightly_verification_t3"
+description = "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and model proof."
+workflow = ".github/workflows/nightly.yml"
+job = "verification-gate-t3"
+tiers = ["nightly"]
+timeout_minutes = 90
+resource_class = "scheduled-suite"
+
 # Every executable partition has a stable command identity, exact matrix cell,
 # bounded timeout, resource class, and DAG parents. Workflows invoke these IDs;
 # command spelling is never duplicated in YAML.
+[[command]]
+id = "nightly.conformance.full"
+family = "nightly_conformance"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 3300
+cache_domain = "cargo-workspace"
+dependencies = []
+evidence_outputs = ["proof-results/nightly/conformance.json"]
+argv = ["uv", "run", "python3", "tests/harness/run_molt_conformance.py", "--suite", "full", "--json-out", "proof-results/nightly/conformance.json"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.differential.basic-stdlib"
+family = "nightly_differential"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 3300
+cache_domain = "cargo-workspace"
+dependencies = []
+env = { MOLT_DIFF_MEASURE_RSS = "1" }
+evidence_outputs = ["proof-results/nightly/differential.json"]
+argv = ["uv", "run", "python3", "-u", "tests/molt_diff.py", "--build-profile", "dev", "--json-output", "proof-results/nightly/differential.json", "tests/differential/basic", "tests/differential/stdlib"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.regrtest.runtime-build"
+family = "nightly_regrtest"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "nightly.regrtest.g5"
+family = "nightly_regrtest"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 5700
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.regrtest.runtime-build"]
+evidence_outputs = ["proof-results/nightly/regrtest"]
+argv = ["uv", "run", "python3", "tools/cpython_regrtest.py", "--uv", "--clone", "--timeout", "600", "--output-dir", "proof-results/nightly/regrtest"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.determinism.runtime-build"
+family = "nightly_determinism"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "nightly.determinism.runtime"
+family = "nightly_determinism"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 1200
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.determinism.runtime-build"]
+evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
+argv = ["uv", "run", "python3", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.determinism.ir"
+family = "nightly_determinism"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 900
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.determinism.runtime"]
+evidence_outputs = ["proof-results/nightly/ir-verification.json"]
+argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.verification-t3.runtime-build"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "nightly.verification-t3.reproducibility"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 600
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.verification-t3.runtime-build"]
+evidence_outputs = ["proof-results/reproducibility-tier3.json"]
+argv = ["uv", "run", "python3", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang"]
+
+[[command]]
+id = "nightly.verification-t3.fuzz-compiler"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 600
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.verification-t3.runtime-build"]
+evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
+argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "100", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.verification-t3.mutation"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 3600
+cache_domain = "pytest"
+dependencies = ["nightly.verification-t3.runtime-build"]
+evidence_outputs = ["proof-results/mutation-tier3.json"]
+argv = ["uv", "run", "python3", "tools/mutation_test.py", "--max-mutations", "50", "--timeout", "60", "--json-out", "proof-results/mutation-tier3.json"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "nightly.verification-t3.translation"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 1800
+cache_domain = "cargo-workspace"
+dependencies = ["nightly.verification-t3.runtime-build"]
+evidence_outputs = ["proof-results/translation-tier3.json"]
+argv = ["uv", "run", "python3", "tools/translation_validate.py", "--json-out", "proof-results/translation-tier3.json", "tests/differential"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "nightly.verification-t3.model-based"
+family = "nightly_verification_t3"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["nightly"]
+resource_class = "scheduled-suite"
+timeout_seconds = 600
+cache_domain = "pytest"
+dependencies = ["nightly.verification-t3.runtime-build"]
+argv = ["uv", "run", "python3", "-m", "pytest", "tests/model_based", "-x", "-q"]
+toolchains = ["python", "uv"]
+
 [[command]]
 id = "portability.queue.linux"
 family = "platform_portability"

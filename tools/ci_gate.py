@@ -12,7 +12,7 @@ Runs ALL correctness verification tools in dependency order across three tiers:
     Translation validation, full property tests,
     reproducible build spot-check.
 
-  Tier 3 — Heavy (< 60min, nightly/weekly):
+  Tier 3 — Heavy (< 90min, nightly/weekly):
     Deep reproducibility sweep,
     extended fuzzing, mutation testing, model-based tests.
 
@@ -44,11 +44,14 @@ from typing import Any
 
 _THIS_FILE = Path(__file__).resolve()
 _REPO_ROOT = _THIS_FILE.parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 _SRC_ROOT = _REPO_ROOT / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
+for _import_root in (_REPO_ROOT, _SRC_ROOT):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+
+from tools.command_execution import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 import tools.memory_guard as memory_guard  # noqa: E402
 import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
@@ -355,7 +358,7 @@ def _build_checks() -> list[Check]:
     checks.append(
         Check(
             # The fail-closed poison ratchet: no NEW ecosystem-baked package header,
-            # fail-open ABI export, duplicate C-API authority, or todo-as-plan marker
+            # fail-open ABI export, duplicate C-API authority, or placeholder plan
             # inside a shipped surface may land unregistered, and each poison class
             # count is monotonically non-increasing against its committed baseline.
             # Sits next to the degrade-to-slow gate; same registry-authority shape.
@@ -940,84 +943,21 @@ def _build_checks() -> list[Check]:
         )
     )
 
-    # ── Tier 3: Heavy (< 60min, nightly/weekly) ────────────────────────
+    # ── Tier 3: the scheduled proof-plan family is the sole command authority ──
 
     checks.append(
         Check(
-            name="reproducible-build-sweep",
+            name="nightly-verification-t3",
             tier=3,
             cmd=_uv_run(
-                str(TOOLS / "check_reproducible_build.py"),
-                "--corpus",
-                "full",
-                "--runs",
-                "5",
-                "--audit-ir",
-                "--json-out",
-                "proof-results/reproducibility-tier3.json",
+                str(TOOLS / "proof_plan.py"),
+                "--run-family",
+                "nightly_verification_t3",
+                "--receipt",
+                "proof-receipts/local-nightly-verification-t3.json",
             ),
-            timeout=600,
+            timeout=5400,
             needs_rust=True,
-        )
-    )
-    checks.append(
-        Check(
-            name="fuzz-compiler-extended",
-            tier=3,
-            cmd=_uv_run(
-                str(TOOLS / "fuzz_compiler.py"),
-                "--count",
-                "100",
-                "--timeout",
-                "300",
-                "--json-out",
-                "proof-results/fuzz-compiler-extended.json",
-            ),
-            timeout=600,
-            needs_rust=True,
-        )
-    )
-    checks.append(
-        Check(
-            name="mutation-test-extended",
-            tier=3,
-            cmd=_uv_run(
-                str(TOOLS / "mutation_test.py"),
-                "--max-mutations",
-                "50",
-                "--timeout",
-                "60",
-                "--json-out",
-                "proof-results/mutation-tier3.json",
-            ),
-            timeout=3600,
-            needs_rust=True,
-        )
-    )
-    checks.append(
-        Check(
-            name="translation-validate-full",
-            tier=3,
-            cmd=_uv_run(
-                str(TOOLS / "translation_validate.py"),
-                "--json-out",
-                "proof-results/translation-tier3.json",
-                str(TESTS / "differential"),
-            ),
-            timeout=1800,
-            needs_rust=True,
-        )
-    )
-    checks.append(
-        Check(
-            name="model-based-tests",
-            tier=3,
-            cmd=_uv_pytest(
-                str(TESTS / "model_based"),
-                "-x",
-                "-q",
-            ),
-            timeout=600,
             needs_pytest=True,
         )
     )

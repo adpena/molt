@@ -1,0 +1,7 @@
+schema = "molt.cpython-regrtest-sources.v1"
+
+[[source]]
+python = "3.12"
+revision = "082755cdf017defd58f2ff7ff0341569946d30e0"
+tag = "v3.12.13"
+git_url = "https://github.com/python/cpython.git"

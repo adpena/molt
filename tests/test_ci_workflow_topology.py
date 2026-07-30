@@ -399,9 +399,7 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     ]
     assert len(llvm_steps) == 1
     assert llvm_steps[0]["with"] == {"profile": "wasm", "wasi": "true"}
-    assert all(
-        "wasi-libc" not in str(step.get("run", "")) for step in wasm_steps
-    )
+    assert all("wasi-libc" not in str(step.get("run", "")) for step in wasm_steps)
     assert "grep -oE" not in ci_text
     assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text
@@ -925,33 +923,36 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "workflow_dispatch:" in nightly_text
     assert "molt-conformance-full:" in nightly_text
     assert "differential-basic-stdlib:" in nightly_text
-    assert "tests/harness/run_molt_conformance.py" in nightly_text
-    assert "tools/guarded_exec.py --prefix MOLT_CONFORMANCE" in nightly_text
-    assert "tools/guarded_exec.py --prefix MOLT_DIFF" in nightly_text
-    assert "tools/guarded_exec.py --prefix MOLT_REGRTEST" in nightly_text
-    assert "tools/guarded_exec.py --prefix MOLT_TEST_SUITE" in nightly_text
-    assert "--suite full" in nightly_text
-    assert "--build-profile dev" in nightly_text
-    assert 'MOLT_DIFF_MEASURE_RSS: "1"' in nightly_text
-    assert "MOLT_DIFF_RLIMIT_GB" not in nightly_text
-    assert "tests/differential/basic" in nightly_text
-    assert "tests/differential/stdlib" in nightly_text
+    for family in (
+        "nightly_conformance",
+        "nightly_differential",
+        "nightly_regrtest",
+        "nightly_determinism",
+        "nightly_verification_t3",
+    ):
+        assert f"--run-family {family} --receipt" in nightly_text
+    assert "nightly-verdict:" in nightly_text
+    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in (
+        nightly_text
+    )
+    assert "--verify-scheduled --receipt-dir nightly-artifacts" in nightly_text
+    assert "tools/guarded_exec.py" not in nightly_text
+    assert "tests/harness/run_molt_conformance.py" not in nightly_text
+    assert "tests/molt_diff.py" not in nightly_text
+    assert "tools/cpython_regrtest.py" not in nightly_text
     assert "tools/check_reproducible_build.py" not in nightly_text
-    ci_gate_text = _read("tools/ci_gate.py")
-    assert '"--corpus",\n                "full"' in ci_gate_text
-    assert '"--audit-ir"' in ci_gate_text
-    assert '"proof-results/reproducibility-tier3.json"' in ci_gate_text
-    assert "tools/check_deterministic_runtime.py" in nightly_text
-    assert "--json-out proof-results/deterministic-runtime.json" in nightly_text
-    assert "--json-out proof-results/ir-verification.json" in nightly_text
+    proof_plan_text = _read("tools/proof_plan.toml")
+    assert 'id = "nightly.verification-t3.reproducibility"' in proof_plan_text
+    assert '"--corpus", "full", "--runs", "5", "--audit-ir"' in proof_plan_text
+    assert '"proof-results/reproducibility-tier3.json"' in proof_plan_text
+    assert "tools/check_deterministic_runtime.py" not in nightly_text
+    assert "proof-results/nightly/deterministic-runtime.json" in nightly_text
+    assert "proof-results/nightly/ir-verification.json" in nightly_text
     assert "name: nightly-determinism-proof-results" in nightly_text
     assert "mkdir -p /tmp/repro_sweep" not in nightly_text
     assert "MOLT_CACHE=/tmp/repro_sweep" not in nightly_text
     assert "~/.molt/build/" not in nightly_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo build -p molt-runtime --profile dev-fast"
-    ) in nightly_text
+    assert "cargo build -p molt-runtime" not in nightly_text
     assert "cargo build -p molt-runtime --release" not in nightly_text
     assert "SKIP: build failed" not in nightly_text
     assert "|| true" not in nightly_text
@@ -964,20 +965,9 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     security_text = _read(".github/workflows/security_hardening.yml")
     release_text = _read(".github/workflows/release.yml")
 
-    guarded_runtime_build = (
-        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo build -p molt-runtime --profile dev-fast"
-    )
-    assert nightly_text.count(guarded_runtime_build) == 3
+    assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 5
     assert "run: cargo build -p molt-runtime --profile dev-fast" not in nightly_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
-    ) in nightly_text
-    assert (
-        "run: uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
-        not in nightly_text
-    )
+    assert "tools/ci_gate.py --tier" not in nightly_text
     assert "uses: ./.github/workflows/formal.yml" in nightly_text
     assert '"formal-methods-full"' not in _read("tools/ci_gate.py")
     assert '"formal-methods-quint-only"' not in _read("tools/ci_gate.py")
@@ -988,7 +978,7 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "          quint verify formal/quint/" not in nightly_text
     assert "uses: ./.github/workflows/security_hardening.yml" not in nightly_text
 
-    assert "--run-command formal.lean.build --receipt" in formal_text
+    assert "--run-command formal.lean.build --receipt" not in formal_text
     assert "--run-command formal.lean.sorry-baseline --receipt" in formal_text
     assert "--run-command formal.quint.models --receipt" in formal_text
     assert "--run-command formal.correspondence --receipt" in formal_text
