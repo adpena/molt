@@ -10,12 +10,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC_PATH = ROOT / "docs/spec/areas/compiler/0100_MOLT_IR.md"
-FRONTEND_PATH = ROOT / "src/molt/frontend/__init__.py"
-NATIVE_BACKEND_PATH = (
-    ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
-)
-WASM_BACKEND_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm.rs"
-WASM_ABI_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
+FRONTEND_SOURCE_ROOT = ROOT / "src/molt/frontend"
+NATIVE_BACKEND_SOURCE_ROOT = ROOT / "runtime/molt-backend-native/src/native_backend"
+WASM_BACKEND_SOURCE_ROOT = ROOT / "runtime/molt-backend-wasm/src"
 
 ALIASES: dict[str, list[str]] = {
     "ConstInt": ["CONST", "CONST_BIGINT"],
@@ -134,13 +131,13 @@ FRONTEND_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="frontend",
-        description="BORROW lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "BORROW":[\s\S]*?"kind": "borrow"'),
+        description="BORROW lowers through the canonical inc_ref lane",
+        pattern=(r'elif op\.kind == "BORROW":[\s\S]*?"kind": "inc_ref"'),
     ),
     SemanticAssertion(
         scope="frontend",
-        description="RELEASE lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "RELEASE":[\s\S]*?"kind": "release"'),
+        description="RELEASE lowers through the canonical dec_ref lane",
+        pattern=(r'elif op\.kind == "RELEASE":[\s\S]*?"kind": "dec_ref"'),
     ),
     SemanticAssertion(
         scope="frontend",
@@ -214,20 +211,20 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         scope="wasm",
         description="call_func/invoke_ffi keep dedicated labels and invoke_ffi import",
         pattern=(
-            r'"invoke_ffi"\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?import_ids\["invoke_ffi_ic"\]'
+            r'"invoke_ffi"\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?WasmRuntimeImport::InvokeFfiIc'
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="call_bind/call_indirect keep distinct labels and dedicated import lanes",
         pattern=(
-            r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?if op\.kind == "call_indirect"[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?import_ids\["call_indirect_ic"\][\s\S]*?import_ids\["call_bind_ic"\]'
+            r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?if op\.kind == "call_indirect"[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?WasmRuntimeImport::CallIndirectIc[\s\S]*?WasmRuntimeImport::CallBindIc'
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="guard_tag lowering remains explicit",
-        pattern=r'"guard_type"\s*\|\s*"guard_tag"\s*=>',
+        pattern=r'"guard_tag"\s*=>\s*Some\([\s\S]*?WasmRuntimeImport::GuardType',
     ),
     SemanticAssertion(
         scope="wasm",
@@ -237,12 +234,16 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="wasm",
         description="inc_ref/borrow call inc_ref_obj import",
-        pattern=(r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?import_ids\["inc_ref_obj"\]'),
+        pattern=(
+            r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?emit_inc_ref_like[\s\S]*?WasmRuntimeImport::IncRefObj'
+        ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="dec_ref/release call dec_ref_obj import and write None on out",
-        pattern=(r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?import_ids\["dec_ref_obj"\]'),
+        pattern=(
+            r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none'
+        ),
     ),
     SemanticAssertion(
         scope="wasm",
@@ -491,12 +492,24 @@ def check_failure_queue_linkage(
     return sorted(required & queue_entries)
 
 
+def _read_production_source_tree(root: Path, suffix: str) -> str:
+    sources = sorted(
+        path
+        for path in root.rglob(f"*{suffix}")
+        if "tests" not in path.relative_to(root).parts
+    )
+    if not sources:
+        raise FileNotFoundError(f"no {suffix} production sources under {root}")
+    return "\n".join(path.read_text(encoding="utf-8") for path in sources)
+
+
 def _read_backend_texts() -> tuple[str, str, str, str]:
     spec_text = SPEC_PATH.read_text(encoding="utf-8")
-    frontend_text = FRONTEND_PATH.read_text(encoding="utf-8")
-    native_backend_text = NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_backend_text = WASM_BACKEND_PATH.read_text(encoding="utf-8")
-    wasm_backend_text += "\n" + WASM_ABI_PATH.read_text(encoding="utf-8")
+    frontend_text = _read_production_source_tree(FRONTEND_SOURCE_ROOT, ".py")
+    native_backend_text = _read_production_source_tree(
+        NATIVE_BACKEND_SOURCE_ROOT, ".rs"
+    )
+    wasm_backend_text = _read_production_source_tree(WASM_BACKEND_SOURCE_ROOT, ".rs")
     return spec_text, frontend_text, native_backend_text, wasm_backend_text
 
 
@@ -599,7 +612,7 @@ def run_default_verify_checks(
             "findings": _build_findings(
                 "semantic-assertions",
                 semantic_failures,
-                artifact=str(FRONTEND_PATH),
+                artifact=str(FRONTEND_SOURCE_ROOT),
             ),
         }
     )
