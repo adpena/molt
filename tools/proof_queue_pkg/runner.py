@@ -22,6 +22,7 @@ from tools.proof_queue_pkg import (
     custody_cas,
     evidence,
     policy,
+    process_image_capture,
     scheduling,
     state,
     toolchain_capture,
@@ -260,6 +261,35 @@ def _validated_execution_context(
         or child_receipt.get("broker_complete") is not True
     ):
         raise ValueError("guarded receipt has no complete child-process custody")
+    platform_custody = context.get("platform_process_custody")
+    platform_applicable = (
+        sys.platform == "win32"
+        and closure.get("descendants") == "declared-toolchains"
+    )
+    platform_images: list[dict[str, object]] = []
+    if platform_custody is not None or platform_applicable:
+        platform_prelaunch = (
+            platform_custody.get("prelaunch")
+            if isinstance(platform_custody, dict)
+            else None
+        )
+        if (
+            not isinstance(platform_custody, dict)
+            or platform_custody.get("schema")
+            != process_image_capture.PROCESS_IMAGE_SCHEMA
+            or not isinstance(platform_prelaunch, list)
+            or platform_custody.get("identical") is not True
+            or platform_custody.get("prelaunch_sha256")
+            != command_envelope._canonical_payload_sha256(platform_prelaunch)
+            or platform_custody.get("postcompletion_sha256")
+            != command_envelope._canonical_payload_sha256(platform_prelaunch)
+        ):
+            raise ValueError("guarded receipt has no stable platform process custody")
+        platform_images = process_image_capture.revalidate_images(platform_prelaunch)
+        if platform_images != platform_prelaunch:
+            raise ValueError("guarded receipt platform process custody is not reproducible")
+        if platform_applicable != bool(platform_images):
+            raise ValueError("guarded receipt platform process custody applicability mismatch")
     supervisor = context.get("process_supervisor")
     supervisor_receipt = (
         supervisor.get("receipt") if isinstance(supervisor, dict) else None
@@ -390,7 +420,10 @@ def _validated_execution_context(
     ):
         expected_root_role, expected_fixed_images = (
             command_envelope._supervisor_fixed_images(
-                full_toolchains, environment_executables, policy_command
+                full_toolchains,
+                environment_executables,
+                policy_command,
+                platform_images,
             )
         )
     expected_derived_roots = None

@@ -164,6 +164,7 @@ WindowsJobCleanup = _win_job.WindowsJobCleanup
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
+from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
@@ -241,7 +242,7 @@ ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
 ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
 ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
-ACTIVE_GUARD_MARKER_DIR = ROOT / "tmp" / "memory_guard" / "active"
+ACTIVE_GUARD_MARKER_DIR = active_guard_marker_dir(ROOT)
 ACTIVE_GUARD_MARKER_KEEP = 128
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,

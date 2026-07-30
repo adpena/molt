@@ -53,7 +53,12 @@ _PYTHON_IDENTITY_PROBE = (
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import proof_plan  # noqa: E402
-from tools.proof_queue_pkg import custody_cas, execution_custody, toolchain_capture  # noqa: E402
+from tools.proof_queue_pkg import (  # noqa: E402
+    custody_cas,
+    execution_custody,
+    process_image_capture,
+    toolchain_capture,
+)
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v3"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
@@ -1691,11 +1696,19 @@ def _tool_identity(
             )
         content_path = candidate.resolve(strict=True)
         content_resolver_identity = _executable_identity(resolver)
+    process_images: list[dict[str, object]] = []
+    launcher_image = process_image_capture.capture_image(f"{name}-launcher", path)
+    process_images.append(launcher_image)
+    if os.path.normcase(str(content_path)) == os.path.normcase(str(path)):
+        content_image = launcher_image
+    else:
+        content_image = process_image_capture.capture_image(name, content_path)
+        process_images.append(content_image)
     material: dict[str, object] = {
         "path": str(path),
-        "launcher_sha256": _hash_file(path),
+        "launcher_sha256": launcher_image["sha256"],
         "content_path": str(content_path),
-        "executable_sha256": _hash_file(content_path),
+        "executable_sha256": content_image["sha256"],
         "version": (completed.stdout or completed.stderr).strip(),
         "probe_cwd": str(probe_cwd),
         "policy_sha256": hashlib.sha256(
@@ -1705,26 +1718,6 @@ def _tool_identity(
     }
     if content_resolver_identity is not None:
         material["content_resolver"] = content_resolver_identity
-    process_images: list[dict[str, object]] = []
-    for role, image_path, digest in (
-        (f"{name}-launcher", path, material["launcher_sha256"]),
-        (name, content_path, material["executable_sha256"]),
-    ):
-        if any(
-            os.path.normcase(str(existing["path"]))
-            == os.path.normcase(str(image_path))
-            for existing in process_images
-        ):
-            continue
-        process_images.append(
-            {
-                "schema": toolchain_capture.PROCESS_IMAGE_SCHEMA,
-                "role": role,
-                "path": str(image_path),
-                "sha256": digest,
-                "size_bytes": image_path.stat().st_size,
-            }
-        )
     if name == "rustc":
         requested_toolchains = envelope.get("toolchains")
         cargo_path = None
@@ -2587,6 +2580,7 @@ def _supervisor_fixed_images(
     toolchains: Mapping[str, object],
     environment_executables: Mapping[str, object],
     execution_command: Sequence[str],
+    platform_process_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[str, list[dict[str, str]]]:
     root = os.path.normcase(os.path.abspath(execution_command[0]))
     images: dict[str, dict[str, str]] = {}
@@ -2651,6 +2645,13 @@ def _supervisor_fixed_images(
         executable = raw.get("executable")
         if isinstance(executable, Mapping):
             add(f"env:{name}", executable.get("path"), executable.get("sha256"))
+    for image in platform_process_images:
+        add(
+            str(image.get("role") or "platform-process"),
+            image.get("path"),
+            image.get("sha256"),
+            image.get("root_exit_disposition"),
+        )
     root_image = images.get(root)
     if root_image is None:
         raise ValueError("supervisor policy has no captured root executable image")
@@ -2730,6 +2731,7 @@ def _supervisor_policy(
     nonce: str,
     toolchains: Mapping[str, object],
     environment_executables: Mapping[str, object],
+    platform_process_images: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
     if not isinstance(closure, Mapping):
@@ -2737,7 +2739,10 @@ def _supervisor_policy(
     descendants = closure.get("descendants")
     mode = "leaf" if descendants == "forbidden" else "declared-tree"
     root_role, fixed_images = _supervisor_fixed_images(
-        toolchains, environment_executables, execution_command
+        toolchains,
+        environment_executables,
+        execution_command,
+        platform_process_images,
     )
     return {
         "schema": "molt.proof-process-closure.v2",
@@ -3152,6 +3157,12 @@ def execute_guarded_request(request_path: Path) -> int:
         environment_executables_pre = _execution_environment_executable_identities(
             execution_env, cwd=cwd
         )
+        process_closure = envelope.get("process_closure")
+        if not isinstance(process_closure, Mapping):
+            raise ValueError("proof envelope has no process-closure authority")
+        platform_process_images_pre = process_image_capture.platform_auxiliary_images(
+            process_closure.get("descendants")
+        )
         custody_authority_paths = [
             Path(execution_custody.__file__).resolve(strict=True),
             supervisor_binary,
@@ -3196,6 +3207,7 @@ def execute_guarded_request(request_path: Path) -> int:
             policy_identities,
             environment_executables_pre,
             custody_authorities_pre,
+            platform_process_images_pre,
         ]
         if payload_executable_pre is not None:
             watch_identities.append(payload_executable_pre)
@@ -3221,6 +3233,12 @@ def execute_guarded_request(request_path: Path) -> int:
             child_server=child_event_server,
         )
         custody_session.__enter__()
+
+        platform_process_images_armed = process_image_capture.revalidate_images(
+            platform_process_images_pre
+        )
+        if platform_process_images_armed != platform_process_images_pre:
+            raise ValueError("platform process-image custody changed while arming")
 
         # Python's mutable package inventory is captured once after custody is
         # armed. Non-Python selection ran exactly once pre-arm so its complete
@@ -3288,6 +3306,7 @@ def execute_guarded_request(request_path: Path) -> int:
             nonce=execution_nonce,
             toolchains=toolchains,
             environment_executables=environment_executables_pre,
+            platform_process_images=platform_process_images_pre,
         )
         _atomic_json(supervisor_policy_path, supervisor_policy)
         supervisor_policy_identity = _file_identity(supervisor_policy_path)
@@ -3380,6 +3399,13 @@ def execute_guarded_request(request_path: Path) -> int:
                     contract=environment_contract,
                 ),
                 "executable_inputs": {"prelaunch": environment_executables_pre},
+            },
+            "platform_process_custody": {
+                "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+                "prelaunch": platform_process_images_pre,
+                "prelaunch_sha256": _canonical_payload_sha256(
+                    platform_process_images_pre
+                ),
             },
             "python_interpreters": {
                 "queue_control_plane": {
@@ -3575,6 +3601,9 @@ def execute_guarded_request(request_path: Path) -> int:
         custody_authorities_post = [
             _file_identity(path) for path in custody_authority_paths
         ]
+        platform_process_images_post = process_image_capture.revalidate_images(
+            platform_process_images_pre
+        )
         custody_session.drain()
         session_receipt = custody_session.receipt()
         live_custody_receipt = session_receipt["live_input_custody"]
@@ -3608,6 +3637,9 @@ def execute_guarded_request(request_path: Path) -> int:
         custody_authorities_identical = (
             custody_authorities_pre == custody_authorities_post
         )
+        platform_process_images_identical = (
+            platform_process_images_pre == platform_process_images_post
+        )
         ineligible_reasons: list[str] = []
         if not pre_source.get("available") or not post_source.get("available"):
             ineligible_reasons.append("source-unavailable")
@@ -3635,6 +3667,8 @@ def execute_guarded_request(request_path: Path) -> int:
             ineligible_reasons.append("execution-environment-executable-changed")
         if not custody_authorities_identical:
             ineligible_reasons.append("execution-custody-authority-changed")
+        if not platform_process_images_identical:
+            ineligible_reasons.append("platform-process-image-changed")
         if not all(
             _content_identity_available(identity)
             for identity in custody_authorities_post
@@ -3749,6 +3783,16 @@ def execute_guarded_request(request_path: Path) -> int:
                     custody_authorities_post
                 ),
                 "identical": custody_authorities_identical,
+            }
+        )
+        platform_process_custody = context["platform_process_custody"]
+        assert isinstance(platform_process_custody, dict)
+        platform_process_custody.update(
+            {
+                "postcompletion_sha256": _canonical_payload_sha256(
+                    platform_process_images_post
+                ),
+                "identical": platform_process_images_identical,
             }
         )
         telemetry = capture_context["telemetry"]

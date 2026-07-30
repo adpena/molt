@@ -9,12 +9,17 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tracemalloc
 from types import SimpleNamespace
 
 import pytest
 
-from tools.proof_queue_pkg import custody_cas, toolchain_capture
+from tools.proof_queue_pkg import (
+    custody_cas,
+    process_image_capture,
+    toolchain_capture,
+)
 
 
 def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
@@ -421,7 +426,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     assert observed[0][1]["CARGO_TARGET_TEST_TRIPLE_LINKER"] == str(linker)
     assert images == [
         {
-            "schema": toolchain_capture.PROCESS_IMAGE_SCHEMA,
+            "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
             "role": "rust-linker",
             "path": str(linker.resolve()),
             "sha256": hashlib.sha256(linker.read_bytes()).hexdigest(),
@@ -450,6 +455,80 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         toolchain_capture.revalidate_rust_link_process_images(
             selected_identity, target="test-triple", command_argv=command_argv
         )
+
+
+def test_process_image_capture_revalidates_exact_identity(tmp_path: Path) -> None:
+    executable = tmp_path / "captured-tool.exe"
+    executable.write_bytes(b"canonical-process-image")
+
+    image = process_image_capture.capture_image("fixture-tool", executable)
+
+    assert image == {
+        "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+        "role": "fixture-tool",
+        "path": str(executable.resolve()),
+        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "size_bytes": executable.stat().st_size,
+    }
+    assert process_image_capture.revalidate_images([image]) == [image]
+
+    terminated = process_image_capture.capture_image(
+        "fixture-helper", executable, root_exit_disposition="terminate"
+    )
+    assert terminated["root_exit_disposition"] == "terminate"
+    assert process_image_capture.revalidate_images([terminated]) == [terminated]
+
+
+def test_process_image_revalidation_rejects_mutation(tmp_path: Path) -> None:
+    executable = tmp_path / "mutable-tool.exe"
+    executable.write_bytes(b"before")
+    image = process_image_capture.capture_image("fixture-tool", executable)
+
+    executable.write_bytes(b"after-with-a-different-size")
+
+    with pytest.raises(ValueError, match="changed while live custody armed"):
+        process_image_capture.revalidate_images([image])
+
+
+def test_platform_auxiliary_images_are_absent_off_windows_or_for_leaf_custody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process_image_capture.sys, "platform", "linux")
+    assert (
+        process_image_capture.platform_auxiliary_images("declared-toolchains") == []
+    )
+
+    monkeypatch.setattr(process_image_capture.sys, "platform", "win32")
+    assert process_image_capture.platform_auxiliary_images("forbidden") == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console broker custody")
+def test_platform_auxiliary_images_capture_exact_windows_console_broker() -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_system_directory = kernel32.GetSystemDirectoryW
+    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    get_system_directory.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = int(get_system_directory(buffer, len(buffer)))
+    assert 0 < length < len(buffer)
+    conhost = (Path(buffer.value) / "conhost.exe").resolve(strict=True)
+
+    images = process_image_capture.platform_auxiliary_images("declared-toolchains")
+
+    assert images == [
+        {
+            "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+            "role": "windows-console-broker",
+            "path": str(conhost),
+            "sha256": hashlib.sha256(conhost.read_bytes()).hexdigest(),
+            "size_bytes": conhost.stat().st_size,
+            "root_exit_disposition": "terminate",
+        }
+    ]
+    assert process_image_capture.revalidate_images(images) == images
 
 
 def test_rust_link_capture_declares_exact_platform_linker_helper_family(

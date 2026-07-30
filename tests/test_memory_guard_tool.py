@@ -15,6 +15,7 @@ import types
 import pytest
 
 import tools.memory_guard as memory_guard
+from tools.memory_guard_core.paths import active_guard_marker_dir
 
 
 @pytest.fixture
@@ -141,6 +142,25 @@ def test_active_guard_marker_records_death_capsule(
     updated = json.loads(marker.read_text(encoding="utf-8"))
     assert updated["status"] == "child_running"
     assert updated["child_process"]["pid"] == 123
+
+
+def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    artifact_root = tmp_path / "artifacts"
+
+    assert active_guard_marker_dir(repo_root, {}) == (
+        repo_root / "tmp" / "memory_guard" / "active"
+    ).resolve(strict=False)
+    assert active_guard_marker_dir(
+        repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
+        strict=False
+    )
+    assert active_guard_marker_dir(
+        repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
+        strict=False
+    )
 
 
 def test_parse_process_table_reads_process_group_ids() -> None:

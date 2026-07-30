@@ -57,6 +57,9 @@ QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
     r"proof queue refuses cold-prone single-test Cargo proofs "
     r"\('(?P<filter>[^']+)' under --lib\)"
 )
+EXECUTION_CUSTODY_FAILURE_RE = re.compile(
+    r"proof_queue execution custody: (?P<error>[^\r\n]+)"
+)
 
 PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
     r"missing Pact fixture:\s+(?P<path>[^\r\n]+)"
@@ -1269,6 +1272,93 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
             )
         ]
+
+    custody_failure = EXECUTION_CUSTODY_FAILURE_RE.search(log_tail)
+    if custody_failure is not None:
+        try:
+            receipt_context = json.loads(row["receipt_context_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            receipt_context = {}
+        source_custody = receipt_context.get("source_custody", {})
+        supervisor = receipt_context.get("process_supervisor", {})
+        supervisor_receipt = (
+            supervisor.get("receipt", {}) if isinstance(supervisor, dict) else {}
+        )
+        ineligible = (
+            source_custody.get("ineligible_reasons", [])
+            if isinstance(source_custody, dict)
+            else []
+        )
+        violations = (
+            supervisor_receipt.get("violations", [])
+            if isinstance(supervisor_receipt, dict)
+            else []
+        )
+        evidence_parts = [custody_failure.group(0)]
+        if isinstance(ineligible, list) and ineligible:
+            evidence_parts.append("ineligible=" + ",".join(map(str, ineligible)))
+        if isinstance(violations, list) and violations:
+            evidence_parts.append("violations=" + "; ".join(map(str, violations)))
+        artifacts = [str(row["log_path"])]
+        for candidate in (
+            supervisor.get("receipt_file") if isinstance(supervisor, dict) else None,
+            receipt_context.get("live_input_custody", {}).get("event_artifact")
+            if isinstance(receipt_context.get("live_input_custody"), dict)
+            else None,
+        ):
+            if isinstance(candidate, dict) and isinstance(candidate.get("path"), str):
+                artifacts.append(str(candidate["path"]))
+        unadmitted_images = [
+            str(violation)
+            for violation in violations
+            if "unadmitted executable image" in str(violation).casefold()
+        ]
+        if unadmitted_images:
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="native-process-image-unadmitted",
+                    severity="infra",
+                    summary=(
+                        "The native supervisor rejected an executable outside the "
+                        "immutable process-image authority."
+                    ),
+                    evidence="; ".join(unadmitted_images),
+                    next_action=(
+                        "Classify the executable as a structurally required exact image, "
+                        "capture its absolute path and content digest before arming, and "
+                        "revalidate it after execution. Never admit by basename or directory."
+                    ),
+                    scopes=(
+                        "tools/proof_queue_pkg/process_image_capture.py",
+                        "tools/proof_queue_pkg/command_envelope.py",
+                        "tools/proof_supervisor/",
+                    ),
+                    artifacts=tuple(dict.fromkeys(artifacts)),
+                )
+            )
+        else:
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="queue-execution-custody-failure",
+                    severity="infra",
+                    summary=(
+                        "The proof command did not produce admissible execution custody."
+                    ),
+                    evidence=" ".join(evidence_parts),
+                    next_action=(
+                        "Inspect the durable custody events and supervisor violations, "
+                        "then fix the control-plane output or executable authority before "
+                        "rerunning. This row is infrastructure evidence, not product proof."
+                    ),
+                    scopes=(
+                        "tools/proof_queue_pkg/command_envelope.py",
+                        "tools/proof_queue_pkg/execution_custody.py",
+                        "tools/memory_guard.py",
+                        "tools/proof_supervisor/",
+                    ),
+                    artifacts=tuple(dict.fromkeys(artifacts)),
+                )
+            )
 
     if (
         "proof queue refuses raw `cargo` commands" in log_tail
