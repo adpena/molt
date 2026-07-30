@@ -58,6 +58,14 @@ processes after the root command exits and records the count in
 `accounting.root_exit_terminated_processes`. Any non-auxiliary descendant still
 live at root exit is a closure violation, not implicit cleanup.
 
+Platform auxiliaries use the same fixed-image contract. On Windows,
+declared-toolchain execution captures the single native console broker returned
+by `GetSystemDirectoryW` as `windows-console-broker`, seals its exact path,
+SHA-256, and size before custody arms, and revalidates those bytes after the
+run. The system directory is never a derived root, and neither a basename nor a
+directory allowlist is process-image authority. Leaf execution admits no
+platform auxiliary.
+
 `run` exits 0 only for a receipt with `complete: true`, 78 for a sealed
 incomplete/rejected receipt, and 2 for malformed input. `verify` requires the
 exact policy and independently canonicalizes it, revalidates fixed images, and

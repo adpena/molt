@@ -26,6 +26,7 @@ from tools.process_spawn import (  # noqa: E402
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
 )
+from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
 
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
@@ -37,7 +38,7 @@ TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
 PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
 ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
-ACTIVE_GUARD_MARKER_DIR = ROOT / "tmp" / "memory_guard" / "active"
+ACTIVE_GUARD_MARKER_DIR = active_guard_marker_dir(ROOT)
 PROOF_QUEUE_ENV = "MOLT_PROOF_QUEUE"
 PROOF_QUEUE_RUN_ID_ENV = "MOLT_PROOF_QUEUE_RUN_ID"
 PROOF_QUEUE_DB_ENV = "MOLT_PROOF_QUEUE_DB"

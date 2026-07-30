@@ -22,10 +22,14 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_ROOT = Path(__file__).resolve().parent
+TOOLS_ROOT = REPO_ROOT / "tools"
 if str(BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCH_ROOT))
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
 
 import run_l7_numeric_attestation as l7  # noqa: E402
+from memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
 
 DEFAULT_OUTPUT = (
     REPO_ROOT
@@ -34,7 +38,7 @@ DEFAULT_OUTPUT = (
     / "sequence_container_attestation"
     / "latest.json"
 )
-CAPSULE_ACTIVE_DIR = REPO_ROOT / "tmp" / "memory_guard" / "active"
+CAPSULE_ACTIVE_DIR = active_guard_marker_dir(REPO_ROOT)
 CAPSULE_ARCHIVE_DIR = (
     REPO_ROOT
     / "logs"
