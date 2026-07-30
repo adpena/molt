@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from molt.dx import development_artifact_env
+from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import (
     command_envelope,
@@ -1156,6 +1156,7 @@ def _run_one(
             session_prefix=f"proof-{resource_family}",
             session_id=session_id,
         )
+        bind_repo_src_pythonpath(repo_root, env)
         env["MOLT_PROOF_QUEUE"] = "1"
         env["MOLT_PROOF_QUEUE_DB"] = str(db)
         env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
