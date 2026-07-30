@@ -942,7 +942,6 @@ refcount_balance_dec_opcodes = ["DecRef"]
 # but not by themselves proof of the lowered re-entrant dispatch shape that the
 # drop-insertion state-machine bail guards.
 lowered_state_machine_body_opcodes = [
-    "AllocTask",
     "ChanRecvYield",
     "ChanSendYield",
     "StateSwitch",
@@ -954,7 +953,8 @@ lowered_state_machine_body_opcodes = [
 # live owned values must be retained into the suspended coroutine/generator
 # frame before the op. This is deliberately distinct from state-machine
 # transform legality: StateSwitch/StateTransition/AllocTask are state-machine
-# machinery, but they do not themselves publish the live frame at a suspension.
+# machinery, but construction alone is neither a re-entrant body nor a
+# suspension that publishes the live frame.
 drop_insertion_suspension_point_opcodes = [
     "ChanRecvYield",
     "ChanSendYield",

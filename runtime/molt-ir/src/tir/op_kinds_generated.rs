@@ -7109,7 +7109,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::IterNextUnboxed => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
-        OpCode::AllocTask => true,
+        OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
         OpCode::StateTransition => true,
         OpCode::StateYield => true,

@@ -47,7 +47,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     //     handled as an ordinary CFG successor.)
     //
     //  2. A lowered coroutine `_poll` STATE MACHINE (`StateSwitch` dispatch +
-    //     `StateTransition`/`StateYield`/`AllocTask`) — `has_state_machine()`.
+    //     `StateTransition`/`StateYield`) — `has_state_machine()`. Constructing
+    //     a task is not evidence that the containing function is re-entrant.
     //     The state dispatch RE-ENTERS resume blocks, so a value defined in one
     //     state region reaches a resume block the dominator walk does NOT see as
     //     dominated; a drop placed there is a use-before-def (the LLVM verifier
