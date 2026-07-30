@@ -7,9 +7,12 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
+import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -17,20 +20,39 @@ from xml.etree import ElementTree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+for import_root in (REPO_ROOT, SRC_ROOT, TOOLS_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
-import harness_memory_guard  # noqa: E402
+from tools.command_execution import (  # noqa: E402
+    CommandExecutor,
+    bind_repository_imports,
+)
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 REGRTEST_MEMORY_PREFIX = "MOLT_REGRTEST"
+CPYTHON_SOURCES = REPO_ROOT / "config" / "cpython_regrtest_sources.toml"
+COMMANDS = CommandExecutor.for_file(__file__)
+
+
+@dataclass(frozen=True, slots=True)
+class CPythonSource:
+    python: str
+    revision: str
+    tag: str
+    git_url: str
 
 
 @dataclass
 class RegrtestConfig:
     repo_root: Path
     cpython_dir: Path
-    cpython_branch: str
+    cpython_source: CPythonSource
     host_python: str
     use_uv: bool
     uv_project: Path | None
@@ -118,6 +140,38 @@ class MatrixReport:
     summary: dict[str, dict[str, int]]
 
 
+def load_cpython_sources(
+    path: Path = CPYTHON_SOURCES,
+) -> dict[str, CPythonSource]:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    if data.get("schema") != "molt.cpython-regrtest-sources.v1":
+        raise ValueError(f"invalid CPython regrtest source schema: {path}")
+    sources: dict[str, CPythonSource] = {}
+    for row in data.get("source", []):
+        source = CPythonSource(
+            python=str(row.get("python", "")),
+            revision=str(row.get("revision", "")),
+            tag=str(row.get("tag", "")),
+            git_url=str(row.get("git_url", "")),
+        )
+        if re.fullmatch(r"3\.\d+", source.python) is None:
+            raise ValueError(f"invalid CPython version authority: {source.python!r}")
+        if re.fullmatch(r"[0-9a-f]{40}", source.revision) is None:
+            raise ValueError(
+                f"{source.python}: CPython revision must be a full commit SHA"
+            )
+        if re.fullmatch(rf"v{re.escape(source.python)}\.\d+", source.tag) is None:
+            raise ValueError(f"{source.python}: CPython tag/version mismatch")
+        if source.git_url != "https://github.com/python/cpython.git":
+            raise ValueError(f"{source.python}: untrusted CPython source URL")
+        if source.python in sources:
+            raise ValueError(f"duplicate CPython source for {source.python}")
+        sources[source.python] = source
+    if not sources:
+        raise ValueError("CPython regrtest source authority is empty")
+    return sources
+
+
 def parse_args(argv: list[str]) -> RegrtestConfig:
     parser = argparse.ArgumentParser(
         description="Run CPython's regrtest against Molt with reporting.",
@@ -133,11 +187,6 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         type=Path,
         default=REPO_ROOT / "third_party" / "cpython",
         help="Path to a CPython checkout (default: third_party/cpython).",
-    )
-    parser.add_argument(
-        "--cpython-branch",
-        default="v3.12.x",
-        help="CPython branch/tag to clone when --clone is used.",
     )
     parser.add_argument(
         "--clone",
@@ -393,9 +442,21 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     type_matrix_path = args.type_matrix_path.resolve()
     semantics_matrix_path = args.semantics_matrix_path.resolve()
 
+    sources = load_cpython_sources()
     uv_python = args.uv_python
     if args.uv and not uv_python:
-        uv_python = ["3.12"]
+        uv_python = [next(iter(sources))]
+    requested_versions = set(uv_python) if args.uv else {"3.12"}
+    unsupported_versions = requested_versions - set(sources)
+    if unsupported_versions:
+        raise ValueError(
+            f"no pinned CPython regrtest source for {sorted(unsupported_versions)!r}"
+        )
+    source_version = next(iter(requested_versions))
+    if len(requested_versions) != 1:
+        raise ValueError(
+            "one regrtest invocation must use exactly one pinned CPython source"
+        )
 
     diff_paths = args.diff_path
     if args.diff and not diff_paths:
@@ -412,7 +473,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     return RegrtestConfig(
         repo_root=repo_root,
         cpython_dir=cpython_dir,
-        cpython_branch=args.cpython_branch,
+        cpython_source=sources[source_version],
         host_python=args.host_python,
         use_uv=args.uv,
         uv_project=uv_project,
@@ -587,53 +648,59 @@ def host_python_cmd(config: RegrtestConfig, python_version: str | None) -> list[
 
 def ensure_cpython_checkout(
     cpython_dir: Path,
-    branch: str,
+    source: CPythonSource,
     *,
     allow_clone: bool,
     log_handle,
     dry_run: bool,
 ) -> None:
+    def verify_revision() -> None:
+        if dry_run:
+            return
+        try:
+            completed = COMMANDS.run(
+                ["git", "-C", str(cpython_dir), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(
+                f"CPython source is not a verifiable Git checkout: {cpython_dir}"
+            ) from exc
+        revision = str(completed.stdout).strip()
+        if revision != source.revision:
+            raise RuntimeError(
+                "CPython source revision drift: "
+                f"expected {source.revision}, observed {revision}"
+            )
+
     if cpython_dir.exists():
+        verify_revision()
         return
     if not allow_clone:
         raise FileNotFoundError(
             f"CPython dir missing: {cpython_dir} (use --clone to fetch)"
         )
 
-    def fallback_branch(name: str) -> str | None:
-        if name.startswith("v") and name.endswith(".x"):
-            return name[1:-2]
-        if name.startswith("v"):
-            return name[1:]
-        return None
-
     cpython_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    def run_clone(target: str) -> int:
-        cmd = [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            target,
-            "https://github.com/python/cpython.git",
-            str(cpython_dir),
-        ]
-        return run_command(
-            cmd, cwd=None, env=None, log_handle=log_handle, dry_run=dry_run
-        )
-
-    rc = run_clone(branch)
+    command = [
+        "git",
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        source.tag,
+        source.git_url,
+        str(cpython_dir),
+    ]
+    rc = run_command(
+        command, cwd=None, env=None, log_handle=log_handle, dry_run=dry_run
+    )
     if rc != 0:
-        alt = fallback_branch(branch)
-        if alt and alt != branch:
-            log_line(log_handle, f"clone failed for {branch}; retrying {alt}")
-            if cpython_dir.exists() and not dry_run:
-                shutil.rmtree(cpython_dir)
-            rc = run_clone(alt)
-    if rc != 0:
-        raise RuntimeError(f"CPython clone failed for {branch}")
+        raise RuntimeError(f"CPython clone failed for {source.tag}")
+    verify_revision()
 
 
 def load_skip_list(path: Path | None) -> list[str]:
@@ -1472,11 +1539,14 @@ def run_regrtest(
     output_dir = config.output_root / run_label
     output_dir.mkdir(parents=True, exist_ok=True)
     cpython_dir = config.cpython_dir
-    cpython_branch = config.cpython_branch
     if python_version:
+        if python_version != config.cpython_source.python:
+            raise ValueError(
+                f"CPython {python_version} is not admitted by pinned source "
+                f"{config.cpython_source.python}"
+            )
         if python_version not in cpython_dir.name:
             cpython_dir = cpython_dir.with_name(f"{cpython_dir.name}-{python_version}")
-            cpython_branch = f"v{python_version}.x"
     run_config = replace(
         config,
         output_dir=output_dir,
@@ -1484,7 +1554,6 @@ def run_regrtest(
         coverage_dir=output_dir / "coverage",
         rust_coverage_dir=output_dir / "rust_coverage",
         cpython_dir=cpython_dir,
-        cpython_branch=cpython_branch,
     )
     log_path = output_dir / "regrtest.log"
     with log_path.open("w", encoding="utf-8") as log_handle:
@@ -1508,7 +1577,7 @@ def run_regrtest(
             validate_molt_cmd(run_config, log_handle=log_handle)
             ensure_cpython_checkout(
                 run_config.cpython_dir,
-                run_config.cpython_branch,
+                run_config.cpython_source,
                 allow_clone=run_config.allow_clone,
                 log_handle=log_handle,
                 dry_run=run_config.dry_run,

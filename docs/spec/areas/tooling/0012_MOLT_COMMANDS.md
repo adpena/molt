@@ -137,7 +137,7 @@ Key flags:
 - Script args are forwarded by default; use `--` to separate.
 
 ### 2.4 `molt compare`
-**Status:** Implemented (initial).
+**Status:** Implemented, commit-pinned source custody.
 
 Purpose: Compare CPython vs Molt compiled output and timings (separates build vs run).
 
@@ -342,7 +342,8 @@ Purpose: Run CPython's regression test suite against Molt with reporting,
 coverage, and stdlib matrix exports.
 
 Key flags:
-- `--clone` (fetch CPython checkout when missing)
+- `--clone` (fetch the exact tag and verify the full commit SHA declared by
+  `config/cpython_regrtest_sources.toml`)
 - `--molt-cmd <cmd...>` (command used by `tools/molt_regrtest_shim.py` to run each test file; defaults to `python -m molt.cli run`)
 - `--molt-capabilities <csv>` (comma-separated `MOLT_CAPABILITIES` for Molt test runs; default `fs.read,env.read`)
 - `--molt-shim <path>` (override the shim path)
@@ -363,7 +364,9 @@ Outputs:
 - `diff_summary.json`/`.md` and `type_semantics_matrix.json`/`.md`
 - Coverage artifacts when enabled
 - Rust coverage artifacts under `rust_coverage/` when enabled
-- Multi-version runs clone under `third_party/cpython-<ver>/`
+- Unsupported Python versions fail closed until an exact source row is added;
+  one invocation uses one pinned CPython source under
+  `third_party/cpython-<ver>/`.
 
 Notes:
 - The shim treats `MOLT_COMPAT_ERROR` results as skipped and records the reason

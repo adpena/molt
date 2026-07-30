@@ -18,7 +18,7 @@ jobs:
   formal-lean:
     name: Lean Proof Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -34,9 +34,8 @@ jobs:
       - name: Setup exact Lean toolchain
         uses: ./.github/actions/setup-lean
 
-      - name: Build proofs
-        run: python3 tools/proof_plan.py --run-command formal.lean.build --receipt proof-receipts/formal-lean.json
-        timeout-minutes: 15
+      - name: Build proofs and check Lean sorry baseline
+        run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean.json
 
       - name: Upload Lean proof receipt
         if: always() && hashFiles('proof-receipts/formal-lean.json') != ''
@@ -44,17 +43,6 @@ jobs:
         with:
           name: proof-receipt-formal-lean
           path: proof-receipts/formal-lean.json
-          if-no-files-found: error
-
-      - name: Check Lean sorry baseline
-        run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean-sorry.json
-
-      - name: Upload Lean sorry receipt
-        if: always() && hashFiles('proof-receipts/formal-lean-sorry.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: proof-receipt-formal-lean-sorry
-          path: proof-receipts/formal-lean-sorry.json
           if-no-files-found: error
 
   formal-quint:

@@ -68,7 +68,11 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
-    build = Path(command_envelope.__file__).resolve().parents[1] / "proof_supervisor" / "build.py"
+    build = (
+        Path(command_envelope.__file__).resolve().parents[1]
+        / "proof_supervisor"
+        / "build.py"
+    )
     completed = run_custody_subject_process(
         [sys.executable, str(build), "--release"],
         check=True,
@@ -205,7 +209,7 @@ def _terminalize_synthetic_run(
             for name in requested_toolchains
         }
         receipt_context: dict[str, object] = {
-            "schema": "molt.proof-receipt.v3",
+            "schema": "molt.proof-receipt.v4",
             "authority_sha256": "a" * 64,
             "run_id": run_id,
             "execution_nonce_sha256": "9" * 64,
@@ -301,7 +305,7 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
         Path(str(v3["supervisor"]["policy"]["path"])).read_text(encoding="utf-8")
     )
     receipt_context = {
-        "schema": "molt.proof-receipt.v3",
+        "schema": "molt.proof-receipt.v4",
         "authority_sha256": "a" * 64,
         "run_id": request["run_id"],
         "execution_nonce_sha256": hashlib.sha256(
@@ -321,9 +325,7 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
             ).encode()
         ).hexdigest(),
         "exact_command_sha256": hashlib.sha256(
-            json.dumps(
-                supervisor_policy["command"], separators=(",", ":")
-            ).encode()
+            json.dumps(supervisor_policy["command"], separators=(",", ":")).encode()
         ).hexdigest(),
         "command_transcript": transcript,
         "live_input_custody": _synthetic_live_custody(result_path.parent),
@@ -736,7 +738,7 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 75
+    assert len(plan.commands) == 88
     for command in plan.commands:
         envelope = command_envelope.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
@@ -1769,10 +1771,14 @@ def _initialize_clean_git_repo(path: Path) -> str:
     run_custody_subject_process(
         ["git", "config", "user.email", "proof@example.invalid"], cwd=path, check=True
     )
-    run_custody_subject_process(["git", "config", "user.name", "Proof Queue"], cwd=path, check=True)
+    run_custody_subject_process(
+        ["git", "config", "user.name", "Proof Queue"], cwd=path, check=True
+    )
     (path / "tracked.txt").write_text("initial\n", encoding="utf-8")
     run_custody_subject_process(["git", "add", "tracked.txt"], cwd=path, check=True)
-    run_custody_subject_process(["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True)
+    run_custody_subject_process(
+        ["git", "commit", "-q", "-m", "fixture"], cwd=path, check=True
+    )
     return check_output_custody_subject_process(
         ["git", "rev-parse", "HEAD"], cwd=path, text=True
     ).strip()
@@ -1982,9 +1988,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
         },
         "process_supervisor": v3["supervisor"],
         "exact_command_sha256": hashlib.sha256(
-            json.dumps(
-                supervisor_policy["command"], separators=(",", ":")
-            ).encode()
+            json.dumps(supervisor_policy["command"], separators=(",", ":")).encode()
         ).hexdigest(),
         "execution_environment": {
             "prelaunch": {
@@ -2025,9 +2029,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
     )
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "substituted"
     command_envelope._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_envelope._file_identity(
-        supervisor_policy_path
-    )
+    v3["supervisor"]["policy"] = command_envelope._file_identity(supervisor_policy_path)
     with pytest.raises(ValueError, match="policy binding is invalid"):
         runner._validated_execution_context(
             context,
@@ -2039,9 +2041,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
         )
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "alpha"
     command_envelope._atomic_json(supervisor_policy_path, supervisor_policy)
-    v3["supervisor"]["policy"] = command_envelope._file_identity(
-        supervisor_policy_path
-    )
+    v3["supervisor"]["policy"] = command_envelope._file_identity(supervisor_policy_path)
     event_artifact = v3["supervisor"]["event_artifact"]
     event_artifact["count"] = int(event_artifact["count"]) + 1
     with pytest.raises(ValueError, match="event artifact binding is invalid"):
@@ -2158,7 +2158,9 @@ def test_guarded_receipt_rejects_source_mutation_during_command(tmp_path: Path) 
         encoding="utf-8",
     )
     run_custody_subject_process(["git", "add", "mutation.patch"], cwd=repo, check=True)
-    run_custody_subject_process(["git", "commit", "-q", "-m", "add mutation"], cwd=repo, check=True)
+    run_custody_subject_process(
+        ["git", "commit", "-q", "-m", "add mutation"], cwd=repo, check=True
+    )
     rc, record = _execute_request(
         repo,
         tmp_path / "mutated-execution.json",
@@ -2227,7 +2229,9 @@ def test_live_custody_detects_tracked_directory_rename_restore(tmp_path: Path) -
     package = repo / "package"
     package.mkdir()
     (package / "input.txt").write_text("owned\n", encoding="utf-8")
-    run_custody_subject_process(["git", "add", "package/input.txt"], cwd=repo, check=True)
+    run_custody_subject_process(
+        ["git", "add", "package/input.txt"], cwd=repo, check=True
+    )
     run_custody_subject_process(
         ["git", "commit", "-q", "-m", "add tracked package"], cwd=repo, check=True
     )
@@ -2345,9 +2349,7 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
 def test_python_bootstrap_command_and_stdin_argv_semantics(
     mode: str, target: str | None, expected_argv0: str
 ) -> None:
-    bootstrap = Path(command_envelope.__file__).with_name(
-        "python_custody_bootstrap.py"
-    )
+    bootstrap = Path(command_envelope.__file__).with_name("python_custody_bootstrap.py")
     command = [sys.executable, str(bootstrap), mode, "0"]
     if target is not None:
         command.append(target)
@@ -2355,9 +2357,7 @@ def test_python_bootstrap_command_and_stdin_argv_semantics(
     completed = run_custody_subject_process(
         command,
         input=(
-            "import json,sys; print(json.dumps(sys.argv))"
-            if mode == "stdin"
-            else None
+            "import json,sys; print(json.dumps(sys.argv))" if mode == "stdin" else None
         ),
         check=False,
         text=True,
@@ -2385,9 +2385,7 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     (package / "__main__.py").write_text(probe, encoding="utf-8")
     script = tmp_path / "script.py"
     script.write_text(probe, encoding="utf-8")
-    bootstrap = Path(command_envelope.__file__).with_name(
-        "python_custody_bootstrap.py"
-    )
+    bootstrap = Path(command_envelope.__file__).with_name("python_custody_bootstrap.py")
     clean_env = {
         key: value
         for key, value in os.environ.items()
@@ -2523,9 +2521,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     supervisor = context["process_supervisor"]
     assert supervisor["schema"] == "molt.proof-process-supervision.v1"
     assert supervisor["supervisor_returncode"] == 0
-    assert supervisor["receipt"]["schema"] == (
-        "molt.proof-process-closure-receipt.v3"
-    )
+    assert supervisor["receipt"]["schema"] == ("molt.proof-process-closure-receipt.v3")
     assert supervisor["receipt"]["state"] == "COMPLETE"
     assert supervisor["receipt"]["complete"] is True
     assert supervisor["receipt"]["accounting"]["total_processes"] == 1
@@ -2539,7 +2535,8 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 
 
 def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
@@ -2599,9 +2596,7 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     assert Path(derived_root["path"]).parent.name == record["execution_nonce"]
     rustc = context["toolchains"]["rustc"]
     assert rustc["link_selection"]["selection_probe_count"] == 1
-    assert any(
-        row["role"] == "rust-linker" for row in rustc["process_images"]
-    )
+    assert any(row["role"] == "rust-linker" for row in rustc["process_images"])
     assert context["toolchain_capture"]["telemetry"]["receipt_context_bytes"] <= (
         40 * 1024
     )
@@ -2633,9 +2628,7 @@ def test_python_leaf_blocks_exec_replacement_before_launch(tmp_path: Path) -> No
     assert rc == 0
     assert not marker.exists()
     receipt = record["receipt_context"]["child_process_custody"]["receipt"]
-    assert any(
-        event.get("surface") == "os.exec" for event in receipt["violations"]
-    )
+    assert any(event.get("surface") == "os.exec" for event in receipt["violations"])
 
 
 def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
@@ -2659,12 +2652,12 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
     hook = Path(execution_custody.__file__).with_name("node_child_custody.cjs")
     env["NODE_OPTIONS"] = f"--no-global-search-paths --require={hook}"
     with server:
-        completed = run_custody_subject_process([node, "-e", script], env=env, check=False)
+        completed = run_custody_subject_process(
+            [node, "-e", script], env=env, check=False
+        )
     assert completed.returncode == 0
     receipt = server.receipt()
-    assert any(
-        event.get("reason") == "opaque-shell" for event in receipt["violations"]
-    )
+    assert any(event.get("reason") == "opaque-shell" for event in receipt["violations"])
 
 
 def test_guarded_identity_timeout_is_terminal_before_command_launch(
@@ -2904,7 +2897,7 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
             ),
             json.dumps(
                 {
-                    "schema": "molt.proof-receipt.v3",
+                    "schema": "molt.proof-receipt.v4",
                     "source_commit": "f" * 40,
                     "status": "success",
                 }
@@ -3890,7 +3883,9 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
 
 def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "cargo-target"))
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     marker = tmp_path / "must-not-run.txt"
@@ -7200,7 +7195,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     requested_toolchains = tuple(authority["toolchains"])
     run_id = str(rows[0]["run_id"])
     receipt_context = {
-        "schema": "molt.proof-receipt.v3",
+        "schema": "molt.proof-receipt.v4",
         "authority_sha256": "a" * 64,
         "run_id": run_id,
         "execution_nonce_sha256": "9" * 64,

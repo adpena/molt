@@ -251,9 +251,10 @@ def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
 def test_ci_gate_finds_uv_run_tool_script_after_interpreter() -> None:
     module = _load_ci_gate()
 
-    assert module._tool_script_arg(module._uv_run(str(module.TOOLS / "ci_gate.py"))) == (
-        module.TOOLS / "ci_gate.py"
-    ).resolve()
+    assert (
+        module._tool_script_arg(module._uv_run(str(module.TOOLS / "ci_gate.py")))
+        == (module.TOOLS / "ci_gate.py").resolve()
+    )
 
 
 def test_required_missing_toolchain_is_unmet_prerequisite(monkeypatch) -> None:
@@ -434,6 +435,22 @@ def test_ci_gate_tier1_includes_structural_audit_ratchet() -> None:
     assert check.timeout == 60
     assert str(module.TOOLS / "structural_audit.py") in check.cmd
     assert "--check" in check.cmd
+
+
+def test_ci_gate_tier3_consumes_the_typed_scheduled_family() -> None:
+    module = _load_ci_gate()
+    tier3 = [check for check in module._build_checks() if check.tier == 3]
+
+    assert len(tier3) == 1
+    check = tier3[0]
+    assert check.name == "nightly-verification-t3"
+    assert check.timeout == 5400
+    assert check.required is True
+    assert check.needs_rust is True
+    assert check.needs_pytest is True
+    assert "--run-family" in check.cmd
+    assert "nightly_verification_t3" in check.cmd
+    assert "--receipt" in check.cmd
 
 
 def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
