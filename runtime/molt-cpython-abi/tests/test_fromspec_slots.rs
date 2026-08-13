@@ -21,8 +21,8 @@
 
 #![allow(non_snake_case)]
 
-#[path = "support/fake_foreign.rs"]
-mod fake_foreign;
+mod support;
+use support::fake_foreign;
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
@@ -35,6 +35,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn pytype_spec_flags(flags: c_ulong) -> c_uint {
+    #[allow(clippy::useless_conversion)]
     flags
         .try_into()
         .expect("CPython PyType_Spec.flags accepts only its unsigned-int flag domain")
@@ -127,10 +128,7 @@ fn install_hooks() {
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
     hooks.foreign_new = fake_foreign::foreign_new;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 // ── Slot callbacks whose identity the test verifies survives dispatch ────────
@@ -323,6 +321,13 @@ fn fromspec_installs_all_slot_families() {
             !found.is_null(),
             "Py_tp_methods entry must be resolvable in tp_dict"
         );
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+
+        // Heap types own their MRO, whose tuple in turn owns the type. Break
+        // that collector-visible cycle through the production clear slot
+        // before releasing this test's external reference.
+        assert_eq!(molt_cpython_abi::api::typeobj::molt_type_clear(obj), 0);
+        molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
 }
 
@@ -425,6 +430,7 @@ fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
         //     back through the public getter. Pre-fix this offset lay OOB past the
         //     416-byte PyTypeObject (a corrupting write).
         let fake_module: *mut PyObject = &raw mut Py_None;
+        molt_cpython_abi::api::refcount::Py_INCREF(fake_module);
         (*et).ht_module = fake_module;
         assert_eq!(
             molt_cpython_abi::api::typeobj::PyType_GetModule(tp),
@@ -435,5 +441,10 @@ fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
         let no_module = molt_cpython_abi::api::typeobj::PyType_GetModule(&raw mut PyLong_Type);
         assert!(no_module.is_null(), "non-heap type has no module -> NULL");
         molt_cpython_abi::api::errors::PyErr_Clear();
+
+        // `molt_type_clear` owns the cycle-breaking contract for heap types
+        // and balances the strong ht_module reference installed above.
+        assert_eq!(molt_cpython_abi::api::typeobj::molt_type_clear(obj), 0);
+        molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
 }

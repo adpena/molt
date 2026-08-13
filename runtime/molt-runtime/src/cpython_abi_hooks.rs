@@ -18,10 +18,10 @@ use molt_cpython_abi::abi_types::{
 use molt_cpython_abi::{
     BorrowedHandleResult, EXCEPTION_SNAPSHOT_ARGS, EXCEPTION_SNAPSHOT_CAUSE,
     EXCEPTION_SNAPSHOT_CONTEXT, EXCEPTION_SNAPSHOT_DICT, EXCEPTION_SNAPSHOT_NOTES,
-    EXCEPTION_SNAPSHOT_TRACEBACK, ExceptionSnapshot, MoltBufferView as AbiMoltBufferView,
-    OwnedHandleResult, RuntimeHooks,
+    EXCEPTION_SNAPSHOT_TRACEBACK, EXCEPTION_TYPED_MAX_FIELDS, ExceptionSnapshot,
+    MoltBufferView as AbiMoltBufferView, OwnedHandleResult, RuntimeHooks,
 };
-use molt_obj_model::MoltObject;
+use molt_obj_model::{ExceptionFieldStorage, ExceptionLayoutKind, MoltObject};
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 
@@ -1234,6 +1234,92 @@ unsafe extern "C" fn hook_foreign_new(c_ptr: usize) -> u64 {
     with_gil(|_py| crate::object::foreign::foreign_new(&_py, c_ptr))
 }
 
+unsafe extern "C" fn hook_native_gc_allocate(address: usize) -> c_int {
+    with_gil(|_py| {
+        if crate::object::gc::native_gc_allocate(&_py, address) {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+unsafe extern "C" fn hook_native_gc_track(address: usize) -> c_int {
+    with_gil(|_| {
+        if crate::object::gc::native_gc_track(address) {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+unsafe extern "C" fn hook_native_gc_untrack(address: usize) {
+    with_gil(|_| crate::object::gc::native_gc_untrack(address));
+}
+
+unsafe extern "C" fn hook_native_gc_deallocate(address: usize) {
+    with_gil(|_py| crate::object::gc::native_gc_deallocate(&_py, address));
+}
+
+unsafe extern "C" fn hook_native_gc_is_tracked(address: usize) -> c_int {
+    with_gil(|_| c_int::from(crate::object::gc::native_gc_is_tracked(address)))
+}
+
+unsafe extern "C" fn hook_native_gc_is_finalized(address: usize) -> c_int {
+    with_gil(|_| c_int::from(crate::object::gc::native_gc_is_finalized(address)))
+}
+
+unsafe extern "C" fn hook_native_gc_claim_finalizer(address: usize) -> c_int {
+    with_gil(|_| crate::object::gc::native_gc_claim_finalizer(address))
+}
+
+unsafe extern "C" fn hook_gc_collect() -> isize {
+    with_gil(|_py| {
+        let outcome = unsafe { crate::object::gc::collect_cycles(&_py) };
+        match outcome.status {
+            crate::object::gc::GcCollectStatus::Completed
+            | crate::object::gc::GcCollectStatus::ReentrantNoop => {
+                isize::try_from(outcome.collected).unwrap_or_else(|_| std::process::abort())
+            }
+            crate::object::gc::GcCollectStatus::ResourceError(message) => {
+                let _ = crate::raise_exception::<i64>(&_py, "MemoryError", message);
+                -1
+            }
+            crate::object::gc::GcCollectStatus::UnsupportedConcurrency => {
+                let _ = crate::raise_exception::<i64>(
+                    &_py,
+                    "RuntimeError",
+                    "cyclic GC requires a free-threaded stop-the-world guard",
+                );
+                -1
+            }
+        }
+    })
+}
+
+unsafe extern "C" fn hook_gc_enable() -> c_int {
+    with_gil(|_py| {
+        let state = &crate::runtime_state(&_py).gc;
+        let previous = state.enabled();
+        state.set_enabled(true);
+        c_int::from(previous)
+    })
+}
+
+unsafe extern "C" fn hook_gc_disable() -> c_int {
+    with_gil(|_py| {
+        let state = &crate::runtime_state(&_py).gc;
+        let previous = state.enabled();
+        state.set_enabled(false);
+        c_int::from(previous)
+    })
+}
+
+unsafe extern "C" fn hook_gc_is_enabled() -> c_int {
+    with_gil(|_py| c_int::from(crate::runtime_state(&_py).gc.enabled()))
+}
+
 /// Raise a `TypeError` for a malformed `hook_object_call` argument shape and
 /// return the hook's error sentinel (0).
 fn object_call_type_error(message: &str) -> OwnedHandleResult {
@@ -1919,6 +2005,15 @@ unsafe extern "C" fn hook_exception_class_borrowed(exception_bits: u64) -> Borro
     })
 }
 
+/// Return the immutable physical layout discriminator without materializing
+/// any Python field or allocating a sidecar. The ABI bridge calls this for
+/// both exception instances and their runtime class identities.
+unsafe extern "C" fn hook_exception_layout_kind(exception_or_class_bits: u64) -> u8 {
+    with_gil(|_py| unsafe {
+        crate::builtins::exceptions::exception_layout_kind_from_bits(&_py, exception_or_class_bits)
+    })
+}
+
 unsafe extern "C" fn hook_exception_snapshot(
     exception_bits: u64,
     out: *mut ExceptionSnapshot,
@@ -1947,10 +2042,25 @@ unsafe extern "C" fn hook_exception_snapshot(
             crate::obj_from_bits(unsafe { crate::exception_suppress_bits(exception_ptr) })
                 .as_bool()
                 .unwrap_or(false);
+        let typed = unsafe {
+            crate::builtins::exceptions::exception_capture_typed_snapshot(&_py, exception_ptr)
+        };
+        if crate::exception_pending(&_py) {
+            for bits in typed.handles.into_iter().filter(|bits| *bits != 0) {
+                crate::dec_ref_bits(&_py, bits);
+            }
+            return -1;
+        }
         let mut snapshot = ExceptionSnapshot {
             present_mask: EXCEPTION_SNAPSHOT_ARGS,
+            typed_present_mask: typed.present_mask,
+            layout_kind: typed.layout_kind as u8,
             suppress_context: u32::from(suppress),
             args,
+            typed_handles: typed.handles,
+            unicode_start: typed.unicode_start,
+            unicode_end: typed.unicode_end,
+            os_error_written: typed.os_error_written,
             ..ExceptionSnapshot::default()
         };
         for (mask, bits, slot) in [
@@ -2004,11 +2114,45 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
         | EXCEPTION_SNAPSHOT_TRACEBACK
         | EXCEPTION_SNAPSHOT_CONTEXT
         | EXCEPTION_SNAPSHOT_CAUSE;
+    let Some(layout_kind) = ExceptionLayoutKind::from_u8(snapshot.layout_kind) else {
+        return -1;
+    };
     if snapshot.present_mask & !known_mask != 0
         || snapshot.present_mask & EXCEPTION_SNAPSHOT_ARGS == 0
         || snapshot.suppress_context > 1
+        || snapshot._reserved != [0; 3]
     {
         return -1;
+    }
+    let typed_policies = layout_kind.field_policies();
+    debug_assert!(typed_policies.len() <= EXCEPTION_TYPED_MAX_FIELDS);
+    let known_typed_mask = (1u32 << typed_policies.len()).wrapping_sub(1);
+    if snapshot.typed_present_mask & !known_typed_mask != 0
+        || snapshot.typed_handles[typed_policies.len()..]
+            .iter()
+            .any(|bits| *bits != 0)
+    {
+        return -1;
+    }
+    for (index, policy) in typed_policies.iter().enumerate() {
+        let present = snapshot.typed_present_mask & (1u32 << index) != 0;
+        let has_handle = snapshot.typed_handles[index] != 0;
+        match policy.storage {
+            ExceptionFieldStorage::RuntimeMessage | ExceptionFieldStorage::Object
+                if present == has_handle => {}
+            ExceptionFieldStorage::PySsize if !present && !has_handle => {}
+            _ => return -1,
+        }
+    }
+    match layout_kind {
+        ExceptionLayoutKind::Unicode if snapshot.os_error_written == -1 => {}
+        ExceptionLayoutKind::OSError
+            if snapshot.unicode_start == 0 && snapshot.unicode_end == 0 => {}
+        ExceptionLayoutKind::Unicode | ExceptionLayoutKind::OSError => return -1,
+        _ if snapshot.unicode_start == 0
+            && snapshot.unicode_end == 0
+            && snapshot.os_error_written == -1 => {}
+        _ => return -1,
     }
     let field = |mask: u32, bits: u64| -> Option<u64> {
         if snapshot.present_mask & mask == 0 {
@@ -2042,6 +2186,11 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
         if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
             return -1;
         }
+        if unsafe { crate::builtins::exceptions::exception_layout_kind(exception_ptr) }
+            != layout_kind
+        {
+            return -1;
+        }
         let valid_args = crate::obj_from_bits(args)
             .as_ptr()
             .is_some_and(|ptr| unsafe { crate::object_type_id(ptr) } == TYPE_ID_TUPLE);
@@ -2068,6 +2217,14 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
         {
             return -1;
         }
+        let typed = crate::builtins::exceptions::ExceptionTypedSnapshotState {
+            layout_kind,
+            present_mask: snapshot.typed_present_mask,
+            handles: snapshot.typed_handles,
+            unicode_start: snapshot.unicode_start,
+            unicode_end: snapshot.unicode_end,
+            os_error_written: snapshot.os_error_written,
+        };
         // Nothing below this point can fail. Pin all new edges, publish every
         // public field as one GIL-serialized transaction, then release the old
         // graph. A rejected snapshot leaves the exception byte-for-byte intact.
@@ -2077,6 +2234,7 @@ unsafe extern "C" fn hook_exception_commit_snapshot(
                 exception_ptr,
                 [dict, args, notes, traceback, context, cause],
                 snapshot.suppress_context != 0,
+                &typed,
             )
         };
         0
@@ -4122,6 +4280,7 @@ pub fn register_cpython_hooks() {
             exception_set_field: hook_exception_set_field,
             exception_get_field: hook_exception_get_field,
             exception_class_borrowed: hook_exception_class_borrowed,
+            exception_layout_kind: hook_exception_layout_kind,
             exception_snapshot: hook_exception_snapshot,
             exception_commit_snapshot: hook_exception_commit_snapshot,
             type_is_subtype: hook_type_is_subtype,
@@ -4129,12 +4288,28 @@ pub fn register_cpython_hooks() {
             clear_pending_exception: hook_clear_pending_exception,
             handled_exception_get: hook_handled_exception_get,
             handled_exception_set: hook_handled_exception_set,
+            native_gc_allocate: hook_native_gc_allocate,
+            native_gc_track: hook_native_gc_track,
+            native_gc_untrack: hook_native_gc_untrack,
+            native_gc_deallocate: hook_native_gc_deallocate,
+            native_gc_is_tracked: hook_native_gc_is_tracked,
+            native_gc_is_finalized: hook_native_gc_is_finalized,
+            native_gc_claim_finalizer: hook_native_gc_claim_finalizer,
+            gc_collect: hook_gc_collect,
+            gc_enable: hook_gc_enable,
+            gc_disable: hook_gc_disable,
+            gc_is_enabled: hook_gc_is_enabled,
         };
         // SAFETY: all fn pointers are valid for the process lifetime.
         let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
         assert!(
             installed,
             "CPython runtime hooks were registered by a second authority"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::abi_types::ready_exception_singleton_types() },
+            0,
+            "CPython exception singleton types failed readiness after production hook publication"
         );
         registration.commit();
     });
@@ -4282,6 +4457,210 @@ mod tests {
                     .unwrap_or(false)
             );
             dec_ref_bits(_py, dict_bits);
+            dec_ref_bits(_py, exception_bits);
+        });
+    }
+
+    #[test]
+    fn exception_snapshot_roundtrips_layout_and_typed_fields_atomically() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exception_ptr = crate::builtins::exceptions::alloc_exception(
+                _py,
+                "AttributeError",
+                "typed snapshot",
+            );
+            assert!(!exception_ptr.is_null());
+            let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
+            let name_ptr = alloc_string(_py, b"before-name");
+            let object_ptr = alloc_string(_py, b"before-object");
+            assert!(!name_ptr.is_null() && !object_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let object_bits = MoltObject::from_ptr(object_ptr).bits();
+            crate::builtins::exceptions::exception_typed_fields_replace_internal(
+                _py,
+                exception_bits,
+                &[
+                    (
+                        molt_obj_model::ExceptionTypedField::AttributeErrorName,
+                        name_bits,
+                    ),
+                    (
+                        molt_obj_model::ExceptionTypedField::AttributeErrorObject,
+                        object_bits,
+                    ),
+                ],
+            )
+            .expect("initialize typed AttributeError fields");
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, object_bits);
+
+            let mut snapshot = ExceptionSnapshot::default();
+            assert_eq!(
+                unsafe { hook_exception_snapshot(exception_bits, &raw mut snapshot) },
+                0
+            );
+            assert_eq!(
+                snapshot.layout_kind,
+                molt_obj_model::ExceptionLayoutKind::AttributeError as u8
+            );
+            assert_eq!(snapshot.typed_present_mask, 0b11);
+            assert_ne!(snapshot.typed_handles[0], 0);
+            assert_ne!(snapshot.typed_handles[1], 0);
+
+            let mut invalid = snapshot;
+            invalid.layout_kind = molt_obj_model::ExceptionLayoutKind::NameError as u8;
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(exception_bits, &raw const invalid) },
+                -1,
+                "layout kind is immutable"
+            );
+            let unchanged =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "name")
+                    .expect("AttributeError.name descriptor")
+                    .expect("AttributeError.name before rejected commit");
+            assert_eq!(
+                crate::string_obj_to_owned(crate::obj_from_bits(unchanged)).as_deref(),
+                Some("before-name")
+            );
+            dec_ref_bits(_py, unchanged);
+
+            let replacement_ptr = alloc_string(_py, b"after-name");
+            assert!(!replacement_ptr.is_null());
+            let replacement_bits = MoltObject::from_ptr(replacement_ptr).bits();
+            dec_ref_bits(_py, snapshot.typed_handles[1]);
+            snapshot.typed_handles[1] = replacement_bits;
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(exception_bits, &raw const snapshot) },
+                0
+            );
+            let observed =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "name")
+                    .expect("AttributeError.name descriptor")
+                    .expect("AttributeError.name value");
+            assert_eq!(
+                crate::string_obj_to_owned(crate::obj_from_bits(observed)).as_deref(),
+                Some("after-name")
+            );
+            dec_ref_bits(_py, observed);
+
+            for bits in [
+                snapshot.dict,
+                snapshot.args,
+                snapshot.notes,
+                snapshot.traceback,
+                snapshot.context,
+                snapshot.cause,
+            ]
+            .into_iter()
+            .chain(snapshot.typed_handles)
+            .filter(|bits| *bits != 0)
+            {
+                dec_ref_bits(_py, bits);
+            }
+            dec_ref_bits(_py, exception_bits);
+        });
+    }
+
+    #[test]
+    fn exception_snapshot_roundtrips_typed_scalars_without_handle_boxing() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let encoding_ptr = alloc_string(_py, b"utf-8");
+            let object_ptr = alloc_string(_py, b"x");
+            let reason_ptr = alloc_string(_py, b"typed scalar snapshot");
+            assert!(!encoding_ptr.is_null() && !object_ptr.is_null() && !reason_ptr.is_null());
+            let constructor_fields = [
+                MoltObject::from_ptr(encoding_ptr).bits(),
+                MoltObject::from_ptr(object_ptr).bits(),
+                MoltObject::from_int(3).bits(),
+                MoltObject::from_int(5).bits(),
+                MoltObject::from_ptr(reason_ptr).bits(),
+            ];
+            let args_ptr = crate::alloc_tuple(_py, &constructor_fields);
+            assert!(!args_ptr.is_null());
+            for bits in [
+                MoltObject::from_ptr(encoding_ptr).bits(),
+                MoltObject::from_ptr(object_ptr).bits(),
+                MoltObject::from_ptr(reason_ptr).bits(),
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+            let class_bits = crate::builtins::exceptions::exception_type_bits_from_name(
+                _py,
+                "UnicodeEncodeError",
+            );
+            let exception_ptr = crate::builtins::exceptions::alloc_exception_from_class_bits(
+                _py,
+                class_bits,
+                MoltObject::from_ptr(args_ptr).bits(),
+            );
+            assert!(!exception_ptr.is_null());
+            let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
+            crate::builtins::exceptions::exception_typed_fields_replace_internal(
+                _py,
+                exception_bits,
+                &[
+                    (
+                        molt_obj_model::ExceptionTypedField::UnicodeStart,
+                        MoltObject::from_int(3).bits(),
+                    ),
+                    (
+                        molt_obj_model::ExceptionTypedField::UnicodeEnd,
+                        MoltObject::from_int(5).bits(),
+                    ),
+                ],
+            )
+            .expect("initialize UnicodeError scalar fields");
+
+            let mut snapshot = ExceptionSnapshot::default();
+            assert_eq!(
+                unsafe { hook_exception_snapshot(exception_bits, &raw mut snapshot) },
+                0
+            );
+            assert_eq!(
+                snapshot.layout_kind,
+                molt_obj_model::ExceptionLayoutKind::Unicode as u8
+            );
+            assert_eq!(snapshot.unicode_start, 3);
+            assert_eq!(snapshot.unicode_end, 5);
+            assert_ne!(snapshot.typed_handles[0], 0, "encoding stays a handle");
+            assert_ne!(snapshot.typed_handles[1], 0, "object stays a handle");
+            assert_eq!(snapshot.typed_handles[2], 0, "start is never boxed");
+            assert_eq!(snapshot.typed_handles[3], 0, "end is never boxed");
+            assert_ne!(snapshot.typed_handles[4], 0, "reason stays a handle");
+            assert!(snapshot.typed_handles[5..].iter().all(|bits| *bits == 0));
+            snapshot.unicode_start = 7;
+            snapshot.unicode_end = 11;
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(exception_bits, &raw const snapshot) },
+                0
+            );
+            let start =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "start")
+                    .expect("UnicodeError.start descriptor")
+                    .expect("UnicodeError.start value");
+            let end =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exception_ptr, "end")
+                    .expect("UnicodeError.end descriptor")
+                    .expect("UnicodeError.end value");
+            assert_eq!(crate::obj_from_bits(start).as_int(), Some(7));
+            assert_eq!(crate::obj_from_bits(end).as_int(), Some(11));
+            dec_ref_bits(_py, start);
+            dec_ref_bits(_py, end);
+            for bits in [
+                snapshot.dict,
+                snapshot.args,
+                snapshot.notes,
+                snapshot.traceback,
+                snapshot.context,
+                snapshot.cause,
+            ]
+            .into_iter()
+            .filter(|bits| *bits != 0)
+            {
+                dec_ref_bits(_py, bits);
+            }
             dec_ref_bits(_py, exception_bits);
         });
     }
@@ -4547,29 +4926,19 @@ mod tests {
             let value_ptr = crate::obj_from_bits(value_bits)
                 .as_ptr()
                 .expect("normalized Unicode error must remain live");
-            let dict_bits = unsafe { crate::exception_dict_bits(value_ptr) };
-            let dict_ptr = crate::obj_from_bits(dict_bits)
-                .as_ptr()
-                .expect("Unicode error attributes must have one runtime dict authority");
-            [
-                b"encoding".as_slice(),
-                b"object",
-                b"start",
-                b"end",
-                b"reason",
-            ]
-            .into_iter()
-            .map(|name| {
-                let bits = unsafe { dict_get_str_bytes_borrowed(&_py, dict_ptr, name) }
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "missing Unicode error attribute {}",
-                            String::from_utf8_lossy(name)
-                        )
-                    });
-                runtime_value(bits)
-            })
-            .collect::<Vec<_>>()
+            ["encoding", "object", "start", "end", "reason"]
+                .into_iter()
+                .map(|name| {
+                    let bits = crate::builtins::exceptions::exception_typed_field_get(
+                        &_py, value_ptr, name,
+                    )
+                    .unwrap_or_else(|| panic!("missing Unicode error descriptor {name}"))
+                    .unwrap_or_else(|_| panic!("missing Unicode error attribute {name}"));
+                    let value = runtime_value(bits);
+                    dec_ref_bits(&_py, bits);
+                    value
+                })
+                .collect::<Vec<_>>()
         });
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(exc_type);

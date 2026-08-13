@@ -232,12 +232,17 @@ class TestTracebackCarets:
 
     def test_binary_op_zero_division(self) -> None:
         """ZeroDivisionError from ``1 / 0`` should produce ``~~^~~`` carets."""
-        result = _compile_and_run("a = 1 / 0\n")
+        result = _compile_and_run(
+            'import atexit\natexit.register(print, "atexit-fired")\na = 1 / 0\n'
+        )
 
-        assert result.returncode != 0, "Expected non-zero exit for ZeroDivisionError"
+        assert result.returncode == 1, result.stderr
+        assert result.stdout == "atexit-fired\n"
         assert "ZeroDivisionError" in result.stderr, (
             f"Expected ZeroDivisionError in stderr, got: {result.stderr}"
         )
+        assert "runtime thread exit crossed an attached PyThreadState" not in result.stderr
+        assert "panicked at" not in result.stderr
 
         pattern = _extract_caret_pattern(result.stderr)
         assert pattern is not None, (
@@ -247,6 +252,20 @@ class TestTracebackCarets:
             f"Expected caret pattern '~~^~~', got '{pattern}'\n"
             f"Full stderr:\n{result.stderr}"
         )
+
+    def test_system_exit_bigint_overflow_uses_cpython_status_boundary(self) -> None:
+        result = _compile_and_run("raise SystemExit(2 ** 100)\n")
+
+        assert result.returncode == (0xFFFFFFFF if os.name == "nt" else 255)
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_system_exit_empty_string_preserves_presentation_newline(self) -> None:
+        result = _compile_and_run("raise SystemExit('')\n")
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == "\n"
 
     def test_attribute_error(self) -> None:
         """AttributeError from ``None.upper()`` should produce ``^^^^^^^`` carets."""

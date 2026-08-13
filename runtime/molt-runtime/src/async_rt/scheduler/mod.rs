@@ -18,15 +18,14 @@ use crate::{
     exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
     exception_handler_active, exception_kind_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
-    format_exception_with_traceback, generator_raise_active, handle_system_exit,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, maybe_ptr_from_bits,
-    molt_exception_last, obj_from_bits, object_class_bits, object_type_id, pending_bits_i64,
-    process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception,
-    resolve_task_ptr, runtime_state, set_task_raise_active, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_store, task_exception_stack_take, task_last_exception_contains_valid,
-    task_raise_active, thread_poll_fn_addr, with_gil,
+    generator_raise_active, header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr,
+    maybe_ptr_from_bits, molt_exception_last, obj_from_bits, object_class_bits, object_type_id,
+    pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits, raise_exception,
+    record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
+    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
+    task_last_exception_contains_valid, task_raise_active, thread_poll_fn_addr, with_gil,
 };
 
 use super::cancellation::{
@@ -1457,15 +1456,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             {
                 let exc_bits = molt_exception_last();
                 if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
-                    let kind_bits = exception_kind_bits(exc_ptr);
-                    if string_obj_to_owned(obj_from_bits(kind_bits)).as_deref()
-                        == Some("SystemExit")
-                    {
-                        handle_system_exit(_py, exc_ptr);
-                    }
-                    context_stack_unwind(_py, exc_bits);
-                    eprintln!("{}", format_exception_with_traceback(_py, exc_ptr));
-                    std::process::exit(1);
+                    context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
                 }
                 if !obj_from_bits(exc_bits).is_none() {
                     dec_ref_bits(_py, exc_bits);

@@ -10,6 +10,8 @@ def main():
         demo.missing
     except AttributeError as exc:
         print("attr", exc.name, exc.obj is demo)
+        print("args", exc.args)
+        print("str", str(exc))
 
 
 if __name__ == "__main__":

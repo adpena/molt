@@ -28,8 +28,8 @@
 
 #![allow(non_snake_case)]
 
-#[path = "support/fake_foreign.rs"]
-mod fake_foreign;
+mod support;
+use support::fake_foreign;
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
@@ -41,7 +41,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    install_runtime_hooks();
 }
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
@@ -134,10 +134,7 @@ fn install_runtime_hooks() {
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
     hooks.foreign_new = fake_foreign::foreign_new;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// A struct shaped like a numpy descriptor object: a `PyObject` header followed
@@ -278,6 +275,7 @@ fn ready_populates_tp_dict_from_members_and_getset() {
     ];
 
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.ob_base.ob_base.ob_refcnt = 1;
     tp.tp_name = c"numpy.dtype_shaped".as_ptr();
     tp.tp_basicsize = std::mem::size_of::<FakeDescrObject>() as Py_ssize_t;
     tp.tp_members = members.as_mut_ptr().cast();
@@ -378,6 +376,21 @@ fn ready_populates_tp_dict_from_members_and_getset() {
         unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(names_value) },
         1234
     );
+    unsafe {
+        for object in [
+            names_value,
+            shadowed,
+            shadow_value,
+            inst_dict,
+            num_value,
+            names_key,
+            num_key,
+            tp.tp_mro,
+            tp.tp_dict,
+        ] {
+            molt_cpython_abi::api::refcount::Py_DECREF(object);
+        }
+    }
 }
 
 // ===========================================================================

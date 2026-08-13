@@ -45,12 +45,13 @@ fn runtime_registers_one_canonical_pending_call_authority() {
     assert!(authority.contains(".store(Self::advance(pos, N), Ordering::Release)"));
     assert!(!authority.contains("Mutex<VecDeque"));
     assert!(!authority.contains("VecDeque"));
-    assert!(authority.contains(
-        "#[cfg(not(feature = \"runtime-test-support\"))]\nuse std::sync::OnceLock;"
-    ));
-    assert!(authority.contains(
-        "#[cfg(feature = \"runtime-test-support\")]\nuse std::sync::Mutex;"
-    ));
+    assert!(
+        authority
+            .contains("#[cfg(not(feature = \"runtime-test-support\"))]\nuse std::sync::OnceLock;")
+    );
+    assert!(
+        authority.contains("#[cfg(feature = \"runtime-test-support\")]\nuse std::sync::Mutex;")
+    );
     assert_eq!(
         authority.matches("static MAIN_THREAD:").count(),
         2,

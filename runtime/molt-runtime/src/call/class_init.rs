@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::builtins::exceptions::{
-    molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
+    exception_layout_kind_for_class, exception_typed_fields_replace_internal, molt_exception_init,
+    molt_exception_init_owned, molt_exception_new_bound, molt_exceptiongroup_init,
 };
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
@@ -9,6 +10,7 @@ use crate::call::type_policy::{
 use crate::object::ops_encoding::DecodeFailure;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::*;
+use molt_obj_model::ExceptionTypedField;
 
 fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String> {
     let obj = obj_from_bits(bits);
@@ -293,6 +295,81 @@ fn reject_builtin_exception_keywords(_py: &PyToken<'_>, class_bits: u64, kw_name
     true
 }
 
+/// Validate and publish the three builtin-exception keyword families that
+/// CPython exposes.  The accepted names and physical fields come from the
+/// canonical exception-layout authority; this function owns only the
+/// constructor parser's exact diagnostics and transactional hand-off.
+pub(crate) fn apply_builtin_exception_keywords(
+    _py: &PyToken<'_>,
+    constructor_class_bits: u64,
+    inst_bits: u64,
+    kw_names: &[u64],
+    kw_values: &[u64],
+) -> bool {
+    if kw_names.is_empty() {
+        return false;
+    }
+    if obj_from_bits(inst_bits).as_ptr().is_none() {
+        let _ = raise_exception::<u64>(_py, "SystemError", "expected exception object");
+        return true;
+    }
+    let layout = exception_layout_kind_for_class(_py, constructor_class_bits);
+    let keyword_policies = layout.constructor_keyword_policies();
+    let max_keywords = keyword_policies.clone().count();
+    if max_keywords == 0 {
+        return reject_builtin_exception_keywords(_py, constructor_class_bits, kw_names);
+    }
+    let constructor_name = class_name_for_error(constructor_class_bits);
+    if kw_names.len() > max_keywords {
+        let msg = format!(
+            "{constructor_name}() takes at most {max_keywords} keyword argument{} ({} given)",
+            if max_keywords == 1 { "" } else { "s" },
+            kw_names.len(),
+        );
+        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        return true;
+    }
+
+    let none = MoltObject::none().bits();
+    let mut updates = [(ExceptionTypedField::ImportName, none); 3];
+    for (slot, policy) in updates.iter_mut().zip(keyword_policies) {
+        *slot = (policy.field, none);
+    }
+    for (&name_bits, &value_bits) in kw_names.iter().zip(kw_values) {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            let _ = raise_exception::<u64>(_py, "SystemError", "keyword name must be str");
+            return true;
+        };
+        let field = layout
+            .constructor_keyword_policy(&name)
+            .map(|policy| policy.field);
+        let Some(field) = field else {
+            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+                format!("{constructor_name}() got an unexpected keyword argument '{name}'")
+            } else {
+                format!("'{name}' is an invalid keyword argument for {constructor_name}()")
+            };
+            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            return true;
+        };
+        let slot = updates[..max_keywords]
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == field)
+            .expect("canonical exception keyword field");
+        slot.1 = value_bits;
+    }
+
+    if let Err(message) =
+        exception_typed_fields_replace_internal(_py, inst_bits, &updates[..max_keywords])
+    {
+        if !exception_pending(_py) {
+            let _ = raise_exception::<u64>(_py, "SystemError", message);
+        }
+        return true;
+    }
+    false
+}
+
 unsafe fn initialize_builtin_exception_from_positional(
     _py: &PyToken<'_>,
     init_bits: u64,
@@ -304,7 +381,10 @@ unsafe fn initialize_builtin_exception_from_positional(
         return;
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    if unsafe { callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init)) } {
+    if unsafe {
+        callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init))
+            || callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init_owned))
+    } {
         let _ = molt_exception_init(inst_bits, args_bits);
     } else {
         debug_assert!(unsafe {
@@ -433,23 +513,41 @@ pub(crate) unsafe fn construct_exception_from_args(
             callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init))
                 || callable_matches_runtime_symbol(
                     Some(init_bits),
+                    fn_addr!(molt_exception_init_owned),
+                )
+                || callable_matches_runtime_symbol(
+                    Some(init_bits),
                     fn_addr!(molt_exceptiongroup_init),
                 );
         if tuple_init && initialized_by_default_new {
-            if reject_builtin_exception_keywords(_py, class_bits, kw_names) {
+            let failed =
+                apply_builtin_exception_keywords(_py, class_bits, inst_bits, kw_names, kw_values);
+            // `class_attr_lookup` returns an owned descriptor result.  For
+            // builtin exception roots this is a bound method that owns `self`;
+            // retaining it keeps every constructed exception (and its args
+            // graph) alive after local rebinding.
+            dec_ref_bits(_py, init_bits);
+            if failed {
                 dec_ref_bits(_py, inst_bits);
                 return MoltObject::none().bits();
             }
             return inst_bits;
         }
         if tuple_init {
-            if reject_builtin_exception_keywords(_py, class_bits, kw_names) {
+            initialize_builtin_exception_from_positional(_py, init_bits, inst_bits, pos);
+            let failed = exception_pending(_py)
+                || apply_builtin_exception_keywords(
+                    _py, class_bits, inst_bits, kw_names, kw_values,
+                );
+            dec_ref_bits(_py, init_bits);
+            if failed {
                 dec_ref_bits(_py, inst_bits);
                 return MoltObject::none().bits();
             }
-            initialize_builtin_exception_from_positional(_py, init_bits, inst_bits, pos);
         } else {
-            let _ = call(init_bits, None, pos, true);
+            let init_result = call(init_bits, None, pos, true);
+            dec_ref_bits(_py, init_result);
+            dec_ref_bits(_py, init_bits);
         }
         resolve_construct_after_init(_py, inst_bits)
     }
@@ -1366,6 +1464,88 @@ mod tests {
 
             clear_exception(_py);
             dec_ref_bits(_py, name_bits);
+        });
+    }
+
+    #[test]
+    fn builtin_exception_constructor_releases_owned_init_descriptor() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = crate::exception_type_bits_from_name(_py, "AttributeError");
+            let class_ptr = obj_from_bits(class_bits)
+                .as_ptr()
+                .expect("AttributeError class");
+            let message_ptr = alloc_string(_py, b"missing");
+            let keyword_ptr = alloc_string(_py, b"name");
+            let field_ptr = alloc_string(_py, b"field");
+            assert!(!message_ptr.is_null() && !keyword_ptr.is_null() && !field_ptr.is_null());
+            let message_bits = MoltObject::from_ptr(message_ptr).bits();
+            let keyword_bits = MoltObject::from_ptr(keyword_ptr).bits();
+            let field_bits = MoltObject::from_ptr(field_ptr).bits();
+
+            let result = unsafe {
+                construct_exception_from_args(
+                    _py,
+                    class_ptr,
+                    &[message_bits],
+                    &[keyword_bits],
+                    &[field_bits],
+                )
+            };
+            let result_ptr = obj_from_bits(result)
+                .as_ptr()
+                .expect("AttributeError construction");
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(result_ptr)).ref_count_snapshot() },
+                1,
+                "the returned exception must carry only the caller-owned reference"
+            );
+
+            dec_ref_bits(_py, result);
+            dec_ref_bits(_py, message_bits);
+            dec_ref_bits(_py, keyword_bits);
+            dec_ref_bits(_py, field_bits);
+        });
+    }
+
+    #[test]
+    fn oserror_keyword_rejection_names_requested_constructor_before_errno_selection() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = crate::exception_type_bits_from_name(_py, "OSError");
+            let class_ptr = obj_from_bits(class_bits).as_ptr().expect("OSError class");
+            let message_ptr = alloc_string(_py, b"missing");
+            let filename_ptr = alloc_string(_py, b"input.txt");
+            let keyword_ptr = alloc_string(_py, b"bad");
+            assert!(!message_ptr.is_null() && !filename_ptr.is_null() && !keyword_ptr.is_null());
+            let message_bits = MoltObject::from_ptr(message_ptr).bits();
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let keyword_bits = MoltObject::from_ptr(keyword_ptr).bits();
+
+            let result = unsafe {
+                construct_exception_from_args(
+                    _py,
+                    class_ptr,
+                    &[MoltObject::from_int(2).bits(), message_bits, filename_bits],
+                    &[keyword_bits],
+                    &[MoltObject::from_int(1).bits()],
+                )
+            };
+            assert!(obj_from_bits(result).is_none());
+            let error_bits = crate::molt_exception_last();
+            let error_ptr = obj_from_bits(error_bits)
+                .as_ptr()
+                .expect("pending TypeError");
+            assert_eq!(
+                crate::format_exception_message(_py, error_ptr),
+                "OSError() takes no keyword arguments"
+            );
+
+            clear_exception(_py);
+            dec_ref_bits(_py, error_bits);
+            dec_ref_bits(_py, message_bits);
+            dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, keyword_bits);
         });
     }
 }

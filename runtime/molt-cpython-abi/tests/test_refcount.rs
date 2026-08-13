@@ -5,6 +5,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{Py_False, Py_None, Py_True, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
@@ -12,7 +14,7 @@ use std::ptr;
 
 /// Ensure bridge + static types are initialised.
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
 }
 
 // ---------------------------------------------------------------------------

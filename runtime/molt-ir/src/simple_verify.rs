@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{FunctionIR, OpIR, SimpleIR};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
+use crate::ir::{FunctionIR, OpIR, SimpleIR};
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, simpleir_call_target_role,
     simpleir_kind_is_repoll, simpleir_kind_is_return_terminator, simpleir_kind_is_suspend,
@@ -533,9 +533,11 @@ fn basic_blocks(ops: &[OpIR], edges: &[Vec<LogicalEdge>]) -> BasicBlocks {
     for (index, outgoing) in edges.iter().enumerate() {
         let targets: BTreeSet<usize> = outgoing.iter().map(|edge| edge.target).collect();
         let next = index + 1;
-        let expected = (next < ops.len())
-            .then_some(BTreeSet::from([next]))
-            .unwrap_or_default();
+        let expected = if next < ops.len() {
+            BTreeSet::from([next])
+        } else {
+            BTreeSet::new()
+        };
         if targets != expected {
             if next < ops.len() {
                 leaders.insert(next);

@@ -1023,10 +1023,17 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
         TirBlock {
             id: body,
             args: vec![],
-            ops: vec![
-                original_copy_with_operands("set_new", vec![], vec![next_owner]),
-                original_copy_with_operands("store_var", vec![next_owner], vec![next_stored]),
-            ],
+            ops: {
+                let mut rebind_boundary = op(OpCode::DelBoundary, vec![current_phi], vec![]);
+                rebind_boundary
+                    .attrs
+                    .insert("s_value".into(), AttrValue::Str("value".into()));
+                vec![
+                    rebind_boundary,
+                    original_copy_with_operands("set_new", vec![], vec![next_owner]),
+                    original_copy_with_operands("store_var", vec![next_owner], vec![next_stored]),
+                ]
+            },
             terminator: Terminator::Branch {
                 target: header,
                 args: vec![next_stored],
@@ -1051,6 +1058,18 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
     let mut am = AnalysisManager::new();
     run(&mut func, &mut am);
 
+    let body_drops: Vec<ValueId> = func.blocks[&body]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert_eq!(
+        body_drops,
+        vec![current_phi],
+        "the STORE_FAST overwrite boundary must release the current loop-carried owner exactly once"
+    );
+
     let exit_drops: Vec<ValueId> = func.blocks[&exit]
         .ops
         .iter()
@@ -1060,7 +1079,7 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
     assert_eq!(
         exit_drops,
         vec![current_phi],
-        "the set_new owner moved into the loop phi; the phi boundary is the sole release authority"
+        "the final live loop owner must be released exactly once at scope exit"
     );
     assert!(
         !exit_drops.contains(&set_owner),

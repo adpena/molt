@@ -3059,6 +3059,98 @@ def f(seq):
     assert producer.get("var") == "value"
 
 
+def test_first_syntactic_loop_assignment_releases_previous_iteration_slot() -> None:
+    source = """
+def f(seq):
+    for item in seq:
+        value = RuntimeError(item)
+    return value
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    producers = {
+        op["out"]: (idx, op)
+        for idx, op in enumerate(ops)
+        if isinstance(op.get("out"), str) and op["out"]
+    }
+
+    loop_start = next(
+        idx for idx, op in enumerate(ops) if op.get("kind") == "loop_start"
+    )
+    boundary_idx, boundary = next(
+        (idx, op)
+        for idx, op in enumerate(ops)
+        if idx > loop_start
+        and op.get("kind") == "del_boundary"
+        and op.get("s_value") == "value"
+    )
+    producer_idx, producer = producers[boundary["args"][0]]
+    store_idx = next(
+        idx
+        for idx, op in enumerate(ops[boundary_idx + 1 :], boundary_idx + 1)
+        if op.get("kind") == "store_var" and op.get("var") == "value"
+    )
+
+    assert [op.get("kind") for op in ops[producer_idx : boundary_idx + 1]] == [
+        "load_var",
+        "check_exception",
+        "del_boundary",
+    ]
+    assert boundary_idx < store_idx
+    assert producer.get("kind") == "load_var"
+    assert producer.get("var") == "value"
+
+
+def test_builtin_exception_names_follow_target_version_and_platform() -> None:
+    source = """
+def f():
+    return PythonFinalizationError, WindowsError
+"""
+
+    def function_ops(*, target_python: tuple[int, int], platform: str):
+        gen = SimpleTIRGenerator(
+            module_name="__main__",
+            target_python=target_python,
+            target_sys_platform=platform,
+        )
+        gen.visit(ast.parse(source))
+        ir = gen.to_json()
+        return next(
+            func["ops"] for func in ir["functions"] if func["name"].endswith("f")
+        )
+
+    py312_linux = function_ops(target_python=(3, 12), platform="linux")
+    assert not any(
+        op.get("kind") == "exception_class"
+        and op.get("s_value") in {"PythonFinalizationError", "WindowsError"}
+        for op in py312_linux
+    )
+    constants = {
+        op["out"]: op.get("s_value")
+        for op in py312_linux
+        if op.get("kind") == "const_str"
+    }
+    assert {
+        constants.get(op.get("args", [None, None])[1])
+        for op in py312_linux
+        if op.get("kind") == "module_get_global"
+    } >= {"PythonFinalizationError", "WindowsError"}
+
+    py313_windows = function_ops(target_python=(3, 13), platform="win32")
+    constants = {
+        op["out"]: op.get("s_value")
+        for op in py313_windows
+        if op.get("kind") == "const_str"
+    }
+    assert {
+        constants.get(op.get("args", [None])[0])
+        for op in py313_windows
+        if op.get("kind") == "exception_class"
+    } >= {"PythonFinalizationError", "WindowsError"}
+
+
 def test_with_context_exit_checks_after_exception_frame_release() -> None:
     source = """
 def f(cm):

@@ -432,16 +432,11 @@ class CallNamedDispatchMixin(_MixinBase):
             )
             if lowered_wrapper_intrinsic is not None:
                 return lowered_wrapper_intrinsic
-            if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
-                if node.keywords:
-                    self._bridge_fallback(
-                        node,
-                        f"{func_id} with keywords",
-                        impact="medium",
-                        alternative=f"{func_id} with positional arguments only",
-                        detail="keywords are not supported for exception constructors",
-                    )
-                    return None
+            if (
+                func_id in {"BaseExceptionGroup", "ExceptionGroup"}
+                and not node.keywords
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
                 args: list[MoltValue] = []
                 for arg in node.args:
                     arg_val = self.visit(arg)

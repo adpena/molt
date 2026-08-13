@@ -67,7 +67,8 @@ pub(crate) fn exception_group_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u
 }
 
 pub(crate) fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-    let bits = unsafe { exception_value_bits(ptr) };
+    let bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::GroupExceptions)? };
     obj_from_bits(bits).as_ptr().and_then(|tuple_ptr| {
         (unsafe { object_type_id(tuple_ptr) } == TYPE_ID_TUPLE).then_some(bits)
     })
@@ -136,19 +137,7 @@ fn exception_group_collect_exceptions(
             let item_bits = molt_index(exceptions_bits, idx_bits);
             if exception_pending(_py) {
                 let exc_bits = molt_exception_last();
-                let exc_obj = obj_from_bits(exc_bits);
-                let mut is_index = false;
-                if let Some(exc_ptr) = exc_obj.as_ptr() {
-                    unsafe {
-                        if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                            let kind_bits = exception_kind_bits(exc_ptr);
-                            let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                            if kind.as_deref() == Some("IndexError") {
-                                is_index = true;
-                            }
-                        }
-                    }
-                }
+                let is_index = exception_matches_builtin_name(_py, exc_bits, "IndexError");
                 if is_index {
                     clear_exception(_py);
                     dec_ref_bits(_py, exc_bits);
@@ -221,7 +210,13 @@ fn exception_group_alloc(
         MoltObject::none().bits(),
     );
     let value_installed = !ptr.is_null()
-        && exception_replace_value_bits(_py, MoltObject::from_ptr(ptr).bits(), tuple_bits).is_ok();
+        && exception_typed_field_replace_internal(
+            _py,
+            MoltObject::from_ptr(ptr).bits(),
+            ExceptionTypedField::GroupExceptions,
+            tuple_bits,
+        )
+        .is_ok();
     dec_ref_bits(_py, args_bits);
     dec_ref_bits(_py, tuple_bits);
     if !value_installed {
@@ -755,9 +750,18 @@ pub(crate) fn alloc_exception_group_from_class_bits(
             dec_ref_bits(_py, args_bits);
             return std::ptr::null_mut();
         }
+        // CPython's exact BaseExceptionGroup constructor narrows to the
+        // ExceptionGroup builtin when every nested item derives from
+        // Exception. Subclasses preserve their requested identity.
+        let allocation_class =
+            if class_bits == builtins.base_exception_group && collected.all_exception {
+                builtins.exception_group
+            } else {
+                class_bits
+            };
         let Some(bits) = exception_group_alloc_collected(
             _py,
-            class_bits,
+            allocation_class,
             message_bits,
             exceptions_bits,
             collected,
@@ -1086,6 +1090,7 @@ pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc_dict_with_pairs;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1211,6 +1216,44 @@ mod tests {
             dec_ref_bits(_py, items_bits);
             dec_ref_bits(_py, first_bits);
             dec_ref_bits(_py, second_bits);
+        });
+    }
+
+    #[test]
+    fn exact_base_exception_group_narrows_only_for_exception_children() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = builtin_classes(_py);
+            let value_ptr = alloc_exception(_py, "ValueError", "value");
+            assert!(!value_ptr.is_null());
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            let message_ptr = alloc_string(_py, b"narrow");
+            let children_ptr = alloc_tuple(_py, &[value_bits]);
+            assert!(!message_ptr.is_null() && !children_ptr.is_null());
+            let args_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_ptr(message_ptr).bits(),
+                    MoltObject::from_ptr(children_ptr).bits(),
+                ],
+            );
+            assert!(!args_ptr.is_null());
+
+            let group_ptr = alloc_exception_group_from_class_bits(
+                _py,
+                builtins.base_exception_group,
+                MoltObject::from_ptr(args_ptr).bits(),
+            );
+            assert!(!group_ptr.is_null());
+            assert_eq!(
+                unsafe { object_class_bits(group_ptr) },
+                builtins.exception_group
+            );
+
+            dec_ref_bits(_py, MoltObject::from_ptr(group_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(message_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(children_ptr).bits());
+            dec_ref_bits(_py, value_bits);
         });
     }
 

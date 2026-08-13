@@ -16,6 +16,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyList_Type, PyListObject, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
@@ -133,10 +135,7 @@ fn install() {
     hooks.classify_heap = fx_classify_heap;
     hooks.int_from_i64 = fx_int_from_i64;
     hooks.foreign_new = fx_foreign_new;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 use molt_cpython_abi::api::{errors, numbers, sequences};
@@ -224,6 +223,7 @@ fn cython_direct_ob_item_construction_commits_one_truthful_list() {
             .bits(),
         replacement_bits
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
 #[test]
@@ -285,6 +285,7 @@ fn setitem_places_items_at_index_out_of_order() {
         unsafe { errors::PyErr_Occurred() }.is_null(),
         "successful fills must not leave an exception"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
 #[test]
@@ -300,6 +301,15 @@ fn setitem_accepts_a_self_cycle_during_presized_construction() {
     assert_eq!(unsafe { sequences::PyList_SetItem(list, 0, list) }, 0);
     assert_eq!(unsafe { sequences::PyList_GetItem(list, 0) }, list);
     assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+
+    // Dissolve the list -> self edge before releasing the caller's retained
+    // reference; the indexed replacement consumes its new reference.
+    let replacement = unsafe { numbers::PyLong_FromLong(0) };
+    assert_eq!(
+        unsafe { sequences::PyList_SetItem(list, 0, replacement) },
+        0
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
 #[test]
@@ -330,6 +340,7 @@ fn setitem_oob_sets_indexerror_and_releases_stolen_ref() {
         "the stolen reference must be released on the OOB error path"
     );
     unsafe { errors::PyErr_Clear() };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
 #[test]
@@ -373,9 +384,10 @@ fn setitem_foreign_item_gets_custody_and_is_retrievable() {
         unsafe { errors::PyErr_Occurred() }.is_null(),
         "the foreign path must not leave a stray exception"
     );
-    // Detach the wrapper identity (foreign/raw_py maps) so the stack object
-    // cannot dangle in the process-global bridge after this test.
+    // Release the list before detaching the wrapper identity so its projection
+    // edge is retired while the stack-backed foreign object is still valid.
     unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(list);
         molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_foreign(fp as usize);
     }
 }

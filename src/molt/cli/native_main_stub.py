@@ -172,7 +172,7 @@ extern void molt_main();
 extern unsigned long long molt_frame_pop();
 extern unsigned long long molt_exception_pending();
 extern unsigned long long molt_exception_last();
-extern unsigned long long molt_raise(unsigned long long exc_bits);
+extern unsigned long long molt_exception_report_uncaught(unsigned long long exc_bits);
 extern void molt_dec_ref(unsigned long long bits);
 extern void molt_dec_ref_obj(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -234,10 +234,10 @@ static int molt_finish() {
     }
     if (pending != 0) {
         unsigned long long exc = molt_exception_last();
-        molt_raise(exc);
+        unsigned long long exit_code = molt_exception_report_uncaught(exc);
         molt_frame_pop();  /* pop frame after traceback formatting */
         molt_dec_ref_obj(exc);
-        molt_runtime_exit(1);
+        molt_runtime_exit(exit_code);
         _Exit(1);
     }
     molt_runtime_exit(0);

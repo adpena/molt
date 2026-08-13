@@ -1,3 +1,5 @@
+mod support;
+
 use molt_cpython_abi::abi_types::PyObject;
 use molt_lang_obj_model::MoltObject;
 
@@ -13,10 +15,7 @@ fn register(bits: u64) -> *mut PyObject {
 fn pyset_add_rejects_shared_frozenset() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.set_add = accept_set_add;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
     let frozen = Box::into_raw(Box::new(PyObject {
         ob_refcnt: 1,
         ob_type: &raw mut molt_cpython_abi::abi_types::PyFrozenSet_Type,

@@ -2,11 +2,13 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::hooks::{DecodedHandleResult, hooks_or_stubs};
 use std::ptr;
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
 }
 
 // ---------------------------------------------------------------------------
@@ -17,8 +19,8 @@ fn init() {
 fn test_hooks_or_stubs_returns_stubs() {
     init();
     let h = hooks_or_stubs();
-    // In test context, no runtime is registered, so we get stubs
-    // Verify stub functions return expected fallback values
+    // The test transaction changes only lifecycle custody. All object hooks
+    // retain the fail-closed stub behavior verified below.
     let str_bits = unsafe { (h.alloc_str)(b"hello".as_ptr(), 5) };
     assert_eq!(str_bits, 0);
 

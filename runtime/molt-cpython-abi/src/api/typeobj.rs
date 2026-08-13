@@ -2079,7 +2079,7 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
     fn live_subclasses(tp: *mut PyTypeObject) -> Vec<TypeIdentity> {
-        let subclasses = {
+        {
             let mut registry = TYPE_SUBCLASSES.lock();
             let Some(tp_identity) = type_identity(&mut registry, tp) else {
                 return Vec::new();
@@ -2106,8 +2106,7 @@ pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
                 entry.members = live_order.iter().copied().collect();
             }
             live_order
-        };
-        subclasses
+        }
     }
 
     unsafe fn invalidate_one(tp: *mut PyTypeObject) {
@@ -2121,10 +2120,10 @@ pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
                 if watched & (1 << watcher_id) == 0 {
                     continue;
                 }
-                if let Some(callback) = callback {
-                    if unsafe { callback(tp.cast::<PyObject>()) } < 0 {
-                        unsafe { crate::api::errors::PyErr_WriteUnraisable(tp.cast()) };
-                    }
+                if let Some(callback) = callback
+                    && unsafe { callback(tp.cast::<PyObject>()) } < 0
+                {
+                    unsafe { crate::api::errors::PyErr_WriteUnraisable(tp.cast()) };
                 }
             }
         }
@@ -3190,6 +3189,12 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeOb
             if std::ptr::eq(entry.cast::<PyTypeObject>(), b) {
                 return 1;
             }
+            if let Some(secondary) = crate::abi_types::exc_singleton_secondary_parent(entry) {
+                let secondary = secondary.cast::<PyTypeObject>();
+                if std::ptr::eq(secondary, b) || unsafe { PyType_IsSubtype(secondary, b) } != 0 {
+                    return 1;
+                }
+            }
             i += 1;
         }
         return 0;
@@ -3201,6 +3206,14 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeOb
     while !cursor.is_null() {
         if std::ptr::eq(cursor, b) {
             return 1;
+        }
+        if let Some(secondary) =
+            crate::abi_types::exc_singleton_secondary_parent(cursor.cast::<PyObject>())
+        {
+            let secondary = secondary.cast::<PyTypeObject>();
+            if std::ptr::eq(secondary, b) || unsafe { PyType_IsSubtype(secondary, b) } != 0 {
+                return 1;
+            }
         }
         cursor = unsafe { (*cursor).tp_base };
     }
@@ -4230,6 +4243,7 @@ mod class2_decode_tests {
 
     #[test]
     fn every_stable_slot_has_one_symmetric_storage_authority() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         for id in 1..=81 {
             unsafe { crate::api::errors::PyErr_Clear() };
@@ -4261,6 +4275,7 @@ mod class2_decode_tests {
 
     #[test]
     fn raw_registered_foreign_object_never_decodes_as_molt_value() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         HASH_CALLS.store(0, Ordering::SeqCst);
         REPR_CALLS.store(0, Ordering::SeqCst);

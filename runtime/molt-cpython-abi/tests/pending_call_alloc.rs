@@ -1,3 +1,5 @@
+mod support;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -65,18 +67,19 @@ pub extern "C" fn pending_call_calibrated_empty_authority() -> c_int {
 
 #[inline(never)]
 fn calibrated_call_baseline(input: c_int) -> c_int {
-    let calibration = std::hint::black_box(std::hint::black_box(input)) & 0;
-    calibration | pending_call_calibrated_empty_authority()
+    std::hint::black_box(input);
+    pending_call_calibrated_empty_authority()
 }
 
 #[inline(never)]
 fn measured_production_empty_poll(input: c_int) -> c_int {
-    let calibration = std::hint::black_box(std::hint::black_box(input)) & 0;
-    calibration | make_pending_calls_at_runtime_safepoint()
+    std::hint::black_box(input);
+    make_pending_calls_at_runtime_safepoint()
 }
 
 #[test]
 fn empty_poll_enqueue_and_full_paths_are_allocation_free() {
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
     const ROUNDS: usize = 31;
     const ITERATIONS: usize = 500_000;
 

@@ -18,7 +18,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    BUILTIN_EXCEPTION_NAMES,
     BUILTIN_LAYOUT_MIN,
     BUILTIN_TYPE_TAGS,
     ClassInfo,
@@ -716,7 +715,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             if (
                 base_info is None
                 and base_name not in BUILTIN_TYPE_TAGS
-                and base_name not in BUILTIN_EXCEPTION_NAMES
+                and not self._builtin_exception_is_available(base_name)
             ):
                 dynamic_build = True
                 continue
@@ -773,7 +772,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         if any(
             name not in self.classes
             and name not in BUILTIN_TYPE_TAGS
-            and name not in BUILTIN_EXCEPTION_NAMES
+            and not self._builtin_exception_is_available(name)
             for name in base_names
         ):
             dynamic = True

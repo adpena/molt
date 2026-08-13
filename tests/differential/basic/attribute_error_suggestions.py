@@ -12,3 +12,5 @@ if __name__ == "__main__":
     except AttributeError as exc:
         print("name", exc.name)
         print("obj", exc.obj is demo)
+        print("args", exc.args)
+        print("str", str(exc))

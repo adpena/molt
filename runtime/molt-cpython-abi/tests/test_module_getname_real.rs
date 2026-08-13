@@ -16,6 +16,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
 use std::collections::HashMap;
@@ -165,10 +167,7 @@ fn install_hooks() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// Build a module named `name` and set its `__name__` in its own dict via the

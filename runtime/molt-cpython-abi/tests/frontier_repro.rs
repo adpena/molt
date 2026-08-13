@@ -36,9 +36,11 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::hooks::RuntimeHooks;
 use std::collections::HashMap;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal fake runtime backend
@@ -103,22 +105,13 @@ unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
     }
 }
 
-static INIT: Once = Once::new();
-
-/// Initialize the ABI and install the minimal str-materializing hook set.
-/// Idempotent; safe for every test in this binary to call.
-fn install_min_hooks() {
-    INIT.call_once(|| {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-        hooks.alloc_str = fake_alloc_str;
-        hooks.str_data = fake_str_data;
-        hooks.classify_heap = fake_classify_heap;
-        // Fresh OnceLock in this dedicated test binary — installs cleanly.
-        unsafe {
-            molt_cpython_abi::try_set_runtime_hooks(hooks);
-        }
-    });
+/// Install this binary's str hooks and own one real runtime execution boundary.
+fn install_min_hooks() -> support::AbiTestThreadStateTransaction {
+    let mut hooks: RuntimeHooks = support::stub_runtime_hooks();
+    hooks.alloc_str = fake_alloc_str;
+    hooks.str_data = fake_str_data;
+    hooks.classify_heap = fake_classify_heap;
+    support::AbiTestThreadStateTransaction::new(hooks)
 }
 
 /// Read a bridge-minted `str` PyObject back to an owned `String`.
@@ -140,7 +133,7 @@ unsafe fn read_pystr(op: *mut molt_cpython_abi::abi_types::PyObject) -> String {
 
 #[test]
 fn harness_drives_real_abi_code() {
-    install_min_hooks();
+    let _thread_state = install_min_hooks();
     // A value inside Molt's inline-int range round-trips correctly today — this
     // is the "the loop is live" sanity check. If this ever breaks, the harness
     // (not a frontier) is broken.
@@ -164,7 +157,7 @@ fn harness_drives_real_abi_code() {
 
 #[test]
 fn frontier_08_pylong_aslong_silent_overflow() {
-    install_min_hooks();
+    let _thread_state = install_min_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     // 2**31 + 5 — above LONG_MAX on any 32-bit-long platform (wasm32, Windows).
@@ -214,7 +207,7 @@ fn frontier_08_pylong_aslong_silent_overflow() {
 
 #[test]
 fn ufunc_frontier_tuple_structural_richcompare() {
-    install_min_hooks();
+    let _thread_state = install_min_hooks();
     unsafe {
         use molt_cpython_abi::api::numbers::PyLong_FromLong;
         use molt_cpython_abi::api::sequences::{PyTuple_New, PyTuple_SetItem};
@@ -302,12 +295,16 @@ fn ufunc_frontier_tuple_structural_richcompare() {
             0,
             "tuples of different length must compare unequal"
         );
+        for tuple in [a, b, reg, look, c, short] {
+            molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+        }
+        molt_cpython_abi::api::refcount::Py_DECREF(elem);
     }
 }
 
 #[test]
 fn frontier_06_pyobject_str_theater() {
-    install_min_hooks();
+    let _thread_state = install_min_hooks();
 
     // str(2147483653) must be its decimal digits, exactly as CPython.
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(2_147_483_653) };

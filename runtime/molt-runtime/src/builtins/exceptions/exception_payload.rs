@@ -1,5 +1,4 @@
 use super::*;
-use num_traits::ToPrimitive;
 use wtf8::Wtf8;
 
 fn exception_dict_attr_bits(_py: &PyToken<'_>, ptr: *mut u8, name: &[u8]) -> Option<u64> {
@@ -24,7 +23,7 @@ fn oserror_root_name(name: &str) -> bool {
 }
 
 fn errno_is_shutdown(errno: i64) -> bool {
-    #[cfg(any(unix, target_arch = "wasm32"))]
+    #[cfg(all(not(windows), not(target_arch = "wasm32")))]
     {
         errno == libc::ESHUTDOWN as i64
     }
@@ -32,7 +31,7 @@ fn errno_is_shutdown(errno: i64) -> bool {
     {
         errno == crate::windows_abi::WSAESHUTDOWN as i64
     }
-    #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+    #[cfg(all(not(windows), target_arch = "wasm32"))]
     {
         let _ = errno;
         false
@@ -96,42 +95,120 @@ fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
     None
 }
 
-pub(super) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
-    unsafe {
-        let mut errno_val = None;
-        let mut strerror_bits = MoltObject::none().bits();
-        let mut filename_bits = MoltObject::none().bits();
-        let args_obj = obj_from_bits(args_bits);
-        if let Some(args_ptr) = args_obj.as_ptr() {
-            let type_id = object_type_id(args_ptr);
-            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                // CPython: `OSError(errno, strerror, filename, ...)` interprets positional args
-                // as `(errno, strerror[, filename[, winerror[, filename2]]])`, and uses those to
-                // populate `errno/strerror/filename` and to choose a more specific subclass.
-                //
-                // When *only one* positional argument is provided (e.g. `OSError(3)`), CPython
-                // does *not* interpret that value as `errno`; the `errno/strerror/filename`
-                // attributes remain `None`.
-                (errno_val, strerror_bits, filename_bits) =
-                    crate::object::seq_access::with_borrowed(args_ptr, |elems| {
-                        if elems.len() < 2 {
-                            return (None, MoltObject::none().bits(), MoltObject::none().bits());
-                        }
-                        (
-                            elems
-                                .first()
-                                .and_then(|first| to_i64(obj_from_bits(*first))),
-                            elems[1],
-                            elems
-                                .get(2)
-                                .copied()
-                                .unwrap_or_else(|| MoltObject::none().bits()),
-                        )
-                    });
-            }
-        }
-        (errno_val, strerror_bits, filename_bits)
+#[derive(Clone, Copy)]
+pub(super) struct OSErrorFields {
+    pub(super) errno_value: Option<i64>,
+    pub(super) errno_bits: u64,
+    pub(super) strerror_bits: u64,
+    pub(super) filename_bits: u64,
+    pub(super) filename2_bits: u64,
+    #[cfg(windows)]
+    pub(super) winerror_bits: u64,
+    pub(super) characters_written_bits: Option<u64>,
+}
+
+fn oserror_integral_i64(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
+    let int_type = builtin_classes(_py).int;
+    (int_type != 0 && isinstance_bits(_py, bits, int_type))
+        .then(|| to_i64(obj_from_bits(bits)))
+        .flatten()
+}
+
+pub(super) unsafe fn oserror_fields_from_args(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    args_bits: u64,
+) -> OSErrorFields {
+    let none = MoltObject::none().bits();
+    let mut fields = OSErrorFields {
+        errno_value: None,
+        errno_bits: none,
+        strerror_bits: none,
+        filename_bits: none,
+        filename2_bits: none,
+        #[cfg(windows)]
+        winerror_bits: none,
+        characters_written_bits: None,
+    };
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return fields;
+    };
+    let type_id = unsafe { object_type_id(args_ptr) };
+    if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
+        return fields;
     }
+    let blocking_type = exception_type_bits_from_name(_py, "BlockingIOError");
+    let exact_blocking = class_bits != 0 && class_bits == blocking_type;
+    unsafe {
+        crate::object::seq_access::with_borrowed(args_ptr, |elems| {
+            if elems.len() < 2 {
+                return;
+            }
+            fields.errno_bits = elems[0];
+            fields.errno_value = oserror_integral_i64(_py, elems[0]);
+            fields.strerror_bits = elems[1];
+            if let Some(&third) = elems.get(2) {
+                if exact_blocking && elems.len() == 3 && oserror_integral_i64(_py, third).is_some()
+                {
+                    fields.characters_written_bits = Some(third);
+                } else {
+                    fields.filename_bits = third;
+                }
+            }
+            #[cfg(windows)]
+            if let Some(&winerror) = elems.get(3) {
+                fields.winerror_bits = winerror;
+                if let Some(winerror_value) = oserror_integral_i64(_py, winerror) {
+                    let errno = crate::windows_abi::winerror_to_errno(winerror_value as i32) as i64;
+                    fields.errno_value = Some(errno);
+                    fields.errno_bits = int_bits_from_i64(_py, errno);
+                }
+            }
+            if let Some(&filename2) = elems.get(4) {
+                fields.filename2_bits = filename2;
+            }
+        });
+    }
+    fields
+}
+
+/// Return one owned tuple containing the CPython-visible `OSError.args`.
+/// Filename state lives only in the typed tail, while Windows replaces arg 0
+/// with the canonical errno translated from arg 3.
+pub(super) fn oserror_stored_args(
+    _py: &PyToken<'_>,
+    fields: OSErrorFields,
+    args_bits: u64,
+) -> Option<u64> {
+    let args_ptr = obj_from_bits(args_bits).as_ptr()?;
+    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+        return None;
+    }
+    let none = MoltObject::none().bits();
+    let mut stored = [none; 5];
+    let (len, changed) = unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+            if !(2..=5).contains(&args.len()) {
+                return (args.len(), false);
+            }
+            stored[..args.len()].copy_from_slice(args);
+            #[cfg(windows)]
+            {
+                stored[0] = fields.errno_bits;
+            }
+            let truncate = fields.filename_bits != none;
+            let len = if truncate { 2 } else { args.len() };
+            let changed = truncate || stored[0] != args[0];
+            (len, changed)
+        })
+        .expect("type-checked OSError args tuple")
+    };
+    if !changed {
+        inc_ref_bits(_py, args_bits);
+        return Some(args_bits);
+    }
+    let ptr = alloc_tuple(_py, &stored[..len]);
+    (!ptr.is_null()).then(|| MoltObject::from_ptr(ptr).bits())
 }
 
 pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
@@ -155,20 +232,6 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
     dec_ref_bits(_py, args_bits);
     if !ptr.is_null() {
-        let dict_bits = unsafe { exception_dict_bits(ptr) };
-        if !obj_from_bits(dict_bits).is_none()
-            && dict_bits != 0
-            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-        {
-            unsafe {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let errno_name =
-                        intern_static_name(_py, &exceptions_state(_py).errno_attr_name, b"errno");
-                    let errno_bits = MoltObject::from_int(errno).bits();
-                    dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
-                }
-            }
-        }
         record_exception_owned(_py, ptr);
     }
     T::exception_sentinel()
@@ -196,38 +259,6 @@ pub(crate) fn raise_os_error<T: ExceptionSentinel>(
     raise_os_error_errno(_py, errno, &msg)
 }
 
-unsafe fn oserror_attr_dict(
-    _py: &PyToken<'_>,
-    errno_val: Option<i64>,
-    strerror_bits: u64,
-    filename_bits: u64,
-) -> u64 {
-    let errno_name = intern_static_name(_py, &exceptions_state(_py).errno_attr_name, b"errno");
-    let strerror_name =
-        intern_static_name(_py, &exceptions_state(_py).strerror_attr_name, b"strerror");
-    let filename_name =
-        intern_static_name(_py, &exceptions_state(_py).filename_attr_name, b"filename");
-    let errno_bits = match errno_val {
-        Some(val) => MoltObject::from_int(val).bits(),
-        None => MoltObject::none().bits(),
-    };
-    let dict_ptr = alloc_dict_with_pairs(
-        _py,
-        &[
-            errno_name,
-            errno_bits,
-            strerror_name,
-            strerror_bits,
-            filename_name,
-            filename_bits,
-        ],
-    );
-    if dict_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    MoltObject::from_ptr(dict_ptr).bits()
-}
-
 #[derive(Clone, Copy)]
 pub(super) enum UnicodeErrorKind {
     Encode,
@@ -242,35 +273,15 @@ pub(super) struct UnicodeErrorFields {
     pub(super) start_bits: u64,
     pub(super) end_bits: u64,
     pub(super) reason_bits: u64,
+    owned_object: bool,
 }
 
-pub(super) fn unicode_error_kind(name: &str) -> Option<UnicodeErrorKind> {
-    match name {
-        "UnicodeEncodeError" => Some(UnicodeErrorKind::Encode),
-        "UnicodeDecodeError" => Some(UnicodeErrorKind::Decode),
-        "UnicodeTranslateError" => Some(UnicodeErrorKind::Translate),
-        _ => None,
+impl UnicodeErrorFields {
+    pub(super) fn release_owned(self, _py: &PyToken<'_>) {
+        if self.owned_object {
+            dec_ref_bits(_py, self.object_bits);
+        }
     }
-}
-
-fn unicode_error_index_bits(_py: &PyToken<'_>, obj_bits: u64) -> Result<u64, ()> {
-    let type_label = type_name(_py, obj_from_bits(obj_bits));
-    let err = format!(
-        "'{}' object cannot be interpreted as an integer",
-        type_label
-    );
-    let Some(value) = index_bigint_from_obj(_py, obj_bits, &err) else {
-        return Err(());
-    };
-    if let Some(val) = value.to_i64() {
-        return Ok(int_bits_from_i64(_py, val));
-    }
-    let _ = raise_exception::<u64>(
-        _py,
-        "OverflowError",
-        "Python int too large to convert to C ssize_t",
-    );
-    Err(())
 }
 
 pub(super) fn unicode_error_fields_from_args(
@@ -300,20 +311,20 @@ pub(super) fn unicode_error_fields_from_args(
             let _ = raise_exception::<u64>(_py, "TypeError", &msg);
             return Err(());
         }
-        let (encoding_bits, object_bits, start_bits, end_bits, reason_bits, object_idx) = match kind
-        {
-            UnicodeErrorKind::Translate => (
-                MoltObject::none().bits(),
-                elems[0],
-                elems[1],
-                elems[2],
-                elems[3],
-                1,
-            ),
-            UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => {
-                (elems[0], elems[1], elems[2], elems[3], elems[4], 2)
-            }
-        };
+        let (encoding_bits, mut object_bits, start_bits, end_bits, reason_bits, object_idx) =
+            match kind {
+                UnicodeErrorKind::Translate => (
+                    MoltObject::none().bits(),
+                    elems[0],
+                    elems[1],
+                    elems[2],
+                    elems[3],
+                    1,
+                ),
+                UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => {
+                    (elems[0], elems[1], elems[2], elems[3], elems[4], 2)
+                }
+            };
         let builtins = builtin_classes(_py);
         if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Decode)
             && !isinstance_bits(_py, encoding_bits, builtins.str)
@@ -324,31 +335,6 @@ pub(super) fn unicode_error_fields_from_args(
             );
             let _ = raise_exception::<u64>(_py, "TypeError", &msg);
             return Err(());
-        }
-        match kind {
-            UnicodeErrorKind::Decode => {
-                let is_bytes_like = obj_from_bits(object_bits)
-                    .as_ptr()
-                    .is_some_and(|ptr| bytes_like_slice(ptr).is_some());
-                if !is_bytes_like {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, obj_from_bits(object_bits))
-                    );
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-                    return Err(());
-                }
-            }
-            UnicodeErrorKind::Encode | UnicodeErrorKind::Translate => {
-                if !isinstance_bits(_py, object_bits, builtins.str) {
-                    let msg = format!(
-                        "argument {object_idx} must be str, not {}",
-                        type_name(_py, obj_from_bits(object_bits))
-                    );
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-                    return Err(());
-                }
-            }
         }
         if !isinstance_bits(_py, reason_bits, builtins.str) {
             let arg_index = match kind {
@@ -362,59 +348,53 @@ pub(super) fn unicode_error_fields_from_args(
             let _ = raise_exception::<u64>(_py, "TypeError", &msg);
             return Err(());
         }
-        let start_bits = unicode_error_index_bits(_py, start_bits)?;
-        let end_bits = unicode_error_index_bits(_py, end_bits)?;
+        let mut owned_object = false;
+        match kind {
+            UnicodeErrorKind::Decode => {
+                let Some(object_ptr) = obj_from_bits(object_bits).as_ptr() else {
+                    let msg = format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, obj_from_bits(object_bits))
+                    );
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    return Err(());
+                };
+                let Some(bytes) = bytes_like_slice(object_ptr) else {
+                    let msg = format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, obj_from_bits(object_bits))
+                    );
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    return Err(());
+                };
+                if object_type_id(object_ptr) != crate::TYPE_ID_BYTES {
+                    let bytes_ptr = alloc_bytes(_py, bytes);
+                    if bytes_ptr.is_null() {
+                        return Err(());
+                    }
+                    object_bits = MoltObject::from_ptr(bytes_ptr).bits();
+                    owned_object = true;
+                }
+            }
+            UnicodeErrorKind::Encode | UnicodeErrorKind::Translate => {
+                if !isinstance_bits(_py, object_bits, builtins.str) {
+                    let msg = format!(
+                        "argument {object_idx} must be str, not {}",
+                        type_name(_py, obj_from_bits(object_bits))
+                    );
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    return Err(());
+                }
+            }
+        }
         Ok(UnicodeErrorFields {
             encoding_bits,
             object_bits,
             start_bits,
             end_bits,
             reason_bits,
+            owned_object,
         })
-    }
-}
-
-pub(super) fn unicode_error_attr_dict(_py: &PyToken<'_>, fields: UnicodeErrorFields) -> u64 {
-    let encoding_name = intern_static_name(
-        _py,
-        &exceptions_state(_py).unicode_encoding_attr_name,
-        b"encoding",
-    );
-    let object_name = intern_static_name(
-        _py,
-        &exceptions_state(_py).unicode_object_attr_name,
-        b"object",
-    );
-    let start_name = intern_static_name(
-        _py,
-        &exceptions_state(_py).unicode_start_attr_name,
-        b"start",
-    );
-    let end_name = intern_static_name(_py, &exceptions_state(_py).unicode_end_attr_name, b"end");
-    let reason_name = intern_static_name(
-        _py,
-        &exceptions_state(_py).unicode_reason_attr_name,
-        b"reason",
-    );
-    let dict_ptr = alloc_dict_with_pairs(
-        _py,
-        &[
-            encoding_name,
-            fields.encoding_bits,
-            object_name,
-            fields.object_bits,
-            start_name,
-            fields.start_bits,
-            end_name,
-            fields.end_bits,
-            reason_name,
-            fields.reason_bits,
-        ],
-    );
-    if dict_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(dict_ptr).bits()
     }
 }
 
@@ -432,7 +412,6 @@ pub(crate) fn alloc_exception_from_class_bits(
             return std::ptr::null_mut();
         }
         let mut class_bits = class_bits;
-        let mut class_ptr = class_ptr;
         let args_bits = exception_normalize_args(_py, args_bits);
         if obj_from_bits(args_bits).is_none() {
             return std::ptr::null_mut();
@@ -441,81 +420,50 @@ pub(crate) fn alloc_exception_from_class_bits(
         if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
             return alloc_exception_group_from_class_bits(_py, class_bits, args_bits);
         }
-        let (errno_val, strerror_bits, filename_bits) = oserror_args(args_bits);
         let oserror_bits = exception_type_bits_from_name(_py, "OSError");
-        let mut dict_bits = MoltObject::none().bits();
+        let mut oserror_layout = false;
         if issubclass_bits(class_bits, oserror_bits) {
+            oserror_layout = true;
             let name = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
                 .expect("exception class must have a string name");
+            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
             if oserror_root_name(&name)
-                && let Some(errno_val) = errno_val
+                && let Some(errno_val) = fields.errno_value
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
             {
                 let mapped_bits = exception_type_bits_from_name(_py, subclass);
-                if mapped_bits != 0
-                    && let Some(mapped_ptr) = obj_from_bits(mapped_bits).as_ptr()
-                {
+                if mapped_bits != 0 && obj_from_bits(mapped_bits).as_ptr().is_some() {
                     class_bits = mapped_bits;
-                    class_ptr = mapped_ptr;
-                }
-            }
-            dict_bits = oserror_attr_dict(_py, errno_val, strerror_bits, filename_bits);
-            let blocking_bits = exception_type_bits_from_name(_py, "BlockingIOError");
-            if blocking_bits != 0 && issubclass_bits(class_bits, blocking_bits) {
-                let mut chars_bits = MoltObject::none().bits();
-                let args_obj = obj_from_bits(args_bits);
-                if let Some(args_ptr) = args_obj.as_ptr() {
-                    let type_id = object_type_id(args_ptr);
-                    if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                        let _ = crate::object::seq_access::read_item_gil_borrowed(
-                            args_ptr,
-                            2,
-                            &mut chars_bits,
-                        );
-                    }
-                }
-                let chars_obj = obj_from_bits(chars_bits);
-                if (chars_obj.is_int() || chars_obj.is_bool()) && dict_bits != 0 {
-                    let name_bits = intern_static_name(
-                        _py,
-                        &exceptions_state(_py).characters_written_attr_name,
-                        b"characters_written",
-                    );
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    {
-                        dict_set_in_place(_py, dict_ptr, name_bits, chars_bits);
-                    }
                 }
             }
         }
-        if let Some(name) = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
-            && let Some(kind) = unicode_error_kind(&name)
-        {
-            let fields = match unicode_error_fields_from_args(_py, kind, args_bits) {
-                Ok(fields) => fields,
-                Err(()) => {
-                    dec_ref_bits(_py, args_bits);
-                    return std::ptr::null_mut();
-                }
+        let stored_args_bits = if oserror_layout {
+            let fields = oserror_fields_from_args(_py, class_bits, args_bits);
+            let Some(stored) = oserror_stored_args(_py, fields, args_bits) else {
+                dec_ref_bits(_py, args_bits);
+                return std::ptr::null_mut();
             };
-            dict_bits = unicode_error_attr_dict(_py, fields);
-        }
-        let msg_bits = exception_message_for_storage(_py, class_bits, args_bits);
-        if obj_from_bits(msg_bits).is_none() {
+            stored
+        } else {
+            inc_ref_bits(_py, args_bits);
+            args_bits
+        };
+        let msg_bits = exception_message_for_storage(_py, class_bits, stored_args_bits);
+        if !exception_message_storage_is_valid(_py, class_bits, msg_bits) {
             dec_ref_bits(_py, args_bits);
+            dec_ref_bits(_py, stored_args_bits);
             return std::ptr::null_mut();
         }
         let none_bits = MoltObject::none().bits();
-        let ptr = alloc_exception_obj(_py, class_bits, msg_bits, args_bits, dict_bits);
-        if !ptr.is_null() {
-            exception_set_stop_iteration_value(_py, ptr, args_bits);
-            exception_set_system_exit_code(_py, ptr, args_bits);
-        }
-        if dict_bits != none_bits {
-            dec_ref_bits(_py, dict_bits);
+        let mut ptr = alloc_exception_obj(_py, class_bits, msg_bits, stored_args_bits, none_bits);
+        if !ptr.is_null()
+            && exception_initialize_typed_fields_from_args(_py, ptr, args_bits).is_err()
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            ptr = std::ptr::null_mut();
         }
         dec_ref_bits(_py, args_bits);
+        dec_ref_bits(_py, stored_args_bits);
         dec_ref_bits(_py, msg_bits);
         ptr
     }
@@ -641,12 +589,13 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
 pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     let class_bits = unsafe { object_class_bits(ptr) };
     let kind = exception_class_name(ptr);
-    if kind == "UnicodeDecodeError"
+    let exception_bits = MoltObject::from_ptr(ptr).bits();
+    if exception_matches_builtin_name(_py, exception_bits, "UnicodeDecodeError")
         && let Some(msg) = format_unicode_decode_error(_py, ptr)
     {
         return msg;
     }
-    if kind == "UnicodeEncodeError"
+    if exception_matches_builtin_name(_py, exception_bits, "UnicodeEncodeError")
         && let Some(msg) = format_unicode_encode_error(_py, ptr)
     {
         return msg;
@@ -696,7 +645,7 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
     if args.is_empty() {
         return String::new();
     }
-    if kind == "KeyError" && args.len() == 1 {
+    if exception_matches_builtin_name(_py, exception_bits, "KeyError") && args.len() == 1 {
         return format_obj(_py, obj_from_bits(args[0]));
     }
     if args.len() == 1 {
@@ -706,14 +655,20 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
 }
 
 fn format_unicode_decode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
-    let args = exception_args_vec(ptr);
-    if args.len() != 5 {
-        return None;
-    }
-    let encoding = string_obj_to_owned(obj_from_bits(args[0]))?;
-    let reason = string_obj_to_owned(obj_from_bits(args[4]))?;
-    let start = to_i64(obj_from_bits(args[2]))?;
-    let end = to_i64(obj_from_bits(args[3]))?;
+    let encoding_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEncoding)? };
+    let object_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeObject)? };
+    let start = unsafe {
+        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeStart)? as isize as i64
+    };
+    let end = unsafe {
+        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEnd)? as isize as i64
+    };
+    let reason_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeReason)? };
+    let encoding = string_obj_to_owned(obj_from_bits(encoding_bits))?;
+    let reason = string_obj_to_owned(obj_from_bits(reason_bits))?;
     if start < 0 || end < 0 {
         return None;
     }
@@ -723,7 +678,7 @@ fn format_unicode_decode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String
         return None;
     }
     if end == start + 1 {
-        let obj = obj_from_bits(args[1]);
+        let obj = obj_from_bits(object_bits);
         let ptr = obj.as_ptr()?;
         let bytes = unsafe { bytes_like_slice(ptr) }?;
         if start >= bytes.len() {
@@ -763,14 +718,20 @@ fn wtf8_codepoint_at_index(bytes: &[u8], idx: usize) -> Option<u32> {
 }
 
 fn format_unicode_encode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
-    let args = exception_args_vec(ptr);
-    if args.len() != 5 {
-        return None;
-    }
-    let encoding = string_obj_to_owned(obj_from_bits(args[0]))?;
-    let reason = string_obj_to_owned(obj_from_bits(args[4]))?;
-    let start = to_i64(obj_from_bits(args[2]))?;
-    let end = to_i64(obj_from_bits(args[3]))?;
+    let encoding_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEncoding)? };
+    let object_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeObject)? };
+    let start = unsafe {
+        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeStart)? as isize as i64
+    };
+    let end = unsafe {
+        exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeEnd)? as isize as i64
+    };
+    let reason_bits =
+        unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::UnicodeReason)? };
+    let encoding = string_obj_to_owned(obj_from_bits(encoding_bits))?;
+    let reason = string_obj_to_owned(obj_from_bits(reason_bits))?;
     if start < 0 || end < 0 {
         return None;
     }
@@ -779,7 +740,7 @@ fn format_unicode_encode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String
     if end <= start {
         return None;
     }
-    let obj = obj_from_bits(args[1]);
+    let obj = obj_from_bits(object_bits);
     let ptr = obj.as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_STRING {

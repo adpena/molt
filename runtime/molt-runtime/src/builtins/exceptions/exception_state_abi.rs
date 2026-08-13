@@ -577,18 +577,42 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
             exception_context_set(_py, MoltObject::from_ptr(exc_ptr).bits());
         }
         if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
-            let kind_bits = unsafe { exception_kind_bits(exc_ptr) };
-            if string_obj_to_owned(obj_from_bits(kind_bits)).as_deref() == Some("SystemExit") {
-                handle_system_exit(_py, exc_ptr);
-            }
             context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
-            let formatted = format_exception_with_traceback(_py, exc_ptr);
-            eprintln!("{}", formatted);
-            if let Ok(path) = std::env::var("MOLT_EXCEPTION_LOG_PATH") {
-                let _ = std::fs::write(path, formatted.as_bytes());
-            }
-            std::process::exit(1);
         }
         MoltObject::none().bits()
+    })
+}
+
+/// Report one exception that escaped the outer application boundary and return
+/// its process exit code without terminating inside the runtime.
+///
+/// Process termination belongs to the host boundary so persistent GIL,
+/// lifecycle-lease, and PyThreadState custody always reaches
+/// `molt_runtime_exit`. Raising inside a function or async task therefore only
+/// publishes pending state; this reporter is the single traceback/SystemExit
+/// policy authority used by the native main stub.
+#[unsafe(no_mangle)]
+#[cfg(not(target_arch = "wasm32"))]
+pub extern "C" fn molt_exception_report_uncaught(exc_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
+            eprintln!("RuntimeError: invalid uncaught exception payload");
+            return 1;
+        };
+        unsafe {
+            if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+                eprintln!("RuntimeError: uncaught payload is not an exception");
+                return 1;
+            }
+        }
+        if exception_matches_builtin_name(_py, exc_bits, "SystemExit") {
+            return super::system_exit_code(_py, exc_ptr) as u32 as u64;
+        }
+        let formatted = format_exception_with_traceback(_py, exc_ptr);
+        eprintln!("{formatted}");
+        if let Ok(path) = std::env::var("MOLT_EXCEPTION_LOG_PATH") {
+            let _ = std::fs::write(path, formatted.as_bytes());
+        }
+        1
     })
 }

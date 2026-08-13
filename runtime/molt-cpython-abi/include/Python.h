@@ -686,16 +686,86 @@ typedef struct _ts {
 
 #include "../../../include/molt/_gil_state_abi.h"
 
+#define PyException_HEAD PyObject_HEAD PyObject *dict; \
+    PyObject *args; PyObject *notes; PyObject *traceback; \
+    PyObject *context; PyObject *cause; char suppress_context;
+
 typedef struct {
-    PyObject_HEAD
-    PyObject *dict;
-    PyObject *args;
-    PyObject *notes;
-    PyObject *traceback;
-    PyObject *context;
-    PyObject *cause;
-    char suppress_context;
+    PyException_HEAD
 } PyBaseExceptionObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *msg;
+    PyObject *excs;
+} PyBaseExceptionGroupObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *msg;
+    PyObject *filename;
+    PyObject *lineno;
+    PyObject *offset;
+    PyObject *end_lineno;
+    PyObject *end_offset;
+    PyObject *text;
+    PyObject *print_file_and_line;
+} PySyntaxErrorObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *msg;
+    PyObject *name;
+    PyObject *path;
+    PyObject *name_from;
+} PyImportErrorObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *encoding;
+    PyObject *object;
+    Py_ssize_t start;
+    Py_ssize_t end;
+    PyObject *reason;
+} PyUnicodeErrorObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *code;
+} PySystemExitObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *myerrno;
+    PyObject *strerror;
+    PyObject *filename;
+    PyObject *filename2;
+#if defined(_WIN32) || defined(MS_WINDOWS)
+    PyObject *winerror;
+#endif
+    Py_ssize_t written;
+} PyOSErrorObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *value;
+} PyStopIterationObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *name;
+} PyNameErrorObject;
+
+typedef struct {
+    PyException_HEAD
+    PyObject *obj;
+    PyObject *name;
+} PyAttributeErrorObject;
+
+typedef PyOSErrorObject PyEnvironmentErrorObject;
+#if defined(_WIN32) || defined(MS_WINDOWS)
+typedef PyOSErrorObject PyWindowsErrorObject;
+#endif
 
 typedef struct {
     PyObject_HEAD
@@ -1501,10 +1571,13 @@ extern PyVarObject *_PyObject_NewVar   (PyTypeObject *typeobj, Py_ssize_t nitems
 extern PyObject *_PyObject_GC_New      (PyTypeObject *typeobj);
 extern void      PyObject_GC_Track     (void *op);
 extern void      PyObject_GC_UnTrack   (void *op);
+extern int       PyObject_GC_IsTracked (PyObject *op);
 extern int       PyObject_GC_IsFinalized(PyObject *op);
 extern int       PyObject_CallFinalizerFromDealloc(PyObject *op);
+extern Py_ssize_t PyGC_Collect         (void);
 extern int       PyGC_Disable          (void);
-extern void      PyGC_Enable           (void);
+extern int       PyGC_Enable           (void);
+extern int       PyGC_IsEnabled        (void);
 extern void      Py_FatalError         (const char *message);
 extern int       Py_EnterRecursiveCall (const char *where);
 extern void      Py_LeaveRecursiveCall (void);
@@ -1639,103 +1712,145 @@ extern int PyArg_VaParseTupleAndKeywords(PyObject *args, PyObject *kwds,
 extern int PyArg_UnpackTuple            (PyObject *args, const char *name,
                                          Py_ssize_t min, Py_ssize_t max, ...);
 
-/* Standard exception singletons (non-null sentinels; exact type unimportant). */
+/* Complete CPython 3.12 public exception type-symbol surface. */
 extern PyObject PyExc_BaseException;
 extern PyObject PyExc_Exception;
-extern PyObject PyExc_ValueError;
+extern PyObject PyExc_BaseExceptionGroup;
+extern PyObject PyExc_StopAsyncIteration;
+extern PyObject PyExc_StopIteration;
+extern PyObject PyExc_GeneratorExit;
+extern PyObject PyExc_ArithmeticError;
 extern PyObject PyExc_LookupError;
 extern PyObject PyExc_AssertionError;
-extern PyObject PyExc_TypeError;
-extern PyObject PyExc_RuntimeError;
-extern PyObject PyExc_MemoryError;
-extern PyObject PyExc_IndexError;
-extern PyObject PyExc_KeyError;
 extern PyObject PyExc_AttributeError;
-extern PyObject PyExc_OverflowError;
-extern PyObject PyExc_ZeroDivisionError;
+extern PyObject PyExc_BufferError;
+extern PyObject PyExc_EOFError;
+extern PyObject PyExc_FloatingPointError;
+extern PyObject PyExc_OSError;
 extern PyObject PyExc_ImportError;
 extern PyObject PyExc_ModuleNotFoundError;
-extern PyObject PyExc_StopIteration;
-extern PyObject PyExc_NotImplementedError;
-extern PyObject PyExc_OSError;
-extern PyObject PyExc_FileNotFoundError;
-extern PyObject PyExc_PermissionError;
-extern PyObject PyExc_FileExistsError;
-extern PyObject PyExc_IsADirectoryError;
-extern PyObject PyExc_NotADirectoryError;
-extern PyObject PyExc_TimeoutError;
-extern PyObject PyExc_ArithmeticError;
+extern PyObject PyExc_IndexError;
+extern PyObject PyExc_KeyError;
+extern PyObject PyExc_KeyboardInterrupt;
+extern PyObject PyExc_MemoryError;
 extern PyObject PyExc_NameError;
-extern PyObject PyExc_UnboundLocalError;
+extern PyObject PyExc_OverflowError;
+extern PyObject PyExc_RuntimeError;
+extern PyObject PyExc_RecursionError;
+extern PyObject PyExc_NotImplementedError;
 extern PyObject PyExc_SyntaxError;
+extern PyObject PyExc_IndentationError;
+extern PyObject PyExc_TabError;
+extern PyObject PyExc_ReferenceError;
 extern PyObject PyExc_SystemError;
 extern PyObject PyExc_SystemExit;
-extern PyObject PyExc_BufferError;
-extern PyObject PyExc_RecursionError;
-extern PyObject PyExc_GeneratorExit;
-extern PyObject PyExc_KeyboardInterrupt;
-extern PyObject PyExc_ConnectionError;
-extern PyObject PyExc_ConnectionResetError;
+extern PyObject PyExc_TypeError;
+extern PyObject PyExc_UnboundLocalError;
+extern PyObject PyExc_UnicodeError;
+extern PyObject PyExc_UnicodeEncodeError;
+extern PyObject PyExc_UnicodeDecodeError;
+extern PyObject PyExc_UnicodeTranslateError;
+extern PyObject PyExc_ValueError;
+extern PyObject PyExc_ZeroDivisionError;
+extern PyObject PyExc_BlockingIOError;
 extern PyObject PyExc_BrokenPipeError;
-extern PyObject PyExc_FloatingPointError;
+extern PyObject PyExc_ChildProcessError;
+extern PyObject PyExc_ConnectionError;
+extern PyObject PyExc_ConnectionAbortedError;
+extern PyObject PyExc_ConnectionRefusedError;
+extern PyObject PyExc_ConnectionResetError;
+extern PyObject PyExc_FileExistsError;
+extern PyObject PyExc_FileNotFoundError;
+extern PyObject PyExc_InterruptedError;
+extern PyObject PyExc_IsADirectoryError;
+extern PyObject PyExc_NotADirectoryError;
+extern PyObject PyExc_PermissionError;
+extern PyObject PyExc_ProcessLookupError;
+extern PyObject PyExc_TimeoutError;
 extern PyObject PyExc_Warning;
+extern PyObject PyExc_UserWarning;
 extern PyObject PyExc_DeprecationWarning;
+extern PyObject PyExc_PendingDeprecationWarning;
+extern PyObject PyExc_SyntaxWarning;
 extern PyObject PyExc_RuntimeWarning;
 extern PyObject PyExc_FutureWarning;
 extern PyObject PyExc_ImportWarning;
-extern PyObject PyExc_UserWarning;
-extern PyObject PyExc_UnicodeError;
-extern PyObject PyExc_UnicodeDecodeError;
-extern PyObject PyExc_UnicodeEncodeError;
+extern PyObject PyExc_UnicodeWarning;
+extern PyObject PyExc_BytesWarning;
+extern PyObject PyExc_EncodingWarning;
+extern PyObject PyExc_ResourceWarning;
 
 #define PyExc_BaseException        (&PyExc_BaseException)
 #define PyExc_Exception            (&PyExc_Exception)
-#define PyExc_ValueError           (&PyExc_ValueError)
+#define PyExc_BaseExceptionGroup   (&PyExc_BaseExceptionGroup)
+#define PyExc_StopAsyncIteration   (&PyExc_StopAsyncIteration)
+#define PyExc_StopIteration        (&PyExc_StopIteration)
+#define PyExc_GeneratorExit        (&PyExc_GeneratorExit)
+#define PyExc_ArithmeticError      (&PyExc_ArithmeticError)
 #define PyExc_LookupError          (&PyExc_LookupError)
 #define PyExc_AssertionError       (&PyExc_AssertionError)
-#define PyExc_TypeError            (&PyExc_TypeError)
-#define PyExc_RuntimeError         (&PyExc_RuntimeError)
-#define PyExc_MemoryError          (&PyExc_MemoryError)
-#define PyExc_IndexError           (&PyExc_IndexError)
-#define PyExc_KeyError             (&PyExc_KeyError)
 #define PyExc_AttributeError       (&PyExc_AttributeError)
-#define PyExc_OverflowError        (&PyExc_OverflowError)
-#define PyExc_ZeroDivisionError    (&PyExc_ZeroDivisionError)
+#define PyExc_BufferError          (&PyExc_BufferError)
+#define PyExc_EOFError             (&PyExc_EOFError)
+#define PyExc_FloatingPointError   (&PyExc_FloatingPointError)
+#define PyExc_OSError              (&PyExc_OSError)
+#define PyExc_EnvironmentError     PyExc_OSError
+#define PyExc_IOError              PyExc_OSError
+#if defined(_WIN32) || defined(MS_WINDOWS)
+#define PyExc_WindowsError         PyExc_OSError
+#endif
 #define PyExc_ImportError          (&PyExc_ImportError)
 #define PyExc_ModuleNotFoundError  (&PyExc_ModuleNotFoundError)
-#define PyExc_StopIteration        (&PyExc_StopIteration)
-#define PyExc_NotImplementedError  (&PyExc_NotImplementedError)
-#define PyExc_OSError              (&PyExc_OSError)
-#define PyExc_IOError              PyExc_OSError
-#define PyExc_FileNotFoundError    (&PyExc_FileNotFoundError)
-#define PyExc_PermissionError      (&PyExc_PermissionError)
-#define PyExc_FileExistsError      (&PyExc_FileExistsError)
-#define PyExc_IsADirectoryError    (&PyExc_IsADirectoryError)
-#define PyExc_NotADirectoryError   (&PyExc_NotADirectoryError)
-#define PyExc_TimeoutError         (&PyExc_TimeoutError)
-#define PyExc_ArithmeticError      (&PyExc_ArithmeticError)
+#define PyExc_IndexError           (&PyExc_IndexError)
+#define PyExc_KeyError             (&PyExc_KeyError)
+#define PyExc_KeyboardInterrupt    (&PyExc_KeyboardInterrupt)
+#define PyExc_MemoryError          (&PyExc_MemoryError)
 #define PyExc_NameError            (&PyExc_NameError)
-#define PyExc_UnboundLocalError    (&PyExc_UnboundLocalError)
+#define PyExc_OverflowError        (&PyExc_OverflowError)
+#define PyExc_RuntimeError         (&PyExc_RuntimeError)
+#define PyExc_RecursionError       (&PyExc_RecursionError)
+#define PyExc_NotImplementedError  (&PyExc_NotImplementedError)
 #define PyExc_SyntaxError          (&PyExc_SyntaxError)
+#define PyExc_IndentationError     (&PyExc_IndentationError)
+#define PyExc_TabError             (&PyExc_TabError)
+#define PyExc_ReferenceError       (&PyExc_ReferenceError)
 #define PyExc_SystemError          (&PyExc_SystemError)
 #define PyExc_SystemExit           (&PyExc_SystemExit)
-#define PyExc_BufferError          (&PyExc_BufferError)
-#define PyExc_RecursionError       (&PyExc_RecursionError)
-#define PyExc_GeneratorExit        (&PyExc_GeneratorExit)
-#define PyExc_KeyboardInterrupt    (&PyExc_KeyboardInterrupt)
-#define PyExc_ConnectionError      (&PyExc_ConnectionError)
-#define PyExc_ConnectionResetError (&PyExc_ConnectionResetError)
+#define PyExc_TypeError            (&PyExc_TypeError)
+#define PyExc_UnboundLocalError    (&PyExc_UnboundLocalError)
+#define PyExc_UnicodeError         (&PyExc_UnicodeError)
+#define PyExc_UnicodeEncodeError   (&PyExc_UnicodeEncodeError)
+#define PyExc_UnicodeDecodeError   (&PyExc_UnicodeDecodeError)
+#define PyExc_UnicodeTranslateError (&PyExc_UnicodeTranslateError)
+#define PyExc_ValueError           (&PyExc_ValueError)
+#define PyExc_ZeroDivisionError    (&PyExc_ZeroDivisionError)
+#define PyExc_BlockingIOError      (&PyExc_BlockingIOError)
 #define PyExc_BrokenPipeError      (&PyExc_BrokenPipeError)
-#define PyExc_FloatingPointError   (&PyExc_FloatingPointError)
+#define PyExc_ChildProcessError    (&PyExc_ChildProcessError)
+#define PyExc_ConnectionError      (&PyExc_ConnectionError)
+#define PyExc_ConnectionAbortedError (&PyExc_ConnectionAbortedError)
+#define PyExc_ConnectionRefusedError (&PyExc_ConnectionRefusedError)
+#define PyExc_ConnectionResetError (&PyExc_ConnectionResetError)
+#define PyExc_FileExistsError      (&PyExc_FileExistsError)
+#define PyExc_FileNotFoundError    (&PyExc_FileNotFoundError)
+#define PyExc_InterruptedError     (&PyExc_InterruptedError)
+#define PyExc_IsADirectoryError    (&PyExc_IsADirectoryError)
+#define PyExc_NotADirectoryError   (&PyExc_NotADirectoryError)
+#define PyExc_PermissionError      (&PyExc_PermissionError)
+#define PyExc_ProcessLookupError   (&PyExc_ProcessLookupError)
+#define PyExc_TimeoutError         (&PyExc_TimeoutError)
 #define PyExc_Warning              (&PyExc_Warning)
+#define PyExc_UserWarning          (&PyExc_UserWarning)
 #define PyExc_DeprecationWarning   (&PyExc_DeprecationWarning)
+#define PyExc_PendingDeprecationWarning (&PyExc_PendingDeprecationWarning)
+#define PyExc_SyntaxWarning        (&PyExc_SyntaxWarning)
 #define PyExc_RuntimeWarning       (&PyExc_RuntimeWarning)
 #define PyExc_FutureWarning        (&PyExc_FutureWarning)
 #define PyExc_ImportWarning        (&PyExc_ImportWarning)
-#define PyExc_UserWarning          (&PyExc_UserWarning)
-#define PyExc_UnicodeError         (&PyExc_UnicodeError)
-#define PyExc_UnicodeDecodeError   (&PyExc_UnicodeDecodeError)
-#define PyExc_UnicodeEncodeError   (&PyExc_UnicodeEncodeError)
+#define PyExc_UnicodeWarning       (&PyExc_UnicodeWarning)
+#define PyExc_BytesWarning         (&PyExc_BytesWarning)
+#define PyExc_EncodingWarning      (&PyExc_EncodingWarning)
+#define PyExc_ResourceWarning      (&PyExc_ResourceWarning)
 
 /* ── Convenience macros ───────────────────────────────────────────────────── */
 

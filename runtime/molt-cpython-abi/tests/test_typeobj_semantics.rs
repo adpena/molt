@@ -7,6 +7,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{
     Py_False, Py_NotImplementedSentinel, Py_True, PyMemberDef, PyObject, PyTypeObject,
 };
@@ -62,10 +64,7 @@ fn install() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE

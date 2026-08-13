@@ -898,7 +898,7 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
+      "cycle": "dynamic",
       "drop": "foreign",
       "edges": "none",
       "external_gc": "cpython_bridge",
@@ -908,7 +908,7 @@
       "name": "FOREIGN",
       "publication": "python",
       "shape": "fixed",
-      "track": "never",
+      "track": "foreign_dynamic",
       "weakref": "class"
     },
     {

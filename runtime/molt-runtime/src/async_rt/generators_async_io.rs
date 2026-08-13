@@ -141,13 +141,18 @@ unsafe fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64)
         if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
             return None;
         }
-        let kind_bits = exception_kind_bits(exc_ptr);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
-        dec_ref_bits(_py, kind_bits);
-        if kind == "BlockingIOError" {
+        if crate::builtins::exceptions::exception_matches_builtin_name(
+            _py,
+            exc_bits,
+            "BlockingIOError",
+        ) {
             return Some(libc::EWOULDBLOCK as i64);
         }
-        if kind == "InterruptedError" {
+        if crate::builtins::exceptions::exception_matches_builtin_name(
+            _py,
+            exc_bits,
+            "InterruptedError",
+        ) {
             return Some(libc::EINTR as i64);
         }
         let args_bits = exception_materialized_args_bits(_py, exc_ptr);

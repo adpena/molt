@@ -2952,6 +2952,7 @@ dependencies = [
  "libloading 0.9.0",
  "molt-cpython-abi-test-support",
  "molt-lang-obj-model",
+ "molt-runtime-platform",
  "once_cell",
  "parking_lot",
  "unicode-properties",
