@@ -40,16 +40,21 @@ pub const EXCEPTION_SNAPSHOT_NOTES: u32 = 1 << 2;
 pub const EXCEPTION_SNAPSHOT_TRACEBACK: u32 = 1 << 3;
 pub const EXCEPTION_SNAPSHOT_CONTEXT: u32 = 1 << 4;
 pub const EXCEPTION_SNAPSHOT_CAUSE: u32 = 1 << 5;
+pub const EXCEPTION_TYPED_MAX_FIELDS: usize = molt_lang_obj_model::MAX_EXCEPTION_TYPED_FIELDS;
 
-/// One atomic runtime/ABI transaction for the complete public
-/// `PyBaseExceptionObject` field set.  Every bit whose mask is present is a
-/// non-zero handle.  A capture owns one reference to each present handle; a
-/// commit borrows every handle.  Missing optional fields are represented only
-/// by their absent mask bit, never by `Ok(0)`.
+/// One atomic runtime/ABI transaction for the complete physical exception
+/// layout. Base handles use `present_mask`; typed handles use field-order bits
+/// in `typed_present_mask` and `typed_handles`. A capture owns one reference
+/// to each present handle; a commit borrows every handle. Scalar typed fields
+/// travel separately. `os_error_written == -1` is CPython's missing
+/// `BlockingIOError.characters_written` sentinel.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct ExceptionSnapshot {
     pub present_mask: u32,
+    pub typed_present_mask: u32,
+    pub layout_kind: u8,
+    pub _reserved: [u8; 3],
     pub suppress_context: u32,
     pub dict: u64,
     pub args: u64,
@@ -57,6 +62,32 @@ pub struct ExceptionSnapshot {
     pub traceback: u64,
     pub context: u64,
     pub cause: u64,
+    pub typed_handles: [u64; EXCEPTION_TYPED_MAX_FIELDS],
+    pub unicode_start: isize,
+    pub unicode_end: isize,
+    pub os_error_written: isize,
+}
+
+impl Default for ExceptionSnapshot {
+    fn default() -> Self {
+        Self {
+            present_mask: 0,
+            typed_present_mask: 0,
+            layout_kind: molt_lang_obj_model::ExceptionLayoutKind::Base as u8,
+            _reserved: [0; 3],
+            suppress_context: 0,
+            dict: 0,
+            args: 0,
+            notes: 0,
+            traceback: 0,
+            context: 0,
+            cause: 0,
+            typed_handles: [0; EXCEPTION_TYPED_MAX_FIELDS],
+            unicode_start: 0,
+            unicode_end: 0,
+            os_error_written: -1,
+        }
+    }
 }
 
 pub enum DecodedHandleResult {
@@ -608,6 +639,12 @@ pub struct RuntimeHooks {
     /// Used when materializing its C view so `Py_TYPE(value)` is the same class
     /// returned by Fetch/Occurred, never the neutral managed-view type.
     pub exception_class_borrowed: unsafe extern "C" fn(exception_bits: u64) -> BorrowedHandleResult,
+    /// Allocation-free physical layout discriminator for an exception instance
+    /// or exception class. The bridge calls this before publishing either
+    /// skeleton, so it must not allocate or re-enter the bridge. Returns an
+    /// `ExceptionLayoutKind` discriminant; non-exception/unknown values return
+    /// `u8::MAX` and fail closed.
+    pub exception_layout_kind: unsafe extern "C" fn(exception_or_class_bits: u64) -> u8,
     /// Capture and pin the complete runtime exception field state in one GIL
     /// transaction.  On success every present field owns one handle reference.
     pub exception_snapshot: unsafe extern "C" fn(
@@ -643,10 +680,34 @@ pub struct RuntimeHooks {
     /// non-zero handle is owned by and always consumed by this call.
     pub handled_exception_set:
         unsafe extern "C" fn(owned_exception_bits: u64) -> std::os::raw::c_int,
+    /// Publish a newly allocated native GC-capable node into the runtime's
+    /// single mixed-node identity/epoch authority before it becomes tracked.
+    pub native_gc_allocate: unsafe extern "C" fn(addr: usize) -> std::os::raw::c_int,
+    /// Make an allocated native node a trial-deletion candidate. Managed bridge
+    /// views are never sent through this lane.
+    pub native_gc_track: unsafe extern "C" fn(addr: usize) -> std::os::raw::c_int,
+    /// Remove a native node from candidate traversal while retaining its
+    /// runtime-owned allocation identity until deallocation.
+    pub native_gc_untrack: unsafe extern "C" fn(addr: usize),
+    /// Retire the native node identity immediately before its allocator frees
+    /// the address, preventing address-reuse/embedded-reinit ABA.
+    pub native_gc_deallocate: unsafe extern "C" fn(addr: usize),
+    pub native_gc_is_tracked: unsafe extern "C" fn(addr: usize) -> std::os::raw::c_int,
+    pub native_gc_is_finalized: unsafe extern "C" fn(addr: usize) -> std::os::raw::c_int,
+    /// Atomically claim a native node's one-shot finalizer. Returns 1 to the
+    /// caller that must run tp_finalize, 0 when already finalized/no longer
+    /// eligible, and -1 for an unknown native identity.
+    pub native_gc_claim_finalizer: unsafe extern "C" fn(addr: usize) -> std::os::raw::c_int,
+    /// Process both managed and native candidates in the runtime's one
+    /// deterministic, epoch-pinned trial-deletion graph.
+    pub gc_collect: unsafe extern "C" fn() -> isize,
+    pub gc_enable: unsafe extern "C" fn() -> std::os::raw::c_int,
+    pub gc_disable: unsafe extern "C" fn() -> std::os::raw::c_int,
+    pub gc_is_enabled: unsafe extern "C" fn() -> std::os::raw::c_int,
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 20;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 23;
 
 /// Target projection used to construct an attached runtime-context capability.
 /// This is deliberately not a boolean: native GIL, free-threaded attachment,
@@ -802,10 +863,17 @@ pub unsafe extern "C" fn molt_cpython_abi_register_hooks(hooks: *const RuntimeHo
     {
         return -1;
     }
-    if unsafe { try_set_runtime_hooks(hooks) } {
-        0
-    } else {
+    if !unsafe { try_set_runtime_hooks(hooks) } {
+        return -1;
+    }
+    // The C registration entrypoint is itself a production bootstrap
+    // boundary. Generic Rust fixtures use try_set_runtime_hooks directly and
+    // therefore never acquire runtime-owned type dictionaries as a side
+    // effect.
+    if unsafe { crate::abi_types::ready_exception_singleton_types() } < 0 {
         -1
+    } else {
+        0
     }
 }
 
@@ -1276,6 +1344,9 @@ unsafe extern "C" fn stub_exception_get_field(
 unsafe extern "C" fn stub_exception_class_borrowed(_exception_bits: u64) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
+unsafe extern "C" fn stub_exception_layout_kind(_exception_bits: u64) -> u8 {
+    u8::MAX
+}
 unsafe extern "C" fn stub_exception_snapshot(
     _exception_bits: u64,
     _out: *mut ExceptionSnapshot,
@@ -1307,6 +1378,35 @@ unsafe extern "C" fn stub_handled_exception_get() -> OwnedHandleResult {
 unsafe extern "C" fn stub_clear_pending_exception() {}
 unsafe extern "C" fn stub_handled_exception_set(_owned_exception_bits: u64) -> std::os::raw::c_int {
     -1
+}
+unsafe extern "C" fn stub_native_gc_allocate(_addr: usize) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_native_gc_track(_addr: usize) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_native_gc_untrack(_addr: usize) {}
+unsafe extern "C" fn stub_native_gc_deallocate(_addr: usize) {}
+unsafe extern "C" fn stub_native_gc_is_tracked(_addr: usize) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_native_gc_is_finalized(_addr: usize) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_native_gc_claim_finalizer(_addr: usize) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_gc_collect() -> isize {
+    0
+}
+unsafe extern "C" fn stub_gc_enable() -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_gc_disable() -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_gc_is_enabled() -> std::os::raw::c_int {
+    0
 }
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
@@ -1408,6 +1508,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     exception_set_field: stub_exception_set_field,
     exception_get_field: stub_exception_get_field,
     exception_class_borrowed: stub_exception_class_borrowed,
+    exception_layout_kind: stub_exception_layout_kind,
     exception_snapshot: stub_exception_snapshot,
     exception_commit_snapshot: stub_exception_commit_snapshot,
     type_is_subtype: stub_type_is_subtype,
@@ -1415,6 +1516,17 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     clear_pending_exception: stub_clear_pending_exception,
     handled_exception_get: stub_handled_exception_get,
     handled_exception_set: stub_handled_exception_set,
+    native_gc_allocate: stub_native_gc_allocate,
+    native_gc_track: stub_native_gc_track,
+    native_gc_untrack: stub_native_gc_untrack,
+    native_gc_deallocate: stub_native_gc_deallocate,
+    native_gc_is_tracked: stub_native_gc_is_tracked,
+    native_gc_is_finalized: stub_native_gc_is_finalized,
+    native_gc_claim_finalizer: stub_native_gc_claim_finalizer,
+    gc_collect: stub_gc_collect,
+    gc_enable: stub_gc_enable,
+    gc_disable: stub_gc_disable,
+    gc_is_enabled: stub_gc_is_enabled,
 };
 
 /// Return the registered hooks or the typed fail-closed bootstrap table.

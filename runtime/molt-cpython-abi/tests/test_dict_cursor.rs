@@ -14,6 +14,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, Py_ssize_t, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::ptr;
@@ -86,10 +88,7 @@ fn install() {
     hooks.dict_get = fx_dict_get;
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 // A ptr-tagged handle whose inner pointer is never dereferenced: classify is

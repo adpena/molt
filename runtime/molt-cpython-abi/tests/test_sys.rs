@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+mod support;
+
 use std::ptr;
 
 unsafe extern "C" fn fake_sys_get_object_borrowed(
@@ -18,9 +20,7 @@ fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 #[test]

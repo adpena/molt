@@ -52,9 +52,7 @@ fn init_hooks() {
     support::fake_strings::wire(&mut hooks);
     // Idempotent: the first test to run installs the shared table; the rest
     // observe it. Both tests need exactly this table.
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// (c) A native dict miss must raise `KeyError` with the key as its argument

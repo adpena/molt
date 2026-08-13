@@ -94,11 +94,15 @@ pub mod loader;
 mod buffer_export_bench;
 
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
+pub use api::memory::{
+    NativeGcEdge, NativeGcEdgeKind, NativeGcVisitProc, native_gc_node_clear, native_gc_node_decref,
+    native_gc_node_finalize, native_gc_node_incref, native_gc_node_refcount, native_gc_node_visit,
+};
 pub use bridge::{AbiHandle, ObjectBridge};
 pub use hooks::{
     BorrowedHandleResult, DictOp, EXCEPTION_SNAPSHOT_ARGS, EXCEPTION_SNAPSHOT_CAUSE,
     EXCEPTION_SNAPSHOT_CONTEXT, EXCEPTION_SNAPSHOT_DICT, EXCEPTION_SNAPSHOT_NOTES,
-    EXCEPTION_SNAPSHOT_TRACEBACK, ExceptionField, ExceptionSnapshot, MoltBufferView,
-    NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, RuntimeHooks, SetOp, hooks, hooks_or_stubs,
-    try_set_runtime_hooks,
+    EXCEPTION_SNAPSHOT_TRACEBACK, EXCEPTION_TYPED_MAX_FIELDS, ExceptionField, ExceptionSnapshot,
+    MoltBufferView, NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, RuntimeHooks, SetOp, hooks,
+    hooks_or_stubs, try_set_runtime_hooks,
 };

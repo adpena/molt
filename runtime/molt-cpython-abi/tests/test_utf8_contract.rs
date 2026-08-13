@@ -7,14 +7,15 @@ use molt_cpython_abi::abi_types::{
 use molt_cpython_abi::hooks::RuntimeHooks;
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, Once};
+
+mod support;
 
 static STRINGS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 static BYTES: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-static INIT: Once = Once::new();
 
 unsafe extern "C" fn alloc_str(data: *const u8, len: usize) -> u64 {
     let bytes = if data.is_null() || len == 0 {
@@ -94,18 +95,15 @@ unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
 unsafe extern "C" fn noop_ref(_bits: u64) {}
 
 fn init() {
-    INIT.call_once(|| {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-        hooks.alloc_str = alloc_str;
-        hooks.alloc_bytes = alloc_bytes;
-        hooks.str_data = str_data;
-        hooks.bytes_data = bytes_data;
-        hooks.classify_heap = classify_heap;
-        hooks.inc_ref = noop_ref;
-        hooks.dec_ref = noop_ref;
-        assert!(unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) });
-    });
+    let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.alloc_str = alloc_str;
+    hooks.alloc_bytes = alloc_bytes;
+    hooks.str_data = str_data;
+    hooks.bytes_data = bytes_data;
+    hooks.classify_heap = classify_heap;
+    hooks.inc_ref = noop_ref;
+    hooks.dec_ref = noop_ref;
+    support::prepare_abi_test_thread(hooks);
 }
 
 #[test]

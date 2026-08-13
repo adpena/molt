@@ -468,7 +468,13 @@ MemoryError = MemoryError
 NameError = NameError
 UnboundLocalError = UnboundLocalError
 NotImplementedError = NotImplementedError
-PythonFinalizationError = PythonFinalizationError
+_molt_sys_version_info = _require_builtin_intrinsic("molt_sys_version_info")
+_target_python_version = _molt_sys_version_info()
+if _target_python_version[:2] >= (3, 13):
+    PythonFinalizationError = PythonFinalizationError
+else:
+    __all__.remove("PythonFinalizationError")
+    _NS.pop("PythonFinalizationError", None)
 OSError = OSError
 EnvironmentError = EnvironmentError
 IOError = IOError
@@ -524,7 +530,6 @@ _molt_trace_enter_slot = _require_builtin_intrinsic("molt_trace_enter_slot")
 _molt_trace_exit = _require_builtin_intrinsic("molt_trace_exit")
 _molt_getrecursionlimit = _require_builtin_intrinsic("molt_getrecursionlimit")
 _molt_setrecursionlimit = _require_builtin_intrinsic("molt_setrecursionlimit")
-_molt_sys_version_info = _require_builtin_intrinsic("molt_sys_version_info")
 _molt_sys_version = _require_builtin_intrinsic("molt_sys_version")
 _molt_sys_stdin = _require_builtin_intrinsic("molt_sys_stdin")
 _molt_sys_stdout = _require_builtin_intrinsic("molt_sys_stdout")
@@ -571,5 +576,8 @@ _molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_na
 _molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
 if _molt_sys_platform() == "win32":
     WindowsError = OSError
+else:
+    __all__.remove("WindowsError")
+    _NS.pop("WindowsError", None)
 _molt_getpid = _require_builtin_intrinsic("molt_getpid")
 _molt_getcwd = _require_builtin_intrinsic("molt_getcwd")

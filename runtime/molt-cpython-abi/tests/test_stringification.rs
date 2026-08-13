@@ -45,10 +45,7 @@ fn install() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = fake_classify_heap;
     support::fake_strings::wire(&mut hooks);
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// Read the UTF-8 bytes backing a Molt-native `str` result.

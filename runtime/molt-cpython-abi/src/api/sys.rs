@@ -64,6 +64,7 @@ mod pystate_tests {
     /// regardless, and the engine exercises the real non-NULL dict end-to-end.)
     #[test]
     fn thread_state_dict_is_stable() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         let a = unsafe { PyThreadState_GetDict() };
         let b = unsafe { PyThreadState_GetDict() };

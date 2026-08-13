@@ -9,13 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import (
-    BUILTIN_EXCEPTION_NAMES,
-    ClassInfo,
-    MethodInfo,
-    MoltOp,
-    MoltValue,
-)
+from molt.frontend._types import ClassInfo, MethodInfo, MoltOp, MoltValue
 from molt.frontend.sema import c3_merge
 
 if TYPE_CHECKING:
@@ -120,7 +114,7 @@ class ClassResolutionMixin(_MixinBase):
         if cached is not None:
             return cached
         for base_name in self._class_mro_names(class_name)[1:]:
-            if base_name in BUILTIN_EXCEPTION_NAMES and base_name not in self.classes:
+            if self._builtin_exception_is_available(base_name) and base_name not in self.classes:
                 class_info["exception_subclass"] = True
                 return True
             base_info = self.classes.get(base_name)

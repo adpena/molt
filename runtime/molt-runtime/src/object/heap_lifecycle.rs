@@ -304,9 +304,11 @@ unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
 fn child_requires_tracking(ptr: *mut u8) -> bool {
     match heap_track_projection(unsafe { object_type_id(ptr) }) {
         Some(HeapTrackProjection::Always) => true,
-        Some(HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic) => unsafe {
-            super::gc::gc_is_tracked(ptr)
-        },
+        Some(
+            HeapTrackProjection::DictDynamic
+            | HeapTrackProjection::ForeignDynamic
+            | HeapTrackProjection::TupleDynamic,
+        ) => unsafe { super::gc::gc_is_tracked(ptr) },
         Some(HeapTrackProjection::Never) | None => false,
     }
 }
@@ -322,6 +324,11 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
     match heap_track_projection(type_id).expect("unknown heap kind in track projection") {
         HeapTrackProjection::Never => false,
         HeapTrackProjection::Always => true,
+        HeapTrackProjection::ForeignDynamic => {
+            let address = unsafe { super::foreign::foreign_ptr_from_obj(ptr) };
+            (unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(address) })
+                && super::gc::native_gc_is_enrolled(address)
+        }
         HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic => {
             let mut tracked = false;
             unsafe {

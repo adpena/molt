@@ -170,10 +170,7 @@ fn install() {
     hooks.complex_parts = support::fake_complex::parts;
     hooks.str_data = fx_str_data;
     hooks.bytes_data = fx_bytes_data;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 // ── minting molt-native operands ───────────────────────────────────────────

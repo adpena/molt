@@ -1664,23 +1664,27 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
                                 let exc_bits = molt_exception_last();
-                                let kind_bits = molt_exception_kind(exc_bits);
-                                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                                dec_ref_bits(_py, kind_bits);
-                                if kind.as_deref() == Some("StopIteration") {
-                                    let value_bits =
-                                        if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
-                                            if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                                                exception_value_bits(exc_ptr)
-                                            } else {
-                                                MoltObject::none().bits()
-                                            }
-                                        } else {
-                                            MoltObject::none().bits()
-                                        };
+                                if crate::builtins::exceptions::exception_matches_builtin_name(
+                                    _py,
+                                    exc_bits,
+                                    "StopIteration",
+                                ) {
+                                    let value_bits = if let Some(exc_ptr) =
+                                        maybe_ptr_from_bits(exc_bits)
+                                        && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
+                                    {
+                                        crate::builtins::exceptions::exception_typed_field_get(
+                                            _py, exc_ptr, "value",
+                                        )
+                                        .and_then(Result::ok)
+                                        .unwrap_or_else(|| MoltObject::none().bits())
+                                    } else {
+                                        MoltObject::none().bits()
+                                    };
                                     molt_exception_clear();
                                     exception_stack_pop(_py);
                                     let out_bits = generator_done_tuple(_py, value_bits);
+                                    dec_ref_bits(_py, value_bits);
                                     dec_ref_bits(_py, exc_bits);
                                     return out_bits;
                                 }
@@ -1955,10 +1959,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
                                 let exc_bits = molt_exception_last();
-                                let kind_bits = molt_exception_kind(exc_bits);
-                                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                                dec_ref_bits(_py, kind_bits);
-                                if kind.as_deref() == Some("IndexError") {
+                                if crate::builtins::exceptions::exception_matches_builtin_name(
+                                    _py,
+                                    exc_bits,
+                                    "IndexError",
+                                ) {
                                     molt_exception_clear();
                                     exception_stack_pop(_py);
                                     dec_ref_bits(_py, exc_bits);

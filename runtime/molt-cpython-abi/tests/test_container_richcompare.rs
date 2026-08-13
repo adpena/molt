@@ -11,6 +11,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
@@ -181,10 +183,7 @@ fn install() {
     hooks.dict_len = fx_dict_len;
     hooks.dict_entry = fx_dict_entry;
     hooks.classify_heap = fx_classify_heap;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// Mint a `*mut PyObject` for a runtime handle (ob_type set from classify_heap).

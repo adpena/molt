@@ -155,9 +155,7 @@ fn install_hooks() {
     hooks.int_sign = mock_int_sign;
     hooks.number_binary_op = mock_number_binary_op;
     support::fake_strings::wire(&mut hooks);
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 fn proxy(bits: u64) -> *mut PyObject {

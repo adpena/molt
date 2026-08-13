@@ -3,13 +3,15 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{
     PyBaseExceptionObject, PyExc_TypeError, PyExc_ValueError, PyExc_Warning, PyObject,
 };
 use std::ptr;
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
 }
 
 // ---------------------------------------------------------------------------

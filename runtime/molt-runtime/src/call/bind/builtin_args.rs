@@ -27,7 +27,16 @@ pub(super) unsafe fn bind_builtin_call(
         }
         if callable_matches_runtime_symbol(
             callable_bits,
+            fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+        ) {
+            return bind_builtin_exception_init_owned(_py, args);
+        }
+        if callable_matches_runtime_symbol(
+            callable_bits,
             fn_addr!(crate::builtins::exceptions::molt_exception_init),
+        ) || callable_matches_runtime_symbol(
+            callable_bits,
+            fn_addr!(crate::builtins::exceptions::molt_exceptiongroup_init),
         ) {
             return bind_builtin_exception_args(_py, args, false);
         }
@@ -424,7 +433,7 @@ pub(super) unsafe fn bind_builtin_call(
     }
 }
 
-fn bind_builtin_exception_args(
+pub(super) fn bind_builtin_exception_args(
     _py: &PyToken<'_>,
     args: &CallArgs,
     allow_keywords: bool,
@@ -453,6 +462,32 @@ fn bind_builtin_exception_args(
     }
     let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
     Some(vec![head, tuple_bits])
+}
+
+pub(super) fn bind_builtin_exception_init_owned(
+    _py: &PyToken<'_>,
+    args: &CallArgs,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>(_py, "TypeError", "missing required arguments");
+    }
+    let positional = alloc_tuple(_py, &args.pos[1..]);
+    let keyword_names = alloc_tuple(_py, &args.kw_names);
+    let keyword_values = alloc_tuple(_py, &args.kw_values);
+    if positional.is_null() || keyword_names.is_null() || keyword_values.is_null() {
+        for ptr in [positional, keyword_names, keyword_values] {
+            if !ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            }
+        }
+        return None;
+    }
+    Some(vec![
+        args.pos[0],
+        MoltObject::from_ptr(positional).bits(),
+        MoltObject::from_ptr(keyword_names).bits(),
+        MoltObject::from_ptr(keyword_values).bits(),
+    ])
 }
 
 unsafe fn bind_builtin_int_new(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {

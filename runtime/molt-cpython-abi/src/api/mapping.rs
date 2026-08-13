@@ -1129,6 +1129,7 @@ mod dict_anchor_tests {
     /// distinguishes it from the error-suppressing `PyDict_GetItemString`.
     #[test]
     fn getitemstring_witherror_null_key_is_bad_internal_call() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::init_tag_table();
         unsafe {
             crate::api::errors::PyErr_Clear();

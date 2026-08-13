@@ -774,6 +774,7 @@ mod capi_tests {
     /// `PyDateTime_IMPORT` performs.
     #[test]
     fn datetime_capi_capsule_roundtrips() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         let ptr =
             unsafe { crate::api::capsule::PyCapsule_Import(DATETIME_CAPSULE_NAME.as_ptr(), 0) };

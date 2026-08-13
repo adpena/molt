@@ -1,5 +1,14 @@
 use super::*;
 
+#[inline]
+fn finish_exception_publication(_py: &PyToken<'_>, result: Result<(), &'static str>) -> i64 {
+    match result {
+        Ok(()) => MoltObject::none().bits() as i64,
+        Err(_) if exception_pending(_py) => MoltObject::none().bits() as i64,
+        Err(message) => raise_exception::<i64>(_py, "SystemError", message),
+    }
+}
+
 fn property_doc_set(_py: &PyToken<'_>, prop_ptr: *mut u8, val_bits: u64) {
     let mut guard = property_docs(_py).lock().unwrap();
     let key = PtrSlot(prop_ptr);
@@ -212,74 +221,18 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 };
                 let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
-                if name == "message" || name == "exceptions" {
-                    let class_bits = object_class_bits(obj_ptr);
-                    let base_group_bits = builtin_classes(_py).base_exception_group;
-                    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
-                        dec_ref_bits(_py, attr_bits);
-                        return raise_exception::<_>(_py, "AttributeError", "readonly attribute");
-                    }
-                }
-                if name == "name" || name == "obj" {
-                    let kind_bits = exception_kind_bits(obj_ptr);
-                    let mut is_attrerr = false;
-                    if let Some(kind_ptr) = obj_from_bits(kind_bits).as_ptr()
-                        && object_type_id(kind_ptr) == TYPE_ID_STRING
-                    {
-                        let kind_len = string_len(kind_ptr);
-                        let kind_bytes =
-                            std::slice::from_raw_parts(string_bytes(kind_ptr), kind_len);
-                        is_attrerr = kind_bytes == b"AttributeError";
-                    }
-                    if is_attrerr {
-                        let members_bits = exception_value_bits(obj_ptr);
-                        let (old_name_bits, old_obj_bits) =
-                            if let Some(members_ptr) = obj_from_bits(members_bits).as_ptr() {
-                                if object_type_id(members_ptr) == TYPE_ID_TUPLE {
-                                    let mut old_name_bits = MoltObject::none().bits();
-                                    let mut old_obj_bits = MoltObject::none().bits();
-                                    let _ = crate::object::seq_access::read_item_gil_borrowed(
-                                        members_ptr,
-                                        0,
-                                        &mut old_name_bits,
-                                    );
-                                    let _ = crate::object::seq_access::read_item_gil_borrowed(
-                                        members_ptr,
-                                        1,
-                                        &mut old_obj_bits,
-                                    );
-                                    (old_name_bits, old_obj_bits)
-                                } else {
-                                    (MoltObject::none().bits(), MoltObject::none().bits())
-                                }
-                            } else {
-                                (MoltObject::none().bits(), MoltObject::none().bits())
-                            };
-                        let new_name_bits = if name == "name" {
-                            val_bits
-                        } else {
-                            old_name_bits
-                        };
-                        let new_obj_bits = if name == "obj" {
-                            val_bits
-                        } else {
-                            old_obj_bits
-                        };
-                        let tuple_ptr = alloc_tuple(_py, &[new_name_bits, new_obj_bits]);
-                        if tuple_ptr.is_null() {
-                            dec_ref_bits(_py, attr_bits);
-                            return MoltObject::none().bits() as i64;
-                        }
-                        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                        let _ = crate::builtins::exceptions::exception_replace_value_bits(
-                            _py,
-                            MoltObject::from_ptr(obj_ptr).bits(),
-                            tuple_bits,
-                        );
-                        dec_ref_bits(_py, tuple_bits);
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits() as i64;
-                    }
+                if let Some(result) = exception_typed_field_replace(
+                    _py,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                    &name,
+                    val_bits,
+                ) {
+                    dec_ref_bits(_py, attr_bits);
+                    return match result {
+                        Ok(()) => MoltObject::none().bits() as i64,
+                        Err(_) if exception_pending(_py) => MoltObject::none().bits() as i64,
+                        Err(message) => raise_exception::<i64>(_py, "AttributeError", message),
+                    };
                 }
                 if name == "__cause__" || name == "__context__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -312,14 +265,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     } else {
                         ExceptionFieldSlot::Context
                     };
-                    let _ = exception_replace_field_bits(
+                    let result = exception_replace_field_bits(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         field,
                         val_bits,
                     );
                     dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits() as i64;
+                    return finish_exception_publication(_py, result);
                 }
                 if name == "args" {
                     let args_bits = exception_args_from_iterable(_py, val_bits);
@@ -343,23 +296,23 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 }
                 if name == "__suppress_context__" {
                     let suppress = is_truthy(_py, obj_from_bits(val_bits));
-                    let _ = exception_replace_suppress_context(
+                    let result = exception_replace_suppress_context(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         suppress,
                     );
                     dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits() as i64;
+                    return finish_exception_publication(_py, result);
                 }
                 if name == "__notes__" {
-                    let _ = exception_replace_field_bits(
+                    let result = exception_replace_field_bits(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         ExceptionFieldSlot::Notes,
                         val_bits,
                     );
                     dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits() as i64;
+                    return finish_exception_publication(_py, result);
                 }
                 if name == "__dict__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -379,29 +332,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
-                    let _ = exception_replace_field_bits(
+                    let result = exception_replace_field_bits(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         ExceptionFieldSlot::Dict,
                         val_bits,
                     );
                     dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits() as i64;
-                }
-                if name == "value" {
-                    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)))
-                        .unwrap_or_default();
-                    if kind != "StopIteration" {
-                        dec_ref_bits(_py, attr_bits);
-                        return attr_error(_py, "exception", attr_name);
-                    }
-                    let _ = crate::builtins::exceptions::exception_replace_value_bits(
-                        _py,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                        val_bits,
-                    );
-                    dec_ref_bits(_py, attr_bits);
-                    return MoltObject::none().bits() as i64;
+                    return finish_exception_publication(_py, result);
                 }
                 let mut dict_bits = exception_dict_bits(obj_ptr);
                 if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
@@ -1024,43 +962,58 @@ pub(crate) unsafe fn del_attr_ptr(
             return attr_error_with_message(_py, &msg);
         }
         if type_id == TYPE_ID_EXCEPTION {
+            if let Some(result) =
+                exception_typed_field_delete(_py, MoltObject::from_ptr(obj_ptr).bits(), attr_name)
+            {
+                return match result {
+                    Ok(()) => MoltObject::none().bits() as i64,
+                    Err(_) if exception_pending(_py) => MoltObject::none().bits() as i64,
+                    Err(message) => raise_exception::<i64>(_py, "AttributeError", message),
+                };
+            }
             if attr_name == "__cause__" || attr_name == "__context__" {
                 let field = if attr_name == "__cause__" {
                     ExceptionFieldSlot::Cause
                 } else {
                     ExceptionFieldSlot::Context
                 };
-                let _ = exception_replace_field_bits(
+                let result = exception_replace_field_bits(
                     _py,
                     MoltObject::from_ptr(obj_ptr).bits(),
                     field,
                     MoltObject::none().bits(),
                 );
+                if result.is_err() {
+                    return finish_exception_publication(_py, result);
+                }
                 if attr_name == "__cause__" {
-                    let _ = exception_replace_suppress_context(
+                    let result = exception_replace_suppress_context(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         false,
                     );
+                    if result.is_err() {
+                        return finish_exception_publication(_py, result);
+                    }
                 }
                 return MoltObject::none().bits() as i64;
             }
             if attr_name == "__suppress_context__" {
-                let _ = exception_replace_suppress_context(
+                let result = exception_replace_suppress_context(
                     _py,
                     MoltObject::from_ptr(obj_ptr).bits(),
                     false,
                 );
-                return MoltObject::none().bits() as i64;
+                return finish_exception_publication(_py, result);
             }
             if attr_name == "__notes__" {
-                let _ = exception_replace_field_bits(
+                let result = exception_replace_field_bits(
                     _py,
                     MoltObject::from_ptr(obj_ptr).bits(),
                     ExceptionFieldSlot::Notes,
                     MoltObject::none().bits(),
                 );
-                return MoltObject::none().bits() as i64;
+                return finish_exception_publication(_py, result);
             }
             let dict_bits = exception_dict_bits(obj_ptr);
             if !obj_from_bits(dict_bits).is_none()

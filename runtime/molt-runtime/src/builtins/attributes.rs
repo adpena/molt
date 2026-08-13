@@ -12,8 +12,9 @@ use crate::builtins::attr::{
 };
 use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::exceptions::{
-    ExceptionFieldSlot, exception_group_exceptions_bits, exception_group_message_bits,
-    exception_replace_field_bits, exception_replace_suppress_context, molt_exception_last_pending,
+    ExceptionFieldSlot, exception_matches_builtin_name, exception_replace_field_bits,
+    exception_replace_suppress_context, exception_typed_field_delete, exception_typed_field_get,
+    exception_typed_field_replace, molt_exception_last_pending,
 };
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
@@ -386,46 +387,16 @@ pub(crate) unsafe fn attr_lookup_ptr(
         if type_id == TYPE_ID_EXCEPTION {
             let name = string_obj_to_owned(obj_from_bits(attr_bits));
             let attr_name = name.as_deref()?;
+            if let Some(result) = exception_typed_field_get(_py, obj_ptr, attr_name) {
+                match result {
+                    Ok(bits) => return Some(bits),
+                    Err(message) => {
+                        let _ = raise_exception::<u64>(_py, "AttributeError", message);
+                        return None;
+                    }
+                }
+            }
             match attr_name {
-                "message" | "exceptions" => {
-                    let class_bits = object_class_bits(obj_ptr);
-                    let base_group_bits = builtin_classes(_py).base_exception_group;
-                    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
-                        let bits = if attr_name == "message" {
-                            exception_group_message_bits(_py, obj_ptr)
-                        } else {
-                            exception_group_exceptions_bits(_py, obj_ptr)?
-                        };
-                        inc_ref_bits(_py, bits);
-                        return Some(bits);
-                    }
-                }
-                "name" | "obj" => {
-                    let kind_bits = exception_kind_bits(obj_ptr);
-                    if let Some(kind_ptr) = obj_from_bits(kind_bits).as_ptr()
-                        && object_type_id(kind_ptr) == TYPE_ID_STRING
-                    {
-                        let kind_len = string_len(kind_ptr);
-                        let kind_bytes =
-                            std::slice::from_raw_parts(string_bytes(kind_ptr), kind_len);
-                        if kind_bytes == b"AttributeError" {
-                            let members_bits = exception_value_bits(obj_ptr);
-                            if obj_from_bits(members_bits).is_none() || members_bits == 0 {
-                                return Some(MoltObject::none().bits());
-                            }
-                            if let Some(members_ptr) = obj_from_bits(members_bits).as_ptr()
-                                && object_type_id(members_ptr) == TYPE_ID_TUPLE
-                            {
-                                let index = usize::from(attr_name != "name");
-                                let bits = crate::object::seq_access::item(members_ptr, index)
-                                    .unwrap_or_else(|| MoltObject::none().bits());
-                                inc_ref_bits(_py, bits);
-                                return Some(bits);
-                            }
-                            return Some(MoltObject::none().bits());
-                        }
-                    }
-                }
                 "__cause__" => {
                     let bits = exception_cause_bits(obj_ptr);
                     inc_ref_bits(_py, bits);
@@ -490,33 +461,6 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     inc_ref_bits(_py, args_bits);
                     return Some(args_bits);
-                }
-                "msg" => {
-                    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)));
-                    if matches!(
-                        kind.as_deref(),
-                        Some("SyntaxError" | "IndentationError" | "TabError")
-                    ) {
-                        let bits = crate::exception_materialized_message_bits(_py, obj_ptr);
-                        inc_ref_bits(_py, bits);
-                        return Some(bits);
-                    }
-                }
-                "value" => {
-                    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)));
-                    if kind.as_deref() == Some("StopIteration") {
-                        let bits = exception_value_bits(obj_ptr);
-                        inc_ref_bits(_py, bits);
-                        return Some(bits);
-                    }
-                }
-                "code" => {
-                    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)));
-                    if kind.as_deref() == Some("SystemExit") {
-                        let bits = exception_value_bits(obj_ptr);
-                        inc_ref_bits(_py, bits);
-                        return Some(bits);
-                    }
                 }
                 _ => {}
             }
@@ -1697,10 +1641,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         let res_bits = call_callable1(_py, call_bits, attr_bits);
                         if exception_pending(_py) {
                             let exc_bits = molt_exception_last_pending();
-                            let kind_bits = molt_exception_kind(exc_bits);
-                            let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                            dec_ref_bits(_py, kind_bits);
-                            if kind.as_deref() == Some("AttributeError") {
+                            if exception_matches_builtin_name(_py, exc_bits, "AttributeError") {
                                 let getattr_bits = intern_static_name(
                                     _py,
                                     &runtime_state(_py).interned.getattr_name,
@@ -2045,10 +1986,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     if exception_pending(_py) {
                         let exc_bits = molt_exception_last_pending();
-                        let kind_bits = molt_exception_kind(exc_bits);
-                        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                        dec_ref_bits(_py, kind_bits);
-                        if kind.as_deref() == Some("AttributeError")
+                        if exception_matches_builtin_name(_py, exc_bits, "AttributeError")
                             && !obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(getattr_bits))
                             && class_attr_lookup_raw_mro(_py, class_ptr, getattr_bits).is_some()
                         {

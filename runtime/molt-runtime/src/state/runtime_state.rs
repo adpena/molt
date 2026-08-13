@@ -1182,12 +1182,7 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
     // Process-exit attachment is governed by the same prepare -> runtime TLS
     // anchors -> arm sequence as ordinary execution and embedding teardown.
     touch_tls_guard();
-    let code = match code_bits {
-        0 => 0,
-        1 => 1,
-        other if other <= i32::MAX as u64 => other as i32,
-        _ => 1,
-    };
+    let code = u32::try_from(code_bits).map_or(1, |raw| raw as i32);
     if !PROCESS_EXIT_FINALIZED.swap(true, AtomicOrdering::SeqCst) {
         let gil = GilGuard::new();
         let lifecycle = runtime_lifecycle();
@@ -1302,7 +1297,10 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     // `Py_IsInitialized` must observe this lifecycle authority immediately
     // after Ready publication; lazily installing the table on an unrelated ABI
     // call leaves the detached stub as a second, false initialization authority.
+    let cpython_bootstrap_state =
+        molt_cpython_abi::api::object::RuntimeInitializationThreadStateGuard::enter();
     crate::cpython_abi_hooks::register_cpython_hooks();
+    drop(cpython_bootstrap_state);
     trace_runtime_init("cpython_abi_hooks");
 
     super::metrics::snapshot_live_floor();

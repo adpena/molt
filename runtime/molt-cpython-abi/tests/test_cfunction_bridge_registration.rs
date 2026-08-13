@@ -16,8 +16,8 @@
 
 #![allow(non_snake_case)]
 
-#[path = "support/fake_foreign.rs"]
-mod fake_foreign;
+mod support;
+use support::fake_foreign;
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
@@ -121,11 +121,7 @@ fn install_hooks() {
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
     hooks.foreign_new = fake_foreign::foreign_new;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        // Fresh OnceLock in this dedicated test binary — installs cleanly.
-        molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
@@ -168,6 +164,7 @@ fn cfunction_newex_returns_bridge_resolvable_object() {
         handle.is_some(),
         "PyCFunction_NewEx result must be bridge-registered so PyDict_SetItem can store it"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(func) };
 }
 
 #[test]
@@ -185,6 +182,7 @@ fn cfunction_descriptor_stores_and_retrieves_in_type_dict() {
         },
     ];
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.ob_base.ob_base.ob_refcnt = 1;
     tp.tp_name = c"scalar".as_ptr();
     tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
     tp.tp_methods = methods.as_mut_ptr();
@@ -199,6 +197,11 @@ fn cfunction_descriptor_stores_and_retrieves_in_type_dict() {
         !found.is_null(),
         "method descriptor stored by PyType_Ready must be retrievable from tp_dict"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+        molt_cpython_abi::api::refcount::Py_DECREF(tp.tp_mro);
+        molt_cpython_abi::api::refcount::Py_DECREF(tp.tp_dict);
+    }
 }
 
 #[test]

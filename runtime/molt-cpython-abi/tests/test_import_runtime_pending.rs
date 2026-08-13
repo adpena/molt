@@ -15,10 +15,7 @@ fn runtime_import_exception_is_not_masked_by_synthetic_abi_error() {
     let mut hooks: RuntimeHooks = STUB_HOOKS;
     hooks.import_module = import_fails;
     hooks.exception_pending = runtime_exception_pending;
-    assert!(
-        unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) },
-        "install runtime hooks"
-    );
+    support::prepare_abi_test_thread(hooks);
 
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let module =

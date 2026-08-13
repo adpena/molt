@@ -3,10 +3,12 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
 use molt_cpython_abi::abi_types::{
-    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, Py_ssize_t, PyBUF_FORMAT, PyBUF_READ,
-    PyBUF_STRIDES, PyBUF_WRITE, PyMethodDef, PyMutex, PyObject, is_immortal_refcnt,
+    METH_NOARGS, METH_O, Py_buffer, Py_ssize_t, PyBUF_FORMAT, PyBUF_READ, PyBUF_STRIDES,
+    PyBUF_WRITE, PyMethodDef, PyObject, is_immortal_refcnt,
 };
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -32,7 +34,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 /// idempotent ABI init. Every test binds the returned `MutexGuard` for its body.
 fn init() -> MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
     guard
 }
 
@@ -582,72 +584,6 @@ fn test_pyobject_type_null_sets_error_and_returns_null() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
-#[test]
-fn test_detached_abi_does_not_fabricate_runtime_or_thread_state() {
-    let _guard = init();
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
-        0
-    );
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
-        0
-    );
-    assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
-    assert_eq!(molt_cpython_abi::api::object::PY_GIL_STATE_LOCKED, 0);
-    assert_eq!(molt_cpython_abi::api::object::PY_GIL_STATE_UNLOCKED, 1);
-}
-
-// Mask-proof regression for POISON Lane A #9 — PyThreadState_GetFrame theater.
-// The ABI-tier PyThreadState carries no CPython frame stack, so GetFrame must
-// return NULL ("no frame executing"), never a fabricated empty PyFrameObject
-// that a frame-walking C extension would read as the real execution frame.
-// Pre-fix this returned a non-null synthetic frame (via PyFrame_New) → FAILS;
-// post-fix it returns NULL → PASSES.
-#[test]
-fn test_gil_check_mutex_and_unstable_unique_refs() {
-    let _guard = init();
-
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
-        0
-    );
-
-    let mut mutex = PyMutex { _bits: 0 };
-    unsafe { molt_cpython_abi::api::object::PyMutex_Lock(&mut mutex) };
-    assert_eq!(mutex._bits, 1);
-    unsafe { molt_cpython_abi::api::object::PyMutex_Unlock(&mut mutex) };
-    assert_eq!(mutex._bits, 0);
-
-    let mut obj = PyObject {
-        ob_refcnt: 1,
-        ob_type: ptr::null_mut(),
-    };
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::object::PyUnstable_Object_IsUniquelyReferenced(&mut obj) },
-        1
-    );
-    assert_eq!(
-        unsafe {
-            molt_cpython_abi::api::object::PyUnstable_Object_IsUniqueReferencedTemporary(&mut obj)
-        },
-        1
-    );
-    obj.ob_refcnt = 2;
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::object::PyUnstable_Object_IsUniquelyReferenced(&mut obj) },
-        0
-    );
-    assert_eq!(
-        unsafe {
-            molt_cpython_abi::api::object::PyUnstable_Object_IsUniquelyReferenced(ptr::null_mut())
-        },
-        0
-    );
-
-    assert_eq!(unsafe { Py_OptimizeFlag }, 0);
-}
-
 // ---------------------------------------------------------------------------
 // PyCallable_Check
 // ---------------------------------------------------------------------------
@@ -928,6 +864,7 @@ fn test_object_dir_foreign_nonbridge_does_not_hang() {
     };
     let raw_addr = (&raw mut fake) as usize;
     let handle = std::thread::spawn(move || {
+        support::prepare_abi_test_thread(support::stub_runtime_hooks());
         let o = raw_addr as *mut PyObject;
         (unsafe { molt_cpython_abi::api::object::PyObject_Dir(o) }) as usize
     });

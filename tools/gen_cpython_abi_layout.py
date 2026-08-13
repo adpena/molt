@@ -97,6 +97,7 @@ F64 = "f64"
 class Field:
     name: str
     category: str  # one of the scalars above, or "embed:<Name>", or "arr:<n>x<cat>"
+    cfg: str | None = None
 
 
 @dataclass(frozen=True)
@@ -232,15 +233,22 @@ def _flush_rust_field(buf: str, fields: list[Field]) -> None:
     frag = buf.strip()
     if not frag:
         return
-    # Strip inline comments and attributes.
+    # Strip inline comments and retain target-conditional fields. The only
+    # layout-affecting conditional in the CPython 3.12 authority is
+    # PyOSErrorObject.winerror on Windows.
     frag = re.sub(r"//.*$", "", frag).strip()
+    cfg = None
+    cfg_match = re.match(r"#\[cfg\((\w+)\)\]\s*(.*)$", frag)
+    if cfg_match:
+        cfg, frag = cfg_match.groups()
+        frag = frag.strip()
     if not frag or frag.startswith("#["):
         return
     m = re.match(r"pub\s+(\w+)\s*:\s*(.+)$", frag)
     if not m:
         return
     name, ty = m.group(1), m.group(2).strip()
-    fields.append(Field(name, _rust_field_category(ty)))
+    fields.append(Field(name, _rust_field_category(ty), cfg))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -271,6 +279,16 @@ C_TO_RUST: dict[str, str] = {
     "PyCFunctionObject": "PyCFunctionObject",
     "Py_complex": "Py_complex",
     "PyLongObject": "PyLongObject",
+    "PyBaseExceptionObject": "PyBaseExceptionObject",
+    "PyBaseExceptionGroupObject": "PyBaseExceptionGroupObject",
+    "PySyntaxErrorObject": "PySyntaxErrorObject",
+    "PyImportErrorObject": "PyImportErrorObject",
+    "PyUnicodeErrorObject": "PyUnicodeErrorObject",
+    "PySystemExitObject": "PySystemExitObject",
+    "PyOSErrorObject": "PyOSErrorObject",
+    "PyStopIterationObject": "PyStopIterationObject",
+    "PyNameErrorObject": "PyNameErrorObject",
+    "PyAttributeErrorObject": "PyAttributeErrorObject",
 }
 
 
@@ -312,6 +330,16 @@ ASSERTED_STRUCTS: tuple[str, ...] = (
     "PyDateTime_Date",
     "PyDateTime_Time",
     "PyDateTime_DateTime",
+    "PyBaseExceptionObject",
+    "PyBaseExceptionGroupObject",
+    "PySyntaxErrorObject",
+    "PyImportErrorObject",
+    "PyUnicodeErrorObject",
+    "PySystemExitObject",
+    "PyOSErrorObject",
+    "PyStopIterationObject",
+    "PyNameErrorObject",
+    "PyAttributeErrorObject",
 )
 
 
@@ -386,9 +414,6 @@ def emit_header(authority: dict[str, Struct]) -> str:
         # sizeof + offsetof parity for BOTH pointer-width models. Both are computed
         # from the same parsed authority; the C compiler's _Static_assert on the
         # branch matching its own pointer width is the real proof.
-        size64, offsets64 = _compute_layout(rust_name, authority, _PTR_SIZE_LP64)
-        size32, offsets32 = _compute_layout(rust_name, authority, _PTR_SIZE_ILP32)
-
         def _emit_block(size: int, offsets: list[tuple[str, int]]) -> None:
             ap(
                 f"_MOLT_ABI_SASSERT(sizeof({c_type}) == {size}u,"
@@ -404,15 +429,31 @@ def emit_header(authority: dict[str, Struct]) -> str:
                     f' "layout drift: offsetof({c_type}, {c_field}) != {off}");'
                 )
 
-        if (size64, offsets64) == (size32, offsets32):
-            # Pointer-width-independent struct (all fixed-width fields): one block.
-            _emit_block(size64, offsets64)
-        else:
-            ap("#if _MOLT_ABI_PTR32")
-            _emit_block(size32, offsets32)
+        def _emit_target_model(windows: bool) -> None:
+            size64, offsets64 = _compute_layout(
+                rust_name, authority, _PTR_SIZE_LP64, windows
+            )
+            size32, offsets32 = _compute_layout(
+                rust_name, authority, _PTR_SIZE_ILP32, windows
+            )
+            if (size64, offsets64) == (size32, offsets32):
+                _emit_block(size64, offsets64)
+            else:
+                ap("#if _MOLT_ABI_PTR32")
+                _emit_block(size32, offsets32)
+                ap("#else")
+                _emit_block(size64, offsets64)
+                ap("#endif")
+
+        has_windows_field = any(field.cfg == "windows" for field in st.fields)
+        if has_windows_field:
+            ap("#if defined(_WIN32) || defined(MS_WINDOWS)")
+            _emit_target_model(True)
             ap("#else")
-            _emit_block(size64, offsets64)
+            _emit_target_model(False)
             ap("#endif")
+        else:
+            _emit_target_model(False)
         ap("")
 
     ap("#undef _MOLT_ABI_SASSERT")
@@ -439,7 +480,7 @@ _PTR_SIZE_ILP32 = 4
 
 
 def _cat_size_align(
-    cat: str, authority: dict[str, Struct], ptr_size: int
+    cat: str, authority: dict[str, Struct], ptr_size: int, windows: bool = False
 ) -> tuple[int, int]:
     if cat in (PTR, WORD):
         return ptr_size, ptr_size
@@ -451,32 +492,39 @@ def _cat_size_align(
         return 1, 1
     if cat.startswith("embed:"):
         name = cat.split(":", 1)[1]
-        sz, _ = _compute_layout(name, authority, ptr_size)
-        al = _struct_align(name, authority, ptr_size)
+        sz, _ = _compute_layout(name, authority, ptr_size, windows)
+        al = _struct_align(name, authority, ptr_size, windows)
         return sz, al
     if cat.startswith("arr:"):
         # arr:<n>x<innercat>
         m = re.match(r"arr:(\d+)x(.+)", cat)
         assert m, cat
         n = int(m.group(1))
-        isz, ial = _cat_size_align(m.group(2), authority, ptr_size)
+        isz, ial = _cat_size_align(m.group(2), authority, ptr_size, windows)
         return isz * n, ial
     if cat == "Py_complex":
         return 16, 8
     raise LayoutError(f"no size for category {cat!r}")
 
 
-def _struct_align(name: str, authority: dict[str, Struct], ptr_size: int) -> int:
+def _struct_align(
+    name: str, authority: dict[str, Struct], ptr_size: int, windows: bool = False
+) -> int:
     st = authority[name]
     al = 1
     for f in st.fields:
-        _, fa = _cat_size_align(f.category, authority, ptr_size)
+        if f.cfg == "windows" and not windows:
+            continue
+        _, fa = _cat_size_align(f.category, authority, ptr_size, windows)
         al = max(al, fa)
     return al
 
 
 def _compute_layout(
-    name: str, authority: dict[str, Struct], ptr_size: int
+    name: str,
+    authority: dict[str, Struct],
+    ptr_size: int,
+    windows: bool = False,
 ) -> tuple[int, list[tuple[str, int]]]:
     """Return (sizeof, [(field, offset)]) for a repr(C) struct under the given
     pointer-width model, flattening embedded struct fields so offsets are relative
@@ -487,7 +535,9 @@ def _compute_layout(
     struct_align = 1
     out: list[tuple[str, int]] = []
     for f in st.fields:
-        fsz, fal = _cat_size_align(f.category, authority, ptr_size)
+        if f.cfg == "windows" and not windows:
+            continue
+        fsz, fal = _cat_size_align(f.category, authority, ptr_size, windows)
         struct_align = max(struct_align, fal)
         # align
         if offset % fal != 0:
@@ -541,6 +591,16 @@ _C_TYPE_EXPR: dict[str, str | None] = {
     "PyDateTime_Date": None,
     "PyDateTime_Time": None,
     "PyDateTime_DateTime": None,
+    "PyBaseExceptionObject": "PyBaseExceptionObject",
+    "PyBaseExceptionGroupObject": "PyBaseExceptionGroupObject",
+    "PySyntaxErrorObject": "PySyntaxErrorObject",
+    "PyImportErrorObject": "PyImportErrorObject",
+    "PyUnicodeErrorObject": "PyUnicodeErrorObject",
+    "PySystemExitObject": "PySystemExitObject",
+    "PyOSErrorObject": "PyOSErrorObject",
+    "PyStopIterationObject": "PyStopIterationObject",
+    "PyNameErrorObject": "PyNameErrorObject",
+    "PyAttributeErrorObject": "PyAttributeErrorObject",
 }
 
 
@@ -557,6 +617,15 @@ def _c_type_expr(rust_name: str) -> str | None:
 _SUPPRESS_OFFSETOF_FIELDS: dict[str, set[str]] = {
     # ob_base is flattened in C (PyObject_HEAD / PyObject_VAR_HEAD) — no such field.
     "*": {"ob_base", "d_common", "m_base", "func"},
+    "PyBaseExceptionGroupObject": {"base"},
+    "PySyntaxErrorObject": {"base"},
+    "PyImportErrorObject": {"base"},
+    "PyUnicodeErrorObject": {"base"},
+    "PySystemExitObject": {"base"},
+    "PyOSErrorObject": {"base"},
+    "PyStopIterationObject": {"base"},
+    "PyNameErrorObject": {"base"},
+    "PyAttributeErrorObject": {"base"},
 }
 
 

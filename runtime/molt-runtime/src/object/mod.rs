@@ -1016,9 +1016,13 @@ const CLASS_POLICY_IMMUTABLE: u64 = 1 << 1;
 const CLASS_POLICY_INSTANCE_KIND_EXPLICIT: u64 = 1 << 2;
 const CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT: u64 = 1 << 3;
 const CLASS_POLICY_DEFINITION_FINISHED: u64 = 1 << 4;
+const CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT: u64 = 1 << 5;
 const CLASS_POLICY_INSTANCE_SHAPE_SHIFT: u32 = 8;
 const CLASS_POLICY_INSTANCE_SHAPE_MASK: u64 =
     (u16::MAX as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
+const CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT: u32 = 24;
+const CLASS_POLICY_EXCEPTION_LAYOUT_MASK: u64 =
+    (u8::MAX as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
 const CLASS_POLICY_INSTANCE_KIND_SHIFT: u32 = molt_codegen_abi::CLASS_POLICY_INSTANCE_KIND_SHIFT;
 const CLASS_POLICY_INSTANCE_KIND_MASK: u64 = (u32::MAX as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
 const CLASS_POLICY_WORD_OFFSET: usize = molt_codegen_abi::CLASS_POLICY_WORD_OFFSET as usize;
@@ -1095,6 +1099,85 @@ pub(crate) unsafe fn class_inherit_instance_shape_id(
                 }
                 (current == 0 || current == encoded)
                     .then_some((word & !CLASS_POLICY_INSTANCE_SHAPE_MASK) | encoded)
+            })
+            .is_ok()
+    }
+}
+
+/// Immutable builtin-exception physical root carried by the class itself.
+/// This byte is read on every exception allocation, so it lives in the atomic
+/// class policy word rather than a name lookup or side registry.
+#[inline]
+pub(crate) unsafe fn class_exception_layout_root(
+    class_ptr: *mut u8,
+) -> molt_obj_model::ExceptionLayoutRoot {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let encoded =
+        ((word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK) >> CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT) as u8;
+    molt_obj_model::ExceptionLayoutRoot::from_u8(encoded)
+        .expect("corrupt class exception-layout policy")
+}
+
+/// Seed a concrete builtin root before base/MRO publication. A conflicting
+/// writer is an invariant violation; aliases share the already-seeded class.
+pub(crate) unsafe fn class_set_exception_layout_root(
+    class_ptr: *mut u8,
+    root: molt_obj_model::ExceptionLayoutRoot,
+) -> bool {
+    if root == molt_obj_model::ExceptionLayoutRoot::Base
+        || class_ptr.is_null()
+        || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE
+    {
+        return false;
+    }
+    let encoded = (root as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK;
+                (current == 0 || current == encoded).then_some(
+                    (word & !CLASS_POLICY_EXCEPTION_LAYOUT_MASK)
+                        | encoded
+                        | CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT,
+                )
+            })
+            .is_ok()
+    }
+}
+
+pub(crate) unsafe fn class_can_inherit_exception_layout_root(
+    class_ptr: *mut u8,
+    inherited: molt_obj_model::ExceptionLayoutRoot,
+) -> bool {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let current = word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK;
+    let encoded = (inherited as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
+    if inherited == molt_obj_model::ExceptionLayoutRoot::Base {
+        current == 0 || word & CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT != 0
+    } else {
+        current == 0 || current == encoded
+    }
+}
+
+pub(crate) unsafe fn class_inherit_exception_layout_root(
+    class_ptr: *mut u8,
+    inherited: molt_obj_model::ExceptionLayoutRoot,
+) -> bool {
+    let encoded = (inherited as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK;
+                let explicit = word & CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT != 0;
+                if inherited == molt_obj_model::ExceptionLayoutRoot::Base {
+                    return (current == 0 || explicit).then_some(if explicit {
+                        word
+                    } else {
+                        word & !CLASS_POLICY_EXCEPTION_LAYOUT_MASK
+                    });
+                }
+                (current == 0 || current == encoded)
+                    .then_some((word & !CLASS_POLICY_EXCEPTION_LAYOUT_MASK) | encoded)
             })
             .is_ok()
     }

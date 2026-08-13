@@ -1599,9 +1599,25 @@ pub extern "C" fn molt_gc_get_objects(generation_bits: u64) -> u64 {
         };
         match crate::object::gc::get_objects(_py, generation) {
             Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
-            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+            Err(error) => gc_introspection_failure(_py, error),
         }
     })
+}
+
+fn gc_introspection_failure(
+    py: &PyToken<'_>,
+    error: crate::object::gc::GcIntrospectionError,
+) -> u64 {
+    match error {
+        crate::object::gc::GcIntrospectionError::Resource(message) => {
+            raise_exception::<_>(py, "MemoryError", message)
+        }
+        crate::object::gc::GcIntrospectionError::UnsupportedConcurrency => raise_exception::<_>(
+            py,
+            "RuntimeError",
+            "GC pointer introspection requires a free-threaded stop-the-world guard",
+        ),
+    }
 }
 
 fn gc_object_args_ptr(_py: &PyToken<'_>, args_bits: u64) -> Result<*mut u8, u64> {
@@ -1631,7 +1647,7 @@ pub extern "C" fn molt_gc_get_referents(args_bits: u64) -> u64 {
         };
         match unsafe { crate::object::gc::get_referents(_py, args_ptr) } {
             Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
-            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+            Err(error) => gc_introspection_failure(_py, error),
         }
     })
 }
@@ -1645,7 +1661,7 @@ pub extern "C" fn molt_gc_get_referrers(args_bits: u64) -> u64 {
         };
         match unsafe { crate::object::gc::get_referrers(_py, args_ptr) } {
             Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
-            Err(message) => raise_exception::<_>(_py, "MemoryError", message),
+            Err(error) => gc_introspection_failure(_py, error),
         }
     })
 }

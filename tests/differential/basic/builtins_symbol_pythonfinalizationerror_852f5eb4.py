@@ -1,5 +1,5 @@
-"""Purpose: CPython 3.12+ builtins semantic probe for symbol `PythonFinalizationError`."""
-# MOLT_META: expect_fail=molt expect_fail_reason=requires_inspect_json_contextlib
+"""Purpose: PythonFinalizationError is published only by CPython 3.13+."""
+# MOLT_META: min_py=3.13 expect_fail=molt expect_fail_reason=requires_inspect_json_contextlib
 import builtins
 import contextlib
 import hashlib

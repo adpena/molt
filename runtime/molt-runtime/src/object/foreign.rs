@@ -18,7 +18,7 @@
 
 use crate::{PyToken, TYPE_ID_FOREIGN};
 
-use super::{alloc_object, bits_from_ptr};
+use super::{ObjectAuxPreselection, alloc_object_zeroed_unpublished_with_aux, bits_from_ptr};
 
 /// Allocate a `TYPE_ID_FOREIGN` wrapper around the C `PyObject*` at address
 /// `c_ptr`. The wrapper payload is exactly the pointer value (`usize`); the
@@ -27,20 +27,28 @@ use super::{alloc_object, bits_from_ptr};
 ///
 /// Returns the wrapper's NaN-boxed handle bits, or 0 on allocation failure.
 pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
-    if unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(c_ptr) } {
+    if unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(c_ptr) }
+        && !super::gc::native_gc_is_enrolled(c_ptr)
+    {
         return crate::raise_exception::<u64>(
             _py,
             "TypeError",
-            "GC-capable foreign objects require a cross-collector ownership contract",
+            "GC-capable foreign object was not enrolled in the runtime GC authority",
         );
     }
     let total = std::mem::size_of::<crate::MoltHeader>() + std::mem::size_of::<usize>();
-    let ptr = alloc_object(_py, total, TYPE_ID_FOREIGN);
+    let ptr = alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_FOREIGN,
+        ObjectAuxPreselection::Default,
+    );
     if ptr.is_null() {
         return 0;
     }
     unsafe {
         *(ptr as *mut usize) = c_ptr;
+        super::gc::gc_publish_initialized(_py, ptr);
     }
     bits_from_ptr(ptr)
 }

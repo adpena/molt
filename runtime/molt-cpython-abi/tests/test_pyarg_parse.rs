@@ -21,6 +21,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
@@ -83,9 +85,7 @@ fn install_hooks() {
     hooks.tuple_len = mock_tuple_len;
     hooks.tuple_item = mock_tuple_item;
     hooks.classify_heap = mock_classify_heap;
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 /// Set the synthetic tuple's items and return its args `PyObject*`.

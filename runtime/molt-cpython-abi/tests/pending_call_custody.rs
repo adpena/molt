@@ -1,3 +1,5 @@
+mod support;
+
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,6 +28,7 @@ fn assert_system_error_pending() {
 
 #[test]
 fn detached_main_direct_c_boundary_sets_and_clears_one_system_error() {
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
     assert!(register_main_thread(std::thread::current().id()));
     assert_eq!(
         unsafe {

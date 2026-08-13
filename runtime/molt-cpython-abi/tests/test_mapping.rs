@@ -2,13 +2,15 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_lang_obj_model::MoltObject;
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
 }
 
 // A hook table whose `alloc_list` SUCCEEDS (so PyList_New returns a non-null
@@ -26,10 +28,7 @@ unsafe extern "C" fn fake_alloc_list() -> u64 {
 fn init_with_working_list_alloc() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_list = fake_alloc_list;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 // ---------------------------------------------------------------------------

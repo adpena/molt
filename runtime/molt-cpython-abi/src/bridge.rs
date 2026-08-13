@@ -26,10 +26,15 @@
 //! in `PyArg_ParseTuple`, which is called on every C extension function entry.
 
 use crate::abi_types::{
-    MoltManaged_Type, MoltTypeTag, Py_False, Py_None, Py_True, PyBaseExceptionObject,
-    PyBaseObject_Type, PyBool_Type, PyList_Type, PyObject, PyTuple_Type, PyType_Type, PyTypeObject,
+    MoltManaged_Type, MoltTypeTag, Py_False, Py_None, Py_True, PyAttributeErrorObject,
+    PyBaseExceptionGroupObject, PyBaseExceptionObject, PyBaseObject_Type, PyBool_Type,
+    PyImportErrorObject, PyList_Type, PyNameErrorObject, PyOSErrorObject, PyObject,
+    PyStopIterationObject, PySyntaxErrorObject, PySystemExitObject, PyTuple_Type, PyType_Type,
+    PyTypeObject, PyUnicodeErrorObject,
 };
-use molt_lang_obj_model::MoltObject;
+use molt_lang_obj_model::{
+    ExceptionFieldStorage, ExceptionLayoutKind, MAX_EXCEPTION_TYPED_FIELDS, MoltObject,
+};
 use once_cell::sync::OnceCell;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::cell::{RefCell, UnsafeCell};
@@ -229,7 +234,7 @@ pub struct RetiredClearedListProjection {
 /// Publication is complete before construction; dropping the guard performs
 /// only the deferred C decrements.
 pub struct RetiredExceptionProjection {
-    pointers: [*mut PyObject; 6],
+    pointers: [*mut PyObject; EXCEPTION_VIEW_POINTER_FIELDS],
 }
 
 /// One pre-acquired C projection edge for an allocation-free list delta.
@@ -289,11 +294,14 @@ impl Drop for RetiredClearedListProjection {
 
 impl Drop for RetiredExceptionProjection {
     fn drop(&mut self) {
-        for pointer in std::mem::replace(&mut self.pointers, [std::ptr::null_mut(); 6])
-            .into_iter()
-            .filter(|pointer| !pointer.is_null())
+        for pointer in std::mem::replace(
+            &mut self.pointers,
+            [std::ptr::null_mut(); EXCEPTION_VIEW_POINTER_FIELDS],
+        )
+        .into_iter()
+        .filter(|pointer| !pointer.is_null())
         {
-            unsafe { crate::api::refcount::Py_DECREF(pointer) };
+            unsafe { GLOBAL_BRIDGE.traversed_projection_decref(pointer) };
         }
     }
 }
@@ -598,6 +606,308 @@ impl Drop for TupleAllocation {
 
 unsafe impl Send for TupleAllocation {}
 
+const EXCEPTION_BASE_POINTER_FIELDS: usize = 6;
+pub const EXCEPTION_VIEW_POINTER_FIELDS: usize =
+    EXCEPTION_BASE_POINTER_FIELDS + MAX_EXCEPTION_TYPED_FIELDS;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExceptionViewState {
+    layout_kind: ExceptionLayoutKind,
+    base: [*mut PyObject; EXCEPTION_BASE_POINTER_FIELDS],
+    typed: [*mut PyObject; MAX_EXCEPTION_TYPED_FIELDS],
+    suppress_context: std::os::raw::c_char,
+    unicode_start: isize,
+    unicode_end: isize,
+    os_error_written: isize,
+}
+
+impl ExceptionViewState {
+    fn empty(layout_kind: ExceptionLayoutKind) -> Self {
+        Self {
+            layout_kind,
+            base: [std::ptr::null_mut(); EXCEPTION_BASE_POINTER_FIELDS],
+            typed: [std::ptr::null_mut(); MAX_EXCEPTION_TYPED_FIELDS],
+            suppress_context: 0,
+            unicode_start: 0,
+            unicode_end: 0,
+            os_error_written: -1,
+        }
+    }
+
+    fn pointers(self) -> [*mut PyObject; EXCEPTION_VIEW_POINTER_FIELDS] {
+        let mut pointers = [std::ptr::null_mut(); EXCEPTION_VIEW_POINTER_FIELDS];
+        pointers[..EXCEPTION_BASE_POINTER_FIELDS].copy_from_slice(&self.base);
+        pointers[EXCEPTION_BASE_POINTER_FIELDS..].copy_from_slice(&self.typed);
+        pointers
+    }
+}
+
+/// Owns one exactly sized CPython 3.12 exception object. The enum is the sole
+/// allocation authority; no typed exception may fall back to a base-sized
+/// sidecar while advertising a larger `tp_basicsize`.
+enum ExceptionAllocation {
+    Base(Box<UnsafeCell<PyBaseExceptionObject>>),
+    Group(Box<UnsafeCell<PyBaseExceptionGroupObject>>),
+    Syntax(Box<UnsafeCell<PySyntaxErrorObject>>),
+    Import(Box<UnsafeCell<PyImportErrorObject>>),
+    Unicode(Box<UnsafeCell<PyUnicodeErrorObject>>),
+    SystemExit(Box<UnsafeCell<PySystemExitObject>>),
+    OSError(Box<UnsafeCell<PyOSErrorObject>>),
+    StopIteration(Box<UnsafeCell<PyStopIterationObject>>),
+    NameError(Box<UnsafeCell<PyNameErrorObject>>),
+    AttributeError(Box<UnsafeCell<PyAttributeErrorObject>>),
+}
+
+unsafe impl Send for ExceptionAllocation {}
+
+impl ExceptionAllocation {
+    fn new(layout_kind: ExceptionLayoutKind, ob_refcnt: isize, ob_type: *mut PyTypeObject) -> Self {
+        let mut allocation = match layout_kind {
+            ExceptionLayoutKind::Base => {
+                Self::Base(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::Group => {
+                Self::Group(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::Syntax => {
+                Self::Syntax(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::Import => {
+                Self::Import(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::Unicode => {
+                Self::Unicode(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::SystemExit => {
+                Self::SystemExit(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::OSError => {
+                Self::OSError(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::StopIteration => {
+                Self::StopIteration(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::NameError => {
+                Self::NameError(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+            ExceptionLayoutKind::AttributeError => {
+                Self::AttributeError(Box::new(UnsafeCell::new(unsafe { std::mem::zeroed() })))
+            }
+        };
+        unsafe {
+            allocation.base_mut().ob_base = PyObject { ob_refcnt, ob_type };
+            if let Self::OSError(object) = &mut allocation {
+                (*object.get()).written = -1;
+            }
+        }
+        allocation
+    }
+
+    fn layout_kind(&self) -> ExceptionLayoutKind {
+        match self {
+            Self::Base(_) => ExceptionLayoutKind::Base,
+            Self::Group(_) => ExceptionLayoutKind::Group,
+            Self::Syntax(_) => ExceptionLayoutKind::Syntax,
+            Self::Import(_) => ExceptionLayoutKind::Import,
+            Self::Unicode(_) => ExceptionLayoutKind::Unicode,
+            Self::SystemExit(_) => ExceptionLayoutKind::SystemExit,
+            Self::OSError(_) => ExceptionLayoutKind::OSError,
+            Self::StopIteration(_) => ExceptionLayoutKind::StopIteration,
+            Self::NameError(_) => ExceptionLayoutKind::NameError,
+            Self::AttributeError(_) => ExceptionLayoutKind::AttributeError,
+        }
+    }
+
+    unsafe fn base(&self) -> &PyBaseExceptionObject {
+        unsafe {
+            match self {
+                Self::Base(object) => &*object.get(),
+                Self::Group(object) => &(*object.get()).base,
+                Self::Syntax(object) => &(*object.get()).base,
+                Self::Import(object) => &(*object.get()).base,
+                Self::Unicode(object) => &(*object.get()).base,
+                Self::SystemExit(object) => &(*object.get()).base,
+                Self::OSError(object) => &(*object.get()).base,
+                Self::StopIteration(object) => &(*object.get()).base,
+                Self::NameError(object) => &(*object.get()).base,
+                Self::AttributeError(object) => &(*object.get()).base,
+            }
+        }
+    }
+
+    unsafe fn base_mut(&mut self) -> &mut PyBaseExceptionObject {
+        unsafe {
+            match self {
+                Self::Base(object) => &mut *object.get(),
+                Self::Group(object) => &mut (*object.get()).base,
+                Self::Syntax(object) => &mut (*object.get()).base,
+                Self::Import(object) => &mut (*object.get()).base,
+                Self::Unicode(object) => &mut (*object.get()).base,
+                Self::SystemExit(object) => &mut (*object.get()).base,
+                Self::OSError(object) => &mut (*object.get()).base,
+                Self::StopIteration(object) => &mut (*object.get()).base,
+                Self::NameError(object) => &mut (*object.get()).base,
+                Self::AttributeError(object) => &mut (*object.get()).base,
+            }
+        }
+    }
+
+    fn py_obj(&self) -> *mut PyObject {
+        unsafe {
+            std::ptr::from_ref(self.base())
+                .cast_mut()
+                .cast::<PyObject>()
+        }
+    }
+
+    unsafe fn state(&self) -> ExceptionViewState {
+        let mut state = ExceptionViewState::empty(self.layout_kind());
+        unsafe {
+            let base = self.base();
+            state.base = [
+                base.dict,
+                base.args,
+                base.notes,
+                base.traceback,
+                base.context,
+                base.cause,
+            ];
+            state.suppress_context = base.suppress_context;
+            match self {
+                Self::Base(_) => {}
+                Self::Group(object) => {
+                    let object = &*object.get();
+                    state.typed[0] = object.msg;
+                    state.typed[1] = object.excs;
+                }
+                Self::Syntax(object) => {
+                    let object = &*object.get();
+                    state.typed[..8].copy_from_slice(&[
+                        object.msg,
+                        object.filename,
+                        object.lineno,
+                        object.offset,
+                        object.end_lineno,
+                        object.end_offset,
+                        object.text,
+                        object.print_file_and_line,
+                    ]);
+                }
+                Self::Import(object) => {
+                    let object = &*object.get();
+                    state.typed[..4].copy_from_slice(&[
+                        object.msg,
+                        object.name,
+                        object.path,
+                        object.name_from,
+                    ]);
+                }
+                Self::Unicode(object) => {
+                    let object = &*object.get();
+                    state.typed[0] = object.encoding;
+                    state.typed[1] = object.object;
+                    state.typed[4] = object.reason;
+                    state.unicode_start = object.start;
+                    state.unicode_end = object.end;
+                }
+                Self::SystemExit(object) => state.typed[0] = (*object.get()).code,
+                Self::OSError(object) => {
+                    let object = &*object.get();
+                    state.typed[0] = object.myerrno;
+                    state.typed[1] = object.strerror;
+                    state.typed[2] = object.filename;
+                    state.typed[3] = object.filename2;
+                    #[cfg(windows)]
+                    {
+                        state.typed[4] = object.winerror;
+                    }
+                    state.os_error_written = object.written;
+                }
+                Self::StopIteration(object) => state.typed[0] = (*object.get()).value,
+                Self::NameError(object) => state.typed[0] = (*object.get()).name,
+                Self::AttributeError(object) => {
+                    let object = &*object.get();
+                    state.typed[0] = object.obj;
+                    state.typed[1] = object.name;
+                }
+            }
+        }
+        state
+    }
+
+    unsafe fn replace_state(&mut self, state: ExceptionViewState) -> Option<ExceptionViewState> {
+        if state.layout_kind != self.layout_kind() {
+            return None;
+        }
+        let old = unsafe { self.state() };
+        unsafe {
+            let base = self.base_mut();
+            base.dict = state.base[0];
+            base.args = state.base[1];
+            base.notes = state.base[2];
+            base.traceback = state.base[3];
+            base.context = state.base[4];
+            base.cause = state.base[5];
+            base.suppress_context = state.suppress_context;
+            match self {
+                Self::Base(_) => {}
+                Self::Group(object) => {
+                    let object = &mut *object.get();
+                    object.msg = state.typed[0];
+                    object.excs = state.typed[1];
+                }
+                Self::Syntax(object) => {
+                    let object = &mut *object.get();
+                    object.msg = state.typed[0];
+                    object.filename = state.typed[1];
+                    object.lineno = state.typed[2];
+                    object.offset = state.typed[3];
+                    object.end_lineno = state.typed[4];
+                    object.end_offset = state.typed[5];
+                    object.text = state.typed[6];
+                    object.print_file_and_line = state.typed[7];
+                }
+                Self::Import(object) => {
+                    let object = &mut *object.get();
+                    object.msg = state.typed[0];
+                    object.name = state.typed[1];
+                    object.path = state.typed[2];
+                    object.name_from = state.typed[3];
+                }
+                Self::Unicode(object) => {
+                    let object = &mut *object.get();
+                    object.encoding = state.typed[0];
+                    object.object = state.typed[1];
+                    object.start = state.unicode_start;
+                    object.end = state.unicode_end;
+                    object.reason = state.typed[4];
+                }
+                Self::SystemExit(object) => (*object.get()).code = state.typed[0],
+                Self::OSError(object) => {
+                    let object = &mut *object.get();
+                    object.myerrno = state.typed[0];
+                    object.strerror = state.typed[1];
+                    object.filename = state.typed[2];
+                    object.filename2 = state.typed[3];
+                    #[cfg(windows)]
+                    {
+                        object.winerror = state.typed[4];
+                    }
+                    object.written = state.os_error_written;
+                }
+                Self::StopIteration(object) => (*object.get()).value = state.typed[0],
+                Self::NameError(object) => (*object.get()).name = state.typed[0],
+                Self::AttributeError(object) => {
+                    let object = &mut *object.get();
+                    object.obj = state.typed[0];
+                    object.name = state.typed[1];
+                }
+            }
+        }
+        Some(old)
+    }
+}
+
 enum ManagedView {
     Object(Box<BridgeHeader>),
     Type {
@@ -610,7 +920,7 @@ enum ManagedView {
     List {
         allocation: ListAllocation,
     },
-    Exception(Box<UnsafeCell<PyBaseExceptionObject>>),
+    Exception(ExceptionAllocation),
 }
 
 unsafe impl Send for ManagedView {}
@@ -622,7 +932,7 @@ impl ManagedView {
             Self::Type { object, .. } => object.get().cast::<PyObject>(),
             Self::Tuple { allocation, .. } => allocation.py_obj(),
             Self::List { allocation, .. } => allocation.py_obj(),
-            Self::Exception(object) => object.get().cast::<PyObject>(),
+            Self::Exception(allocation) => allocation.py_obj(),
         }
     }
 
@@ -648,20 +958,18 @@ impl ManagedView {
                     }
                 }
             }
-            Self::Exception(object) => unsafe {
-                let object = &mut *object.get();
-                for field in [
-                    &mut object.dict,
-                    &mut object.args,
-                    &mut object.notes,
-                    &mut object.traceback,
-                    &mut object.context,
-                    &mut object.cause,
-                ] {
-                    let value = std::mem::replace(field, std::ptr::null_mut());
-                    if !value.is_null() {
-                        crate::api::refcount::Py_DECREF(value);
-                    }
+            Self::Exception(allocation) => unsafe {
+                let layout_kind = allocation.layout_kind();
+                let state = allocation
+                    .replace_state(ExceptionViewState::empty(layout_kind))
+                    .expect("same exception allocation layout");
+                for value in state
+                    .base
+                    .into_iter()
+                    .chain(state.typed)
+                    .filter(|p| !p.is_null())
+                {
+                    GLOBAL_BRIDGE.traversed_projection_decref(value);
                 }
             },
             Self::Object(_) | Self::Type { .. } => {}
@@ -920,12 +1228,22 @@ struct AddressShard {
     from_py: HashMap<usize, AbiHandle>,
     direct_molt_py: HashMap<usize, AbiHandle>,
     numeric_carriers: HashMap<usize, NumericCarrierRecord>,
-    /// C references owned by concrete ABI projections (list/exception fields),
-    /// distinct from externally-held C roots. Cycle GC traverses these edges;
-    /// finalization must therefore not mistake them for resurrection.
-    projection_refs: HashMap<usize, usize>,
+    /// C references owned by concrete ABI projections, distinct from external
+    /// C roots and classified by whether shared cycle GC traverses the physical
+    /// edge independently of its canonical runtime mirror.
+    projection_refs: HashMap<usize, ProjectionRefCounts>,
     foreign: HashMap<usize, AbiHandle>,
     foreign_inflight: HashSet<usize>,
+}
+
+/// Physical ABI ownership for one target identity. Clean list/tuple fields are
+/// mirrored by canonical runtime edges and contribute only to `total`.
+/// Exception fields have no shadow authority, so they also contribute to
+/// `traversed` and are represented as independent shared-GC graph edges.
+#[derive(Clone, Copy, Default)]
+struct ProjectionRefCounts {
+    total: usize,
+    traversed: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1369,6 +1687,9 @@ impl ObjectBridge {
         };
         let view = if tag == MoltTypeTag::Type {
             let (name, base_bits) = unsafe { Self::managed_type_metadata(bits) }?;
+            let exception_layout = ExceptionLayoutKind::from_u8(unsafe {
+                (crate::hooks::hooks_or_stubs().exception_layout_kind)(bits)
+            });
             let base = if base_bits == 0 {
                 &raw mut PyBaseObject_Type
             } else {
@@ -1402,10 +1723,27 @@ impl ObjectBridge {
                 ob_size: 0,
             };
             object.tp_name = name.as_ptr();
-            object.tp_basicsize = std::mem::size_of::<PyObject>() as crate::abi_types::Py_ssize_t;
+            object.tp_basicsize = if let Some(layout) = exception_layout {
+                crate::abi_types::exception_layout_basicsize(layout)
+            } else if base.is_null() {
+                std::mem::size_of::<PyObject>() as crate::abi_types::Py_ssize_t
+            } else {
+                unsafe { (*base).tp_basicsize }
+            };
+            object.tp_itemsize = if exception_layout.is_some() || base.is_null() {
+                0
+            } else {
+                unsafe { (*base).tp_itemsize }
+            };
             object.tp_flags = crate::abi_types::Py_TPFLAGS_DEFAULT
                 | crate::abi_types::Py_TPFLAGS_READY
-                | inherited_flags;
+                | inherited_flags
+                | if exception_layout.is_some() {
+                    crate::abi_types::Py_TPFLAGS_BASE_EXC_SUBCLASS
+                        | crate::abi_types::Py_TPFLAGS_HAVE_GC
+                } else {
+                    0
+                };
             object.tp_base = base;
             ManagedView::Type {
                 object: Box::new(UnsafeCell::new(object)),
@@ -1420,16 +1758,21 @@ impl ObjectBridge {
             let allocation = ListAllocation::new(ob_refcnt, ob_type, len)?;
             ManagedView::List { allocation }
         } else if tag == MoltTypeTag::Exception {
-            ManagedView::Exception(Box::new(UnsafeCell::new(PyBaseExceptionObject {
-                ob_base: PyObject { ob_refcnt, ob_type },
-                dict: std::ptr::null_mut(),
-                args: std::ptr::null_mut(),
-                notes: std::ptr::null_mut(),
-                traceback: std::ptr::null_mut(),
-                context: std::ptr::null_mut(),
-                cause: std::ptr::null_mut(),
-                suppress_context: 0,
-            })))
+            let raw_kind = unsafe { (crate::hooks::hooks_or_stubs().exception_layout_kind)(bits) };
+            let layout_kind = ExceptionLayoutKind::from_u8(raw_kind)?;
+            if ob_type.is_null()
+                || unsafe { (*ob_type).tp_basicsize }
+                    != crate::abi_types::exception_layout_basicsize(layout_kind)
+            {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                        c"managed exception type/layout size mismatch".as_ptr(),
+                    )
+                };
+                return None;
+            }
+            ManagedView::Exception(ExceptionAllocation::new(layout_kind, ob_refcnt, ob_type))
         } else {
             ManagedView::Object(Box::new(BridgeHeader {
                 py_obj: UnsafeCell::new(PyObject { ob_refcnt, ob_type }),
@@ -2857,6 +3200,118 @@ impl ObjectBridge {
     }
 }
 
+const EXCEPTION_BASE_MASKS: [u32; EXCEPTION_BASE_POINTER_FIELDS] = [
+    crate::hooks::EXCEPTION_SNAPSHOT_DICT,
+    crate::hooks::EXCEPTION_SNAPSHOT_ARGS,
+    crate::hooks::EXCEPTION_SNAPSHOT_NOTES,
+    crate::hooks::EXCEPTION_SNAPSHOT_TRACEBACK,
+    crate::hooks::EXCEPTION_SNAPSHOT_CONTEXT,
+    crate::hooks::EXCEPTION_SNAPSHOT_CAUSE,
+];
+
+fn exception_snapshot_base_handles(
+    snapshot: &crate::hooks::ExceptionSnapshot,
+) -> [u64; EXCEPTION_BASE_POINTER_FIELDS] {
+    [
+        snapshot.dict,
+        snapshot.args,
+        snapshot.notes,
+        snapshot.traceback,
+        snapshot.context,
+        snapshot.cause,
+    ]
+}
+
+fn release_exception_snapshot_handles(snapshot: &crate::hooks::ExceptionSnapshot) {
+    let hooks = crate::hooks::hooks_or_stubs();
+    for bits in exception_snapshot_base_handles(snapshot)
+        .into_iter()
+        .chain(snapshot.typed_handles)
+        .filter(|bits| *bits != 0)
+    {
+        unsafe { (hooks.dec_ref)(bits) };
+    }
+}
+
+fn validate_exception_snapshot(
+    snapshot: &crate::hooks::ExceptionSnapshot,
+    expected: Option<ExceptionLayoutKind>,
+) -> Option<ExceptionLayoutKind> {
+    let layout_kind = ExceptionLayoutKind::from_u8(snapshot.layout_kind)?;
+    if expected.is_some_and(|expected| expected != layout_kind)
+        || snapshot._reserved != [0; 3]
+        || snapshot.suppress_context > 1
+    {
+        return None;
+    }
+    let base_handles = exception_snapshot_base_handles(snapshot);
+    let known_base_mask = EXCEPTION_BASE_MASKS
+        .into_iter()
+        .fold(0, |all, mask| all | mask);
+    if snapshot.present_mask & !known_base_mask != 0
+        || snapshot.present_mask & crate::hooks::EXCEPTION_SNAPSHOT_ARGS == 0
+        || base_handles
+            .iter()
+            .zip(EXCEPTION_BASE_MASKS)
+            .any(|(handle, mask)| (snapshot.present_mask & mask != 0) != (*handle != 0))
+    {
+        return None;
+    }
+
+    let policies = layout_kind.field_policies();
+    let known_typed_mask = if policies.len() == u32::BITS as usize {
+        u32::MAX
+    } else {
+        (1u32 << policies.len()) - 1
+    };
+    if snapshot.typed_present_mask & !known_typed_mask != 0
+        || snapshot.typed_handles[policies.len()..]
+            .iter()
+            .any(|handle| *handle != 0)
+    {
+        return None;
+    }
+    for (index, policy) in policies.iter().enumerate() {
+        let present = snapshot.typed_present_mask & (1 << index) != 0;
+        let handle_present = snapshot.typed_handles[index] != 0;
+        match policy.storage {
+            ExceptionFieldStorage::Object | ExceptionFieldStorage::RuntimeMessage => {
+                if present != handle_present {
+                    return None;
+                }
+            }
+            ExceptionFieldStorage::PySsize => {
+                if present || handle_present {
+                    return None;
+                }
+            }
+        }
+    }
+
+    match layout_kind {
+        ExceptionLayoutKind::Unicode if snapshot.os_error_written == -1 => {}
+        ExceptionLayoutKind::OSError
+            if snapshot.unicode_start == 0 && snapshot.unicode_end == 0 => {}
+        ExceptionLayoutKind::Unicode | ExceptionLayoutKind::OSError => return None,
+        _ if snapshot.unicode_start == 0
+            && snapshot.unicode_end == 0
+            && snapshot.os_error_written == -1 => {}
+        _ => return None,
+    }
+    Some(layout_kind)
+}
+
+fn release_exception_view_state(state: ExceptionViewState) {
+    for pointer in state
+        .base
+        .into_iter()
+        .chain(state.typed)
+        .filter(|pointer| !pointer.is_null())
+    {
+        unsafe { GLOBAL_BRIDGE.traversed_projection_decref(pointer) };
+    }
+}
+
 // Physical exception projection refresh, GC traversal, direct-write commit, and clear.
 impl ObjectBridge {
     /// Pull the complete runtime exception state into its physical
@@ -2864,16 +3319,16 @@ impl ObjectBridge {
     /// conversion happens before the bridge lock and old C references are
     /// released only after the atomic pointer swap.
     pub fn refresh_exception_view(&self, bits: AbiHandle) -> bool {
-        let is_exception = {
+        let expected_layout = {
             let handle = self.handle_shard(bits).lock();
-            matches!(
-                handle.to_py.get(&bits).map(|entry| &entry.view),
-                Some(ManagedView::Exception(_))
-            )
+            match handle.to_py.get(&bits).map(|entry| &entry.view) {
+                Some(ManagedView::Exception(allocation)) => Some(allocation.layout_kind()),
+                _ => None,
+            }
         };
-        if !is_exception {
+        let Some(expected_layout) = expected_layout else {
             return true;
-        }
+        };
         let Some(_sync) = ExceptionSyncGuard::enter(bits) else {
             return true;
         };
@@ -2885,98 +3340,111 @@ impl ObjectBridge {
             }
             return false;
         }
-        let masks = [
-            crate::hooks::EXCEPTION_SNAPSHOT_DICT,
-            crate::hooks::EXCEPTION_SNAPSHOT_ARGS,
-            crate::hooks::EXCEPTION_SNAPSHOT_NOTES,
-            crate::hooks::EXCEPTION_SNAPSHOT_TRACEBACK,
-            crate::hooks::EXCEPTION_SNAPSHOT_CONTEXT,
-            crate::hooks::EXCEPTION_SNAPSHOT_CAUSE,
-        ];
-        let mut handles = [
-            snapshot.dict,
-            snapshot.args,
-            snapshot.notes,
-            snapshot.traceback,
-            snapshot.context,
-            snapshot.cause,
-        ];
-        let known_mask = masks.into_iter().fold(0, |known, mask| known | mask);
-        let malformed = snapshot.present_mask & !known_mask != 0
-            || snapshot.present_mask & crate::hooks::EXCEPTION_SNAPSHOT_ARGS == 0
-            || snapshot.suppress_context > 1
-            || handles.iter().zip(masks).any(|(handle, mask)| {
-                let present = snapshot.present_mask & mask != 0;
-                present != (*handle != 0)
-            });
-        if malformed {
-            for handle_bits in handles.into_iter().filter(|bits| *bits != 0) {
-                unsafe { (hooks.dec_ref)(handle_bits) };
-            }
+        let Some(layout_kind) = validate_exception_snapshot(&snapshot, Some(expected_layout))
+        else {
+            release_exception_snapshot_handles(&snapshot);
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
-                    c"runtime returned a malformed exception snapshot".as_ptr(),
+                    c"runtime returned malformed or mismatched typed exception state".as_ptr(),
                 )
             };
             return false;
-        }
-        let mut fields: [*mut PyObject; 6] = [std::ptr::null_mut(); 6];
-        for index in 0..handles.len() {
-            if snapshot.present_mask & masks[index] == 0 {
+        };
+
+        let mut next = ExceptionViewState::empty(layout_kind);
+        next.suppress_context = snapshot.suppress_context as std::os::raw::c_char;
+        next.unicode_start = snapshot.unicode_start;
+        next.unicode_end = snapshot.unicode_end;
+        next.os_error_written = snapshot.os_error_written;
+        let mut base_handles = exception_snapshot_base_handles(&snapshot);
+        let mut typed_handles = snapshot.typed_handles;
+        for index in 0..base_handles.len() {
+            if snapshot.present_mask & EXCEPTION_BASE_MASKS[index] == 0 {
                 continue;
             }
-            let handle_bits = std::mem::take(&mut handles[index]);
+            let handle_bits = std::mem::take(&mut base_handles[index]);
             let field = unsafe { self.owned_handle_to_pyobj(handle_bits) };
             if field.is_null() {
-                for field in fields.into_iter().filter(|field| !field.is_null()) {
-                    unsafe { crate::api::refcount::Py_DECREF(field) };
-                }
-                for handle_bits in handles.into_iter().filter(|bits| *bits != 0) {
+                release_exception_view_state(next);
+                for handle_bits in base_handles
+                    .into_iter()
+                    .chain(typed_handles)
+                    .filter(|b| *b != 0)
+                {
                     unsafe { (hooks.dec_ref)(handle_bits) };
                 }
                 return false;
             }
-            fields[index] = field;
+            if !unsafe { self.traversed_projection_adopt_owned_ref(field) } {
+                unsafe { crate::api::refcount::Py_DECREF(field) };
+                release_exception_view_state(next);
+                for handle_bits in base_handles
+                    .into_iter()
+                    .chain(typed_handles)
+                    .filter(|b| *b != 0)
+                {
+                    unsafe { (hooks.dec_ref)(handle_bits) };
+                }
+                return false;
+            }
+            next.base[index] = field;
+        }
+        for index in 0..layout_kind.field_policies().len() {
+            if snapshot.typed_present_mask & (1 << index) == 0 {
+                continue;
+            }
+            let handle_bits = std::mem::take(&mut typed_handles[index]);
+            let field = unsafe { self.owned_handle_to_pyobj(handle_bits) };
+            if field.is_null() {
+                release_exception_view_state(next);
+                for handle_bits in base_handles
+                    .into_iter()
+                    .chain(typed_handles)
+                    .filter(|b| *b != 0)
+                {
+                    unsafe { (hooks.dec_ref)(handle_bits) };
+                }
+                return false;
+            }
+            if !unsafe { self.traversed_projection_adopt_owned_ref(field) } {
+                unsafe { crate::api::refcount::Py_DECREF(field) };
+                release_exception_view_state(next);
+                for handle_bits in base_handles
+                    .into_iter()
+                    .chain(typed_handles)
+                    .filter(|b| *b != 0)
+                {
+                    unsafe { (hooks.dec_ref)(handle_bits) };
+                }
+                return false;
+            }
+            next.typed[index] = field;
         }
         let mut handle = self.handle_shard(bits).lock();
         let Some(entry) = handle.to_py.get_mut(&bits) else {
             drop(handle);
-            for field in fields.into_iter().filter(|field| !field.is_null()) {
-                unsafe { crate::api::refcount::Py_DECREF(field) };
-            }
+            release_exception_view_state(next);
             return false;
         };
-        let ManagedView::Exception(object) = &mut entry.view else {
+        let ManagedView::Exception(allocation) = &mut entry.view else {
             drop(handle);
-            for field in fields.into_iter().filter(|field| !field.is_null()) {
-                unsafe { crate::api::refcount::Py_DECREF(field) };
-            }
+            release_exception_view_state(next);
             return false;
         };
-        let old = unsafe {
-            let object = &mut *object.get();
-            let old = [
-                object.dict,
-                object.args,
-                object.notes,
-                object.traceback,
-                object.context,
-                object.cause,
-            ];
-            object.dict = fields[0];
-            object.args = fields[1];
-            object.notes = fields[2];
-            object.traceback = fields[3];
-            object.context = fields[4];
-            object.cause = fields[5];
-            object.suppress_context = snapshot.suppress_context as std::os::raw::c_char;
-            old
+        let Some(old) = (unsafe { allocation.replace_state(next) }) else {
+            drop(handle);
+            release_exception_view_state(next);
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"typed exception projection layout changed during refresh".as_ptr(),
+                )
+            };
+            return false;
         };
         drop(handle);
-        for field in old.into_iter().filter(|field| !field.is_null()) {
-            unsafe { crate::api::refcount::Py_DECREF(field) };
-        }
+        release_exception_view_state(old);
         true
     }
 
@@ -2988,28 +3456,21 @@ impl ObjectBridge {
     /// parent handle lock, then resolve them after dropping it: a self edge may
     /// hash to the same shard, so nested resolution under the parent lock would
     /// deadlock.
-    pub fn exception_view_handles_for_gc(&self, bits: AbiHandle) -> [AbiHandle; 6] {
+    pub fn exception_view_handles_for_gc(
+        &self,
+        bits: AbiHandle,
+    ) -> [AbiHandle; EXCEPTION_VIEW_POINTER_FIELDS] {
         let fields = {
             let handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get(&bits) else {
-                return [0; 6];
+                return [0; EXCEPTION_VIEW_POINTER_FIELDS];
             };
-            let ManagedView::Exception(object) = &entry.view else {
-                return [0; 6];
+            let ManagedView::Exception(allocation) = &entry.view else {
+                return [0; EXCEPTION_VIEW_POINTER_FIELDS];
             };
-            unsafe {
-                let object = &*object.get();
-                [
-                    object.dict,
-                    object.args,
-                    object.notes,
-                    object.traceback,
-                    object.context,
-                    object.cause,
-                ]
-            }
+            unsafe { allocation.state().pointers() }
         };
-        let mut handles = [0; 6];
+        let mut handles = [0; EXCEPTION_VIEW_POINTER_FIELDS];
         for (index, field) in fields.into_iter().enumerate() {
             if let Some(field_bits) = self.managed_handle_for_pyobj(field) {
                 handles[index] = field_bits;
@@ -3033,20 +3494,11 @@ impl ObjectBridge {
         let old = {
             let mut handle = self.handle_shard(bits).lock();
             let entry = handle.to_py.get_mut(&bits)?;
-            let ManagedView::Exception(object) = &mut entry.view else {
+            let ManagedView::Exception(allocation) = &mut entry.view else {
                 return None;
             };
-            unsafe {
-                let object = &mut *object.get();
-                [
-                    std::mem::replace(&mut object.dict, std::ptr::null_mut()),
-                    std::mem::replace(&mut object.args, std::ptr::null_mut()),
-                    std::mem::replace(&mut object.notes, std::ptr::null_mut()),
-                    std::mem::replace(&mut object.traceback, std::ptr::null_mut()),
-                    std::mem::replace(&mut object.context, std::ptr::null_mut()),
-                    std::mem::replace(&mut object.cause, std::ptr::null_mut()),
-                ]
-            }
+            let empty = ExceptionViewState::empty(allocation.layout_kind());
+            unsafe { allocation.replace_state(empty)? }.pointers()
         };
         Some(RetiredExceptionProjection { pointers: old })
     }
@@ -3059,91 +3511,79 @@ impl ObjectBridge {
         let Some(_sync) = ExceptionSyncGuard::enter(bits) else {
             return true;
         };
-        let fields = loop {
-            let snapshot = {
+        let (state, ob_type) = loop {
+            let captured = {
                 let handle = self.handle_shard(bits).lock();
                 let Some(entry) = handle.to_py.get(&bits) else {
                     return true;
                 };
-                let ManagedView::Exception(object) = &entry.view else {
+                let ManagedView::Exception(allocation) = &entry.view else {
                     return true;
                 };
-                unsafe {
-                    let object = &*object.get();
-                    (
-                        [
-                            object.dict,
-                            object.args,
-                            object.notes,
-                            object.traceback,
-                            object.context,
-                            object.cause,
-                        ],
-                        object.suppress_context,
-                    )
-                }
+                unsafe { (allocation.state(), allocation.base().ob_base.ob_type) }
             };
-            for field in snapshot.0.into_iter().filter(|field| !field.is_null()) {
+            for field in captured
+                .0
+                .pointers()
+                .into_iter()
+                .filter(|field| !field.is_null())
+            {
                 unsafe { crate::api::refcount::Py_INCREF(field) };
             }
             let current = {
                 let handle = self.handle_shard(bits).lock();
                 handle.to_py.get(&bits).and_then(|entry| {
-                    let ManagedView::Exception(object) = &entry.view else {
+                    let ManagedView::Exception(allocation) = &entry.view else {
                         return None;
                     };
-                    unsafe {
-                        let object = &*object.get();
-                        Some((
-                            [
-                                object.dict,
-                                object.args,
-                                object.notes,
-                                object.traceback,
-                                object.context,
-                                object.cause,
-                            ],
-                            object.suppress_context,
-                        ))
-                    }
+                    unsafe { Some((allocation.state(), allocation.base().ob_base.ob_type)) }
                 })
             };
-            if current == Some(snapshot) {
-                break snapshot;
+            if current == Some(captured) {
+                break captured;
             }
-            for field in snapshot.0.into_iter().filter(|field| !field.is_null()) {
+            for field in captured
+                .0
+                .pointers()
+                .into_iter()
+                .filter(|field| !field.is_null())
+            {
                 unsafe { crate::api::refcount::Py_DECREF(field) };
             }
             if current.is_none() {
                 return true;
             }
         };
-        let (c_fields, suppress_context) = fields;
-        if c_fields[1].is_null() || !matches!(suppress_context, 0 | 1) {
-            for field in c_fields.into_iter().filter(|field| !field.is_null()) {
+        let pinned_pointers = state.pointers();
+        if state.base[1].is_null()
+            || !matches!(state.suppress_context, 0 | 1)
+            || ob_type.is_null()
+            || unsafe { (*ob_type).tp_basicsize }
+                != crate::abi_types::exception_layout_basicsize(state.layout_kind)
+        {
+            for field in pinned_pointers.into_iter().filter(|field| !field.is_null()) {
                 unsafe { crate::api::refcount::Py_DECREF(field) };
             }
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
-                    c"invalid direct PyBaseExceptionObject field state".as_ptr(),
+                    c"invalid direct typed exception object state".as_ptr(),
                 )
             };
             return false;
         }
-        let masks = [
-            crate::hooks::EXCEPTION_SNAPSHOT_DICT,
-            crate::hooks::EXCEPTION_SNAPSHOT_ARGS,
-            crate::hooks::EXCEPTION_SNAPSHOT_NOTES,
-            crate::hooks::EXCEPTION_SNAPSHOT_TRACEBACK,
-            crate::hooks::EXCEPTION_SNAPSHOT_CONTEXT,
-            crate::hooks::EXCEPTION_SNAPSHOT_CAUSE,
-        ];
         let hooks = crate::hooks::hooks_or_stubs();
-        let mut runtime_fields = [0u64; 6];
-        let mut present_mask = 0u32;
+        let mut snapshot = crate::hooks::ExceptionSnapshot {
+            layout_kind: state.layout_kind as u8,
+            suppress_context: state.suppress_context as u32,
+            unicode_start: state.unicode_start,
+            unicode_end: state.unicode_end,
+            os_error_written: state.os_error_written,
+            ..crate::hooks::ExceptionSnapshot::default()
+        };
         let mut converted = true;
-        for (index, field) in c_fields.iter().copied().enumerate() {
+        let mut runtime_base = [0u64; EXCEPTION_BASE_POINTER_FIELDS];
+        for (index, field) in state.base.iter().copied().enumerate() {
             if field.is_null() {
                 continue;
             }
@@ -3151,25 +3591,46 @@ impl ObjectBridge {
                 converted = false;
                 break;
             };
-            runtime_fields[index] = value_bits;
-            present_mask |= masks[index];
+            runtime_base[index] = value_bits;
+            snapshot.present_mask |= EXCEPTION_BASE_MASKS[index];
         }
-        let snapshot = crate::hooks::ExceptionSnapshot {
-            present_mask,
-            suppress_context: suppress_context as u32,
-            dict: runtime_fields[0],
-            args: runtime_fields[1],
-            notes: runtime_fields[2],
-            traceback: runtime_fields[3],
-            context: runtime_fields[4],
-            cause: runtime_fields[5],
-        };
-        let committed = converted
+        if converted {
+            for (index, field) in state
+                .typed
+                .iter()
+                .copied()
+                .take(state.layout_kind.field_policies().len())
+                .enumerate()
+            {
+                if field.is_null() {
+                    continue;
+                }
+                let Some(value_bits) = (unsafe { self.molt_value_for_pyobj(field) }) else {
+                    converted = false;
+                    break;
+                };
+                snapshot.typed_handles[index] = value_bits;
+                snapshot.typed_present_mask |= 1 << index;
+            }
+        }
+        snapshot.dict = runtime_base[0];
+        snapshot.args = runtime_base[1];
+        snapshot.notes = runtime_base[2];
+        snapshot.traceback = runtime_base[3];
+        snapshot.context = runtime_base[4];
+        snapshot.cause = runtime_base[5];
+        let structurally_valid =
+            converted && validate_exception_snapshot(&snapshot, Some(state.layout_kind)).is_some();
+        let committed = structurally_valid
             && unsafe { (hooks.exception_commit_snapshot)(bits, &raw const snapshot) } == 0;
-        for value_bits in runtime_fields.into_iter().filter(|bits| *bits != 0) {
+        for value_bits in runtime_base
+            .into_iter()
+            .chain(snapshot.typed_handles)
+            .filter(|bits| *bits != 0)
+        {
             unsafe { (hooks.dec_ref)(value_bits) };
         }
-        for field in c_fields.into_iter().filter(|field| !field.is_null()) {
+        for field in pinned_pointers.into_iter().filter(|field| !field.is_null()) {
             unsafe { crate::api::refcount::Py_DECREF(field) };
         }
         if !committed && !crate::api::errors::transfer_runtime_pending_to_current() {
@@ -3426,41 +3887,82 @@ impl ObjectBridge {
     /// materialized numeric carrier) as a projection edge without incrementing
     /// it a second time.
     unsafe fn projection_adopt_owned_ref(&self, ptr: *mut PyObject) -> bool {
+        unsafe { self.projection_adopt_owned_ref_kind(ptr, false) }
+    }
+
+    /// Register an already-owned projection reference that shared cycle GC
+    /// traverses independently of the canonical runtime edge.
+    unsafe fn traversed_projection_adopt_owned_ref(&self, ptr: *mut PyObject) -> bool {
+        unsafe { self.projection_adopt_owned_ref_kind(ptr, true) }
+    }
+
+    unsafe fn projection_adopt_owned_ref_kind(&self, ptr: *mut PyObject, traversed: bool) -> bool {
         if ptr.is_null() || unsafe { crate::abi_types::is_immortal_refcnt((*ptr).ob_refcnt) } {
             return true;
         }
         let mut address = self.address_shard(ptr.addr()).lock();
-        if let Some(count) = address.projection_refs.get_mut(&ptr.addr()) {
-            let Some(next) = count.checked_add(1) else {
-                unsafe { crate::api::errors::PyErr_NoMemory() };
-                return false;
-            };
-            *count = next;
-            return true;
-        }
-        if address.projection_refs.try_reserve(1).is_err() {
+        let counts = address
+            .projection_refs
+            .get(&ptr.addr())
+            .copied()
+            .unwrap_or_default();
+        let Some(total) = counts.total.checked_add(1) else {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return false;
+        };
+        let Some(traversed_count) = counts.traversed.checked_add(usize::from(traversed)) else {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return false;
+        };
+        if counts.total == 0 && address.projection_refs.try_reserve(1).is_err() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
             return false;
         }
-        address.projection_refs.insert(ptr.addr(), 1);
+        address.projection_refs.insert(
+            ptr.addr(),
+            ProjectionRefCounts {
+                total,
+                traversed: traversed_count,
+            },
+        );
         true
     }
 
     /// Remove one adopted projection edge without consuming the underlying C
     /// reference. Used only to unwind a pre-publication failure.
     unsafe fn projection_unadopt_owned_ref(&self, ptr: *mut PyObject) {
+        unsafe { self.projection_unadopt_owned_ref_kind(ptr, false) };
+    }
+
+    unsafe fn traversed_projection_unadopt_owned_ref(&self, ptr: *mut PyObject) {
+        unsafe { self.projection_unadopt_owned_ref_kind(ptr, true) };
+    }
+
+    unsafe fn projection_unadopt_owned_ref_kind(&self, ptr: *mut PyObject, traversed: bool) {
         if ptr.is_null() || unsafe { crate::abi_types::is_immortal_refcnt((*ptr).ob_refcnt) } {
             return;
         }
         let mut address = self.address_shard(ptr.addr()).lock();
         let remove = match address.projection_refs.get_mut(&ptr.addr()) {
-            Some(count) if *count > 1 => {
-                *count -= 1;
-                false
+            Some(counts)
+                if counts.total > 0
+                    && (!traversed || counts.traversed > 0)
+                    && counts.traversed <= counts.total =>
+            {
+                counts.total -= 1;
+                counts.traversed -= usize::from(traversed);
+                if counts.traversed > counts.total {
+                    eprintln!("molt fatal: invalid traversed projection reference ledger");
+                    std::process::abort();
+                }
+                counts.total == 0
             }
-            Some(_) => true,
             None => {
                 eprintln!("molt fatal: missing projection reference ledger entry");
+                std::process::abort();
+            }
+            Some(_) => {
+                eprintln!("molt fatal: invalid projection reference ledger entry");
                 std::process::abort();
             }
         };
@@ -3476,6 +3978,14 @@ impl ObjectBridge {
             return;
         }
         unsafe { self.projection_unadopt_owned_ref(ptr) };
+        unsafe { crate::api::refcount::Py_DECREF(ptr) };
+    }
+
+    unsafe fn traversed_projection_decref(&self, ptr: *mut PyObject) {
+        if ptr.is_null() || unsafe { crate::abi_types::is_immortal_refcnt((*ptr).ob_refcnt) } {
+            return;
+        }
+        unsafe { self.traversed_projection_unadopt_owned_ref(ptr) };
         unsafe { crate::api::refcount::Py_DECREF(ptr) };
     }
 
@@ -3885,7 +4395,8 @@ impl ObjectBridge {
             .projection_refs
             .get(&ptr.addr())
             .copied()
-            .unwrap_or(0);
+            .unwrap_or_default()
+            .total;
         let Ok(projection) = isize::try_from(projection) else {
             abort_refcount_invariant("projection reference query", refs, lifecycle);
         };
@@ -4006,10 +4517,13 @@ impl ObjectBridge {
 
 // Finalization completion, resurrection, GC roots, and zero-ref disposition.
 impl ObjectBridge {
-    /// Adjustment from raw runtime refcount to cycle-GC external-root count.
+    /// Adjustment from raw runtime refcount to cycle-GC edge accounting.
     /// The runtime count includes the view's one strong hold, which is not an
-    /// external root; direct C references are external roots and live only in
-    /// the C-visible header count beyond the runtime-owner bias.
+    /// external root. The C-visible count beyond the runtime-owner bias contains
+    /// both direct C roots and separately owned physical-projection edges. Only
+    /// the projection subset independently traversed by shared GC belongs in
+    /// scratch; clean tuple/list mirrors are already represented by canonical
+    /// runtime edges. The one stable-view hold is always removed.
     pub fn gc_ref_adjustment(&self, bits: AbiHandle) -> isize {
         let (ptr, c_refs, lifecycle) = {
             let handle = self.handle_shard(bits).lock();
@@ -4033,17 +4547,23 @@ impl ObjectBridge {
             .projection_refs
             .get(&ptr.addr())
             .copied()
-            .unwrap_or(0);
-        let Ok(projection) = isize::try_from(projection) else {
+            .unwrap_or_default();
+        if projection.traversed > projection.total {
+            abort_refcount_invariant("GC projection adjustment", c_refs, lifecycle);
+        }
+        let (Ok(total_projection), Ok(traversed_projection)) = (
+            isize::try_from(projection.total),
+            isize::try_from(projection.traversed),
+        ) else {
             abort_refcount_invariant("GC projection adjustment", c_refs, lifecycle);
         };
-        let Some(direct_c_refs) = direct_and_projection.checked_sub(projection) else {
+        let Some(direct_c_refs) = direct_and_projection.checked_sub(total_projection) else {
             abort_refcount_invariant("GC projection adjustment", c_refs, lifecycle);
         };
         if direct_c_refs < 0 {
             abort_refcount_invariant("GC projection adjustment", c_refs, lifecycle);
         }
-        direct_c_refs - 1
+        direct_c_refs + traversed_projection - 1
     }
 
     /// Finalization is an explicit GC root until the runtime pin is resolved.
@@ -5047,6 +5567,95 @@ mod bridge_handle_tests {
                 .raw_py
                 .contains_key(&w_bits)
         );
+    }
+}
+
+#[cfg(test)]
+mod exception_projection_tests {
+    use super::*;
+
+    fn valid_snapshot(kind: ExceptionLayoutKind) -> crate::hooks::ExceptionSnapshot {
+        let mut snapshot = crate::hooks::ExceptionSnapshot {
+            layout_kind: kind as u8,
+            present_mask: crate::hooks::EXCEPTION_SNAPSHOT_ARGS,
+            args: 0x100,
+            ..crate::hooks::ExceptionSnapshot::default()
+        };
+        for (index, policy) in kind.field_policies().iter().enumerate() {
+            if matches!(
+                policy.storage,
+                ExceptionFieldStorage::Object | ExceptionFieldStorage::RuntimeMessage
+            ) {
+                snapshot.typed_present_mask |= 1 << index;
+                snapshot.typed_handles[index] = 0x200 + index as u64;
+            }
+        }
+        snapshot
+    }
+
+    #[test]
+    fn every_layout_allocates_exact_shape_and_round_trips_typed_state() {
+        let mut fake_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        for (raw, kind) in ExceptionLayoutKind::ALL.iter().copied().enumerate() {
+            fake_type.tp_basicsize = crate::abi_types::exception_layout_basicsize(kind);
+            let mut allocation = ExceptionAllocation::new(kind, 7, &raw mut fake_type);
+            assert_eq!(allocation.layout_kind(), kind);
+            let base = unsafe { allocation.base() };
+            assert_eq!(base.ob_base.ob_refcnt, 7);
+            assert_eq!(base.ob_base.ob_type, &raw mut fake_type);
+
+            let mut next = ExceptionViewState::empty(kind);
+            next.base[1] = 0x1000usize as *mut PyObject;
+            for (index, policy) in kind.field_policies().iter().enumerate() {
+                if policy.storage != ExceptionFieldStorage::PySsize {
+                    next.typed[index] = (0x2000usize + index * 16) as *mut PyObject;
+                }
+            }
+            if kind == ExceptionLayoutKind::Unicode {
+                next.unicode_start = 3;
+                next.unicode_end = 9;
+            }
+            if kind == ExceptionLayoutKind::OSError {
+                next.os_error_written = 17;
+            }
+            let old = unsafe { allocation.replace_state(next) }.unwrap();
+            assert_eq!(old, ExceptionViewState::empty(kind));
+            assert_eq!(unsafe { allocation.state() }, next);
+            let wrong = ExceptionLayoutKind::ALL[(raw + 1) % ExceptionLayoutKind::ALL.len()];
+            assert!(
+                unsafe { allocation.replace_state(ExceptionViewState::empty(wrong)) }.is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_validation_is_layout_exact_and_scalar_aware() {
+        for (raw, kind) in ExceptionLayoutKind::ALL.iter().copied().enumerate() {
+            let snapshot = valid_snapshot(kind);
+            assert_eq!(
+                validate_exception_snapshot(&snapshot, Some(kind)),
+                Some(kind)
+            );
+
+            let mut mismatch = snapshot;
+            mismatch.layout_kind =
+                ExceptionLayoutKind::ALL[(raw + 1) % ExceptionLayoutKind::ALL.len()] as u8;
+            assert_eq!(validate_exception_snapshot(&mismatch, Some(kind)), None);
+
+            let mut scalar_as_handle = snapshot;
+            if let Some(index) = kind
+                .field_policies()
+                .iter()
+                .position(|policy| policy.storage == ExceptionFieldStorage::PySsize)
+            {
+                scalar_as_handle.typed_present_mask |= 1 << index;
+                scalar_as_handle.typed_handles[index] = 0xBAD;
+                assert_eq!(
+                    validate_exception_snapshot(&scalar_as_handle, Some(kind)),
+                    None
+                );
+            }
+        }
     }
 }
 
