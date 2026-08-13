@@ -10,6 +10,74 @@ mod hierarchy;
 
 pub use self::hierarchy::*;
 
+/// Consume structural metadata from a freshly copied class namespace.
+///
+/// Namespace entries are installed directly into the unpublished class
+/// dictionary. Only metadata that owns dedicated type storage is consumed;
+/// replaying the namespace through `type.__setattr__` changes descriptor
+/// precedence and can observe a partially published type.
+pub(crate) unsafe fn class_finalize_namespace_metadata(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    default_qualname_bits: u64,
+) -> bool {
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return false;
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return false;
+    }
+    let qualname_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.qualname_name,
+        b"__qualname__",
+    );
+    let mut qualname_bits = default_qualname_bits;
+    let mut qualname_owned = false;
+    if let Some(bits) = unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) } {
+        qualname_bits = bits;
+        inc_ref_bits(_py, qualname_bits);
+        qualname_owned = true;
+        unsafe { dict_del_in_place(_py, dict_ptr, qualname_name_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, qualname_bits);
+            return false;
+        }
+    }
+    if let Some(classdictcell_bits) = attr_name_bits_from_bytes(_py, b"__classdictcell__") {
+        unsafe { dict_del_in_place(_py, dict_ptr, classdictcell_bits) };
+        dec_ref_bits(_py, classdictcell_bits);
+        if exception_pending(_py) {
+            if qualname_owned {
+                dec_ref_bits(_py, qualname_bits);
+            }
+            return false;
+        }
+    }
+    let qualname_obj = obj_from_bits(qualname_bits);
+    if !qualname_obj
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+    {
+        let type_label = type_name(_py, qualname_obj);
+        if qualname_owned {
+            dec_ref_bits(_py, qualname_bits);
+        }
+        let _ = raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("type __qualname__ must be a str, not {type_label}"),
+        );
+        return false;
+    }
+    unsafe { class_set_qualname_bits(_py, class_ptr, qualname_bits) };
+    if qualname_owned {
+        dec_ref_bits(_py, qualname_bits);
+    }
+    true
+}
+
 /// Cached `MOLT_TRACE_BUILTIN_TYPE` flag. `molt_builtin_type` resolves builtin
 /// type objects (`int`, `str`, ...) and is on a very hot dispatch path; read
 /// the env var once rather than per call (per-call `std::env::var` takes the
@@ -247,78 +315,11 @@ pub extern "C" fn molt_type_new(
             }
             return MoltObject::none().bits();
         }
-        let mut qualname_bits = 0u64;
-        let mut qualname_owned = false;
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
-        {
-            let qualname_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.qualname_name,
-                b"__qualname__",
-            );
-            if let Some(val_bits) = unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) }
-            {
-                qualname_bits = val_bits;
-                // We're about to delete __qualname__ from the class dict; hold a strong
-                // reference so we can safely move it into the class qualname slot.
-                inc_ref_bits(_py, qualname_bits);
-                qualname_owned = true;
-                unsafe {
-                    dict_del_in_place(_py, dict_ptr, qualname_name_bits);
-                }
-                if exception_pending(_py) {
-                    if qualname_owned {
-                        dec_ref_bits(_py, qualname_bits);
-                    }
-                    if bases_owned {
-                        dec_ref_bits(_py, bases_tuple_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-            if let Some(classdictcell_bits) = attr_name_bits_from_bytes(_py, b"__classdictcell__") {
-                unsafe {
-                    dict_del_in_place(_py, dict_ptr, classdictcell_bits);
-                }
-                dec_ref_bits(_py, classdictcell_bits);
-                if exception_pending(_py) {
-                    if qualname_owned {
-                        dec_ref_bits(_py, qualname_bits);
-                    }
-                    if bases_owned {
-                        dec_ref_bits(_py, bases_tuple_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        if qualname_bits == 0 {
-            qualname_bits = name_bits;
-        }
-        let qualname_obj = obj_from_bits(qualname_bits);
-        let qualname_is_str = if let Some(ptr) = qualname_obj.as_ptr() {
-            unsafe { object_type_id(ptr) == TYPE_ID_STRING }
-        } else {
-            false
-        };
-        if !qualname_is_str {
-            let type_label = type_name(_py, qualname_obj);
-            let msg = format!("type __qualname__ must be a str, not {}", type_label);
-            if qualname_owned {
-                dec_ref_bits(_py, qualname_bits);
-            }
+        if unsafe { !class_finalize_namespace_metadata(_py, class_ptr, name_bits) } {
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
             }
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        unsafe {
-            class_set_qualname_bits(_py, class_ptr, qualname_bits);
-        }
-        if qualname_owned {
-            // Balance the strong ref we took before deleting __qualname__ from the dict.
-            dec_ref_bits(_py, qualname_bits);
+            return MoltObject::none().bits();
         }
 
         let _ = molt_class_set_base(class_bits, bases_tuple_bits);

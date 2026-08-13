@@ -160,6 +160,19 @@ unsafe fn type_attr_lookup_ptr_inner(
 ) -> Option<u64> {
     unsafe {
         let class_bits = MoltObject::from_ptr(obj_ptr).bits();
+        let structural_type_attr =
+            string_obj_to_owned(obj_from_bits(attr_bits)).is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "__name__"
+                        | "__qualname__"
+                        | "__dict__"
+                        | "__annotations__"
+                        | "__annotate__"
+                        | "__base__"
+                        | "__bases__"
+                )
+            });
 
         // CPython parity: type.__getattribute__ first checks the class's
         // own __dict__ for user-defined class attributes. This handles
@@ -167,7 +180,10 @@ unsafe fn type_attr_lookup_ptr_inner(
         // __init__, or module-level class attribute assignment.
         // Without this, dynamically-set attributes on user-defined classes
         // are invisible to getattr even though setattr succeeds.
-        if !is_builtin_class_bits(_py, class_bits) {
+        // Data descriptors on `type` precede identically named entries in the
+        // class namespace. The namespace entries remain visible through
+        // `cls.__dict__`, but cannot shadow structural type slots.
+        if !structural_type_attr && !is_builtin_class_bits(_py, class_bits) {
             let dict_bits = class_dict_bits(obj_ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
