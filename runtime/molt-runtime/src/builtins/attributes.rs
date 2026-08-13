@@ -3024,6 +3024,37 @@ mod tests {
     }
 
     #[test]
+    fn type_data_descriptors_precede_shadowing_class_namespace_entries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let declared_name = string_bits(_py, b"ActualName");
+            let class_bits = crate::molt_class_new(declared_name);
+            let class_ptr = MoltObject::from_bits(class_bits)
+                .as_ptr()
+                .expect("class allocation");
+            let name_key = string_bits(_py, b"__name__");
+            let shadow_name = string_bits(_py, b"ShadowName");
+            let dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+            let dict_ptr = MoltObject::from_bits(dict_bits)
+                .as_ptr()
+                .expect("class namespace");
+            unsafe { crate::dict_set_in_place(_py, dict_ptr, name_key, shadow_name) };
+
+            let resolved = super::molt_get_attr_name(class_bits, name_key);
+            assert_eq!(
+                crate::string_obj_to_owned(MoltObject::from_bits(resolved)).as_deref(),
+                Some("ActualName")
+            );
+
+            dec_ref_bits(_py, resolved);
+            dec_ref_bits(_py, class_bits);
+            dec_ref_bits(_py, declared_name);
+            dec_ref_bits(_py, name_key);
+            dec_ref_bits(_py, shadow_name);
+        });
+    }
+
+    #[test]
     fn attr_ic_entry_owns_class_bits_through_replacement_and_clear() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {

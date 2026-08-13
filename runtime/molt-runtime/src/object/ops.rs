@@ -2584,6 +2584,46 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
 ///
 /// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
 /// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
+unsafe fn install_guarded_class_namespace(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    name_bits: u64,
+    attrs: &[u64],
+    layout_size: i64,
+) -> bool {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return false;
+    };
+    let dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return false;
+    };
+    for pair in attrs.chunks_exact(2) {
+        unsafe { crate::dict_set_in_place(_py, dict_ptr, pair[0], pair[1]) };
+        if exception_pending(_py) {
+            return false;
+        }
+    }
+    let size_obj = MoltObject::from_int(layout_size).bits();
+    let layout_attr = crate::intern_static_name(
+        _py,
+        &crate::runtime_state(_py).interned.molt_layout_size,
+        b"__molt_layout_size__",
+    );
+    unsafe { crate::dict_set_in_place(_py, dict_ptr, layout_attr, size_obj) };
+    crate::dec_ref_bits(_py, size_obj);
+    !exception_pending(_py)
+        && unsafe {
+            crate::builtins::types::class_finalize_namespace_metadata(_py, class_ptr, name_bits)
+        }
+}
+
+/// Build and publish a class from raw base and namespace arrays.
+///
+/// # Safety
+///
+/// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
+/// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_class_def(
     name_bits: u64,
@@ -2595,7 +2635,6 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     layout_version: i64,
     flags: u64,
 ) -> u64 {
-    use crate::builtins::attributes::molt_set_attr_name;
     use crate::builtins::types::{
         molt_class_apply_set_name, molt_class_new, molt_class_set_base,
         molt_class_set_layout_version,
@@ -2698,22 +2737,15 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         }
     }
 
-    if na > 0 {
-        for pair in attrs_vec.chunks_exact(2) {
-            molt_set_attr_name(class_bits, pair[0], pair[1]);
+    let namespace_ok = crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            install_guarded_class_namespace(_py, class_bits, name_bits, &attrs_vec, layout_size)
         }
-    }
-
-    crate::with_gil_entry_nopanic!(_py, {
-        let size_obj = MoltObject::from_int(layout_size).bits();
-        let layout_attr = crate::intern_static_name(
-            _py,
-            &crate::runtime_state(_py).interned.molt_layout_size,
-            b"__molt_layout_size__",
-        );
-        molt_set_attr_name(class_bits, layout_attr, size_obj);
-        crate::dec_ref_bits(_py, size_obj);
     });
+    if !namespace_ok {
+        crate::with_gil_entry_nopanic!(_py, { crate::dec_ref_bits(_py, class_bits) });
+        return MoltObject::none().bits();
+    }
 
     if debug_class_def {
         eprintln!("molt class_def before apply_set_name");
