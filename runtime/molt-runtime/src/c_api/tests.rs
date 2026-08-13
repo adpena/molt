@@ -953,6 +953,29 @@ fn guarded_class_def_retains_attr_values_after_source_drop() {
 }
 
 #[test]
+fn guarded_class_def_keeps_structural_type_names_out_of_descriptor_shadowing() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let shadow_bits = unsafe { molt_string_from(b"ShadowName".as_ptr(), 10) };
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"ActualName", &[(b"__name__", shadow_bits)]);
+
+        let resolved = molt_object_getattr(class_bits, attr_storage[0]);
+        assert_eq!(
+            crate::string_obj_to_owned(obj_from_bits(resolved)).as_deref(),
+            Some("ActualName")
+        );
+
+        dec_ref_bits(_py, resolved);
+        dec_ref_bits(_py, shadow_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+    });
+}
+
+#[test]
 fn guarded_class_def_set_name_keeps_descriptor_attr_value_owner() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
