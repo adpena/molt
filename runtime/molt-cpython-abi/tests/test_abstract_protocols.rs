@@ -14,6 +14,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
@@ -215,10 +217,7 @@ fn install() {
     hooks.str_data = fx_str_data;
     hooks.dict_len = fx_dict_len;
     hooks.classify_heap = fx_classify_heap;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 fn register(bits: u64) -> *mut PyObject {
@@ -337,6 +336,7 @@ fn str_materializes_into_code_point_tuple() {
     );
     assert_eq!(unsafe { abstract_sequence::PySequence_Fast_GET_SIZE(t) }, 2);
     assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(t) };
 }
 
 #[test]

@@ -268,10 +268,14 @@ fn clear_pending_missing_import_exception_for(_py: &PyToken<'_>, expected_name: 
     if !exception_pending(_py) {
         return false;
     }
+    let exc_bits = molt_exception_last_pending();
+    let is_import = ["ImportError", "ModuleNotFoundError"].iter().any(|kind| {
+        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, kind)
+    });
+    dec_ref_bits(_py, exc_bits);
     let mut clear = false;
-    if let Some((kind, message)) = pending_import_exception_kind_and_message(_py) {
-        clear = (kind == "ImportError" || kind == "ModuleNotFoundError")
-            && message == format!("No module named '{expected_name}'");
+    if let Some((_kind, message)) = pending_import_exception_kind_and_message(_py) {
+        clear = is_import && message == format!("No module named '{expected_name}'");
     }
     if clear {
         clear_exception(_py);

@@ -648,6 +648,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
                 return None;
             }
         }
+        let group_ptr = obj_from_bits(base_exception_group)
+            .as_ptr()
+            .expect("validated BaseExceptionGroup class pointer");
+        debug_assert!(crate::object::class_set_exception_layout_root(
+            group_ptr,
+            molt_obj_model::ExceptionLayoutRoot::BaseExceptionGroup,
+        ));
     }
 
     let _ = molt_class_set_base(object, MoltObject::none().bits());

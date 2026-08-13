@@ -726,13 +726,7 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
 /// early (a bare `init();`) is caught at compile time.
 fn init() -> MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
-    // Idempotent — only the first test in the run actually installs hooks;
-    // subsequent calls observe the already-registered state and silently
-    // no-op rather than panicking on `OnceLock::set` failure.
-    unsafe {
-        molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS);
-    }
+    support::prepare_abi_test_thread(TEST_HOOKS);
     guard
 }
 

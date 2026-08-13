@@ -28,12 +28,13 @@ use molt_cpython_abi::api::object::{
 };
 use molt_cpython_abi::api::sequences::{PyTuple_New, PyTuple_SetItem, PyTuple_Size};
 use molt_cpython_abi::api::strings::PyUnicode_FromString;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
+
+mod support;
 
 // Serialize these tests: they share the `REC`/`TPREC` recording statics, and the
 // default cargo harness runs a binary's tests on parallel threads.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-static INIT: Once = Once::new();
 
 const OFFSET_BIT: usize = 1usize << (8 * std::mem::size_of::<usize>() - 1);
 const SENTINEL_VC: std::os::raw::c_long = 24_601; // returned by the vectorcall slot
@@ -86,17 +87,12 @@ struct VcInstance {
 }
 
 fn setup() {
-    INIT.call_once(|| {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        // A str-materializing hook so `PyUnicode_FromString` (kwnames keys) works;
-        // inline ints (`PyLong_FromLong`) and ABI-layout tuples need no hooks.
-        let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-        hooks.alloc_str = fake_alloc_str;
-        hooks.str_data = fake_str_data;
-        unsafe {
-            let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-        }
-    });
+    // A str-materializing hook so `PyUnicode_FromString` (kwnames keys) works;
+    // inline ints (`PyLong_FromLong`) and ABI-layout tuples need no hooks.
+    let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.alloc_str = fake_alloc_str;
+    hooks.str_data = fake_str_data;
+    support::prepare_abi_test_thread(hooks);
     *REC.lock().unwrap() = REC_EMPTY;
     *TPREC.lock().unwrap() = TPREC_EMPTY;
 }
@@ -293,6 +289,13 @@ fn vectorcall_reads_slot_and_forwards_kwnames() {
         r.first_arg_addr, a0 as usize,
         "the argument array is forwarded verbatim"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(result);
+        molt_cpython_abi::api::refcount::Py_DECREF(kwnames);
+        molt_cpython_abi::api::refcount::Py_DECREF(a0);
+        molt_cpython_abi::api::refcount::Py_DECREF(a1);
+        molt_cpython_abi::api::refcount::Py_DECREF(kwval);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -323,6 +326,10 @@ fn vectorcall_uses_slot_not_tp_call() {
         0,
         "tp_call must NOT be reached when a vectorcall slot exists"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(result);
+        molt_cpython_abi::api::refcount::Py_DECREF(a0);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -384,6 +391,12 @@ fn tp_call_is_pyvectorcall_call_terminates() {
         calls1 + 1,
         "one further slot call, no recursion"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(r3);
+        molt_cpython_abi::api::refcount::Py_DECREF(r2);
+        molt_cpython_abi::api::refcount::Py_DECREF(r1);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -416,6 +429,7 @@ fn pyvectorcall_call_without_slot_raises_typeerror() {
         "a NULL PyVectorcall_Call must set TypeError, never a bare NULL"
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(args) };
 }
 
 // ════════════════════════════════════════════════════════════════════════════

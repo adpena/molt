@@ -686,7 +686,6 @@ class LocalBindingMixin(_MixinBase):
         if (
             value is None
             or value.name in ("none", "")
-            or value.type_hint == "missing"
             or self.current_func_name == "molt_main"
             or name not in self.scope_assigned
             or name in self.closure_locals
@@ -694,6 +693,12 @@ class LocalBindingMixin(_MixinBase):
             or self.is_async()
         ):
             return None
+        # A syntactic first assignment is not necessarily a runtime first
+        # assignment: loop backedges carry the previous iteration's slot value.
+        # The pre-seeded Missing value therefore cannot suppress the overwrite
+        # boundary. Releasing Missing is a runtime no-op, while always reading
+        # the current slot gives every plain STORE_VAR one canonical
+        # STORE_FAST-style release boundary across loops and branches.
         return value
 
     def _plain_local_del_boundary_enabled(
@@ -824,8 +829,7 @@ class LocalBindingMixin(_MixinBase):
         ):
             self.emit(MoltOp(kind="INC_REF", args=[preserve], result=MoltValue("none")))
         for name, value in bindings:
-            boundary_value = self._load_local_value(name, guard_unbound=False) or value
-            self._emit_plain_local_del_boundary(name, boundary_value)
+            self._emit_plain_local_del_boundary(name, value)
 
     def _store_local_value(
         self,
@@ -946,10 +950,7 @@ class LocalBindingMixin(_MixinBase):
                 and previous.name != value.name
                 and self._plain_local_del_boundary_enabled(name, previous)
             ):
-                boundary_value = (
-                    self._load_local_value(name, guard_unbound=False) or previous
-                )
-                self._emit_plain_local_del_boundary(name, boundary_value)
+                self._emit_plain_local_del_boundary(name, previous)
         self.locals[name] = value
         # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
         # op that PRODUCED the bound value. CPython holds a named local in the

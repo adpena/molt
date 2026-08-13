@@ -54,10 +54,12 @@ unsafe fn classed_attr_lookup_without_dict_inner(
             }
             if exception_pending(_py) {
                 let exc_bits = molt_exception_last_pending();
-                let kind_bits = molt_exception_kind(exc_bits);
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                dec_ref_bits(_py, kind_bits);
-                if kind.as_deref() == Some("AttributeError") && getattr_candidate {
+                if crate::builtins::exceptions::exception_matches_builtin_name(
+                    _py,
+                    exc_bits,
+                    "AttributeError",
+                ) && getattr_candidate
+                {
                     molt_exception_clear();
                     dec_ref_bits(_py, exc_bits);
                     exception_stack_pop(_py);
@@ -502,7 +504,9 @@ unsafe fn type_attr_lookup_ptr_inner(
                     return Some(bound_bits);
                 }
             }
-            if is_builtin_class_bits(_py, class_bits) {
+            if is_builtin_class_bits(_py, class_bits)
+                || crate::builtins::exceptions::is_builtin_exception_class_bits(_py, class_bits)
+            {
                 if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name.as_str()) {
                     if name == "__init_subclass__"
                         && matches!(
@@ -578,10 +582,12 @@ unsafe fn type_attr_lookup_ptr_inner(
                     }
                     if exception_pending(_py) {
                         let exc_bits = molt_exception_last_pending();
-                        let kind_bits = molt_exception_kind(exc_bits);
-                        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                        dec_ref_bits(_py, kind_bits);
-                        if kind.as_deref() == Some("AttributeError") && getattr_candidate {
+                        if crate::builtins::exceptions::exception_matches_builtin_name(
+                            _py,
+                            exc_bits,
+                            "AttributeError",
+                        ) && getattr_candidate
+                        {
                             molt_exception_clear();
                             dec_ref_bits(_py, exc_bits);
                             exception_stack_pop(_py);

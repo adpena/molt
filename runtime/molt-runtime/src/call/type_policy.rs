@@ -137,7 +137,7 @@ mod tests {
             assert!(unsafe {
                 callable_matches_runtime_symbol(
                     init_bits,
-                    fn_addr!(crate::builtins::exceptions::molt_exception_init),
+                    fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
                 )
             });
         });

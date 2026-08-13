@@ -23,6 +23,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
@@ -109,10 +111,7 @@ fn install_hooks_without_cfunction_registration() {
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
     // NOTE: hooks.register_c_function is intentionally left as the stub.
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {

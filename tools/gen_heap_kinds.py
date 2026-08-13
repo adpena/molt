@@ -164,6 +164,7 @@ TRACK_PROJECTIONS = {
     "never",
     "always",
     "dict_dynamic",
+    "foreign_dynamic",
     "tuple_dynamic",
 }
 OBJECT_SHAPE_FAMILIES = {

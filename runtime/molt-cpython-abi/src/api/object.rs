@@ -4044,6 +4044,228 @@ fn existing_current_thread_state() -> Option<*mut PyThreadState> {
     })
 }
 
+/// Owns the detached CPython thread state used while the runtime is still in
+/// its private initialization phase.
+///
+/// Runtime hook publication and static-type readiness happen before the
+/// process-wide Ready pointer may become visible.  Readiness legitimately uses
+/// C error APIs, so it needs a real thread-state record even though ordinary
+/// execution attachment is not yet admissible.  This guard is the sole bridge
+/// for that phase: the TLS lifetime must already be armed, the record is never
+/// marked attached, and every owned edge is drained before initialization can
+/// publish Ready.
+#[must_use = "runtime initialization must retain its CPython thread-state guard through readiness"]
+pub struct RuntimeInitializationThreadStateGuard {
+    created: bool,
+}
+
+impl RuntimeInitializationThreadStateGuard {
+    pub fn enter() -> Self {
+        assert!(
+            existing_current_thread_state().is_none(),
+            "runtime initialization inherited a CPython thread state"
+        );
+        let created = create_prepared_current_thread_state();
+        assert!(
+            created,
+            "runtime initialization thread-state publication lost"
+        );
+        Self { created }
+    }
+}
+
+impl Drop for RuntimeInitializationThreadStateGuard {
+    fn drop(&mut self) {
+        if self.created {
+            assert!(
+                !current_thread_state_attached(),
+                "runtime initialization thread state became execution-attached"
+            );
+            destroy_current_thread_state(
+                ThreadStatePanicBoundary::Propagate,
+                ThreadStateDropCustodyMode::Acquire,
+            );
+            self.created = false;
+        }
+    }
+}
+
+/// Owns the complete CPython thread-state lifecycle for an isolated ABI unit
+/// test. Production remains fail-closed: only the real runtime boundary may
+/// prepare and publish a production record. Unit tests that exercise C error,
+/// context, or state-dict APIs use this transaction so every test starts with
+/// an empty record and releases every managed edge before returning its test
+/// harness thread.
+#[cfg(test)]
+#[must_use = "the ABI test thread-state transaction must live for the whole C-API test"]
+pub(crate) struct AbiTestThreadStateTransaction;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct AbiTestNativeGcState {
+    tracked: bool,
+    finalized: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ABI_TEST_NATIVE_GC_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static ABI_TEST_NATIVE_GC_NODES: RefCell<HashMap<usize, AbiTestNativeGcState>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+fn abi_test_native_gc_active() -> bool {
+    ABI_TEST_NATIVE_GC_ACTIVE.with(Cell::get)
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_runtime_is_initialized() -> c_int {
+    c_int::from(abi_test_native_gc_active())
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_allocate(addr: usize) -> c_int {
+    if addr == 0 || !abi_test_native_gc_active() {
+        return -1;
+    }
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        nodes.borrow_mut().entry(addr).or_default();
+    });
+    0
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_track(addr: usize) -> c_int {
+    if !abi_test_native_gc_active() {
+        return -1;
+    }
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let Some(node) = nodes.get_mut(&addr) else {
+            return -1;
+        };
+        node.tracked = true;
+        0
+    })
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_untrack(addr: usize) {
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        if let Some(node) = nodes.borrow_mut().get_mut(&addr) {
+            node.tracked = false;
+        }
+    });
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_deallocate(addr: usize) {
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        nodes.borrow_mut().remove(&addr);
+    });
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_is_tracked(addr: usize) -> c_int {
+    ABI_TEST_NATIVE_GC_NODES
+        .with(|nodes| c_int::from(nodes.borrow().get(&addr).is_some_and(|node| node.tracked)))
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_is_finalized(addr: usize) -> c_int {
+    ABI_TEST_NATIVE_GC_NODES
+        .with(|nodes| c_int::from(nodes.borrow().get(&addr).is_some_and(|node| node.finalized)))
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_claim_finalizer(addr: usize) -> c_int {
+    if !abi_test_native_gc_active() {
+        return -1;
+    }
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let Some(node) = nodes.get_mut(&addr) else {
+            return -1;
+        };
+        if node.finalized {
+            0
+        } else {
+            node.finalized = true;
+            1
+        }
+    })
+}
+
+#[cfg(test)]
+fn install_abi_unit_test_native_gc_hooks() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let mut hooks = crate::hooks::STUB_HOOKS;
+        hooks.runtime_is_initialized = abi_test_runtime_is_initialized;
+        hooks.native_gc_allocate = abi_test_native_gc_allocate;
+        hooks.native_gc_track = abi_test_native_gc_track;
+        hooks.native_gc_untrack = abi_test_native_gc_untrack;
+        hooks.native_gc_deallocate = abi_test_native_gc_deallocate;
+        hooks.native_gc_is_tracked = abi_test_native_gc_is_tracked;
+        hooks.native_gc_is_finalized = abi_test_native_gc_is_finalized;
+        hooks.native_gc_claim_finalizer = abi_test_native_gc_claim_finalizer;
+        assert!(unsafe { crate::hooks::try_set_runtime_hooks(hooks) });
+    });
+}
+
+#[cfg(test)]
+impl AbiTestThreadStateTransaction {
+    pub(crate) fn new() -> Self {
+        assert!(
+            existing_current_thread_state().is_none(),
+            "ABI unit test inherited a live PyThreadState from another transaction"
+        );
+        prepare_runtime_thread_state_lifetime();
+        arm_runtime_thread_state_lifetime();
+        assert!(
+            create_prepared_current_thread_state(),
+            "ABI unit-test PyThreadState publication must be exclusive"
+        );
+        install_abi_unit_test_native_gc_hooks();
+        ABI_TEST_NATIVE_GC_ACTIVE.with(|active| {
+            assert!(!active.replace(true), "nested ABI unit-test transaction");
+        });
+        ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+            assert!(
+                nodes.borrow().is_empty(),
+                "ABI unit test inherited native GC identities"
+            );
+        });
+        crate::bridge::molt_cpython_abi_init();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for AbiTestThreadStateTransaction {
+    fn drop(&mut self) {
+        if existing_current_thread_state().is_some() {
+            destroy_current_thread_state(
+                ThreadStatePanicBoundary::Propagate,
+                ThreadStateDropCustodyMode::Acquire,
+            );
+        }
+        ABI_TEST_NATIVE_GC_ACTIVE.with(|active| {
+            assert!(
+                active.replace(false),
+                "ABI unit-test transaction lost activation"
+            );
+        });
+        ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+            assert!(
+                nodes.borrow().is_empty(),
+                "ABI unit-test transaction leaked native GC identities"
+            );
+        });
+    }
+}
+
 fn current_thread_state_attached() -> bool {
     MOLT_THREAD_STATE.with(|slot| {
         slot.borrow()
@@ -4597,15 +4819,9 @@ mod thread_state_tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
-    fn prepare_test_thread_state() {
-        prepare_runtime_thread_state_lifetime();
-        arm_runtime_thread_state_lifetime();
-        create_prepared_current_thread_state();
-    }
-
     #[test]
     fn thread_state_identity_is_stable_and_self_linked() {
-        prepare_test_thread_state();
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let first = ensure_current_thread_state();
         let second = ensure_current_thread_state();
         assert_eq!(first, second);
@@ -4619,30 +4835,22 @@ mod thread_state_tests {
         set_current_thread_state_attached(false);
         assert!(!current_thread_state_attached());
         assert_eq!(existing_current_thread_state(), Some(first));
-        destroy_current_thread_state(
-            ThreadStatePanicBoundary::Propagate,
-            ThreadStateDropCustodyMode::Acquire,
-        );
     }
 
     #[test]
     fn thread_state_identity_and_custody_are_thread_local() {
-        prepare_test_thread_state();
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let local = ensure_current_thread_state();
         let local_id = registered_thread_state(local, "test local thread state").id;
         let release = Arc::new(Barrier::new(2));
         let worker_release = Arc::clone(&release);
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            prepare_test_thread_state();
+            let _thread_state = AbiTestThreadStateTransaction::new();
             let worker_state = ensure_current_thread_state();
             let worker_id = registered_thread_state(worker_state, "test worker thread state").id;
             tx.send((worker_state as usize, worker_id)).unwrap();
             worker_release.wait();
-            destroy_current_thread_state(
-                ThreadStatePanicBoundary::Propagate,
-                ThreadStateDropCustodyMode::Acquire,
-            );
         });
 
         let (worker_state, worker_id) = rx.recv().unwrap();
@@ -4669,15 +4877,11 @@ mod thread_state_tests {
         );
         release.wait();
         worker.join().unwrap();
-        destroy_current_thread_state(
-            ThreadStatePanicBoundary::Propagate,
-            ThreadStateDropCustodyMode::Acquire,
-        );
     }
 
     #[test]
     fn explicit_thread_state_destruction_releases_every_owned_python_edge() {
-        prepare_test_thread_state();
+        let thread_state = AbiTestThreadStateTransaction::new();
         let mut dict = Box::new(PyObject {
             ob_refcnt: 2,
             ob_type: ptr::null_mut(),
@@ -4707,10 +4911,7 @@ mod thread_state_tests {
             assert!(context.insert(0xC0FFEE, context_ptr as usize).is_none());
         });
 
-        destroy_current_thread_state(
-            ThreadStatePanicBoundary::Propagate,
-            ThreadStateDropCustodyMode::Acquire,
-        );
+        drop(thread_state);
         assert!(existing_current_thread_state().is_none());
         assert_eq!(dict.ob_refcnt, 1, "state dict owner must be released once");
         assert_eq!(
@@ -4756,6 +4957,7 @@ mod item_access_slot_tests {
     /// prior bare-NULL return skipped entirely).
     #[test]
     fn get_item_dispatches_to_foreign_mp_subscript() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
@@ -4793,6 +4995,7 @@ mod item_access_slot_tests {
     /// `PyNumber_AsSsize_t` error sentinel.
     #[test]
     fn get_item_sequence_path_adjusts_negative_index_via_sq_length() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         SQ_ITEM_INDEX.store(i64::MIN, Ordering::SeqCst);
         // A native int `-1` key so `PyIndex_Check`/`PyNumber_AsSsize_t` resolve it.
@@ -4821,6 +5024,7 @@ mod item_access_slot_tests {
     /// silent-failure surface and raises an honest `TypeError`.
     #[test]
     fn get_item_without_slot_is_never_a_silent_null() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -4867,6 +5071,7 @@ mod item_access_slot_tests {
     /// prior bare -1.
     #[test]
     fn set_item_dispatches_to_foreign_mp_ass_subscript() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         SET_CALLS.store(0, Ordering::SeqCst);
         let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
@@ -4899,6 +5104,7 @@ mod item_access_slot_tests {
     /// -1: record + honest `TypeError` (the SetItem analog of (b)).
     #[test]
     fn set_item_without_slot_is_never_a_silent_minus_one() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5025,6 +5231,7 @@ mod f3_divergence_tests {
 
     #[test]
     fn iter_send_dispatches_am_send_with_exact_result_contract() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut async_methods: PyAsyncMethods = unsafe { std::mem::zeroed() };
         async_methods.am_send = fake_am_send as *mut c_void;
@@ -5050,6 +5257,7 @@ mod f3_divergence_tests {
 
     #[test]
     fn iter_send_transfers_stop_iteration_value_and_clears_error() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5071,6 +5279,7 @@ mod f3_divergence_tests {
 
     #[test]
     fn iter_send_falls_back_to_send_method_for_non_none_argument() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut method_type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5116,6 +5325,7 @@ mod f3_divergence_tests {
     /// bridge-miss object as truthy without ever consulting a slot.
     #[test]
     fn is_true_dispatches_foreign_nb_bool() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut num: PyNumberMethods = unsafe { std::mem::zeroed() };
         num.nb_bool = fake_nb_bool as *mut c_void;
@@ -5144,6 +5354,7 @@ mod f3_divergence_tests {
     /// non-empty one is truthy — CPython's mp_length/sq_length truthiness tier.
     #[test]
     fn is_true_empty_container_is_falsy_via_length_slots() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         // mp_length == 0 -> falsy.
         let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
@@ -5194,6 +5405,7 @@ mod f3_divergence_tests {
     /// `len(ndarray)` path) instead of the prior silent -1.
     #[test]
     fn size_dispatches_foreign_sq_length() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut seq: PySequenceMethods = unsafe { std::mem::zeroed() };
         seq.sq_length = fake_len_three as *mut c_void;
@@ -5211,6 +5423,7 @@ mod f3_divergence_tests {
     /// a bare -1.
     #[test]
     fn size_without_len_slot_raises_typeerror() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5259,6 +5472,7 @@ mod f3_divergence_tests {
     /// "absent" (silent-wrong-answer on coercion). Load-bearing.
     #[test]
     fn get_optional_attr_propagates_non_attribute_error() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5297,6 +5511,7 @@ mod f3_divergence_tests {
     /// 0 (so a genuinely-missing optional dunder is still detected).
     #[test]
     fn get_optional_attr_absent_on_attribute_error() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -5334,6 +5549,7 @@ mod f3_divergence_tests {
     /// silent NULL, and a real iterator object is produced for a non-NULL seq.
     #[test]
     fn seqiter_new_null_raises_and_nonnull_builds_iterator() {
+        let _thread_state = AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         unsafe { crate::api::errors::PyErr_Clear() };
         assert!(unsafe { PySeqIter_New(ptr::null_mut()) }.is_null());

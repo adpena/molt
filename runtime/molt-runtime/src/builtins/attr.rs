@@ -3,10 +3,13 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use molt_obj_model::MoltObject;
+use molt_obj_model::{ExceptionTypedField, MoltObject};
 
 use crate::builtins::annotations::pep649_enabled;
-use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
+use crate::builtins::exceptions::{
+    exception_matches_builtin_name, exception_typed_fields_replace_internal,
+    molt_exception_last_pending,
+};
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
     TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
@@ -14,13 +17,13 @@ use crate::{
     TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
     TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple,
-    attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
-    call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, attr_lookup_ptr,
+    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
+    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
     class_layout_version_bits, class_mro_pinned, class_mro_vec, class_mro_view, class_name_bits,
     class_name_for_error, classmethod_func_bits, clear_exception, dataclass_desc_ptr,
     dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
-    dict_get_in_place, dict_order, dict_set_in_place, exception_dict_bits, exception_kind_bits,
+    dict_get_in_place, dict_order, dict_set_in_place, exception_dict_bits,
     exception_last_bits_noinc, exception_pending, exception_stack_pop, exception_stack_push,
     inc_ref_bits, init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
     is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
@@ -67,7 +70,7 @@ impl AttrNameCacheKey {
 mod tests {
     use super::{
         ATTR_NAME_INLINE_CAP, AttrNameCacheKey, clear_attr_tls_caches, descriptor_cache_lookup,
-        descriptor_cache_store,
+        descriptor_cache_store, set_attribute_error_members,
     };
     use crate::{MoltObject, alloc_string, dec_ref_bits, obj_from_bits};
 
@@ -91,6 +94,57 @@ mod tests {
 
         assert!(matches!(key, AttrNameCacheKey::Heap(_)));
         assert_eq!(key.as_slice(), bytes.as_slice());
+    }
+
+    #[test]
+    fn attribute_error_members_use_canonical_typed_fields_without_overwriting_args() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = alloc_string(_py, b"attribute-owner");
+            assert!(!obj_ptr.is_null());
+            let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
+            let obj_refcount = heap_refcount(obj_bits);
+            let exc_ptr = crate::builtins::exceptions::alloc_exception(
+                _py,
+                "AttributeError",
+                "missing attribute",
+            );
+            assert!(!exc_ptr.is_null());
+            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+            let args_bits = unsafe { crate::builtins::exceptions::exception_args_bits(exc_ptr) };
+            let args_refcount = heap_refcount(args_bits);
+
+            set_attribute_error_members(_py, exc_bits, "missing", obj_bits)
+                .expect("publish AttributeError typed members");
+
+            assert_eq!(
+                unsafe { crate::builtins::exceptions::exception_args_bits(exc_ptr) },
+                args_bits,
+                "AttributeError member publication must not overwrite args"
+            );
+            assert_eq!(heap_refcount(args_bits), args_refcount);
+            let name_bits =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exc_ptr, "name")
+                    .expect("AttributeError.name descriptor")
+                    .expect("AttributeError.name value");
+            let member_obj_bits =
+                crate::builtins::exceptions::exception_typed_field_get(_py, exc_ptr, "obj")
+                    .expect("AttributeError.obj descriptor")
+                    .expect("AttributeError.obj value");
+            assert_eq!(
+                crate::string_obj_to_owned(obj_from_bits(name_bits)).as_deref(),
+                Some("missing")
+            );
+            assert_eq!(member_obj_bits, obj_bits);
+            assert_eq!(heap_refcount(obj_bits), obj_refcount + 2);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, member_obj_bits);
+            assert_eq!(heap_refcount(obj_bits), obj_refcount + 1);
+
+            dec_ref_bits(_py, exc_bits);
+            assert_eq!(heap_refcount(obj_bits), obj_refcount);
+            dec_ref_bits(_py, obj_bits);
+        });
     }
 
     #[test]
@@ -521,61 +575,36 @@ pub(crate) fn setattr_no_attr_error_with_obj(
     );
     let res = raise_exception(_py, "AttributeError", &msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-    if !obj_from_bits(exc_bits).is_none() {
-        set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
+    if !obj_from_bits(exc_bits).is_none()
+        && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
+    {
+        return res;
     }
     res
 }
 
-fn set_attribute_error_members(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, obj_bits: u64) {
+fn set_attribute_error_members(
+    _py: &PyToken<'_>,
+    exc_bits: u64,
+    attr_name: &str,
+    obj_bits: u64,
+) -> Result<(), &'static str> {
     crate::gil_assert();
-    let exc_obj = obj_from_bits(exc_bits);
-    let Some(exc_ptr) = exc_obj.as_ptr() else {
-        return;
-    };
-    // AttributeError.name and AttributeError.obj are not stored in `__dict__` on CPython.
-    // Store the pair in the exception "value" slot (used for StopIteration/SystemExit),
-    // and have getattr/setattr on exceptions treat this slot specially for AttributeError.
     let name_ptr = alloc_string(_py, attr_name.as_bytes());
     if name_ptr.is_null() {
-        return;
+        return Err("failed to allocate AttributeError.name");
     };
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let tuple_ptr = alloc_tuple(_py, &[name_bits, obj_bits]);
+    let result = exception_typed_fields_replace_internal(
+        _py,
+        exc_bits,
+        &[
+            (ExceptionTypedField::AttributeErrorName, name_bits),
+            (ExceptionTypedField::AttributeErrorObject, obj_bits),
+        ],
+    );
     dec_ref_bits(_py, name_bits);
-    if tuple_ptr.is_null() {
-        return;
-    }
-    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-    unsafe {
-        let slot = exc_ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != tuple_bits {
-            dec_ref_bits(_py, old_bits);
-            inc_ref_bits(_py, tuple_bits);
-            *slot = tuple_bits;
-        }
-    }
-    dec_ref_bits(_py, tuple_bits);
-}
-
-fn set_attribute_error_attrs(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, obj_bits: u64) {
-    crate::gil_assert();
-    let exc_obj = obj_from_bits(exc_bits);
-    let Some(exc_ptr) = exc_obj.as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-            return;
-        }
-        let kind =
-            string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr))).unwrap_or_default();
-        if kind != "AttributeError" {
-            return;
-        }
-    }
-    set_attribute_error_members(_py, exc_bits, attr_name, obj_bits);
+    result
 }
 
 pub(crate) fn attr_error_with_obj(
@@ -592,8 +621,10 @@ pub(crate) fn attr_error_with_obj(
     );
     let res = raise_exception(_py, "AttributeError", &msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-    if !obj_from_bits(exc_bits).is_none() {
-        set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
+    if !obj_from_bits(exc_bits).is_none()
+        && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
+    {
+        return res;
     }
     res
 }
@@ -612,8 +643,10 @@ pub(crate) fn attr_error_with_obj_message(
     crate::gil_assert();
     let res = raise_exception(_py, "AttributeError", msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-    if !obj_from_bits(exc_bits).is_none() {
-        set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
+    if !obj_from_bits(exc_bits).is_none()
+        && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
+    {
+        return res;
     }
     res
 }
@@ -1116,7 +1149,11 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
                 // Clear any exception left by the failed dict lookup
                 clear_attribute_error_if_pending(_py);
                 if let Some(name) = attr_name.as_deref()
-                    && is_builtin_class_bits(_py, *class_bits)
+                    && (is_builtin_class_bits(_py, *class_bits)
+                        || crate::builtins::exceptions::is_builtin_exception_class_bits(
+                            _py,
+                            *class_bits,
+                        ))
                     && let Some(func_bits) = builtin_class_method_bits(_py, *class_bits, name)
                 {
                     return Some(func_bits);
@@ -1146,7 +1183,11 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
             clear_attribute_error_if_pending(_py);
             if let Some(name) = attr_name.as_deref() {
                 let current_bits = MoltObject::from_ptr(current_ptr).bits();
-                if is_builtin_class_bits(_py, current_bits)
+                if (is_builtin_class_bits(_py, current_bits)
+                    || crate::builtins::exceptions::is_builtin_exception_class_bits(
+                        _py,
+                        current_bits,
+                    ))
                     && let Some(func_bits) = builtin_class_method_bits(_py, current_bits, name)
                 {
                     return Some(func_bits);

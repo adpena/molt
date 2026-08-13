@@ -7,6 +7,8 @@
 
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{
     Py_True, Py_complex, PyLong_Type, PyLongObject, PyLongValue, PyObject,
 };
@@ -276,7 +278,6 @@ unsafe extern "C" fn counted_dec_ref(bits: u64) {
 
 fn initialize_hooks() {
     molt_cpython_abi_test_support::link();
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = STUB_HOOKS;
     hooks.int_from_digits = counted_from_digits;
     hooks.int_from_bytes = counted_from_bytes;
@@ -291,12 +292,7 @@ fn initialize_hooks() {
     hooks.classify_heap = counted_classify;
     hooks.inc_ref = counted_inc_ref;
     hooks.dec_ref = counted_dec_ref;
-    unsafe {
-        assert!(
-            molt_cpython_abi::try_set_runtime_hooks(hooks),
-            "attestation test binary must own the RuntimeHooks table"
-        );
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 #[derive(Clone, Copy)]

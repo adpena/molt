@@ -23,9 +23,7 @@ fn init() {
     hooks.object_hash = support::fake_complex::hash;
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.complex_parts = support::fake_complex::parts;
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 // ---------------------------------------------------------------------------

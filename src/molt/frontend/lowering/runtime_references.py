@@ -9,6 +9,7 @@ detection shared by import, call, class, expression, and pattern visitors.
 from __future__ import annotations
 
 import ast
+import sys
 from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import (
@@ -38,6 +39,22 @@ else:
 
 
 class RuntimeReferenceMixin(_MixinBase):
+    def _builtin_exception_is_available(self, name: str) -> bool:
+        """Target-gated builtin exception namespace authority.
+
+        The schema intentionally describes the supported-version/platform
+        superset. Name resolution must expose only the configured CPython
+        surface so a cross-compile never inherits the compiler host's builtins.
+        """
+        if name not in BUILTIN_EXCEPTION_NAMES:
+            return False
+        if name == "PythonFinalizationError":
+            return self.target_python >= (3, 13)
+        if name == "WindowsError":
+            target_platform = self.target_sys_platform or sys.platform
+            return target_platform == "win32"
+        return True
+
     def _emit_const_value(self, value: object) -> MoltValue:
         if value is None:
             res = MoltValue(self.next_var(), type_hint="None")
@@ -319,7 +336,7 @@ class RuntimeReferenceMixin(_MixinBase):
         return (
             name in BUILTIN_TYPE_TAGS
             or name in BUILTIN_FUNC_SPECS
-            or name in BUILTIN_EXCEPTION_NAMES
+            or self._builtin_exception_is_available(name)
         )
 
     def _emit_builtin_type_value(self, type_name: str) -> MoltValue:

@@ -10,6 +10,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
 use molt_cpython_abi::api::object::{PyIter_Next, PyObject_IsTrue, PyObject_Size, PySeqIter_New};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -47,9 +49,7 @@ fn init_hooks() {
     hooks.classify_heap = list_classify;
     hooks.list_len = list_len_hook;
     hooks.list_item = list_item_hook;
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 fn native_list(nonempty: bool) -> *mut PyObject {

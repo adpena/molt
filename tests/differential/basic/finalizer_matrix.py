@@ -176,3 +176,26 @@ else:
 
     run_with_state()
     print("with_state", seen8)
+
+    # ── 9. first syntactic assignment in a loop releases each prior slot ──
+    # The compiler pre-seeds function locals with Missing.  On iteration two,
+    # however, the runtime slot owns the prior iteration's object; STORE_FAST
+    # must release it before the following Python side effect.
+    seen9 = []
+
+    class FirstLoopAssignment:
+        def __init__(self, tag: int) -> None:
+            self.tag = tag
+
+        def __del__(self) -> None:
+            seen9.append(("del", self.tag))
+
+    def run_first_loop_assignment() -> None:
+        for tag in (1, 2, 3):
+            slot = FirstLoopAssignment(tag)
+            seen9.append(("after", tag))
+        del slot
+        gc.collect()
+
+    run_first_loop_assignment()
+    print("first_loop_assignment", seen9)

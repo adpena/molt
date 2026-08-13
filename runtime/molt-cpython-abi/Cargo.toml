@@ -37,6 +37,9 @@ unicode-properties  = { version = "0.1", default-features = false, features = ["
 libloading = { version = "0.9", optional = true }
 molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support", optional = true }
 
+[target.'cfg(any(windows, all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+molt-runtime-platform = { path = "../molt-runtime-platform" }
+
 [dev-dependencies]
 # Integration tests mint NaN-boxed pointer handles (so the bridge's classify
 # path stamps the right builtin ob_type) via MoltObject::from_ptr.

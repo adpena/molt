@@ -684,11 +684,14 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                             }
                             if exception_pending(_py) {
                                 let exc_bits = molt_exception_last();
-                                let kind_bits = molt_exception_kind(exc_bits);
-                                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                                dec_ref_bits(_py, kind_bits);
+                                let cancelled =
+                                    crate::builtins::exceptions::exception_matches_builtin_name(
+                                        _py,
+                                        exc_bits,
+                                        "CancelledError",
+                                    );
                                 dec_ref_bits(_py, exc_bits);
-                                if kind.as_deref() == Some("CancelledError") {
+                                if cancelled {
                                     molt_exception_clear();
                                     return wait_for_raise_timeout(_py);
                                 }
@@ -725,11 +728,13 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                 }
                 if exception_pending(_py) {
                     let exc_bits = molt_exception_last();
-                    let kind_bits = molt_exception_kind(exc_bits);
-                    let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                    dec_ref_bits(_py, kind_bits);
+                    let cancelled = crate::builtins::exceptions::exception_matches_builtin_name(
+                        _py,
+                        exc_bits,
+                        "CancelledError",
+                    );
                     dec_ref_bits(_py, exc_bits);
-                    if kind.as_deref() == Some("CancelledError") {
+                    if cancelled {
                         molt_exception_clear();
                         return wait_for_raise_timeout(_py);
                     }

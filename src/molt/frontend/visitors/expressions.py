@@ -19,7 +19,6 @@ from typing import (
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
-    BUILTIN_EXCEPTION_NAMES,
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
     MoltOp,
@@ -144,7 +143,7 @@ class ExpressionVisitorMixin(_MixinBase):
                     return self._emit_builtin_function(
                         node.id, runtime_requirement_bits=requirement_bits
                     )
-                if node.id in BUILTIN_EXCEPTION_NAMES:
+                if self._builtin_exception_is_available(node.id):
                     return self._emit_exception_class(node.id)
                 if node.id in self.stdlib_allowlist:
                     module_val = self._emit_module_load(node.id)

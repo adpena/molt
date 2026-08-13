@@ -5,6 +5,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{Py_buffer, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
@@ -190,10 +192,7 @@ fn install() {
     hooks.import_module = fake_import_module_fails;
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
+    support::prepare_abi_test_thread(hooks);
 }
 
 unsafe fn str_obj(text: &str) -> *mut PyObject {
@@ -388,6 +387,11 @@ fn format_applies_width_precision_and_hex() {
         "[   ab][7   ][xy][0xff]",
         "width/precision/flags were previously parsed then DISCARDED"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(out);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
+    }
 }
 
 #[test]
@@ -419,6 +423,11 @@ fn format_float_conversions() {
         String::from_utf8(unsafe { read_str(out) }).unwrap(),
         "3.14|1.000000e+02|0.5"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(out);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
+    }
 }
 
 #[test]
@@ -446,6 +455,12 @@ fn format_not_enough_and_surplus_args_are_typeerrors() {
     assert!(out2.is_null(), "surplus args must raise TypeError");
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(args2);
+        molt_cpython_abi::api::refcount::Py_DECREF(fmt2);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
+    }
 }
 
 #[test]
@@ -459,6 +474,10 @@ fn format_d_of_non_number_is_typeerror_not_minus_one() {
     assert!(out.is_null(), "old body appended '-1' and continued");
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
+    }
 }
 
 #[test]
@@ -491,6 +510,12 @@ fn join_concatenates_with_separator_and_rejects_non_str_items() {
     assert!(out2.is_null());
     assert!(unsafe { err_set() }, "non-str item must be a TypeError");
     unsafe { err_clear() };
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(bad);
+        molt_cpython_abi::api::refcount::Py_DECREF(out);
+        molt_cpython_abi::api::refcount::Py_DECREF(list);
+        molt_cpython_abi::api::refcount::Py_DECREF(sep);
+    }
 }
 
 // ===========================================================================
@@ -1090,6 +1115,8 @@ fn datetime_fromtimestamp_epoch() {
         assert_eq!((data[4], data[5], data[6]), (0, 0, 0), "00:00:00");
         let us = ((data[7] as u32) << 16) | ((data[8] as u32) << 8) | data[9] as u32;
         assert_eq!(us, 500_000, "fractional second rounds to microseconds");
+        molt_cpython_abi::api::refcount::Py_DECREF(dt);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
     }
 }
 

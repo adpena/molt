@@ -20,6 +20,7 @@ mod support;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, DictOp, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_ulong};
@@ -38,6 +39,26 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 /// integration tests). Serial `--test-threads=1` was already 0-flake — this is a
 /// pure isolation gate, NOT a product change; every assertion is unchanged.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static READY_STACK_TYPES: RefCell<Vec<*mut PyTypeObject>> = const { RefCell::new(Vec::new()) };
+}
+
+struct TypeReadyTestTransaction {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for TypeReadyTestTransaction {
+    fn drop(&mut self) {
+        let ready = READY_STACK_TYPES.with(|types| std::mem::take(&mut *types.borrow_mut()));
+        for type_ in ready.into_iter().rev() {
+            unsafe {
+                molt_cpython_abi::api::refcount::Py_CLEAR(&raw mut (*type_).tp_mro);
+                molt_cpython_abi::api::refcount::Py_CLEAR(&raw mut (*type_).tp_dict);
+            }
+        }
+    }
+}
 
 // A minimal in-test runtime hook table. PyType_Ready builds `tp_dict` via
 // PyDict_New and populates method names via PyUnicode_FromString; both fail
@@ -155,8 +176,14 @@ unsafe extern "C" fn fake_register_c_function(
 /// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
 /// failure never cascades) and install the idempotent ABI + hook state. Every
 /// test binds the returned `MutexGuard` (itself `#[must_use]`) for its body.
-fn init() -> MutexGuard<'static, ()> {
+fn init() -> TypeReadyTestTransaction {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    READY_STACK_TYPES.with(|types| {
+        assert!(
+            types.borrow().is_empty(),
+            "prior type-readiness test leaked stack-type cleanup custody"
+        );
+    });
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_dict = fake_alloc_dict;
     hooks.dict_set = fake_dict_set;
@@ -169,14 +196,20 @@ fn init() -> MutexGuard<'static, ()> {
     hooks.dec_ref = fake_noop_ref;
     hooks.register_c_function = fake_register_c_function;
     hooks.foreign_new = support::fake_foreign::foreign_new;
-    unsafe {
-        molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
-    guard
+    support::prepare_abi_test_thread(hooks);
+    TypeReadyTestTransaction { _guard: guard }
 }
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
+    if unsafe { (*tp).ob_base.ob_base.ob_refcnt } == 0 {
+        unsafe { (*tp).ob_base.ob_base.ob_refcnt = 1 };
+    }
+    READY_STACK_TYPES.with(|types| {
+        let mut types = types.borrow_mut();
+        if !types.contains(&tp) {
+            types.push(tp);
+        }
+    });
     unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp) }
 }
 
@@ -936,6 +969,10 @@ fn metatype_inherits_type_call_and_instantiates_via_tp_new_tp_init() {
         &mut dtype_class as *mut PyTypeObject,
         "the instance's ob_type must be the called class"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(obj);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1071,10 @@ fn metatype_with_unresolved_type_base_gains_type_call_when_subtype_readied() {
         &mut dtype_class as *mut PyTypeObject,
         "the instance's ob_type must be the called DType class"
     );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(obj);
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+    }
 }
 
 #[test]
@@ -1059,6 +1100,7 @@ fn type_call_without_tp_new_raises_type_error_not_null_funcref() {
         "the failure must set a TypeError, never a bare NULL"
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(args) };
 }
 
 // Records what `args` its caller received: whether the pointer was NULL and, if

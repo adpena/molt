@@ -153,6 +153,7 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
         }
         let mut inherited_instance_type_id = TYPE_ID_OBJECT;
         let mut inherited_instance_shape = crate::object::ObjectShapeId::Plain;
+        let mut inherited_exception_layout_root = molt_obj_model::ExceptionLayoutRoot::Base;
         for base in bases_vec.iter() {
             let base_obj = obj_from_bits(*base);
             let Some(base_ptr) = base_obj.as_ptr() else {
@@ -190,6 +191,19 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                     }
                     inherited_instance_type_id = base_instance_type_id;
                 }
+                let base_layout_root = crate::object::class_exception_layout_root(base_ptr);
+                if base_layout_root != molt_obj_model::ExceptionLayoutRoot::Base {
+                    if inherited_exception_layout_root != molt_obj_model::ExceptionLayoutRoot::Base
+                        && inherited_exception_layout_root != base_layout_root
+                    {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "multiple bases have instance lay-out conflict",
+                        );
+                    }
+                    inherited_exception_layout_root = base_layout_root;
+                }
                 let base_instance_shape = crate::object::class_instance_shape_id(base_ptr);
                 if base_instance_shape != crate::object::ObjectShapeId::Plain {
                     if inherited_instance_shape != crate::object::ObjectShapeId::Plain
@@ -221,6 +235,18 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 _py,
                 "TypeError",
                 "inherited native instance kind conflicts with class layout",
+            );
+        }
+        if !unsafe {
+            crate::object::class_can_inherit_exception_layout_root(
+                class_ptr,
+                inherited_exception_layout_root,
+            )
+        } {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "inherited exception payload conflicts with class layout",
             );
         }
 
@@ -291,6 +317,14 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 debug_assert!(
                     shape_published,
                     "validated instance-shape publication must succeed"
+                );
+                let exception_layout_published = crate::object::class_inherit_exception_layout_root(
+                    class_ptr,
+                    inherited_exception_layout_root,
+                );
+                debug_assert!(
+                    exception_layout_published,
+                    "validated exception-layout publication must succeed"
                 );
                 crate::object::class_refresh_finalizer_flag(_py, class_ptr);
                 class_bump_layout_version(class_ptr);

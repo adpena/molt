@@ -1946,6 +1946,12 @@ unsafe fn function_binding_meta(
 /// `func_ptr` must be a live function object; the GIL must be held.
 pub(crate) unsafe fn function_needs_full_binder(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
     unsafe {
+        if callable_matches_runtime_symbol(
+            Some(MoltObject::from_ptr(func_ptr).bits()),
+            fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+        ) {
+            return true;
+        }
         for name in [
             b"__molt_bind_kind__".as_slice(),
             b"__molt_vararg__",
@@ -2476,6 +2482,29 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 crate::object::seq_access::pin_tuple(_py, arg_names_ptr)
                     .expect("type-checked argument-name tuple must be pinnable")
             } else {
+                if callable_matches_runtime_symbol(
+                    Some(func_bits),
+                    fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+                ) {
+                    let Some(bound_args) =
+                        builtin_args::bind_builtin_exception_init_owned(_py, args)
+                    else {
+                        return MoltObject::none().bits();
+                    };
+                    let result = crate::builtins::exceptions::molt_exception_init_owned(
+                        function_closure_bits(func_ptr),
+                        bound_args[0],
+                        bound_args[1],
+                        bound_args[2],
+                        bound_args[3],
+                    );
+                    return protect_bound_args_or_callargs_aliased_return(
+                        _py,
+                        result,
+                        args_ptr,
+                        bound_args.as_slice(),
+                    );
+                }
                 if let Some(bound_args) =
                     builtin_args::bind_builtin_call(_py, func_bits, func_ptr, args)
                 {

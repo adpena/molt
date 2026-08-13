@@ -7,13 +7,19 @@
 
 use crate::abi_types::{
     MoltTypeTag, Py_buffer, Py_complex, Py_ssize_t, PyBUF_SIMPLE, PyBUF_WRITABLE,
-    PyBaseExceptionObject, PyObject, PyTypeObject,
+    PyBaseExceptionObject, PyGetSetDef, PyMemberDef, PyObject, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::ffi::{CStr, c_void};
+use once_cell::sync::Lazy;
+use std::ffi::{CStr, CString, c_void};
 use std::os::raw::{c_char, c_int, c_long, c_ulong};
 use std::ptr;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use libc as platform_errno;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use molt_runtime_platform::libc_compat as platform_errno;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NewException(
@@ -545,6 +551,1384 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
     }
 }
 
+struct NativeExceptionKeywords {
+    fields: [Option<(molt_lang_obj_model::ExceptionTypedField, *mut PyObject)>;
+        molt_lang_obj_model::MAX_EXCEPTION_TYPED_FIELDS],
+    len: usize,
+}
+
+impl Default for NativeExceptionKeywords {
+    fn default() -> Self {
+        Self {
+            fields: [None; molt_lang_obj_model::MAX_EXCEPTION_TYPED_FIELDS],
+            len: 0,
+        }
+    }
+}
+
+impl NativeExceptionKeywords {
+    fn iter(
+        &self,
+    ) -> impl Iterator<Item = (molt_lang_obj_model::ExceptionTypedField, *mut PyObject)> + '_ {
+        self.fields[..self.len].iter().flatten().copied()
+    }
+}
+
+unsafe fn native_exception_keywords(
+    layout: molt_lang_obj_model::ExceptionLayoutKind,
+    kwds: *mut PyObject,
+) -> Option<NativeExceptionKeywords> {
+    let size = if kwds.is_null() {
+        0
+    } else {
+        unsafe { crate::api::mapping::PyDict_Size(kwds) }
+    };
+    if size < 0 {
+        return None;
+    }
+    let mut values = NativeExceptionKeywords::default();
+    let mut recognized = 0isize;
+    if !kwds.is_null() {
+        for policy in layout.constructor_keyword_policies() {
+            let name = CString::new(policy.python_name)
+                .expect("exception constructor keyword contains no NUL");
+            let value = unsafe { crate::api::mapping::PyDict_GetItemString(kwds, name.as_ptr()) };
+            if !value.is_null() {
+                values.fields[values.len] = Some((policy.field, value));
+                values.len += 1;
+                recognized += 1;
+            }
+        }
+    }
+    if recognized != size {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"invalid keyword argument for builtin exception".as_ptr(),
+            )
+        };
+        return None;
+    }
+    Some(values)
+}
+
+unsafe fn clear_native_typed_fields(
+    instance: *mut PyBaseExceptionObject,
+    layout: molt_lang_obj_model::ExceptionLayoutKind,
+) {
+    for policy in layout.field_policies() {
+        if let Some(slot) =
+            unsafe { crate::abi_types::exception_typed_object_slot(instance, layout, policy.field) }
+        {
+            let value = unsafe { std::mem::replace(&mut *slot, ptr::null_mut()) };
+            unsafe { crate::api::refcount::Py_XDECREF(value) };
+        }
+    }
+    unsafe { crate::abi_types::initialize_exception_typed_scalars(instance, layout) };
+}
+
+/// Visit every owned edge in the exact native builtin-exception shape.  The
+/// common prefix and typed tail share one schema-derived traversal authority so
+/// a new field cannot be added to projection/allocation without also becoming
+/// visible to cyclic GC.
+pub unsafe extern "C" fn molt_native_exception_traverse(
+    op: *mut PyObject,
+    visit_raw: *mut c_void,
+    arg: *mut c_void,
+) -> c_int {
+    if op.is_null() || visit_raw.is_null() {
+        return 0;
+    }
+    let Some(layout) = (unsafe { crate::abi_types::exception_layout_for_type((*op).ob_type) })
+    else {
+        return 0;
+    };
+    type VisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
+    let visit: VisitProc = unsafe { std::mem::transmute(visit_raw) };
+    let instance = op.cast::<PyBaseExceptionObject>();
+    let common = unsafe {
+        [
+            (*instance).dict,
+            (*instance).args,
+            (*instance).notes,
+            (*instance).traceback,
+            (*instance).cause,
+            (*instance).context,
+        ]
+    };
+    for reference in common {
+        if !reference.is_null() {
+            let result = unsafe { visit(reference, arg) };
+            if result != 0 {
+                return result;
+            }
+        }
+    }
+    for policy in layout.field_policies() {
+        let Some(slot) = (unsafe {
+            crate::abi_types::exception_typed_object_slot(instance, layout, policy.field)
+        }) else {
+            continue;
+        };
+        let reference = unsafe { *slot };
+        if !reference.is_null() {
+            let result = unsafe { visit(reference, arg) };
+            if result != 0 {
+                return result;
+            }
+        }
+    }
+    0
+}
+
+/// Break every owned edge in the exact native builtin-exception shape.  This
+/// is both the type ``tp_clear`` slot and the deallocator's single clearing
+/// authority; it is safe to call repeatedly.
+pub unsafe extern "C" fn molt_native_exception_clear(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let Some(layout) = (unsafe { crate::abi_types::exception_layout_for_type((*op).ob_type) })
+    else {
+        return 0;
+    };
+    let instance = op.cast::<PyBaseExceptionObject>();
+    unsafe {
+        clear_native_typed_fields(instance, layout);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).dict);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).args);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).notes);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).traceback);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).cause);
+        crate::api::refcount::Py_CLEAR(&raw mut (*instance).context);
+    }
+    0
+}
+
+const PY_T_OBJECT: c_int = 6;
+const PY_T_BOOL: c_int = 14;
+const PY_T_OBJECT_EX: c_int = 16;
+const PY_T_PYSSIZET: c_int = 19;
+const PY_READONLY: c_int = 1;
+
+struct ExceptionMemberTable {
+    _names: Vec<CString>,
+    entries: Box<[PyMemberDef]>,
+}
+
+static EXCEPTION_MEMBER_TABLES: Lazy<Vec<ExceptionMemberTable>> = Lazy::new(|| {
+    molt_lang_obj_model::ExceptionLayoutRoot::ALL
+        .into_iter()
+        .map(|root| {
+            let mut names = Vec::with_capacity(root.kind().field_policies().len());
+            let mut entries = Vec::with_capacity(root.kind().field_policies().len() + 1);
+            for policy in root.kind().field_policies() {
+                if policy.field
+                    == molt_lang_obj_model::ExceptionTypedField::OSErrorCharactersWritten
+                {
+                    continue;
+                }
+                let Some(offset) = crate::abi_types::exception_typed_field_offset(policy.field)
+                else {
+                    continue;
+                };
+                let name = CString::new(policy.python_name)
+                    .expect("exception descriptor names contain no NUL");
+                let type_ = match policy.storage {
+                    molt_lang_obj_model::ExceptionFieldStorage::RuntimeMessage
+                    | molt_lang_obj_model::ExceptionFieldStorage::Object => PY_T_OBJECT,
+                    molt_lang_obj_model::ExceptionFieldStorage::PySsize => PY_T_PYSSIZET,
+                };
+                entries.push(PyMemberDef {
+                    name: name.as_ptr(),
+                    type_,
+                    offset,
+                    flags: if policy.writable { 0 } else { PY_READONLY },
+                    doc: ptr::null(),
+                });
+                names.push(name);
+            }
+            entries.push(PyMemberDef {
+                name: ptr::null(),
+                type_: 0,
+                offset: 0,
+                flags: 0,
+                doc: ptr::null(),
+            });
+            ExceptionMemberTable {
+                _names: names,
+                entries: entries.into_boxed_slice(),
+            }
+        })
+        .collect()
+});
+
+static mut BASE_EXCEPTION_MEMBERS: [PyMemberDef; 3] = [
+    PyMemberDef {
+        name: c"__suppress_context__".as_ptr(),
+        type_: PY_T_BOOL,
+        offset: core::mem::offset_of!(PyBaseExceptionObject, suppress_context) as Py_ssize_t,
+        flags: 0,
+        doc: ptr::null(),
+    },
+    PyMemberDef {
+        name: c"__notes__".as_ptr(),
+        type_: PY_T_OBJECT_EX,
+        offset: core::mem::offset_of!(PyBaseExceptionObject, notes) as Py_ssize_t,
+        flags: 0,
+        doc: ptr::null(),
+    },
+    PyMemberDef {
+        name: ptr::null(),
+        type_: 0,
+        offset: 0,
+        flags: 0,
+        doc: ptr::null(),
+    },
+];
+
+unsafe extern "C" fn native_exception_args_get(
+    op: *mut PyObject,
+    _closure: *mut c_void,
+) -> *mut PyObject {
+    if let Some(result) =
+        unsafe { managed_exception_get_field(op, crate::hooks::ExceptionField::Args) }
+    {
+        return match result {
+            Ok(value) if value.is_null() => unsafe {
+                crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None)
+            },
+            Ok(value) => value,
+            Err(()) => ptr::null_mut(),
+        };
+    }
+    let Some(base) = foreign_exception_layout(op) else {
+        return ptr::null_mut();
+    };
+    let args = unsafe { (*base).args };
+    if args.is_null() {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    } else {
+        unsafe { crate::api::object::Py_NewRef(args) }
+    }
+}
+
+unsafe extern "C" fn native_exception_args_set(
+    op: *mut PyObject,
+    value: *mut PyObject,
+    _closure: *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"args may not be deleted".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    let tuple = unsafe { crate::api::abstract_sequence::PySequence_Tuple(value) };
+    if tuple.is_null() {
+        return -1;
+    }
+    if let Some(status) =
+        unsafe { managed_exception_set_field(op, crate::hooks::ExceptionField::Args, tuple) }
+    {
+        unsafe { crate::api::refcount::Py_DECREF(tuple) };
+        return status;
+    }
+    let Some(base) = foreign_exception_layout(op) else {
+        unsafe { crate::api::refcount::Py_DECREF(tuple) };
+        return -1;
+    };
+    unsafe {
+        let old = std::mem::replace(&mut (*base).args, tuple);
+        crate::api::refcount::Py_XDECREF(old);
+    }
+    0
+}
+
+unsafe extern "C" fn native_exception_traceback_get(
+    op: *mut PyObject,
+    _closure: *mut c_void,
+) -> *mut PyObject {
+    let value = unsafe { PyException_GetTraceback(op) };
+    if value.is_null() && unsafe { PyErr_Occurred() }.is_null() {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    } else {
+        value
+    }
+}
+
+unsafe extern "C" fn native_exception_traceback_set(
+    op: *mut PyObject,
+    value: *mut PyObject,
+    _closure: *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"__traceback__ may not be deleted".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    unsafe { PyException_SetTraceback(op, value) }
+}
+
+unsafe extern "C" fn native_exception_context_get(
+    op: *mut PyObject,
+    _closure: *mut c_void,
+) -> *mut PyObject {
+    let value = unsafe { PyException_GetContext(op) };
+    if value.is_null() && unsafe { PyErr_Occurred() }.is_null() {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    } else {
+        value
+    }
+}
+
+unsafe extern "C" fn native_exception_context_set(
+    op: *mut PyObject,
+    value: *mut PyObject,
+    _closure: *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"__context__ may not be deleted".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    unsafe { PyException_SetContext(op, crate::api::object::Py_NewRef(value)) };
+    if unsafe { PyErr_Occurred() }.is_null() {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn native_exception_cause_get(
+    op: *mut PyObject,
+    _closure: *mut c_void,
+) -> *mut PyObject {
+    let value = unsafe { PyException_GetCause(op) };
+    if value.is_null() && unsafe { PyErr_Occurred() }.is_null() {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    } else {
+        value
+    }
+}
+
+unsafe extern "C" fn native_exception_cause_set(
+    op: *mut PyObject,
+    value: *mut PyObject,
+    _closure: *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"__cause__ may not be deleted".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    unsafe { PyException_SetCause(op, crate::api::object::Py_NewRef(value)) };
+    if unsafe { PyErr_Occurred() }.is_null() {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn native_oserror_written_get(
+    op: *mut PyObject,
+    _closure: *mut c_void,
+) -> *mut PyObject {
+    let written = unsafe { (*op.cast::<crate::abi_types::PyOSErrorObject>()).written };
+    if written == -1 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_AttributeError).cast::<PyObject>(),
+                c"characters_written".as_ptr(),
+            )
+        };
+        ptr::null_mut()
+    } else {
+        unsafe { crate::api::numbers::PyLong_FromSsize_t(written) }
+    }
+}
+
+unsafe extern "C" fn native_oserror_written_set(
+    op: *mut PyObject,
+    value: *mut PyObject,
+    _closure: *mut c_void,
+) -> c_int {
+    let object = op.cast::<crate::abi_types::PyOSErrorObject>();
+    if value.is_null() {
+        if unsafe { (*object).written } == -1 {
+            unsafe {
+                PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_AttributeError).cast::<PyObject>(),
+                    c"characters_written".as_ptr(),
+                )
+            };
+            return -1;
+        }
+        unsafe { (*object).written = -1 };
+        return 0;
+    }
+    let written = unsafe {
+        crate::api::abstract_number::PyNumber_AsSsize_t(
+            value,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
+        )
+    };
+    if written == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+        return -1;
+    }
+    unsafe { (*object).written = written };
+    0
+}
+
+static mut BASE_EXCEPTION_GETSET: [PyGetSetDef; 6] = [
+    PyGetSetDef {
+        name: c"__dict__".as_ptr(),
+        get: Some(crate::api::object::PyObject_GenericGetDict),
+        set: Some(crate::api::object::PyObject_GenericSetDict),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: c"args".as_ptr(),
+        get: Some(native_exception_args_get),
+        set: Some(native_exception_args_set),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: c"__traceback__".as_ptr(),
+        get: Some(native_exception_traceback_get),
+        set: Some(native_exception_traceback_set),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: c"__context__".as_ptr(),
+        get: Some(native_exception_context_get),
+        set: Some(native_exception_context_set),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: c"__cause__".as_ptr(),
+        get: Some(native_exception_cause_get),
+        set: Some(native_exception_cause_set),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: ptr::null(),
+        get: None,
+        set: None,
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+];
+
+static mut OS_ERROR_GETSET: [PyGetSetDef; 2] = [
+    PyGetSetDef {
+        name: c"characters_written".as_ptr(),
+        get: Some(native_oserror_written_get),
+        set: Some(native_oserror_written_set),
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+    PyGetSetDef {
+        name: ptr::null(),
+        get: None,
+        set: None,
+        doc: ptr::null(),
+        closure: ptr::null_mut(),
+    },
+];
+
+pub(crate) fn native_exception_members_for_builtin(
+    builtin_name: &str,
+    root: molt_lang_obj_model::ExceptionLayoutRoot,
+) -> *mut c_void {
+    if builtin_name == "BaseException" {
+        return (&raw mut BASE_EXCEPTION_MEMBERS).cast::<c_void>();
+    }
+    if molt_lang_obj_model::builtin_exception_spec(builtin_name)
+        .and_then(|spec| spec.introduced_layout_root())
+        != Some(root)
+    {
+        return ptr::null_mut();
+    }
+    EXCEPTION_MEMBER_TABLES[root as usize]
+        .entries
+        .as_ptr()
+        .cast_mut()
+        .cast::<c_void>()
+}
+
+pub(crate) fn native_exception_getset_for_builtin(
+    builtin_name: &str,
+    root: molt_lang_obj_model::ExceptionLayoutRoot,
+) -> *mut c_void {
+    if builtin_name == "BaseException" {
+        (&raw mut BASE_EXCEPTION_GETSET).cast::<c_void>()
+    } else if root == molt_lang_obj_model::ExceptionLayoutRoot::OSError
+        && root.owner_name() == builtin_name
+    {
+        (&raw mut OS_ERROR_GETSET).cast::<c_void>()
+    } else {
+        ptr::null_mut()
+    }
+}
+
+unsafe fn set_native_typed_field(
+    instance: *mut PyBaseExceptionObject,
+    layout: molt_lang_obj_model::ExceptionLayoutKind,
+    field: molt_lang_obj_model::ExceptionTypedField,
+    value: *mut PyObject,
+) -> bool {
+    let Some(slot) =
+        (unsafe { crate::abi_types::exception_typed_object_slot(instance, layout, field) })
+    else {
+        return false;
+    };
+    unsafe {
+        crate::api::refcount::Py_XINCREF(value);
+        let old = std::mem::replace(&mut *slot, value);
+        crate::api::refcount::Py_XDECREF(old);
+    }
+    true
+}
+
+unsafe fn clear_native_typed_field(
+    instance: *mut PyBaseExceptionObject,
+    layout: molt_lang_obj_model::ExceptionLayoutKind,
+    field: molt_lang_obj_model::ExceptionTypedField,
+) {
+    if let Some(slot) =
+        unsafe { crate::abi_types::exception_typed_object_slot(instance, layout, field) }
+    {
+        let old = unsafe { std::mem::replace(&mut *slot, ptr::null_mut()) };
+        unsafe { crate::api::refcount::Py_XDECREF(old) };
+    }
+}
+
+unsafe fn replace_native_args(instance: *mut PyBaseExceptionObject, args: *mut PyObject) {
+    unsafe {
+        let old = std::mem::replace(&mut (*instance).args, args);
+        crate::api::refcount::Py_XDECREF(old);
+    }
+}
+
+unsafe fn owned_exception_args(args: *mut PyObject) -> *mut PyObject {
+    if args.is_null() {
+        unsafe { crate::api::sequences::PyTuple_New(0) }
+    } else {
+        unsafe { crate::api::object::Py_NewRef(args) }
+    }
+}
+
+unsafe fn oserror_use_init(type_: *mut PyTypeObject) -> bool {
+    if type_.is_null() {
+        return false;
+    }
+    let custom_init = match unsafe { (*type_).tp_init } {
+        Some(init) => !std::ptr::fn_addr_eq(
+            init,
+            molt_native_exception_init
+                as unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
+        ),
+        None => true,
+    };
+    let inherited_new = unsafe { (*type_).tp_new }.is_some_and(|new_| {
+        std::ptr::fn_addr_eq(
+            new_,
+            molt_native_exception_new
+                as unsafe extern "C" fn(
+                    *mut PyTypeObject,
+                    *mut PyObject,
+                    *mut PyObject,
+                ) -> *mut PyObject,
+        )
+    });
+    custom_init && inherited_new
+}
+
+unsafe fn oserror_subtype_for_errno(errno: c_int) -> *mut PyTypeObject {
+    let singleton = |name| {
+        crate::abi_types::exc_singleton_for_builtin_name(name)
+            .expect("OSError errno subtype singleton")
+            .cast::<PyTypeObject>()
+    };
+    if [
+        platform_errno::EAGAIN,
+        platform_errno::EALREADY,
+        platform_errno::EINPROGRESS,
+        platform_errno::EWOULDBLOCK,
+    ]
+    .contains(&errno)
+    {
+        singleton("BlockingIOError")
+    } else if errno == platform_errno::EPIPE || {
+        // CPython adds ESHUTDOWN to the BrokenPipeError map only when the
+        // platform exposes that errno. WASI deliberately does not; keeping
+        // the capability check at this classifier boundary avoids inventing
+        // a numeric errno that the target cannot report.
+        #[cfg(windows)]
+        {
+            errno == molt_runtime_platform::windows_abi::WSAESHUTDOWN
+        }
+        #[cfg(all(not(windows), not(target_os = "wasi")))]
+        {
+            errno == platform_errno::ESHUTDOWN
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            false
+        }
+    } {
+        singleton("BrokenPipeError")
+    } else if errno == platform_errno::ECHILD {
+        singleton("ChildProcessError")
+    } else if errno == platform_errno::ECONNABORTED {
+        singleton("ConnectionAbortedError")
+    } else if errno == platform_errno::ECONNREFUSED {
+        singleton("ConnectionRefusedError")
+    } else if errno == platform_errno::ECONNRESET {
+        singleton("ConnectionResetError")
+    } else if errno == platform_errno::EEXIST {
+        singleton("FileExistsError")
+    } else if errno == platform_errno::ENOENT {
+        singleton("FileNotFoundError")
+    } else if errno == platform_errno::EISDIR {
+        singleton("IsADirectoryError")
+    } else if errno == platform_errno::ENOTDIR {
+        singleton("NotADirectoryError")
+    } else if errno == platform_errno::EINTR {
+        singleton("InterruptedError")
+    } else if errno == platform_errno::EACCES || errno == platform_errno::EPERM {
+        singleton("PermissionError")
+    } else if errno == platform_errno::ESRCH {
+        singleton("ProcessLookupError")
+    } else if errno == platform_errno::ETIMEDOUT {
+        singleton("TimeoutError")
+    } else {
+        (&raw mut crate::abi_types::PyExc_OSError).cast::<PyTypeObject>()
+    }
+}
+
+#[cfg(windows)]
+unsafe fn normalize_oserror_windows_args(args: *mut PyObject) -> *mut PyObject {
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    if !(2..=5).contains(&nargs) || nargs < 4 {
+        return args;
+    }
+    let winerror = unsafe { crate::api::sequences::PyTuple_GetItem(args, 3) };
+    if unsafe { crate::api::numbers::PyLong_Check(winerror) } == 0 {
+        return args;
+    }
+    let winerror = unsafe { crate::api::numbers::PyLong_AsLong(winerror) };
+    if winerror == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(args) };
+        return ptr::null_mut();
+    }
+    let errno = molt_runtime_platform::windows_abi::winerror_to_errno(winerror as i32);
+    let errno_object = unsafe { crate::api::numbers::PyLong_FromLong(errno as c_long) };
+    let normalized = unsafe { crate::api::sequences::PyTuple_New(nargs) };
+    if errno_object.is_null() || normalized.is_null() {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(errno_object);
+            crate::api::refcount::Py_XDECREF(normalized);
+            crate::api::refcount::Py_DECREF(args);
+        }
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::sequences::PyTuple_SetItem(normalized, 0, errno_object) };
+    for index in 1..nargs {
+        let value = unsafe { crate::api::sequences::PyTuple_GetItem(args, index) };
+        unsafe {
+            crate::api::refcount::Py_INCREF(value);
+            crate::api::sequences::PyTuple_SetItem(normalized, index, value);
+        }
+    }
+    unsafe { crate::api::refcount::Py_DECREF(args) };
+    normalized
+}
+
+#[cfg(windows)]
+unsafe fn normalize_oserror_platform_args(args: *mut PyObject) -> *mut PyObject {
+    unsafe { normalize_oserror_windows_args(args) }
+}
+
+#[cfg(not(windows))]
+unsafe fn normalize_oserror_platform_args(args: *mut PyObject) -> *mut PyObject {
+    args
+}
+
+unsafe fn initialize_oserror_fields(
+    instance: *mut PyBaseExceptionObject,
+    args: *mut PyObject,
+) -> c_int {
+    let layout = molt_lang_obj_model::ExceptionLayoutKind::OSError;
+    unsafe { clear_native_typed_fields(instance, layout) };
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    if !(2..=5).contains(&nargs) {
+        unsafe { replace_native_args(instance, crate::api::object::Py_NewRef(args)) };
+        return 0;
+    }
+    let item = |index| unsafe { crate::api::sequences::PyTuple_GetItem(args, index) };
+    unsafe {
+        set_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::OSErrorErrno,
+            item(0),
+        );
+        set_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::OSErrorStrError,
+            item(1),
+        );
+    }
+    let filename = if nargs >= 3 { item(2) } else { ptr::null_mut() };
+    let filename_present =
+        !filename.is_null() && !std::ptr::eq(filename, &raw mut crate::abi_types::Py_None);
+    if filename_present {
+        let exact_blocking = std::ptr::eq(
+            unsafe { (*instance).ob_base.ob_type },
+            &raw mut crate::abi_types::PyExc_BlockingIOError,
+        );
+        if exact_blocking && unsafe { crate::api::numbers::PyNumber_Check(filename) } != 0 {
+            let written = unsafe {
+                crate::api::abstract_number::PyNumber_AsSsize_t(
+                    filename,
+                    (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
+                )
+            };
+            if written == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+                return -1;
+            }
+            unsafe {
+                (*instance.cast::<crate::abi_types::PyOSErrorObject>()).written = written;
+            }
+        } else {
+            unsafe {
+                set_native_typed_field(
+                    instance,
+                    layout,
+                    molt_lang_obj_model::ExceptionTypedField::OSErrorFilename,
+                    filename,
+                )
+            };
+            if nargs >= 5 && !std::ptr::eq(item(4), &raw mut crate::abi_types::Py_None) {
+                unsafe {
+                    set_native_typed_field(
+                        instance,
+                        layout,
+                        molt_lang_obj_model::ExceptionTypedField::OSErrorFilename2,
+                        item(4),
+                    )
+                };
+            }
+            let short_args = unsafe { crate::api::sequences::PyTuple_GetSlice(args, 0, 2) };
+            if short_args.is_null() {
+                return -1;
+            }
+            unsafe { replace_native_args(instance, short_args) };
+        }
+    }
+    #[cfg(windows)]
+    if nargs >= 4 {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::OSErrorWinError,
+                item(3),
+            )
+        };
+    }
+    if !filename_present {
+        unsafe { replace_native_args(instance, crate::api::object::Py_NewRef(args)) };
+    }
+    0
+}
+
+unsafe fn initialize_unicode_fields(
+    instance: *mut PyBaseExceptionObject,
+    root: molt_lang_obj_model::ExceptionLayoutRoot,
+    args: *mut PyObject,
+) -> c_int {
+    use molt_lang_obj_model::ExceptionLayoutRoot::{UnicodeDecodeError, UnicodeTranslateError};
+    let layout = molt_lang_obj_model::ExceptionLayoutKind::Unicode;
+    unsafe { clear_native_typed_fields(instance, layout) };
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    let expected = if root == UnicodeTranslateError { 4 } else { 5 };
+    if nargs != expected {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                if root == UnicodeTranslateError {
+                    c"UnicodeTranslateError requires exactly 4 arguments".as_ptr()
+                } else {
+                    c"Unicode error requires exactly 5 arguments".as_ptr()
+                },
+            )
+        };
+        return -1;
+    }
+    let item = |index| unsafe { crate::api::sequences::PyTuple_GetItem(args, index) };
+    let (encoding, object, start_obj, end_obj, reason) = if root == UnicodeTranslateError {
+        (ptr::null_mut(), item(0), item(1), item(2), item(3))
+    } else {
+        (item(0), item(1), item(2), item(3), item(4))
+    };
+    let unicode_ok = |value| unsafe { crate::api::strings::PyUnicode_Check(value) } != 0;
+    if (root != UnicodeTranslateError && !unicode_ok(encoding))
+        || (root != UnicodeDecodeError && !unicode_ok(object))
+        || !unicode_ok(reason)
+    {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"Unicode error arguments have invalid types".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    let start = unsafe { crate::api::numbers::PyLong_AsSsize_t(start_obj) };
+    if start == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+        return -1;
+    }
+    let end = unsafe { crate::api::numbers::PyLong_AsSsize_t(end_obj) };
+    if end == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+        return -1;
+    }
+    if root != UnicodeTranslateError {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::UnicodeEncoding,
+                encoding,
+            )
+        };
+    }
+    if root == UnicodeDecodeError && unsafe { crate::api::strings::PyBytes_Check(object) } == 0 {
+        let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+        if unsafe { crate::api::buffer::PyObject_GetBuffer(object, &raw mut view, PyBUF_SIMPLE) }
+            != 0
+        {
+            return -1;
+        }
+        let bytes = unsafe {
+            crate::api::strings::PyBytes_FromStringAndSize(view.buf.cast::<c_char>(), view.len)
+        };
+        unsafe { crate::api::buffer::PyBuffer_Release(&raw mut view) };
+        if bytes.is_null() {
+            return -1;
+        }
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::UnicodeObject,
+                bytes,
+            );
+            crate::api::refcount::Py_DECREF(bytes);
+        }
+    } else {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::UnicodeObject,
+                object,
+            )
+        };
+    }
+    unsafe {
+        set_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::UnicodeReason,
+            reason,
+        );
+        let unicode = &mut *instance.cast::<crate::abi_types::PyUnicodeErrorObject>();
+        unicode.start = start;
+        unicode.end = end;
+    }
+    0
+}
+
+unsafe fn initialize_syntax_fields(
+    instance: *mut PyBaseExceptionObject,
+    args: *mut PyObject,
+) -> c_int {
+    let layout = molt_lang_obj_model::ExceptionLayoutKind::Syntax;
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    let item = |index| unsafe { crate::api::sequences::PyTuple_GetItem(args, index) };
+    if nargs >= 1 {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::SyntaxMessage,
+                item(0),
+            )
+        };
+    }
+    if nargs != 2 {
+        return 0;
+    }
+    let info = unsafe { crate::api::abstract_sequence::PySequence_Tuple(item(1)) };
+    if info.is_null() {
+        return -1;
+    }
+    // CPython clears the optional end pair immediately after successful
+    // sequence conversion, before arity validation or replacement of the
+    // first four location fields.  Re-init failure therefore has observable
+    // staged state that must not be made transactional.
+    unsafe {
+        clear_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::SyntaxEndLineNumber,
+        );
+        clear_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::SyntaxEndOffset,
+        );
+    }
+    let info_len = unsafe { crate::api::sequences::PyTuple_Size(info) };
+    if !(4..=6).contains(&info_len) {
+        unsafe {
+            crate::api::refcount::Py_DECREF(info);
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"SyntaxError location must contain 4 to 6 items".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    for (source, field) in [
+        (0, molt_lang_obj_model::ExceptionTypedField::SyntaxFilename),
+        (
+            1,
+            molt_lang_obj_model::ExceptionTypedField::SyntaxLineNumber,
+        ),
+        (2, molt_lang_obj_model::ExceptionTypedField::SyntaxOffset),
+        (3, molt_lang_obj_model::ExceptionTypedField::SyntaxText),
+    ] {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                field,
+                crate::api::sequences::PyTuple_GetItem(info, source),
+            );
+        }
+    }
+    if info_len >= 5 {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::SyntaxEndLineNumber,
+                crate::api::sequences::PyTuple_GetItem(info, 4),
+            );
+        }
+    }
+    if info_len == 6 {
+        unsafe {
+            set_native_typed_field(
+                instance,
+                layout,
+                molt_lang_obj_model::ExceptionTypedField::SyntaxEndOffset,
+                crate::api::sequences::PyTuple_GetItem(info, 5),
+            );
+        }
+    }
+    unsafe { crate::api::refcount::Py_DECREF(info) };
+    if info_len == 5 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"end_offset must be provided when end_lineno is provided".as_ptr(),
+            )
+        };
+        return -1;
+    }
+    0
+}
+
+/// Initialize the exact native typed exception tail. This is the `tp_init`
+/// authority for static PyExc types and their honest C subtypes; managed
+/// runtime exceptions use the atomic snapshot transaction instead.
+pub unsafe extern "C" fn molt_native_exception_init(
+    op: *mut PyObject,
+    args: *mut PyObject,
+    kwds: *mut PyObject,
+) -> c_int {
+    if op.is_null() {
+        unsafe { PyErr_BadInternalCall() };
+        return -1;
+    }
+    let subtype = unsafe { (*op).ob_type };
+    let Some(root) = (unsafe { crate::abi_types::exception_layout_root_for_type(subtype) }) else {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                c"native exception has no canonical physical layout".as_ptr(),
+            )
+        };
+        return -1;
+    };
+    let layout = root.kind();
+    if root == molt_lang_obj_model::ExceptionLayoutRoot::OSError
+        && !unsafe { oserror_use_init(subtype) }
+    {
+        // The ordinary OSError path is parsed and initialized atomically in
+        // tp_new so errno subtype selection precedes allocation.
+        return 0;
+    }
+    let Some(keywords) = (unsafe { native_exception_keywords(layout, kwds) }) else {
+        return -1;
+    };
+    let mut args = unsafe { owned_exception_args(args) };
+    if args.is_null() {
+        return -1;
+    }
+    if root == molt_lang_obj_model::ExceptionLayoutRoot::OSError {
+        args = unsafe { normalize_oserror_platform_args(args) };
+        if args.is_null() {
+            return -1;
+        }
+    }
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    if nargs < 0 {
+        unsafe { crate::api::refcount::Py_DECREF(args) };
+        return -1;
+    }
+    let instance = op.cast::<PyBaseExceptionObject>();
+    unsafe { replace_native_args(instance, args) };
+    let item = |index: isize| unsafe { crate::api::sequences::PyTuple_GetItem(args, index) };
+    match layout {
+        molt_lang_obj_model::ExceptionLayoutKind::Base => {}
+        molt_lang_obj_model::ExceptionLayoutKind::Group => {}
+        molt_lang_obj_model::ExceptionLayoutKind::Syntax => {
+            return unsafe { initialize_syntax_fields(instance, args) };
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::Import => {
+            unsafe { clear_native_typed_fields(instance, layout) };
+            if nargs == 1 {
+                unsafe {
+                    set_native_typed_field(
+                        instance,
+                        layout,
+                        molt_lang_obj_model::ExceptionTypedField::ImportMessage,
+                        item(0),
+                    )
+                };
+            }
+            for (field, value) in keywords.iter() {
+                unsafe { set_native_typed_field(instance, layout, field, value) };
+            }
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::Unicode => {
+            return unsafe { initialize_unicode_fields(instance, root, args) };
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::SystemExit => {
+            let code = match nargs {
+                0 => ptr::null_mut(),
+                1 => item(0),
+                _ => args,
+            };
+            if !code.is_null() {
+                unsafe {
+                    set_native_typed_field(
+                        instance,
+                        layout,
+                        molt_lang_obj_model::ExceptionTypedField::SystemExitCode,
+                        code,
+                    )
+                };
+            }
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::OSError => {
+            return unsafe { initialize_oserror_fields(instance, args) };
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::StopIteration => {
+            unsafe { clear_native_typed_fields(instance, layout) };
+            let value = if nargs == 0 {
+                &raw mut crate::abi_types::Py_None
+            } else {
+                item(0)
+            };
+            unsafe {
+                set_native_typed_field(
+                    instance,
+                    layout,
+                    molt_lang_obj_model::ExceptionTypedField::StopIterationValue,
+                    value,
+                )
+            };
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::NameError => {
+            unsafe { clear_native_typed_fields(instance, layout) };
+            for (field, value) in keywords.iter() {
+                unsafe { set_native_typed_field(instance, layout, field, value) };
+            }
+        }
+        molt_lang_obj_model::ExceptionLayoutKind::AttributeError => {
+            unsafe { clear_native_typed_fields(instance, layout) };
+            for (field, value) in keywords.iter() {
+                unsafe { set_native_typed_field(instance, layout, field, value) };
+            }
+        }
+    }
+    0
+}
+
+unsafe fn allocate_native_exception(
+    subtype: *mut PyTypeObject,
+    args: *mut PyObject,
+) -> *mut PyBaseExceptionObject {
+    let Some(exception_layout) = (unsafe { crate::abi_types::exception_layout_for_type(subtype) })
+    else {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                c"native exception type has no canonical physical layout".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    };
+    let required_size = crate::abi_types::exception_layout_basicsize(exception_layout);
+    if unsafe { (*subtype).tp_basicsize } < required_size {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                c"native exception tp_basicsize is smaller than its physical layout".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    if let Some(reason) = unsafe { crate::api::memory::native_gc_type_admission_error(subtype) } {
+        crate::capi_trace::record_silent_failure("molt_native_exception_new", Some(reason));
+        return ptr::null_mut();
+    }
+    let owned_args = unsafe { owned_exception_args(args) };
+    if owned_args.is_null() {
+        return ptr::null_mut();
+    }
+    let allocate =
+        unsafe { (*subtype).tp_alloc }.unwrap_or(crate::api::typeobj::PyType_GenericAlloc);
+    let generic_allocator = std::ptr::fn_addr_eq(
+        allocate,
+        crate::api::typeobj::PyType_GenericAlloc
+            as unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject,
+    );
+    let allocation = unsafe { allocate(subtype, 0) };
+    if allocation.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(owned_args) };
+        return ptr::null_mut();
+    }
+    if !generic_allocator
+        && unsafe { (crate::hooks::hooks_or_stubs().native_gc_allocate)(allocation.addr()) } < 0
+    {
+        let free = unsafe { (*subtype).tp_free }.unwrap_or(crate::api::memory::PyObject_GC_Del);
+        let heap_type = unsafe { (*subtype).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 };
+        unsafe {
+            crate::api::refcount::Py_DECREF(owned_args);
+            if !std::ptr::fn_addr_eq(
+                free,
+                crate::api::memory::PyObject_GC_Del as unsafe extern "C" fn(*mut c_void),
+            ) {
+                crate::api::memory::native_gc_node_deallocate(allocation.addr());
+            }
+            free(allocation.cast::<c_void>());
+            if heap_type {
+                crate::api::refcount::Py_DECREF(subtype.cast::<PyObject>());
+            }
+        }
+        return ptr::null_mut();
+    }
+    let instance = allocation.cast::<PyBaseExceptionObject>();
+    unsafe {
+        (*instance).dict = ptr::null_mut();
+        (*instance).args = owned_args;
+        (*instance).notes = ptr::null_mut();
+        (*instance).traceback = ptr::null_mut();
+        (*instance).context = ptr::null_mut();
+        (*instance).cause = ptr::null_mut();
+        (*instance).suppress_context = 0;
+        for policy in exception_layout.field_policies() {
+            if let Some(slot) = crate::abi_types::exception_typed_object_slot(
+                instance,
+                exception_layout,
+                policy.field,
+            ) {
+                *slot = ptr::null_mut();
+            }
+        }
+        crate::abi_types::initialize_exception_typed_scalars(instance, exception_layout);
+    }
+    if unsafe { (crate::hooks::hooks_or_stubs().native_gc_track)(allocation.addr()) } < 0 {
+        unsafe { crate::api::refcount::Py_DECREF(allocation) };
+        return ptr::null_mut();
+    }
+    instance
+}
+
+unsafe fn new_native_exception_group(
+    subtype: *mut PyTypeObject,
+    args: *mut PyObject,
+) -> *mut PyObject {
+    let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    if nargs != 2 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"BaseExceptionGroup.__new__ requires message and exceptions".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    let message = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+    let exceptions_arg = unsafe { crate::api::sequences::PyTuple_GetItem(args, 1) };
+    if unsafe { crate::api::strings::PyUnicode_Check(message) } == 0 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"BaseExceptionGroup message must be a str".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    if unsafe { crate::api::abstract_sequence::PySequence_Check(exceptions_arg) } == 0 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"second argument (exceptions) must be a sequence".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    let exceptions = unsafe { crate::api::abstract_sequence::PySequence_Tuple(exceptions_arg) };
+    if exceptions.is_null() {
+        return ptr::null_mut();
+    }
+    let count = unsafe { crate::api::sequences::PyTuple_Size(exceptions) };
+    if count == 0 {
+        unsafe {
+            crate::api::refcount::Py_DECREF(exceptions);
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
+                c"second argument (exceptions) must be a non-empty sequence".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let mut nested_base = false;
+    for index in 0..count {
+        let exception = unsafe { crate::api::sequences::PyTuple_GetItem(exceptions, index) };
+        let is_base_exception = unsafe {
+            crate::api::typeobj::PyObject_IsInstance(
+                exception,
+                (&raw mut crate::abi_types::PyExc_BaseException).cast::<PyObject>(),
+            )
+        };
+        if is_base_exception < 0 {
+            unsafe { crate::api::refcount::Py_DECREF(exceptions) };
+            return ptr::null_mut();
+        }
+        if is_base_exception == 0 {
+            unsafe {
+                crate::api::refcount::Py_DECREF(exceptions);
+                PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
+                    c"second argument contains a non-exception".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        let is_exception = unsafe {
+            crate::api::typeobj::PyObject_IsInstance(
+                exception,
+                (&raw mut crate::abi_types::PyExc_Exception).cast::<PyObject>(),
+            )
+        };
+        if is_exception < 0 {
+            unsafe { crate::api::refcount::Py_DECREF(exceptions) };
+            return ptr::null_mut();
+        }
+        nested_base |= is_exception == 0;
+    }
+    let base_group = &raw mut crate::abi_types::PyExc_BaseExceptionGroup;
+    let exception_group = &raw mut crate::abi_types::PYEXC_EXCEPTION_GROUP_INTERNAL;
+    let mut selected = subtype;
+    if std::ptr::eq(subtype, exception_group) && nested_base {
+        unsafe {
+            crate::api::refcount::Py_DECREF(exceptions);
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"Cannot nest BaseExceptions in an ExceptionGroup".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    if std::ptr::eq(subtype, base_group) && !nested_base {
+        selected = exception_group;
+    } else if nested_base
+        && unsafe { crate::api::typeobj::PyType_IsSubtype(subtype, exception_group) } != 0
+    {
+        unsafe {
+            crate::api::refcount::Py_DECREF(exceptions);
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"Cannot nest BaseExceptions in an ExceptionGroup subclass".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let instance = unsafe { allocate_native_exception(selected, args) };
+    if instance.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(exceptions) };
+        return ptr::null_mut();
+    }
+    let layout = molt_lang_obj_model::ExceptionLayoutKind::Group;
+    unsafe {
+        set_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::GroupMessage,
+            message,
+        );
+        set_native_typed_field(
+            instance,
+            layout,
+            molt_lang_obj_model::ExceptionTypedField::GroupExceptions,
+            exceptions,
+        );
+        crate::api::refcount::Py_DECREF(exceptions);
+    }
+    instance.cast::<PyObject>()
+}
+
 /// Allocate a concrete native `PyBaseExceptionObject` for canonical `PyExc_*`
 /// types before (or without) runtime-handle binding. This is also inherited by
 /// honest C subtypes through `PyType_Ready`, so `type_call` has one physical
@@ -562,64 +1946,67 @@ pub unsafe extern "C" fn molt_native_exception_new(
         }
         return ptr::null_mut();
     }
-    if !kwds.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwds) } != 0 {
-        unsafe {
-            PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
-                c"BaseException does not take keyword arguments".as_ptr(),
-            )
-        };
-        return ptr::null_mut();
-    }
-    let owned_args = if args.is_null() {
-        unsafe { crate::api::sequences::PyTuple_New(0) }
+    let mut args = if args.is_null() {
+        let empty = unsafe { crate::api::sequences::PyTuple_New(0) };
+        if empty.is_null() {
+            return ptr::null_mut();
+        }
+        empty
     } else {
-        unsafe { crate::api::refcount::Py_INCREF(args) };
-        args
+        unsafe { crate::api::object::Py_NewRef(args) }
     };
-    if owned_args.is_null() {
-        return ptr::null_mut();
-    }
-    let size = unsafe { (*subtype).tp_basicsize }
-        .max(std::mem::size_of::<PyBaseExceptionObject>() as crate::abi_types::Py_ssize_t)
-        as usize;
-    let Ok(layout) =
-        std::alloc::Layout::from_size_align(size, std::mem::align_of::<PyBaseExceptionObject>())
-    else {
-        unsafe {
-            crate::api::refcount::Py_DECREF(owned_args);
-            replace_current_error(None);
-            install_normalization_failure();
-        }
+    let Some(root) = (unsafe { crate::abi_types::exception_layout_root_for_type(subtype) }) else {
+        unsafe { crate::api::refcount::Py_DECREF(args) };
         return ptr::null_mut();
     };
-    let allocation = unsafe { std::alloc::alloc_zeroed(layout) };
-    if allocation.is_null() {
-        unsafe {
-            crate::api::refcount::Py_DECREF(owned_args);
-            replace_current_error(None);
-            install_normalization_failure();
+    let result = if root == molt_lang_obj_model::ExceptionLayoutRoot::BaseExceptionGroup {
+        unsafe { new_native_exception_group(subtype, args) }
+    } else if root == molt_lang_obj_model::ExceptionLayoutRoot::OSError
+        && !unsafe { oserror_use_init(subtype) }
+    {
+        args = unsafe { normalize_oserror_platform_args(args) };
+        if args.is_null() {
+            return ptr::null_mut();
         }
-        return ptr::null_mut();
-    }
-    let instance = allocation.cast::<PyBaseExceptionObject>();
-    unsafe {
-        crate::api::refcount::Py_INCREF(subtype.cast::<PyObject>());
-        instance.write(PyBaseExceptionObject {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: subtype,
-            },
-            dict: ptr::null_mut(),
-            args: owned_args,
-            notes: ptr::null_mut(),
-            traceback: ptr::null_mut(),
-            context: ptr::null_mut(),
-            cause: ptr::null_mut(),
-            suppress_context: 0,
-        });
-    }
-    instance.cast::<PyObject>()
+        if unsafe {
+            native_exception_keywords(molt_lang_obj_model::ExceptionLayoutKind::OSError, kwds)
+        }
+        .is_none()
+        {
+            ptr::null_mut()
+        } else {
+            let mut selected = subtype;
+            let nargs = unsafe { crate::api::sequences::PyTuple_Size(args) };
+            if std::ptr::eq(subtype, &raw mut crate::abi_types::PyExc_OSError)
+                && (2..=5).contains(&nargs)
+            {
+                let errno_obj = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+                if unsafe { crate::api::numbers::PyLong_Check(errno_obj) } != 0 {
+                    let errno = unsafe { crate::api::numbers::PyLong_AsLong(errno_obj) };
+                    if errno == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+                        unsafe { crate::api::refcount::Py_DECREF(args) };
+                        return ptr::null_mut();
+                    }
+                    selected = unsafe { oserror_subtype_for_errno(errno as c_int) };
+                }
+            }
+            let instance = unsafe { allocate_native_exception(selected, args) };
+            if instance.is_null() || unsafe { initialize_oserror_fields(instance, args) } < 0 {
+                unsafe { crate::api::refcount::Py_XDECREF(instance.cast::<PyObject>()) };
+                ptr::null_mut()
+            } else {
+                instance.cast::<PyObject>()
+            }
+        }
+    } else if root == molt_lang_obj_model::ExceptionLayoutRoot::OSError {
+        // A subclass with a custom tp_init receives an empty base allocation;
+        // its init may explicitly delegate back to OSError initialization.
+        unsafe { allocate_native_exception(subtype, ptr::null_mut()) }.cast::<PyObject>()
+    } else {
+        unsafe { allocate_native_exception(subtype, args) }.cast::<PyObject>()
+    };
+    unsafe { crate::api::refcount::Py_DECREF(args) };
+    result
 }
 
 /// CPython `BaseException.__str__`: zero args -> empty string, one arg ->
@@ -674,28 +2061,31 @@ pub unsafe extern "C" fn molt_native_exception_dealloc(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
-    let instance = op.cast::<PyBaseExceptionObject>();
     let subtype = unsafe { (*op).ob_type };
-    let size = if subtype.is_null() {
-        std::mem::size_of::<PyBaseExceptionObject>()
-    } else {
-        unsafe { (*subtype).tp_basicsize }
-            .max(std::mem::size_of::<PyBaseExceptionObject>() as crate::abi_types::Py_ssize_t)
-            as usize
-    };
-    unsafe {
-        crate::api::refcount::Py_XDECREF((*instance).dict);
-        crate::api::refcount::Py_XDECREF((*instance).args);
-        crate::api::refcount::Py_XDECREF((*instance).notes);
-        crate::api::refcount::Py_XDECREF((*instance).traceback);
-        crate::api::refcount::Py_XDECREF((*instance).context);
-        crate::api::refcount::Py_XDECREF((*instance).cause);
-        crate::api::refcount::Py_XDECREF(subtype.cast::<PyObject>());
-    }
-    if let Ok(layout) =
-        std::alloc::Layout::from_size_align(size, std::mem::align_of::<PyBaseExceptionObject>())
+    if subtype.is_null()
+        || unsafe { crate::abi_types::exception_layout_for_type(subtype) }.is_none()
     {
-        unsafe { std::alloc::dealloc(op.cast::<u8>(), layout) };
+        return;
+    }
+    let is_heap_type = unsafe { (*subtype).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 };
+    let free = unsafe { (*subtype).tp_free }.unwrap_or(crate::api::memory::PyObject_GC_Del);
+    unsafe {
+        crate::api::memory::PyObject_GC_UnTrack(op.cast::<c_void>());
+        if crate::api::memory::PyObject_CallFinalizerFromDealloc(op) < 0 {
+            crate::api::memory::PyObject_GC_Track(op.cast::<c_void>());
+            return;
+        }
+        molt_native_exception_clear(op);
+        if !std::ptr::fn_addr_eq(
+            free,
+            crate::api::memory::PyObject_GC_Del as unsafe extern "C" fn(*mut c_void),
+        ) {
+            crate::api::memory::native_gc_node_deallocate(op.addr());
+        }
+        free(op.cast::<c_void>());
+        if is_heap_type {
+            crate::api::refcount::Py_DECREF(subtype.cast::<PyObject>());
+        }
     }
 }
 
@@ -1537,6 +2927,12 @@ fn foreign_exception_layout(exc: *mut PyObject) -> Option<*mut PyBaseExceptionOb
     if exception_type.is_null()
         || unsafe { (*exception_type).tp_flags } & crate::abi_types::Py_TPFLAGS_BASE_EXC_SUBCLASS
             == 0
+    {
+        return None;
+    }
+    let layout = unsafe { crate::abi_types::exception_layout_for_type(exception_type) }?;
+    if unsafe { (*exception_type).tp_basicsize }
+        < crate::abi_types::exception_layout_basicsize(layout)
     {
         return None;
     }

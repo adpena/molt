@@ -885,6 +885,7 @@ mod tests {
 
     #[test]
     fn callback_failure_is_normalized_and_later_work_remains_queued() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         let queue = PendingCallQueue::<3>::new();
         let handling = AtomicBool::new(false);
         queue.push(PendingCall { func: fail, arg: 0 }).unwrap();
@@ -915,6 +916,7 @@ mod tests {
 
     #[test]
     fn callback_failure_preserves_exact_existing_c_exception() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         let queue = PendingCallQueue::<1>::new();
         let handling = AtomicBool::new(false);
         queue

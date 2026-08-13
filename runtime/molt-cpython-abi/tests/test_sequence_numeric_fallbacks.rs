@@ -7,6 +7,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{
     IMMORTAL_REFCNT, PyNumberMethods, PyObject, PySequenceMethods, PyTypeObject,
 };
@@ -106,6 +108,7 @@ impl ForeignSequence {
 }
 
 fn reset() {
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     unsafe { errors::PyErr_Clear() };
     LAST_SLOT.store(0, Ordering::SeqCst);

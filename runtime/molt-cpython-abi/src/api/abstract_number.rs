@@ -1364,6 +1364,7 @@ mod conversion_slot_tests {
 
     #[test]
     fn py_number_add_not_implemented_raises_cpython_type_error() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut methods: PyNumberMethods = unsafe { std::mem::zeroed() };
         methods.nb_add = not_implemented_nb_add as *mut c_void;
@@ -1413,6 +1414,7 @@ mod conversion_slot_tests {
     /// — including numpy's reduction-identity packing — relies on).
     #[test]
     fn py_number_long_without_slot_is_never_a_silent_null() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         unsafe { crate::api::errors::PyErr_Clear() };
         let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };

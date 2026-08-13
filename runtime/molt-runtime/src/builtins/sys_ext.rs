@@ -534,10 +534,16 @@ pub extern "C" fn molt_sys_getsizeof(obj_bits: u64, default_bits: u64) -> u64 {
         TYPE_ID_MODULE => 72,       // CPython module: ~72 bytes
         TYPE_ID_TYPE => 864,        // CPython type: ~864 bytes
         TYPE_ID_COMPLEX => 32,      // CPython complex: 32 bytes
-        TYPE_ID_EXCEPTION => 96,    // CPython-visible BaseException footprint oracle
-        TYPE_ID_BIGINT => 32,       // approximation for arbitrary-precision int
-        TYPE_ID_CODE => 176,        // CPython code object: ~176 bytes
-        _ => 64,                    // reasonable default for other heap objects
+        TYPE_ID_EXCEPTION => unsafe {
+            // Runtime exceptions have one compact common prefix plus the exact
+            // schema-owned typed tail selected from their real class MRO.
+            (std::mem::size_of::<MoltHeader>()
+                + crate::builtins::exceptions::exception_payload_words(ptr)
+                    * std::mem::size_of::<u64>()) as i64
+        },
+        TYPE_ID_BIGINT => 32, // approximation for arbitrary-precision int
+        TYPE_ID_CODE => 176,  // CPython code object: ~176 bytes
+        _ => 64,              // reasonable default for other heap objects
     };
     MoltObject::from_int(size).bits()
 }

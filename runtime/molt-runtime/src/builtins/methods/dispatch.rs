@@ -109,11 +109,18 @@ pub(crate) fn builtin_class_method_bits(
             return Some(bits);
         }
     }
-    if class_bits == builtins.base_exception || class_bits == builtins.exception {
-        return exception_method_bits(_py, name);
-    }
     if class_bits == builtins.base_exception_group || class_bits == builtins.exception_group {
+        if name == "__init__" {
+            return crate::builtins::exceptions::exception_method_bits_for_owner(
+                _py,
+                builtins.base_exception_group,
+                name,
+            );
+        }
         return exception_group_method_bits(_py, name);
+    }
+    if issubclass_bits(class_bits, builtins.base_exception) {
+        return crate::builtins::exceptions::exception_method_bits_for_owner(_py, class_bits, name);
     }
     if class_bits == builtins.dict {
         return dict_method_bits(_py, name);

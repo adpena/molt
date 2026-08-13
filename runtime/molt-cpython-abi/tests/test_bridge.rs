@@ -3,6 +3,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, PyObjRelease};
 use std::{f64::consts::PI, hint::black_box, ptr, sync::Arc, thread, time::Instant};
@@ -10,7 +12,7 @@ use std::{f64::consts::PI, hint::black_box, ptr, sync::Arc, thread, time::Instan
 use molt_lang_obj_model::MoltObject;
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    support::prepare_abi_test_thread(support::stub_runtime_hooks());
 }
 
 #[test]

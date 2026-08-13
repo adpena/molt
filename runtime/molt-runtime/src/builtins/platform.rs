@@ -225,24 +225,22 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     }
 }
 
-fn pending_exception_kind_name(_py: &PyToken<'_>) -> Option<String> {
+fn pending_exception_matches_any(_py: &PyToken<'_>, kinds: &[&str]) -> bool {
     if !exception_pending(_py) {
-        return None;
+        return false;
     }
     let exc_bits = molt_exception_last();
-    let kind = maybe_ptr_from_bits(exc_bits)
-        .and_then(|ptr| string_obj_to_owned(obj_from_bits(unsafe { exception_kind_bits(ptr) })));
+    let matches = kinds.iter().any(|kind| {
+        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, kind)
+    });
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
-    kind
+    matches
 }
 
 fn clear_pending_if_kind(_py: &PyToken<'_>, kinds: &[&str]) -> bool {
-    let Some(kind) = pending_exception_kind_name(_py) else {
-        return false;
-    };
-    if kinds.iter().any(|value| *value == kind) {
+    if pending_exception_matches_any(_py, kinds) {
         clear_exception(_py);
         return true;
     }
@@ -2217,10 +2215,12 @@ fn importlib_rethrow_pending_exception(_py: &PyToken<'_>) {
 }
 
 fn importlib_exception_should_fallback(_py: &PyToken<'_>, resolved: &str) -> bool {
-    let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
+    let is_import = pending_exception_matches_any(_py, &["ImportError", "ModuleNotFoundError"]);
+    let is_type_error = pending_exception_matches_any(_py, &["TypeError"]);
+    let Some((_kind, message)) = pending_exception_kind_and_message(_py) else {
         return false;
     };
-    if kind == "ImportError" || kind == "ModuleNotFoundError" {
+    if is_import {
         if missing_module_name_from_message(&message)
             .is_some_and(|missing| missing_module_matches_import(missing, resolved))
         {
@@ -2229,7 +2229,7 @@ fn importlib_exception_should_fallback(_py: &PyToken<'_>, resolved: &str) -> boo
         }
         return false;
     }
-    if kind == "TypeError" && message.contains("import returned non-module payload") {
+    if is_type_error && message.contains("import returned non-module payload") {
         clear_exception(_py);
         return true;
     }

@@ -28,3 +28,19 @@ def test_native_main_stub_uses_warning_free_windows_env_probe() -> None:
 
     assert "_dupenv_s(&value, &value_len, name)" in rendered
     assert 'getenv("MOLT_DEBUG_MAIN_EXCEPTION")' not in rendered
+
+
+def test_native_main_stub_reports_then_exits_through_runtime_custody() -> None:
+    rendered = native_main_stub._render_native_main_stub(
+        trusted=False,
+        capabilities_list=None,
+    )
+
+    assert "molt_exception_report_uncaught(exc)" in rendered
+    assert "molt_raise(exc)" not in rendered
+    report = rendered.index("molt_exception_report_uncaught(exc)")
+    frame_pop = rendered.index("molt_frame_pop()", report)
+    release = rendered.index("molt_dec_ref_obj(exc)", frame_pop)
+    shutdown = rendered.index("molt_runtime_exit(exit_code)", release)
+    fallback = rendered.index("_Exit(1)", shutdown)
+    assert report < frame_pop < release < shutdown < fallback
