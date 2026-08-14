@@ -6,6 +6,7 @@ import io
 import importlib.metadata as importlib_metadata
 import json
 import os
+import platform
 import subprocess
 import sys
 import sysconfig
@@ -30,6 +31,7 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
+    _host_target_triple,
     _manifest_dotted_name_tuple,
     _validate_extension_manifest,
 )
@@ -74,6 +76,7 @@ from molt.cli.source_extension_link_requirements import (
     materialize_source_extension_link_requirements,
     parse_source_extension_link_requirements,
 )
+from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.cli.source_extension_set_identity import (
     _require_expected_source_extension_set_identity,
     _source_extension_reproduction_comparison,
@@ -103,6 +106,8 @@ from molt.cli.source_package_seal import (
 )
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
+    ScientificExtensionVariant,
+    resolve_scientific_stack,
     scientific_extension_set,
     scientific_extension_set_root,
     verify_cpython_abi_headers,
@@ -1132,14 +1137,22 @@ def _audit_declared_wheel(
     return actual_sha256
 
 
-def _audit_producer_contract(manifest: Mapping[str, Any], *, module: str) -> None:
+def _audit_producer_contract(
+    manifest: Mapping[str, Any],
+    *,
+    module: str,
+    expected_target_triple: str,
+) -> None:
     current_abi = _default_molt_c_api_version(_REPO_ROOT)
+    target_is_wasm = expected_target_triple.lower().startswith("wasm32")
     expected = {
         "deterministic": True,
         "loader_kind": "libmolt_source",
         "runtime_linkage": "static_link",
-        "artifact_kind": "wasm_relocatable_object",
-        "target_triple": "wasm32-wasip1",
+        "artifact_kind": (
+            "wasm_relocatable_object" if target_is_wasm else "static_archive"
+        ),
+        "target_triple": expected_target_triple,
         "abi_tier": "cpython-abi",
         "molt_c_api_version": current_abi,
         "abi_tag": f"molt_abi{current_abi.split('.', 1)[0]}",
@@ -1160,7 +1173,8 @@ def _audit_extension_output(
     *,
     output_root: Path,
     module: str,
-    target: str,
+    source_plan_target: str,
+    expected_target_triple: str,
     python_exports: Sequence[str],
     capabilities: Sequence[str],
     provided_capsules: Sequence[str],
@@ -1201,14 +1215,19 @@ def _audit_extension_output(
             f"contract: expected {list(capabilities)}, "
             f"got {manifest.get('capabilities')!r}"
         )
-    _audit_producer_contract(manifest, module=module)
+    _audit_producer_contract(
+        manifest,
+        module=module,
+        expected_target_triple=expected_target_triple,
+    )
     source_plan = manifest.get("source_plan")
     if (
         not isinstance(source_plan, Mapping)
-        or source_plan.get("target_selector") != target
+        or source_plan.get("target_selector") != source_plan_target
     ):
         raise SourceExtensionProducerError(
-            f"built extension {module} did not attest configured Meson target {target!r}"
+            "built extension "
+            f"{module} did not attest configured Meson target {source_plan_target!r}"
         )
     export_errors: list[str] = []
     actual_exports = _manifest_dotted_name_tuple(
@@ -1296,7 +1315,7 @@ def _audit_extension_output(
     wheel_path = _declared_wheel_path(manifest, output_root=output_root, module=module)
     return _ProducedExtension(
         module=module,
-        target=target,
+        target=source_plan_target,
         capabilities=tuple(capabilities),
         output_root=output_root,
         manifest_path=manifest_path,
@@ -1327,6 +1346,12 @@ def _build_extension(
     tool_commands: Mapping[str, Sequence[str]],
     backend: _SourceNinjaDriver,
 ) -> _ProducedExtension:
+    target_plan = resolve_source_extension_target_plan(
+        target,
+        host_target_triple=_host_target_triple(),
+        host_platform=sys.platform,
+        host_arch=platform.machine(),
+    )
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -1361,7 +1386,8 @@ def _build_extension(
     return _audit_extension_output(
         output_root=output_root,
         module=module,
-        target=target_name,
+        source_plan_target=target_name,
+        expected_target_triple=target_plan.target_triple,
         python_exports=python_exports,
         capabilities=capabilities,
         provided_capsules=provided_capsules,
@@ -1813,13 +1839,19 @@ def _stage_build_metadata(
     return staged, canonical_target_metadata
 
 
+def _source_extension_artifact_suffix(target_triple: str) -> str:
+    return ".molt.wasm" if target_triple.lower().startswith("wasm32") else ".molt.a"
+
+
 def _source_package_input_role(relative: Path) -> str:
     posix = relative.as_posix()
     if posix == "extension_set_manifest.json":
         return "set-manifest"
-    if posix.endswith(".molt.wasm"):
+    if posix.endswith((".molt.wasm", ".molt.a")):
         return "extension-artifact"
-    if posix.endswith(".molt.wasm.extension_manifest.json"):
+    if posix.endswith(
+        (".molt.wasm.extension_manifest.json", ".molt.a.extension_manifest.json")
+    ):
         return "extension-manifest"
     if posix.startswith("provenance/compiled-inputs/"):
         return "compiled-input"
@@ -2126,16 +2158,22 @@ def _validate_complete_publish_root(
             f"got {manifest_contracts}"
         )
 
+    target_triple = set_manifest.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple:
+        raise SourceExtensionProducerError(
+            "extension-set manifest has no target-triple authority"
+        )
+    artifact_suffix = _source_extension_artifact_suffix(target_triple)
     expected_sidecars = {
         publish_root.joinpath(
             *spec.module.split(".")[:-1],
-            f"{spec.target}.molt.wasm.extension_manifest.json",
+            f"{spec.target}{artifact_suffix}.extension_manifest.json",
         ).resolve()
         for spec in extension_set.extensions
     }
     actual_sidecars = {
         path.resolve()
-        for path in publish_root.glob("**/*.molt.wasm.extension_manifest.json")
+        for path in publish_root.glob(f"**/*{artifact_suffix}.extension_manifest.json")
         if path.is_file()
     }
     if actual_sidecars != expected_sidecars:
@@ -2163,7 +2201,7 @@ def _validate_complete_publish_root(
     for spec in extension_set.extensions:
         sidecar_path = publish_root.joinpath(
             *spec.module.split(".")[:-1],
-            f"{spec.target}.molt.wasm.extension_manifest.json",
+            f"{spec.target}{artifact_suffix}.extension_manifest.json",
         ).resolve()
         try:
             sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -2534,7 +2572,23 @@ def produce_source_extension_set(
             raise SourceExtensionProducerError(
                 f"source checkout is not a directory: {source_root}"
             )
-        extension_set = scientific_extension_set(package, module_set)
+        stack = resolve_scientific_stack()
+        extension_set = scientific_extension_set(
+            package,
+            module_set,
+            stack=stack,
+        )
+        target_plan = resolve_source_extension_target_plan(
+            target,
+            host_target_triple=_host_target_triple(),
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
+        variant = ScientificExtensionVariant(
+            cpython=stack.cpython,
+            abi_tier=abi_tier,
+            target_triple=target_plan.target_triple,
+        )
         locked_environment = source_build_environment(
             _REPO_ROOT, extension_set.build_dependency_group
         )
@@ -2554,7 +2608,11 @@ def produce_source_extension_set(
                 expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
                 json_output=json_output,
             )
-        destination = scientific_extension_set_root(extension_set)
+        destination = scientific_extension_set_root(
+            extension_set,
+            variant=variant,
+            stack=stack,
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         lock_path = destination.parent / f".{destination.name}.producer.lock"
         producer_lock = _acquire_file_lock(
@@ -2641,6 +2699,12 @@ def produce_source_extension_set(
             raise SourceExtensionProducerError(
                 "failed to materialize source-extension target metadata: "
                 + "; ".join(metadata_errors)
+            )
+        if metadata.target_triple != variant.target_triple:
+            raise SourceExtensionProducerError(
+                "source-extension target metadata drifted from canonical publication "
+                f"variant: expected {variant.target_triple}, got "
+                f"{metadata.target_triple}"
             )
         tool_commands = _target_tool_commands(metadata.payload)
         config_tool_cross = _materialize_meson_config_tool_cross(

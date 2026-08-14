@@ -21,7 +21,10 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
+_CUSTODY_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 SCIENTIFIC_EXTENSION_EXEC_CAPABILITY = "module.extension.exec"
+SCIENTIFIC_WITNESS_TARGET_TRIPLE = "wasm32-wasip1"
+SCIENTIFIC_WITNESS_ABI_TIER = "cpython-abi"
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,29 @@ class ScientificExtensionSet:
     use_pkg_config: bool
     required_installed_files: tuple[str, ...]
     extensions: tuple[ScientificExtensionSpec, ...]
+
+
+@dataclass(frozen=True)
+class ScientificExtensionVariant:
+    """Complete custody coordinate for one target-specific extension set."""
+
+    cpython: str
+    abi_tier: str
+    target_triple: str
+
+    def __post_init__(self) -> None:
+        for field, value in (
+            ("cpython", self.cpython),
+            ("abi_tier", self.abi_tier),
+            ("target_triple", self.target_triple),
+        ):
+            if value != value.strip().lower() or not _CUSTODY_COMPONENT_RE.fullmatch(
+                value
+            ):
+                raise ValueError(
+                    f"scientific extension variant {field} must be a canonical "
+                    f"lowercase custody component, got {value!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -78,6 +104,18 @@ class ScientificStackVersion:
             "scientific_numpy_repo_ref": self.numpy_repo_ref,
             "scientific_scipy_repo_ref": self.scipy_repo_ref,
         }
+
+
+def scientific_witness_variant(
+    *,
+    stack: ScientificStackVersion | None = None,
+) -> ScientificExtensionVariant:
+    selected = resolve_scientific_stack() if stack is None else stack
+    return ScientificExtensionVariant(
+        cpython=selected.cpython,
+        abi_tier=SCIENTIFIC_WITNESS_ABI_TIER,
+        target_triple=SCIENTIFIC_WITNESS_TARGET_TRIPLE,
+    )
 
 
 def _config_path(config_path: Path | None) -> Path:
@@ -208,9 +246,7 @@ def _extension_sets(
                     python_exports=python_exports,
                     capabilities=capabilities,
                     provided_capsules=provided_capsules,
-                    exclude_linked_static_libraries=(
-                        exclude_linked_static_libraries
-                    ),
+                    exclude_linked_static_libraries=(exclude_linked_static_libraries),
                 )
             )
         sets.append(
@@ -363,17 +399,6 @@ def scientific_custody_root() -> Path:
     return checkout_custody(ROOT, os.environ).custody_root
 
 
-def numpy_witness_seal_root(
-    *,
-    stack: ScientificStackVersion | None = None,
-) -> Path:
-    selected = resolve_scientific_stack() if stack is None else stack
-    return scientific_extension_set_root(
-        scientific_extension_set("numpy", "pact-witness", stack=selected),
-        stack=selected,
-    )
-
-
 def scientific_extension_set(
     package: str,
     name: str,
@@ -390,6 +415,8 @@ def scientific_extension_set(
 
 def scientific_extension_set_root(
     extension_set: ScientificExtensionSet,
+    *,
+    variant: ScientificExtensionVariant,
     stack: ScientificStackVersion | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
@@ -400,6 +427,11 @@ def scientific_extension_set_root(
         raise ValueError(
             f"scientific extension set {extension_set.package}/{extension_set.name} "
             "does not match the selected verified-stack authority"
+        )
+    if variant.cpython != selected.cpython:
+        raise ValueError(
+            f"scientific extension variant CPython {variant.cpython} does not "
+            f"match selected verified-stack CPython {selected.cpython}"
         )
     version = {"numpy": selected.numpy, "scipy": selected.scipy}.get(
         extension_set.package
@@ -414,17 +446,24 @@ def scientific_extension_set_root(
         / "package-seals"
         / extension_set.package
         / version
+        / "variants"
+        / f"cpython-{variant.cpython}"
+        / variant.abi_tier
+        / variant.target_triple
         / extension_set.seal_name
     )
 
 
-def scipy_witness_seal_root(
+def scientific_witness_seal_root(
+    package: str,
     *,
+    variant: ScientificExtensionVariant,
     stack: ScientificStackVersion | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
     return scientific_extension_set_root(
-        scientific_extension_set("scipy", "pact-witness", stack=selected),
+        scientific_extension_set(package, "pact-witness", stack=selected),
+        variant=variant,
         stack=selected,
     )
 

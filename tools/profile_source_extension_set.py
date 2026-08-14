@@ -11,15 +11,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 
+from molt.cli.extension_manifest import _host_target_triple
 from molt.cli.source_package_seal import verify_source_package_seal
+from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.scientific_stack_versions import (
+    ScientificExtensionVariant,
+    resolve_scientific_stack,
     scientific_extension_set,
     scientific_extension_set_root,
 )
 from tools.perf_calibration import run_and_measure
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -64,8 +70,27 @@ def main(argv: list[str] | None = None) -> int:
 
     source = args.source.expanduser().resolve()
     build_root = args.build_root.expanduser().resolve()
-    extension_set = scientific_extension_set(args.package, args.module_set)
-    destination = scientific_extension_set_root(extension_set)
+    stack = resolve_scientific_stack()
+    extension_set = scientific_extension_set(
+        args.package,
+        args.module_set,
+        stack=stack,
+    )
+    target_plan = resolve_source_extension_target_plan(
+        args.target,
+        host_target_triple=_host_target_triple(),
+        host_platform=sys.platform,
+        host_arch=platform.machine(),
+    )
+    destination = scientific_extension_set_root(
+        extension_set,
+        variant=ScientificExtensionVariant(
+            cpython=stack.cpython,
+            abi_tier=args.abi_tier,
+            target_triple=target_plan.target_triple,
+        ),
+        stack=stack,
+    )
     command = [
         sys.executable,
         "-m",

@@ -16,8 +16,9 @@ from typing import Any
 
 from molt.scientific_stack_versions import (
     attest_numpy_witness_seal,
-    numpy_witness_seal_root,
     resolve_scientific_stack,
+    scientific_witness_seal_root,
+    scientific_witness_variant,
 )
 from molt.wasm_artifact import wasm_runtime_manifest_entry_path
 
@@ -825,7 +826,11 @@ def _attest_effective_numpy_seal() -> Path:
         for raw in os.environ.get("MOLT_MODULE_ROOTS", "").split(os.pathsep)
         if raw.strip()
     ]
-    durable_root = numpy_witness_seal_root(stack=stack)
+    durable_root = scientific_witness_seal_root(
+        "numpy",
+        variant=scientific_witness_variant(stack=stack),
+        stack=stack,
+    )
     candidates = [durable_root, *configured_roots]
     for root in candidates:
         if not (root / "numpy/version.py").is_file():

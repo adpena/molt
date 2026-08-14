@@ -44,6 +44,20 @@ def _write_fake_compiler_depfile(cmd: list[str]) -> None:
     )
 
 
+def _materialize_fake_extension_command(cmd: list[str]) -> Path:
+    if "-o" in cmd:
+        output = Path(cmd[cmd.index("-o") + 1])
+        payload = b"object" if "-c" in cmd else b"wasm-object"
+    else:
+        archive_mode_index = cmd.index("rcsD")
+        output = Path(cmd[archive_mode_index + 1])
+        payload = static_archive_bytes()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(payload)
+    _write_fake_compiler_depfile(cmd)
+    return output
+
+
 def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2331,13 +2345,16 @@ def test_extension_build_excludes_linked_static_library(
 
     Mirrors the numpy multi-extension case: ``_umath_linalg`` links
     ``libnpymath.a``, which the PRIMARY ``_multiarray_umath`` extension already
-    statically exports. Excluding the shared archive keeps its symbols undefined
+    statically exports. Excluding the linked archive keeps its symbols undefined
     (resolved against the primary at final link) instead of compiling a second
     colliding copy into this extension's closure.
     """
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     _write_meson_source_plan_project(project_root, linked_static_library=True)
+    (project_root / "pkg" / "libunique_hash.a").write_bytes(
+        static_archive_bytes(b"unique-hash")
+    )
     commands: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

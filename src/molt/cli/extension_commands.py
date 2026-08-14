@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import platform
-import shlex
 import shutil
 import sys
 import tempfile
@@ -784,15 +783,8 @@ def extension_build(
             return _fail(capi_error, json_output, command="extension-build")
         assert source_c_api_requirements is not None
 
-    cc = os.environ.get("CC", "clang")
-    cc_cmd = shlex.split(cc)
     effective_tool_commands: Mapping[str, Sequence[str]] = tool_commands or {}
-    if not cc_cmd:
-        return _fail(
-            "Compiler command is empty. Set CC or install clang.",
-            json_output,
-            command="extension-build",
-        )
+    cc_cmd: list[str] = []
     wasi_sysroot: Path | None = None
     if wasm_static_link:
         target_arg = runtime_target_triple or "wasm32-wasip1"
@@ -834,9 +826,31 @@ def extension_build(
         cross_cc = os.environ.get("MOLT_CROSS_CC")
         target_arg = runtime_target_triple
         if cross_cc:
-            cc_cmd = shlex.split(cross_cc)
+            try:
+                cc_cmd = list(
+                    resolve_explicit_tool_command(
+                        cross_cc,
+                        label="MOLT_CROSS_CC",
+                    )
+                )
+            except ValueError as exc:
+                return _fail(
+                    str(exc),
+                    json_output,
+                    command="extension-build",
+                )
         elif shutil.which("zig"):
-            cc_cmd = ["zig", "cc"]
+            try:
+                cc_cmd = [
+                    *resolve_explicit_tool_command("zig", label="zig"),
+                    "cc",
+                ]
+            except ValueError as exc:
+                return _fail(
+                    str(exc),
+                    json_output,
+                    command="extension-build",
+                )
             normalized = _zig_target_query(runtime_target_triple)
             if normalized != runtime_target_triple:
                 warnings.append(
@@ -857,6 +871,20 @@ def extension_build(
                 command="extension-build",
             )
         cc_cmd.extend(["-target", target_arg])
+    elif not effective_tool_commands:
+        try:
+            cc_cmd = list(
+                resolve_explicit_tool_command(
+                    os.environ.get("CC", "clang"),
+                    label="CC",
+                )
+            )
+        except ValueError as exc:
+            return _fail(
+                str(exc),
+                json_output,
+                command="extension-build",
+            )
 
     if not wasm_static_link:
         try:
@@ -899,6 +927,12 @@ def extension_build(
                     }.items()
                     if tool is not None
                 }
+                # Explicit compiler selection is target policy.  Family
+                # discovery supplies sibling archive and symbol tools; it must
+                # never replace the compiler command or its target arguments.
+                native_commands["c"] = explicit_native_tools["cc"]
+                if "cxx" in explicit_native_tools:
+                    native_commands["cpp"] = explicit_native_tools["cxx"]
         except (OSError, ValueError) as exc:
             return _fail(
                 f"Native source-extension tool family is invalid: {exc}",
