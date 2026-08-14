@@ -12,9 +12,9 @@ import subprocess
 from typing import Any, Mapping, Sequence
 
 from tools import proof_plan
-from tools.toolchain_content_path import resolve_content_path
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
+from tools.toolchain_probe import resolve_single_file_path
 
 
 def _hash_file(path: Path) -> str:
@@ -603,25 +603,23 @@ def _tool_identity(
             cwd=probe_cwd,
             env=env,
         )
-        if resolved.returncode != 0 or not resolved.stdout.strip():
+        if resolved.returncode != 0:
             raise ValueError(
                 f"{name} content-path probe failed: "
                 + (resolved.stderr.strip() or resolved.stdout.strip())
             )
         try:
-            content_path = resolve_content_path(
-                path,
+            content_path = resolve_single_file_path(
                 resolved.stdout,
-                strategy=str(
-                    policy.data.get("content_path_strategy", "executable-path")
-                ),
                 probe_cwd=probe_cwd,
             )
         except (OSError, ValueError) as exc:
             raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
         content_resolver_identity = _executable_identity(resolver)
     process_images: list[dict[str, object]] = []
-    launcher_image = process_image_capture.capture_image(f"{name}-launcher", path)
+    launcher_image = process_image_capture.capture_image(
+        f"{name}-launcher", path, preserve_path=True
+    )
     process_images.append(launcher_image)
     if os.path.normcase(str(content_path)) == os.path.normcase(str(path)):
         content_image = launcher_image
@@ -774,6 +772,31 @@ def _validate_toolchain_identity(
         for value in hash_values
     ):
         raise ValueError(f"{name} identity has no available executable content hash")
+    process_image_capture.toolchain_images(name, identity)
+    probes = policy.data.get("process_image_probes", [])
+    inventories = identity.get("process_image_inventories", [])
+    if not isinstance(probes, list) or not isinstance(inventories, list):
+        raise ValueError(f"{name} process-image inventory authority is malformed")
+    if len(inventories) != len(probes):
+        raise ValueError(f"{name} process-image inventory closure is incomplete")
+    for inventory in inventories:
+        if (
+            not isinstance(inventory, Mapping)
+            or inventory.get("schema") != "molt.proof-process-image-inventory.v1"
+            or not isinstance(inventory.get("observed_image_count"), int)
+            or int(inventory["observed_image_count"]) <= 0
+            or any(
+                not isinstance(inventory.get(field), str)
+                or re.fullmatch(r"[0-9a-f]{64}", str(inventory[field])) is None
+                for field in (
+                    "probe_argv_sha256",
+                    "stdout_sha256",
+                    "stderr_sha256",
+                    "receipt_identity_sha256",
+                )
+            )
+        ):
+            raise ValueError(f"{name} process-image inventory receipt is malformed")
     if name == "python":
         runtime_digest = identity.get("runtime_closure_sha256")
         runtime = identity.get("runtime")

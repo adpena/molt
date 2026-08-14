@@ -13,8 +13,12 @@ from typing import Any
 import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
-from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
-from tools.toolchain_content_path import resolve_content_path
+from tools import (
+    check_subprocess_guard_coverage,
+    gen_proof_plan,
+    proof_plan,
+    toolchain_probe,
+)
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
@@ -416,44 +420,31 @@ def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     )
 
 
-def test_git_content_path_strategy_captures_windows_runtime_image(
-    tmp_path: Path,
-) -> None:
-    launcher = tmp_path / "Git" / "cmd" / "git.exe"
-    runtime = tmp_path / "Git" / "mingw64" / "bin" / "git.exe"
-    exec_path = tmp_path / "Git" / "mingw64" / "libexec" / "git-core"
-    launcher.parent.mkdir(parents=True)
-    runtime.parent.mkdir(parents=True)
-    exec_path.mkdir(parents=True)
-    launcher.write_bytes(b"launcher")
-    runtime.write_bytes(b"runtime")
+def test_git_toolchain_declares_lossless_process_image_probe() -> None:
+    git = next(policy for policy in PLAN.toolchain_policies if policy.name == "git")
 
-    assert resolve_content_path(
-        launcher,
-        str(exec_path),
-        strategy="git-exec-path",
-        probe_cwd=tmp_path,
-        platform_name="win32",
-    ) == runtime.resolve()
+    assert git.data["process_image_probes"] == [["--version"]]
 
 
-@pytest.mark.parametrize("platform_name", ["linux", "darwin"])
-def test_git_content_path_strategy_uses_posix_launcher(
-    tmp_path: Path, platform_name: str
-) -> None:
-    launcher = tmp_path / "bin" / "git"
-    exec_path = tmp_path / "libexec" / "git-core"
-    launcher.parent.mkdir(parents=True)
-    exec_path.mkdir(parents=True)
-    launcher.write_bytes(b"git")
+@pytest.mark.parametrize("probes", [[], [[]], [[""]], [["--version"], ["--version"]]])
+def test_toolchain_process_image_probes_fail_closed(probes: list[list[str]]) -> None:
+    policies = tuple(
+        replace(policy, data={**policy.data, "process_image_probes": probes})
+        if policy.name == "git"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
 
-    assert resolve_content_path(
-        launcher,
-        str(exec_path),
-        strategy="git-exec-path",
-        probe_cwd=tmp_path,
-        platform_name=platform_name,
-    ) == launcher.resolve()
+    if probes == []:
+        assert not any(
+            "process_image_probes" in error
+            for error in replace(PLAN, toolchain_policies=policies).validate()
+        )
+    else:
+        assert any(
+            "process_image_probes" in error
+            for error in replace(PLAN, toolchain_policies=policies).validate()
+        )
 
 
 @pytest.mark.parametrize(
@@ -732,6 +723,23 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         fingerprint["executable_sha256"]
         == hashlib.sha256(b"canonical payload").hexdigest()
     )
+
+
+def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> None:
+    executable = tmp_path / "bin" / "tool"
+    executable.parent.mkdir()
+    executable.write_bytes(b"tool")
+
+    assert (
+        toolchain_probe.resolve_single_file_path("bin/tool\n", probe_cwd=tmp_path)
+        == executable.resolve()
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        toolchain_probe.resolve_single_file_path(
+            "bin/tool\nother-tool\n", probe_cwd=tmp_path
+        )
+    with pytest.raises(ValueError, match="did not name a file"):
+        toolchain_probe.resolve_single_file_path("bin\n", probe_cwd=tmp_path)
 
 
 def test_manifest_rejects_missing_repository_command_inputs() -> None:

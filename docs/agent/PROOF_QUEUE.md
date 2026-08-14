@@ -214,6 +214,15 @@ at launch, requiring the guarded typed command family—even a version command
 may be a shim that starts the resolved tool. This is one shared rule for every
 launcher family, not a per-command allowlist.
 
+Toolchains whose selected launcher starts a distinct executable declare bounded
+`process_image_probes` in `tools/proof_plan.toml`. Before source custody arms,
+the native supervisor runs each exact probe in non-evidence inventory mode and
+records every kernel-observed executable by path, size, and SHA-256. That sealed
+image set is the single authority consumed by both pre-spawn child custody and
+the proof supervisor; no install-directory or basename allowlist is inferred.
+Inventory is lossless on Windows and Linux. macOS remains fail-closed until an
+entitlement-backed Endpoint Security process backend is available.
+
 One queue-owned memory guard contains interpreter/tool identity probes,
 toolchain preflight, the proof command, and both source snapshots. The guarded
 child resolves the exact outer and payload executables and records their paths,

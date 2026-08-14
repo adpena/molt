@@ -50,15 +50,18 @@ authority_inputs = [
   "tools/fuzz_compiler.py",
   "tools/proof_plan.py",
   "tools/proof_executor.py",
-  "tools/toolchain_content_path.py",
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
+  "tools/toolchain_probe.py",
   "tools/proof_queue_pkg/command_admission.py",
   "tools/proof_queue_pkg/command_identity.py",
+  "tools/proof_queue_pkg/execution_custody.py",
   "tools/proof_queue_pkg/execution_environment.py",
   "tools/proof_queue_pkg/guarded_execution.py",
+  "tools/proof_queue_pkg/process_image_capture.py",
   "tools/proof_queue_pkg/supervisor_custody.py",
+  "tools/proof_queue_pkg/toolchain_capture.py",
   "tools/proof_queue_pkg/commands.py",
   "tools/proof_queue_pkg/evidence.py",
   "tools/proof_queue_pkg/custody.py",
@@ -76,6 +79,18 @@ authority_inputs = [
   "tools/proof_queue_pkg/runner.py",
   "tools/proof_queue_pkg/scheduling.py",
   "tools/proof_queue_pkg/state.py",
+  "tools/proof_supervisor/build.py",
+  "tools/proof_supervisor/Cargo.lock",
+  "tools/proof_supervisor/Cargo.toml",
+  "tools/proof_supervisor/src/evidence.rs",
+  "tools/proof_supervisor/src/image_cache.rs",
+  "tools/proof_supervisor/src/lib.rs",
+  "tools/proof_supervisor/src/main.rs",
+  "tools/proof_supervisor/src/platform/linux.rs",
+  "tools/proof_supervisor/src/platform/mod.rs",
+  "tools/proof_supervisor/src/platform/windows.rs",
+  "tools/proof_supervisor/tests/kernel_closure.rs",
+  "tools/proof_supervisor/tests/verification.rs",
   "tools/check_subprocess_guard_coverage.py",
   "tools/command_execution.py",
   "tools/cargo_test_binary_runner.py",
@@ -115,6 +130,7 @@ authority_inputs = [
   "tests/tools/test_ci_gate.py",
   "tests/tools/test_guarded_exec.py",
   "tests/tools/test_proof_queue.py",
+  "tests/tools/test_proof_supervisor_inventory.py",
   "tests/tools/test_memory_guard_spawn_callback.py",
   "tests/tools/test_pytest_truth_plugin.py",
   "tests/tools/test_win_job.py",
@@ -238,9 +254,8 @@ setup_evidence = [
 [[toolchain_policy]]
 name = "git"
 executable = "git"
-content_path_command = ["git", "--exec-path"]
-content_path_strategy = "git-exec-path"
 version_args = ["--version"]
+process_image_probes = [["--version"]]
 version_pattern = '^git version 2\.'
 setup_value = "2.x"
 setup_evidence = [
@@ -697,7 +712,7 @@ dependencies = []
 [[ci_family]]
 name = "platform_portability"
 description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/memory_guard_core/**", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/verify_ir_suite.py", "tools/win_job.py", "tests/differential/basic/arith.py", "tests/test_harness_memory_guard.py", "tests/test_memory_guard_tool.py", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py"]
+inputs = [".github/workflows/ci.yml", ".python-version", "docs/agent/PROOF_QUEUE.md", "rust-toolchain.toml", "src/molt/dx.py", "src/molt/path_custody.py", "src/molt/scientific_stack_versions.py", "src/molt/cli/source_build_environment.py", "src/molt/cli/entrypoint_dispatch.py", "src/molt/cli/entrypoint_parser.py", "src/molt/cli/queue_cli.py", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/memory_guard_core/**", "tools/process_spawn.py", "tools/pytest_memory_guard_bootstrap.py", "tools/proof_queue.py", "tools/proof_queue_pkg/**", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/verify_ir_suite.py", "tools/win_job.py", "tests/differential/basic/arith.py", "tests/test_harness_memory_guard.py", "tests/test_memory_guard_tool.py", "tests/test_molt_queue_cli.py", "tests/test_dx_run_context.py", "tests/test_memory_guard_wiring.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_scientific_stack_versions.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py"]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
 job = "platform-portability"
@@ -974,7 +989,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -986,7 +1001,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -998,7 +1013,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_source_extension_producer.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
