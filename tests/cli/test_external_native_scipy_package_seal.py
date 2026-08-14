@@ -7,17 +7,19 @@ import json
 from pathlib import Path
 import shutil
 
-import pytest
-
 from tools.proof_queue_pkg import pact
 
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
-from molt.scientific_stack_versions import scientific_extension_set
+from molt.scientific_stack_versions import resolve_scientific_stack
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _extension_set(package: str):
+    return resolve_scientific_stack().extension_set(package, "pact-witness")
 
 
 def _write_native_extension(
@@ -52,6 +54,11 @@ def _write_native_extension(
         "init_symbol": init_symbol,
         "runtime_linkage": "static_link",
         "artifact_kind": "wasm_relocatable_object",
+        "link_requirements": {
+            "target_triple": "wasm32-wasip1",
+            "items": [],
+            "retained_symbols": [],
+        },
         "deterministic": True,
         "capabilities": ["module.extension.exec"],
         "extension": artifact_name,
@@ -94,7 +101,7 @@ def _stage_canonical_scipy_root(root: Path, *, omit: str | None = None) -> None:
     if transaction_root.exists():
         shutil.rmtree(transaction_root)
     abi_version = _default_molt_c_api_version(REPO_ROOT)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = _extension_set("scipy")
     for extension in extension_set.extensions:
         if extension.module == omit:
             continue
@@ -122,30 +129,8 @@ def _stage_canonical_scipy_root(root: Path, *, omit: str | None = None) -> None:
     shutil.rmtree(transaction_root)
 
 
-def _reseal_canonical_scipy_root(destination: Path) -> None:
-    payload = destination.parent / f".{destination.name}.reseal-payload"
-    transaction = destination.parent / f".{destination.name}.reseal-transaction"
-    shutil.copytree(destination / "files", payload)
-    seal = stage_source_package_seal(
-        transaction,
-        [
-            SourcePackageInput(
-                path,
-                path.relative_to(payload).as_posix(),
-                "fixture",
-            )
-            for path in sorted(payload.rglob("*"))
-            if path.is_file()
-        ],
-    )
-    shutil.rmtree(destination)
-    shutil.copytree(seal.root, destination)
-    shutil.rmtree(payload)
-    shutil.rmtree(transaction)
-
-
 def _resolved_modules(root: Path) -> dict[str, str]:
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = _extension_set("scipy")
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[root / "files"],
         admitted_packages={"scipy"},
@@ -160,7 +145,7 @@ def _resolved_modules(root: Path) -> dict[str, str]:
 def test_canonical_scipy_root_resolves_exact_four_module_set(tmp_path: Path) -> None:
     root = tmp_path / "pact_scipy_witness"
     _stage_canonical_scipy_root(root)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = _extension_set("scipy")
 
     assert _resolved_modules(root) == {
         extension.module: f"PyInit_{extension.target}"
@@ -168,41 +153,14 @@ def test_canonical_scipy_root_resolves_exact_four_module_set(tmp_path: Path) -> 
     }
 
 
-@pytest.mark.parametrize(
-    "missing",
-    [
-        "scipy.ndimage._nd_image",
-        "scipy.ndimage._ni_label",
-        "scipy.ndimage._rank_filter_1d",
-        "scipy._lib._ccallback_c",
-    ],
-)
-def test_each_missing_scipy_extension_fails_canonical_seal_completeness(
-    tmp_path: Path, missing: str
-) -> None:
+def test_pact_seal_gate_delegates_to_generic_set_validator(tmp_path: Path) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _stage_canonical_scipy_root(root, omit=missing)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    _stage_canonical_scipy_root(root)
+    extension_set = _extension_set("scipy")
 
     problems = pact._scientific_extension_set_seal_problems(root, extension_set)
 
-    assert any(missing in problem for problem in problems), problems
-
-
-def test_extra_scipy_extension_manifest_fails_exact_set_completeness(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "pact_scipy_witness"
-    _stage_canonical_scipy_root(root)
-    unexpected = root / "files/scipy/ndimage/_legacy.molt.wasm.extension_manifest.json"
-    unexpected.write_text("{}", encoding="utf-8")
-    _reseal_canonical_scipy_root(root)
-
-    problems = pact._scientific_extension_set_seal_problems(
-        root, scientific_extension_set("scipy", "pact-witness")
-    )
-
-    assert any("unexpected scipy extension manifest" in problem for problem in problems)
+    assert any("extension_set_manifest.json" in problem for problem in problems)
 
 
 def test_identical_duplicate_package_roots_are_order_independent(
@@ -212,7 +170,7 @@ def test_identical_duplicate_package_roots_are_order_independent(
     second = tmp_path / "second"
     _stage_canonical_scipy_root(first)
     _stage_canonical_scipy_root(second)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = _extension_set("scipy")
 
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[first / "files", second / "files"],
@@ -241,7 +199,7 @@ def test_conflicting_duplicate_package_roots_fail_before_order_can_choose(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["python_exports"].append("scipy.ndimage.conflicting_owner")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = _extension_set("scipy")
 
     plan, errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=[first / "files", second / "files"],

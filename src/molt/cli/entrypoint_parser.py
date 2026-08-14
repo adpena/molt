@@ -580,6 +580,14 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Output directory for python3.pc, meson.cross, and metadata sidecar.",
     )
     extension_metadata_parser.add_argument(
+        "--python-version",
+        required=True,
+        help=(
+            "Canonical CPython major.minor version for python3.pc and target "
+            "metadata (for example, 3.12)."
+        ),
+    )
+    extension_metadata_parser.add_argument(
         "--abi-tier",
         choices=["source-compat", "cpython-abi"],
         help=(
@@ -597,19 +605,29 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     extension_produce_set_parser = extension_subparsers.add_parser(
         "produce-set",
         help=(
-            "Build and atomically publish a configured scientific extension set "
+            "Build and atomically publish a registered source-extension set "
             "from upstream Meson metadata."
         ),
     )
     extension_produce_set_parser.add_argument(
         "--package",
         required=True,
-        help="Configured scientific package name (for example: scipy).",
+        help="Registered package name (for example: scipy).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--package-version",
+        required=True,
+        help="Registered upstream package version (for example: 1.18.0).",
     )
     extension_produce_set_parser.add_argument(
         "--module-set",
         required=True,
         help="Configured extension-set name (for example: pact-witness).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--python-version",
+        required=True,
+        help="Registered target CPython feature version (for example: 3.12).",
     )
     extension_produce_set_parser.add_argument(
         "--source",
@@ -623,9 +641,11 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_produce_set_parser.add_argument(
         "--target",
-        choices=("wasm",),
         default="wasm",
-        help="Extension-set target (default: wasm).",
+        help=(
+            "Extension-set target: native, wasm, wasm-freestanding, or an explicit "
+            "Rust target triple (default: wasm)."
+        ),
     )
     extension_produce_set_parser.add_argument(
         "--abi-tier",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import keyword
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,8 +12,17 @@ from typing import Any, cast
 from molt.cli.source_extension_manifest_codec import (
     _manifest_dependencies,
     _manifest_sequence,
+    _validate_compact_source_extension_manifest,
 )
 from molt.cli.source_extension_reproducibility import _require_location_neutral
+from molt.cli.source_extension_set_registry import (
+    validate_source_extension_module_target,
+)
+from molt.cli.source_extension_target import (
+    source_extension_artifact_kind,
+    source_extension_artifact_suffix,
+)
+from molt.target_python import _parse_target_python_version
 
 _OBJECT_SEQUENCE_FIELDS = (
     "defined_symbols",
@@ -23,39 +31,18 @@ _OBJECT_SEQUENCE_FIELDS = (
     "required_capsules",
     "project_generated_c_api_symbols",
 )
-_WINDOWS_RESERVED_FILENAME = re.compile(
-    r"(?i)\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\Z"
-)
-
-
-def _require_safe_extension_key(module: object, target: object) -> tuple[str, str]:
-    if (
-        not isinstance(module, str)
-        or not module
-        or not all(
-            part.isidentifier() and not keyword.iskeyword(part)
-            for part in module.split(".")
-        )
-    ):
-        raise ValueError(f"extension-set module is not import syntax: {module!r}")
-    if (
-        not isinstance(target, str)
-        or not target
-        or target in {".", ".."}
-        or any(ord(character) < 32 for character in target)
-        or any(character in target for character in '<>:"/\\|?*')
-        or target.startswith(("~", "$", "%"))
-        or target.endswith((".", " "))
-        or _WINDOWS_RESERVED_FILENAME.fullmatch(target) is not None
-    ):
-        raise ValueError(f"extension-set target is not a safe filename: {target!r}")
-    return module, target
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 4
 
 
 def _digest_payload(payload: Any) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -93,6 +80,8 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             "module",
             "name",
             "version",
+            "python_tag",
+            "target_python",
             "abi_tag",
             "abi_tier",
             "molt_c_api_version",
@@ -100,6 +89,7 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             "artifact_kind",
             "loader_kind",
             "runtime_linkage",
+            "deterministic",
             "extension_sha256",
             "wheel_sha256",
             "init_symbol",
@@ -145,21 +135,46 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _target_semantic_projection(set_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    if set_manifest.get("schema_version") != SOURCE_EXTENSION_SET_SCHEMA_VERSION:
+        raise ValueError(
+            "extension-set identity requires schema_version "
+            f"{SOURCE_EXTENSION_SET_SCHEMA_VERSION}"
+        )
+    if set_manifest.get("kind") != "molt-source-extension-set":
+        raise ValueError(
+            "extension-set identity requires kind 'molt-source-extension-set'"
+        )
+    cpython = set_manifest.get("cpython")
+    if not isinstance(cpython, str) or not cpython:
+        raise ValueError("extension-set identity requires CPython version custody")
+    try:
+        _parse_target_python_version(cpython)
+    except ValueError as exc:
+        raise ValueError(
+            f"extension-set identity has invalid CPython version {cpython!r}: {exc}"
+        ) from exc
     extensions = set_manifest.get("extensions")
     if not isinstance(extensions, list) or not extensions:
         raise ValueError("extension-set identity requires typed extensions")
     target_metadata = set_manifest.get("target_metadata")
     abi = target_metadata.get("abi") if isinstance(target_metadata, Mapping) else None
+    abi_tier = set_manifest.get("abi_tier")
+    if not isinstance(abi_tier, str) or not abi_tier or not isinstance(abi, Mapping):
+        raise ValueError("extension-set identity requires ABI target metadata")
+    if abi.get("tier") != abi_tier:
+        raise ValueError("extension-set identity ABI tier differs from target metadata")
     projection = {
         key: set_manifest.get(key)
         for key in (
+            "schema_version",
             "kind",
             "package",
+            "package_version",
             "name",
             "seal_name",
+            "cpython",
             "source_head",
             "submodules",
-            "target",
             "target_triple",
             "abi_tier",
         )
@@ -218,7 +233,7 @@ def _source_extension_set_identity(
     if not all(isinstance(item, Mapping) for item in extensions):
         raise ValueError("extension-set identity has invalid extension entries")
     extension_keys = [
-        _require_safe_extension_key(item.get("module"), item.get("target"))
+        validate_source_extension_module_target(item.get("module"), item.get("target"))
         for item in extensions
     ]
     if len(set(extension_keys)) != len(extension_keys):
@@ -226,21 +241,44 @@ def _source_extension_set_identity(
     target_triple = set_manifest.get("target_triple")
     if not isinstance(target_triple, str) or not target_triple:
         raise ValueError("extension-set identity requires a target triple")
-    artifact_suffix = (
-        ".molt.wasm" if target_triple.lower().startswith("wasm32") else ".molt.a"
-    )
-    sidecar_paths = [
+    artifact_suffix = source_extension_artifact_suffix(target_triple)
+    abi_tier = set_manifest.get("abi_tier")
+    cpython = set_manifest.get("cpython")
+    package_version = set_manifest.get("package_version")
+    assert isinstance(abi_tier, str)
+    assert isinstance(cpython, str)
+    if not isinstance(package_version, str) or not package_version:
+        raise ValueError("extension-set identity requires package version custody")
+    target_python = _parse_target_python_version(cpython)
+    artifact_paths = [
         root.joinpath(
             *str(module).split(".")[:-1],
-            f"{target}{artifact_suffix}.extension_manifest.json",
+            f"{target}{artifact_suffix}",
         )
         for module, target in extension_keys
     ]
+    sidecar_paths = [
+        artifact.with_name(f"{artifact.name}.extension_manifest.json")
+        for artifact in artifact_paths
+    ]
+    expected_artifacts = {path.relative_to(root).as_posix() for path in artifact_paths}
+    inventoried_artifacts = {
+        path for path in inventory_sha256 if path.endswith((".molt.wasm", ".molt.a"))
+    }
+    if inventoried_artifacts != expected_artifacts:
+        raise ValueError(
+            "extension-set identity artifact inventory differs from typed set"
+        )
     expected_sidecars = {path.relative_to(root).as_posix() for path in sidecar_paths}
     inventoried_sidecars = {
         path
         for path in inventory_sha256
-        if path.endswith(f"{artifact_suffix}.extension_manifest.json")
+        if path.endswith(
+            (
+                ".molt.wasm.extension_manifest.json",
+                ".molt.a.extension_manifest.json",
+            )
+        )
     }
     if inventoried_sidecars != expected_sidecars:
         raise ValueError(
@@ -248,13 +286,67 @@ def _source_extension_set_identity(
         )
     extension_content: list[dict[str, Any]] = []
     producer_sidecars: list[dict[str, Any]] = []
-    for path in sidecar_paths:
+    for set_entry, (module, target), artifact_path, path in zip(
+        extensions,
+        extension_keys,
+        artifact_paths,
+        sidecar_paths,
+        strict=True,
+    ):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"cannot read extension sidecar {path}: {exc}") from exc
         if not isinstance(payload, Mapping):
             raise ValueError(f"extension sidecar is not an object: {path}")
+        try:
+            _validate_compact_source_extension_manifest(payload)
+        except ValueError as exc:
+            raise ValueError(f"extension sidecar is invalid: {path}: {exc}") from exc
+        source_plan = payload.get("source_plan")
+        expected_contract = {
+            "module": module,
+            "version": package_version,
+            "target_triple": target_triple,
+            "abi_tier": abi_tier,
+            "target_python": target_python.tag,
+            "artifact_kind": source_extension_artifact_kind(target_triple),
+            "python_exports": set_entry.get("python_exports"),
+            "capabilities": set_entry.get("capabilities"),
+            "provided_capsules": set_entry.get("provided_capsules"),
+        }
+        mismatches = [
+            f"{field}: expected {expected!r}, got {payload.get(field)!r}"
+            for field, expected in expected_contract.items()
+            if payload.get(field) != expected
+        ]
+        actual_target = (
+            source_plan.get("target_selector")
+            if isinstance(source_plan, Mapping)
+            else None
+        )
+        if actual_target != target:
+            mismatches.append(
+                "source_plan.target_selector: "
+                f"expected {target!r}, got {actual_target!r}"
+            )
+        if mismatches:
+            raise ValueError(
+                "extension sidecar differs from set variant contract: "
+                + "; ".join(mismatches)
+            )
+        artifact_relative = artifact_path.relative_to(root).as_posix()
+        artifact_sha256 = inventory_sha256.get(artifact_relative)
+        if (
+            not artifact_path.is_file()
+            or not isinstance(artifact_sha256, str)
+            or _sha256_file(artifact_path) != artifact_sha256
+            or payload.get("extension_sha256") != artifact_sha256
+        ):
+            raise ValueError(
+                "extension-set artifact bytes differ from sidecar and inventory: "
+                f"{artifact_relative}"
+            )
         relative = path.relative_to(root).as_posix()
         extension_content.append(
             {"path": relative, "identity": _extension_content_projection(payload)}

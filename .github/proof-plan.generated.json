@@ -18,6 +18,7 @@
     "config/nightly_shard_profile.json",
     "config/reproducibility_corpus.toml",
     "config/scientific_stack_versions.toml",
+    "config/source_extension_package_sets.toml",
     "config/proof_requirements/pact_witness.txt",
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
@@ -128,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "39db04dfc5ed6184a4c67d0aa2f221bd536556217ad2f2fc099a869d8cdb7901",
+  "authority_sha256": "93e5beae3b98b43838afad710872d324ef68704f3f9d9805dc2dbcdde6d11b68",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -487,12 +488,14 @@
       "inputs": [
         ".github/workflows/ci.yml",
         ".python-version",
+        "config/source_extension_package_sets.toml",
         "docs/agent/PROOF_QUEUE.md",
         "rust-toolchain.toml",
         "src/molt/dx.py",
         "src/molt/path_custody.py",
         "src/molt/scientific_stack_versions.py",
         "src/molt/cli/source_build_environment.py",
+        "src/molt/cli/source_extension_*.py",
         "src/molt/cli/entrypoint_dispatch.py",
         "src/molt/cli/entrypoint_parser.py",
         "src/molt/cli/queue_cli.py",
@@ -514,9 +517,10 @@
         "tests/test_molt_queue_cli.py",
         "tests/test_dx_run_context.py",
         "tests/test_memory_guard_wiring.py",
-        "tests/cli/test_source_extension_producer.py",
+        "tests/cli/test_source_extension_*.py",
         "tests/tools/test_guarded_exec.py",
         "tests/tools/test_memory_guard_spawn_callback.py",
+        "tests/tools/test_native_link_benchmark.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
@@ -1011,6 +1015,9 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_source_extension_set_registry.py",
+        "tests/cli/test_source_extension_manifest_authority.py",
+        "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py"
       ],
       "cache_domain": "pytest",
@@ -1048,6 +1055,9 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_source_extension_set_registry.py",
+        "tests/cli/test_source_extension_manifest_authority.py",
+        "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py"
       ],
       "cache_domain": "pytest",
@@ -1085,6 +1095,9 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_scientific_stack_versions.py",
+        "tests/cli/test_source_extension_set_registry.py",
+        "tests/cli/test_source_extension_manifest_authority.py",
+        "tests/cli/test_source_extension_link_requirements.py",
         "tests/cli/test_source_extension_producer.py"
       ],
       "cache_domain": "pytest",
@@ -3578,6 +3591,7 @@
       "local.rust-ffi-blocks.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
       "local.rust-toolchain.0": "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
       "local.rust-toolchain.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
+      "local.source-extension-package-sets.0": "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.0": "python3 tools/gen_stringprep_tables.py --check",
       "local.stringprep-tables.1": "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
@@ -4077,6 +4091,34 @@
           "runtime/molt-runtime/src/**/*.rs"
         ],
         "name": "llvm-runtime-abi"
+      },
+      {
+        "command_ids": [
+          "local.source-extension-package-sets.0"
+        ],
+        "description": "Versioned source-extension package sets: one typed registry owns variant identity, manifests, toolchain custody, link requirements, seal validation, profiling, and Pact roots.",
+        "gates": [
+          "uv run python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_external_native_scipy_package_seal.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py"
+        ],
+        "globs": [
+          "config/source_extension_package_sets.toml",
+          "config/scientific_stack_versions.toml",
+          "src/molt/scientific_stack_versions.py",
+          "src/molt/cli/extension_commands.py",
+          "src/molt/cli/extension_manifest.py",
+          "src/molt/cli/external_native.py",
+          "src/molt/cli/link_pipeline.py",
+          "src/molt/cli/native_link_command.py",
+          "src/molt/cli/source_extension_*.py",
+          "tools/native_link_benchmark.py",
+          "tools/profile_source_extension_set.py",
+          "tools/proof_queue_pkg/pact.py",
+          "tests/cli/test_external_native_scipy_package_seal.py",
+          "tests/cli/test_source_extension_*.py",
+          "tests/tools/test_native_link_benchmark.py",
+          "tests/tools/test_scientific_stack_versions.py"
+        ],
+        "name": "source-extension-package-sets"
       },
       {
         "command_ids": [

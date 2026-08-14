@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+import platform
+import sys
 
 from molt.cli.native_link_plan import (
     NativeObjectFormat,
@@ -19,15 +22,15 @@ class SourceExtensionTargetPlan:
 
     @property
     def is_wasm(self) -> bool:
-        return self.target_triple.startswith("wasm32")
+        return source_extension_target_is_wasm(self.target_triple)
 
     @property
     def artifact_kind(self) -> str:
-        return "wasm_relocatable_object" if self.is_wasm else "static_archive"
+        return source_extension_artifact_kind(self.target_triple)
 
     @property
     def artifact_suffix(self) -> str:
-        return ".molt.wasm" if self.is_wasm else ".molt.a"
+        return source_extension_artifact_suffix(self.target_triple)
 
     @property
     def requires_position_independent_code(self) -> bool:
@@ -41,6 +44,59 @@ class SourceExtensionTargetPlan:
         if self.is_wasm:
             return ("MOLT_EXTENSION_WASM_STATIC_LINK",)
         return ()
+
+
+class SourceExtensionLinkDialect(str, Enum):
+    ELF_GNU = "elf-gnu"
+    MACHO = "macho"
+    COFF_GNU = "coff-gnu"
+    COFF_MSVC = "coff-msvc"
+    WASM = "wasm"
+
+
+def source_extension_target_is_wasm(target_triple: str) -> bool:
+    return target_triple.strip().lower().startswith("wasm32")
+
+
+def source_extension_artifact_kind(target_triple: str) -> str:
+    return (
+        "wasm_relocatable_object"
+        if source_extension_target_is_wasm(target_triple)
+        else "static_archive"
+    )
+
+
+def source_extension_artifact_suffix(target_triple: str) -> str:
+    return ".molt.wasm" if source_extension_target_is_wasm(target_triple) else ".molt.a"
+
+
+def source_extension_link_dialect(
+    target_triple: str | None,
+    *,
+    host_platform: str | None = None,
+    host_arch: str | None = None,
+) -> SourceExtensionLinkDialect:
+    if target_triple is not None and source_extension_target_is_wasm(target_triple):
+        return SourceExtensionLinkDialect.WASM
+    native_target = resolve_native_target_spec(
+        target_triple,
+        host_platform=sys.platform if host_platform is None else host_platform,
+        host_arch=platform.machine() if host_arch is None else host_arch,
+    )
+    if native_target.object_format is NativeObjectFormat.ELF:
+        return SourceExtensionLinkDialect.ELF_GNU
+    if native_target.object_format is NativeObjectFormat.MACHO:
+        return SourceExtensionLinkDialect.MACHO
+    normalized = (target_triple or "").lower()
+    return (
+        SourceExtensionLinkDialect.COFF_GNU
+        if (
+            "mingw" in normalized
+            or "gnullvm" in normalized
+            or normalized.endswith("-gnu")
+        )
+        else SourceExtensionLinkDialect.COFF_MSVC
+    )
 
 
 def resolve_source_extension_target_plan(
@@ -70,7 +126,7 @@ def resolve_source_extension_target_plan(
         compiler_target_triple = target_triple
     native_target = (
         None
-        if target_triple.startswith("wasm32")
+        if source_extension_target_is_wasm(target_triple)
         else resolve_native_target_spec(
             compiler_target_triple,
             host_platform=host_platform,

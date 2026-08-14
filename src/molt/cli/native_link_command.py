@@ -32,7 +32,8 @@ from molt.cli.native_link_plan import (
     resolve_native_target_spec,
 )
 from molt.cli.source_extension_link_requirements import (
-    validate_source_extension_link_arguments,
+    SourceExtensionLinkRequirements,
+    render_source_extension_link_arguments,
 )
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
@@ -41,6 +42,7 @@ from molt.cli.native_toolchain import (
     _strip_arch_flags,
     _zig_target_query,
 )
+from molt.cli.source_extension_target import source_extension_link_dialect
 
 
 _CPYTHON_SINGLETON_CANONICAL_ALIASES = (
@@ -273,7 +275,7 @@ def _build_native_link_plan(
     source_fingerprint: Mapping[str, object],
     stdlib_obj_path: Path | None = None,
     external_static_archives: Sequence[Path] = (),
-    external_link_arguments: Sequence[str] = (),
+    external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
     bolt_requested: bool = False,
     host_platform: str | None = None,
     host_arch: str | None = None,
@@ -296,14 +298,30 @@ def _build_native_link_plan(
         host_platform=host_platform,
         host_arch=host_arch,
     )
-    try:
-        external_link_arguments = validate_source_extension_link_arguments(
-            external_link_arguments
-        )
-    except ValueError as exc:
-        raise RuntimeError(
-            f"External source-extension link requirements are invalid: {exc}"
-        ) from exc
+    target_dialect = source_extension_link_dialect(
+        target_triple,
+        host_platform=host_platform,
+        host_arch=host_arch,
+    )
+    external_link_arguments: tuple[str, ...] = ()
+    for requirements in external_link_requirements:
+        if (
+            target_triple is not None
+            and requirements.target_triple != target_triple.lower()
+        ):
+            raise RuntimeError(
+                "External source-extension link requirements cross target triples: "
+                f"{requirements.target_triple} != {target_triple.lower()}"
+            )
+        if (
+            source_extension_link_dialect(requirements.target_triple)
+            is not target_dialect
+        ):
+            raise RuntimeError(
+                "External source-extension link requirements cross target dialects: "
+                f"{requirements.target_triple} is not {target_dialect.value}"
+            )
+        external_link_arguments += render_source_extension_link_arguments(requirements)
     selected_linker_name = native_linker_name_from_driver_command(
         link_cmd,
         hinted=linker_hint,

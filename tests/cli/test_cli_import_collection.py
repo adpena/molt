@@ -67,6 +67,12 @@ from molt.cli.models import (
     _FrontendWorkerResourceDecision,
     _StagedExternalPackageNativeArtifact,
 )
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkInput,
+    SourceExtensionLinkProvider,
+    SourceExtensionLinkProviderKind,
+    SourceExtensionLinkRequirements,
+)
 from molt.target_python import TargetPythonVersion
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
@@ -3352,7 +3358,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
                 init_symbol="PyInit__nd_image",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 provided_capsules=("nativepkg.legacy._nd_image._ARRAY_API",),
                 support_file_sha256=(
                     ("nativepkg/__init__.py", "a" * 64),
@@ -4212,6 +4218,11 @@ def _libmolt_source_manifest_fields(
         "init_symbol": init_symbol,
         "runtime_linkage": runtime_linkage,
         "artifact_kind": resolved_artifact_kind,
+        "link_requirements": {
+            "target_triple": resolved_target_triple,
+            "items": [],
+            "retained_symbols": [],
+        },
         "provided_capsules": [],
         "object_closure": {
             "schema_version": 1,
@@ -4250,6 +4261,9 @@ def _apply_manifest_overrides(
             cast(dict[str, Any], manifest["object_closure"]).update(value)
         else:
             manifest[key] = value
+    link_requirements = manifest.get("link_requirements")
+    if isinstance(link_requirements, dict):
+        link_requirements["target_triple"] = manifest["target_triple"]
 
 
 def _record_static_archive_symbol_facts(
@@ -5245,7 +5259,9 @@ def test_native_support_function_roots_cross_imported_helpers(
                 platform_tag="wasm32",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements(
+                    "wasm32-unknown-unknown"
+                ),
                 support_file_sha256=(
                     (
                         "nativepkg/ndimage/_filters.py",
@@ -5383,8 +5399,6 @@ def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
         artifact_name="_nd_image.a",
         artifact_bytes=b"archive-bytes",
         manifest_overrides={
-            "target_triple": "wasm32-wasip1",
-            "platform_tag": "wasm32_wasip1",
             "runtime_linkage": "static_link",
             "artifact_kind": "static_archive",
             "object_closure": {"defined_symbols": [native_symbol]},
@@ -5403,7 +5417,7 @@ def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
         admitted_packages={"nativepkg"},
-        target="wasm",
+        target="native",
         required_modules={"nativepkg.ndimage.distance_transform_edt"},
     )
 
@@ -7162,7 +7176,7 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 callable_exports=(
                     _ExternalNativeCallableExport(
                         module="nativepkg.ndimage",
@@ -7189,7 +7203,7 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 callable_exports=(
                     _ExternalNativeCallableExport(
                         module="nativepkg.linalg",
@@ -8209,7 +8223,7 @@ def test_module_graph_policy_digest_includes_native_runtime_import_modules(
         init_symbol="PyInit__native",
         runtime_linkage="static_link",
         artifact_kind="wasm_relocatable_object",
-        link_arguments=(),
+        link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
     )
     first_policy = cli._ImportAdmissionPolicy(
         native_artifact_plan=_ExternalPackageNativeArtifactPlan(
@@ -10035,7 +10049,7 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
         platform_tag="x86_64_unknown_linux_gnu",
         runtime_linkage="static_link",
         artifact_kind="static_archive",
-        link_arguments=(),
+        link_requirements=SourceExtensionLinkRequirements("x86_64-unknown-linux-gnu"),
     )
 
     data = cli_build_results._build_native_link_success_data(
@@ -10186,7 +10200,12 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
         source_fingerprint={},
         stdlib_obj_path=None,
         external_static_archives=(extension_archive,),
-        external_link_arguments=("-Wl,--undefined=PyInit_extension",),
+        external_link_requirements=(
+            SourceExtensionLinkRequirements(
+                "x86_64-unknown-linux-gnu",
+                retained_symbols=("PyInit_extension",),
+            ),
+        ),
         host_platform="linux",
     )
 
@@ -10227,7 +10246,18 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
     )
 
-    external_link_arguments = ("-framework", "Accelerate")
+    external_link_arguments = ("-Wl,-framework,Accelerate",)
+    external_link_requirements = (
+        SourceExtensionLinkRequirements(
+            "aarch64-apple-darwin",
+            items=(
+                SourceExtensionLinkProvider(
+                    SourceExtensionLinkProviderKind.FRAMEWORK,
+                    "Accelerate",
+                ),
+            ),
+        ),
+    )
     link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
@@ -10240,7 +10270,7 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         source_fingerprint={},
         stdlib_obj_path=None,
         external_static_archives=extension_archives,
-        external_link_arguments=external_link_arguments,
+        external_link_requirements=external_link_requirements,
         host_platform="darwin",
         host_arch="arm64",
     )
@@ -10249,11 +10279,14 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         f"-Wl,-force_load,{archive.resolve()}" for archive in extension_archives
     )
     start = link_plan.command.index(force_load_arguments[0])
-    assert link_plan.command[start : start + 6] == (
+    expected_link_arguments = (
         *force_load_arguments,
         str(runtime_lib),
         str(runtime_lib),
         *external_link_arguments,
+    )
+    assert link_plan.command[start : start + len(expected_link_arguments)] == (
+        expected_link_arguments
     )
     assert not any("export_dynamic" in argument for argument in link_plan.command)
     exported_symbols = tmp_path / ".molt_exports.exp"
@@ -10372,7 +10405,12 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         source_fingerprint={},
         stdlib_obj_path=None,
         external_static_archives=(extension_archive,),
-        external_link_arguments=("-Wl,/INCLUDE:PyInit_extension",),
+        external_link_requirements=(
+            SourceExtensionLinkRequirements(
+                "x86_64-pc-windows-msvc",
+                retained_symbols=("PyInit_extension",),
+            ),
+        ),
         host_platform="win32",
     )
 
@@ -20276,8 +20314,16 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=("--allow-undefined", dependency_relative),
-                link_inputs=((1, dependency_relative, dependency_sha, ""),),
+                link_requirements=SourceExtensionLinkRequirements(
+                    "wasm32-wasip1",
+                    items=(
+                        SourceExtensionLinkInput(
+                            dependency_relative,
+                            dependency_sha,
+                        ),
+                    ),
+                    retained_symbols=("PyInit__ndimage",),
+                ),
                 support_file_sha256=(("nativepkg/__init__.py", package_init_sha),),
                 callable_exports=(
                     _ExternalNativeCallableExport(
@@ -20391,7 +20437,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         for index, argument in enumerate(link_cmd)
         if argument == "--native-link-arg"
     ]
-    assert native_link_arguments[0] == "--allow-undefined"
+    assert native_link_arguments[0] == "--undefined=PyInit__ndimage"
     staged_dependency = Path(native_link_arguments[1])
     assert staged_dependency != dependency_path
     assert staged_dependency.read_bytes() == dependency_bytes
@@ -20505,7 +20551,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 support_file_sha256=(
                     (
                         "nativepkg/__init__.py",
@@ -20699,7 +20745,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 abi_symbols=(
                     _ExternalNativeAbiSymbol(
                         symbol="printf",
@@ -20857,7 +20903,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 abi_symbols=(
                     _ExternalNativeAbiSymbol(
                         symbol="printf",
@@ -20982,7 +21028,7 @@ def test_wasm_static_link_native_artifact_inputs_include_linkable_support_paths(
         platform_tag="wasm32_wasip1",
         runtime_linkage="static_link",
         artifact_kind="wasm_relocatable_object",
-        link_arguments=(),
+        link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
     )
 
     assert cli_non_native_output._wasm_static_link_native_artifact_inputs(
@@ -21022,7 +21068,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 init_symbol=pyinit_symbol,
                 callable_exports=(
                     _ExternalNativeCallableExport(

@@ -6,13 +6,21 @@ from pathlib import Path
 import pytest
 
 from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkCyclicGroup,
     SourceExtensionLinkInput,
+    SourceExtensionLinkLoadingPolicy,
+    SourceExtensionLinkProvider,
+    SourceExtensionLinkProviderKind,
     SourceExtensionLinkRequirements,
     materialize_source_extension_link_requirements,
     parse_source_extension_link_requirements,
+    render_source_extension_link_arguments,
     resolve_source_extension_link_arguments,
     source_extension_link_requirements,
-    validate_source_extension_link_arguments,
+)
+from molt.cli.source_extension_target import (
+    SourceExtensionLinkDialect,
+    source_extension_link_dialect,
 )
 
 
@@ -20,7 +28,7 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def test_link_requirements_fold_and_publish_checksummed_static_inputs(
+def test_link_requirements_publish_typed_checksummed_inputs_and_render_late(
     tmp_path: Path,
 ) -> None:
     build_root = tmp_path / "build"
@@ -35,30 +43,41 @@ def test_link_requirements_fold_and_publish_checksummed_static_inputs(
         (
             str(folded),
             "-Wl,--as-needed",
+            "-lm",
+            "-Wl,--no-as-needed",
             "-Wl,--whole-archive",
             str(dependency),
             "-Wl,--no-whole-archive",
         ),
-        target_triple="x86_64-pc-windows-msvc",
+        target_triple="x86_64-unknown-linux-gnu",
         folded_static_archives=(folded.name,),
         path_roots=(build_root,),
         publish_root=publish_root,
     )
 
-    assert requirements.arguments == (
-        "-Wl,--as-needed",
-        "-Wl,--whole-archive",
-        f"__molt_link__/{_sha256(b'dependency')}/libdependency.a",
-        "-Wl,--no-whole-archive",
-    )
-    assert requirements.inputs == (
+    relative = f"__molt_link__/{_sha256(b'dependency')}/libdependency.a"
+    assert requirements.items == (
+        SourceExtensionLinkProvider(
+            SourceExtensionLinkProviderKind.LIBRARY,
+            "m",
+            SourceExtensionLinkLoadingPolicy.AS_NEEDED,
+        ),
         SourceExtensionLinkInput(
-            argument_index=2,
-            path=f"__molt_link__/{_sha256(b'dependency')}/libdependency.a",
-            sha256=_sha256(b"dependency"),
+            relative,
+            _sha256(b"dependency"),
+            SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
         ),
     )
-    assert (publish_root / requirements.inputs[0].path).read_bytes() == b"dependency"
+    assert render_source_extension_link_arguments(requirements) == (
+        "-Wl,--as-needed",
+        "-lm",
+        "-Wl,--no-as-needed",
+        "-Wl,--whole-archive",
+        relative,
+        "-Wl,--no-whole-archive",
+    )
+    assert (publish_root / relative).read_bytes() == b"dependency"
+    assert "arguments" not in requirements.manifest_payload()
 
 
 @pytest.mark.parametrize(
@@ -77,6 +96,15 @@ def test_link_requirements_fold_and_publish_checksummed_static_inputs(
         "/DEFAULTLIB:../unsealed.lib",
         "-Wl,-Tunsealed.ld",
         "-Wl,--version-script=unsealed.map",
+        "/wholearchive:C:\\outside.lib",
+        "-Xlinker",
+        "--sysroot=/outside",
+        "-Wl,--sysroot,/outside",
+        "-Wl,-Map,secondary.map",
+        "-fuse-ld=outside-linker",
+        "-Wl,--allow-undefined",
+        "--allow-undefined",
+        "--no-entry",
     ),
 )
 def test_link_requirements_reject_final_link_mode_and_path_authority(
@@ -89,13 +117,222 @@ def test_link_requirements_reject_final_link_mode_and_path_authority(
         )
 
 
-def test_manifest_parser_rejects_target_drift_and_unchecksummed_static_path() -> None:
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-Wl,--start-group", "liba.a"),
+        ("-Wl,--end-group",),
+        (
+            "-Wl,--start-group",
+            "-Wl,--start-group",
+            "liba.a",
+            "-Wl,--end-group",
+            "-Wl,--end-group",
+        ),
+        ("-Wl,--whole-archive", "liba.a"),
+        ("-Wl,--no-whole-archive",),
+        (
+            "-Wl,--whole-archive",
+            "-Wl,--whole-archive",
+            "liba.a",
+            "-Wl,--no-whole-archive",
+        ),
+        (
+            "-Wl,--start-group",
+            "-Wl,--whole-archive",
+            "liba.a",
+            "-Wl,--end-group",
+            "-Wl,--no-whole-archive",
+        ),
+    ],
+)
+def test_gnu_group_and_whole_archive_grammar_is_balanced(
+    arguments: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        source_extension_link_requirements(
+            arguments,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+
+
+def test_cyclic_group_is_structural_and_preserves_member_policies() -> None:
+    requirements = source_extension_link_requirements(
+        (
+            "-Wl,--start-group",
+            "libfirst.a",
+            "-Wl,--whole-archive",
+            "libsecond.a",
+            "-Wl,--no-whole-archive",
+            "-Wl,--end-group",
+        ),
+        target_triple="wasm32-wasip1",
+    )
+
+    assert requirements.items == (
+        SourceExtensionLinkCyclicGroup(
+            (
+                SourceExtensionLinkProvider(
+                    SourceExtensionLinkProviderKind.ARCHIVE,
+                    "libfirst.a",
+                ),
+                SourceExtensionLinkProvider(
+                    SourceExtensionLinkProviderKind.ARCHIVE,
+                    "libsecond.a",
+                    SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
+                ),
+            )
+        ),
+    )
+    assert render_source_extension_link_arguments(requirements) == (
+        "-Wl,--start-group",
+        "libfirst.a",
+        "-Wl,--whole-archive",
+        "libsecond.a",
+        "-Wl,--no-whole-archive",
+        "-Wl,--end-group",
+    )
+
+
+def test_bare_system_library_names_are_typed_providers() -> None:
+    requirements = source_extension_link_requirements(
+        ("python313.lib", "/DEFAULTLIB:ucrt.lib"),
+        target_triple="x86_64-pc-windows-msvc",
+    )
+
+    assert requirements.items == (
+        SourceExtensionLinkProvider(
+            SourceExtensionLinkProviderKind.LIBRARY,
+            "python313.lib",
+        ),
+        SourceExtensionLinkProvider(
+            SourceExtensionLinkProviderKind.LIBRARY,
+            "ucrt.lib",
+        ),
+    )
+    assert render_source_extension_link_arguments(requirements) == (
+        "python313.lib",
+        "ucrt.lib",
+    )
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "argument"),
+    [
+        ("x86_64-pc-windows-msvc", "-Wl,--as-needed"),
+        ("x86_64-pc-windows-msvc", "-lm"),
+        ("x86_64-unknown-linux-gnu", "/DEFAULTLIB:ucrt.lib"),
+        ("x86_64-unknown-linux-gnu", "-Wl,-framework,Accelerate"),
+        ("wasm32-wasip1", "-Wl,-force_load,libprovider.a"),
+    ],
+)
+def test_link_requirements_reject_cross_dialect_arguments(
+    target_triple: str, argument: str
+) -> None:
+    with pytest.raises(ValueError):
+        source_extension_link_requirements(
+            (argument,),
+            target_triple=target_triple,
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "source_argument", "rendered"),
+    [
+        (
+            "x86_64-unknown-linux-gnu",
+            "-Wl,--undefined=PyInit_demo",
+            "-Wl,--undefined=PyInit_demo",
+        ),
+        (
+            "aarch64-apple-darwin",
+            "-Wl,-u,_PyInit_demo",
+            "-Wl,-u,_PyInit_demo",
+        ),
+        (
+            "x86_64-pc-windows-gnullvm",
+            "-Wl,-u,PyInit_demo",
+            "-Wl,--undefined=PyInit_demo",
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            "/INCLUDE:PyInit_demo",
+            "-Wl,/INCLUDE:PyInit_demo",
+        ),
+        (
+            "wasm32-wasip1",
+            "--undefined=PyInit_demo",
+            "--undefined=PyInit_demo",
+        ),
+    ],
+)
+def test_retained_symbols_are_typed_then_rendered_for_selected_dialect(
+    target_triple: str,
+    source_argument: str,
+    rendered: str,
+) -> None:
+    requirements = source_extension_link_requirements(
+        (source_argument,),
+        target_triple=target_triple,
+    )
+    assert requirements.retained_symbols == (
+        source_argument.rsplit(":", 1)[-1]
+        if "/INCLUDE:" in source_argument
+        else source_argument.rsplit(",", 1)[-1].rsplit("=", 1)[-1],
+    )
+    assert render_source_extension_link_arguments(requirements) == (rendered,)
+
+
+def test_windows_gnullvm_uses_coff_gnu_dialect() -> None:
+    assert (
+        source_extension_link_dialect("x86_64-pc-windows-gnullvm")
+        is SourceExtensionLinkDialect.COFF_GNU
+    )
+
+
+def test_manifest_parser_requires_typed_exact_canonical_schema() -> None:
+    payload = SourceExtensionLinkRequirements(
+        "wasm32-wasip1",
+        items=(
+            SourceExtensionLinkProvider(
+                SourceExtensionLinkProviderKind.LIBRARY,
+                "m",
+            ),
+        ),
+        retained_symbols=("PyInit_demo",),
+    ).manifest_payload()
+    parsed, errors = parse_source_extension_link_requirements(
+        {"link_requirements": payload},
+        expected_target_triple="wasm32-wasip1",
+    )
+    assert errors == []
+    assert parsed is not None
+    assert parsed.manifest_payload() == payload
+
+    payload["arguments"] = []
+    parsed, errors = parse_source_extension_link_requirements(
+        {"link_requirements": payload},
+        expected_target_triple="wasm32-wasip1",
+    )
+    assert parsed is None
+    assert any("keys must be exactly" in error for error in errors)
+
+
+def test_manifest_parser_rejects_target_drift_and_uppercase_digest() -> None:
+    digest = "A" * 64
     parsed, errors = parse_source_extension_link_requirements(
         {
             "link_requirements": {
                 "target_triple": "x86_64-unknown-linux-gnu",
-                "arguments": ["subdir/libunsealed.a"],
-                "inputs": [],
+                "items": [
+                    {
+                        "kind": "input",
+                        "path": "__molt_link__/input/libunsealed.a",
+                        "sha256": digest,
+                        "loading": "default",
+                    }
+                ],
+                "retained_symbols": [],
             }
         },
         expected_target_triple="wasm32-wasip1",
@@ -103,27 +340,16 @@ def test_manifest_parser_rejects_target_drift_and_unchecksummed_static_path() ->
 
     assert parsed is None
     assert any("must match target_triple" in error for error in errors)
-    assert any("unchecksummed static path operand" in error for error in errors)
+    assert any("lowercase SHA-256" in error for error in errors)
 
 
-def test_bare_system_library_names_are_not_misclassified_as_path_inputs() -> None:
-    requirements = source_extension_link_requirements(
-        ("python313.lib", "libm.a", "/DEFAULTLIB:ucrt.lib"),
-        target_triple="x86_64-pc-windows-msvc",
-    )
-
-    assert requirements.arguments == (
-        "python313.lib",
-        "libm.a",
-        "/DEFAULTLIB:ucrt.lib",
-    )
-    assert requirements.inputs == ()
+def test_manifest_parser_requires_explicit_empty_link_requirements() -> None:
     parsed, errors = parse_source_extension_link_requirements(
-        {"link_requirements": requirements.manifest_payload()},
-        expected_target_triple="x86_64-pc-windows-msvc",
+        {},
+        expected_target_triple="wasm32-wasip1",
     )
-    assert errors == []
-    assert parsed == requirements
+    assert parsed is None
+    assert errors == ["link_requirements must be an explicit object"]
 
 
 def test_manifest_parser_rejects_package_escape() -> None:
@@ -131,22 +357,21 @@ def test_manifest_parser_rejects_package_escape() -> None:
         {
             "link_requirements": {
                 "target_triple": "wasm32-wasip1",
-                "arguments": ["../libescape.a"],
-                "inputs": [
+                "items": [
                     {
-                        "argument_index": 0,
+                        "kind": "input",
                         "path": "../libescape.a",
                         "sha256": "0" * 64,
-                        "prefix": "",
+                        "loading": "default",
                     }
                 ],
+                "retained_symbols": [],
             }
         },
         expected_target_triple="wasm32-wasip1",
     )
-
     assert parsed is None
-    assert any("must be package-relative" in error for error in errors)
+    assert any("package-relative" in error for error in errors)
 
 
 def test_link_requirement_publication_rejects_source_root_escape(
@@ -166,19 +391,47 @@ def test_link_requirement_publication_rejects_source_root_escape(
         )
 
 
-def test_final_link_validation_preserves_resolved_static_input_paths(
+@pytest.mark.parametrize(
+    ("target_triple", "loading_argument", "expected_prefix"),
+    [
+        (
+            "aarch64-apple-darwin",
+            "-Wl,-force_load,{path}",
+            "-Wl,-force_load,",
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            "-Wl,/WHOLEARCHIVE:{path}",
+            "-Wl,/WHOLEARCHIVE:",
+        ),
+    ],
+)
+def test_target_loading_syntax_becomes_one_input_policy(
     tmp_path: Path,
+    target_triple: str,
+    loading_argument: str,
+    expected_prefix: str,
 ) -> None:
-    staged = tmp_path / "staged" / "dependency.a"
-    staged.parent.mkdir()
-    staged.write_bytes(b"dependency")
+    source = tmp_path / (
+        "dependency.lib" if "windows" in target_triple else "dependency.a"
+    )
+    source.write_bytes(b"dependency")
+    publish = tmp_path / "publish"
+    requirements = source_extension_link_requirements(
+        (loading_argument.format(path=source),),
+        target_triple=target_triple,
+        path_roots=(tmp_path,),
+        publish_root=publish,
+    )
+    assert (
+        requirements.inputs[0].loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+    )
+    assert render_source_extension_link_arguments(requirements)[0].startswith(
+        expected_prefix
+    )
 
-    assert validate_source_extension_link_arguments(
-        (str(staged.resolve()), "-lm", "/DEFAULTLIB:kernel32.lib")
-    ) == (str(staged.resolve()), "-lm", "/DEFAULTLIB:kernel32.lib")
 
-
-def test_resolve_and_materialize_verify_bytes_and_rewrite_only_owned_operands(
+def test_resolve_and_materialize_verify_bytes_and_preserve_structure(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "source" / "demo"
@@ -189,14 +442,16 @@ def test_resolve_and_materialize_verify_bytes_and_rewrite_only_owned_operands(
     archive.write_bytes(b"dependency")
     relative = archive.relative_to(package_root).as_posix()
     requirements = SourceExtensionLinkRequirements(
-        target_triple="wasm32-wasip1",
-        arguments=("--allow-undefined", f"-Wl,-force_load,{relative}"),
-        inputs=(
+        target_triple="aarch64-apple-darwin",
+        items=(
+            SourceExtensionLinkProvider(
+                SourceExtensionLinkProviderKind.THREAD_RUNTIME,
+                "pthread",
+            ),
             SourceExtensionLinkInput(
-                argument_index=1,
-                path=relative,
-                sha256=_sha256(b"dependency"),
-                prefix="-Wl,-force_load,",
+                relative,
+                _sha256(b"dependency"),
+                SourceExtensionLinkLoadingPolicy.ALL_MEMBERS,
             ),
         ),
     )
@@ -207,7 +462,10 @@ def test_resolve_and_materialize_verify_bytes_and_rewrite_only_owned_operands(
         manifest_dir=manifest_dir,
     )
     assert errors == []
-    assert resolved == ("--allow-undefined", f"-Wl,-force_load,{archive.resolve()}")
+    assert resolved == (
+        "-pthread",
+        f"-Wl,-force_load,{archive.resolve()}",
+    )
 
     publish_root = tmp_path / "published" / "demo"
     materialized, errors = materialize_source_extension_link_requirements(
@@ -222,8 +480,8 @@ def test_resolve_and_materialize_verify_bytes_and_rewrite_only_owned_operands(
     assert published_input.path == (
         f"__molt_link__/{_sha256(b'dependency')}/libdependency.a"
     )
+    assert published_input.loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
     assert (publish_root / published_input.path).read_bytes() == b"dependency"
-    assert materialized.arguments[1] == f"-Wl,-force_load,{published_input.path}"
 
     archive.write_bytes(b"tampered")
     resolved, errors = resolve_source_extension_link_arguments(

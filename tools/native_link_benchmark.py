@@ -43,6 +43,11 @@ from molt.cli.native_link_manifest import (  # noqa: E402
 )
 from molt.cli.native_link_plan import NativeLinkPlan  # noqa: E402
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
+from molt.cli.source_extension_link_requirements import (  # noqa: E402
+    SourceExtensionLinkRequirements,
+    parse_source_extension_link_requirements,
+    resolve_source_extension_link_requirements,
+)
 from molt.cli.static_archive_identity import artifact_content_identity  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
 
@@ -878,7 +883,76 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         Path(path).expanduser().resolve(strict=True)
         for path in args.external_static_archive
     )
-    external_link_arguments = tuple(args.external_link_argument)
+    external_link_requirements: list[SourceExtensionLinkRequirements] = []
+    for index, raw_path in enumerate(args.external_link_requirements_manifest):
+        manifest_path = Path(raw_path).expanduser().resolve(strict=True)
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise LinkBenchmarkError(
+                f"invalid source-extension link-requirements manifest {manifest_path}: {exc}"
+            ) from exc
+        if not isinstance(manifest, Mapping):
+            raise LinkBenchmarkError(
+                f"source-extension link-requirements manifest is not an object: {manifest_path}"
+            )
+        raw_requirements = manifest.get("link_requirements")
+        target = (
+            raw_requirements.get("target_triple")
+            if isinstance(raw_requirements, Mapping)
+            else None
+        )
+        if not isinstance(target, str) or not target:
+            raise LinkBenchmarkError(
+                f"source-extension link-requirements manifest has no target: {manifest_path}"
+            )
+        requirements, requirement_errors = parse_source_extension_link_requirements(
+            manifest,
+            expected_target_triple=target,
+        )
+        if requirement_errors:
+            raise LinkBenchmarkError(
+                f"invalid source-extension link requirements in {manifest_path}: "
+                + "; ".join(requirement_errors)
+            )
+        assert requirements is not None
+        package_root = manifest_path.parent
+        if requirements.inputs:
+            module = manifest.get("module")
+            if not isinstance(module, str) or not module:
+                raise LinkBenchmarkError(
+                    "source-extension link-requirements manifest with inputs has no module: "
+                    f"{manifest_path}"
+                )
+            package = module.split(".", 1)[0]
+            package_root = next(
+                (
+                    candidate
+                    for candidate in manifest_path.parents
+                    if candidate.name == package
+                ),
+                None,
+            )
+            if package_root is None:
+                raise LinkBenchmarkError(
+                    "source-extension manifest path does not reside under its package root "
+                    f"{package!r}: {manifest_path}"
+                )
+        resolved, resolution_errors = resolve_source_extension_link_requirements(
+            requirements,
+            package_root=package_root,
+            manifest_dir=manifest_path.parent,
+        )
+        if resolution_errors:
+            raise LinkBenchmarkError(
+                f"unresolved source-extension link requirements in {manifest_path}: "
+                + "; ".join(resolution_errors)
+            )
+        assert resolved is not None
+        external_link_requirements.append(resolved)
+        inputs[f"external_link_requirements_{index}"] = manifest_path
+        for input_index, link_input in enumerate(resolved.inputs):
+            inputs[f"external_link_input_{index}_{input_index}"] = Path(link_input.path)
     for index, archive in enumerate(external_archives):
         inputs[f"external_archive_{index}"] = archive
     inputs["runtime_link_manifest"] = native_link_dependency_manifest_path(
@@ -910,7 +984,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             source_fingerprint=source_fingerprint,
             stdlib_obj_path=inputs.get("stdlib"),
             external_static_archives=external_archives,
-            external_link_arguments=external_link_arguments,
+            external_link_requirements=external_link_requirements,
             bolt_requested=args.bolt,
         )
 
@@ -1145,12 +1219,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Checksummed source-extension archive included in the measured final link",
     )
     parser.add_argument(
-        "--external-link-argument",
+        "--external-link-requirements-manifest",
         action="append",
         default=[],
         help=(
-            "Source-extension final-link argument included in the measured link; "
-            "use --external-link-argument=<value> for values beginning with '-'"
+            "Typed source-extension manifest whose checksummed final-link requirements "
+            "are included in the measured link"
         ),
     )
     parser.add_argument("--compare", help="drift-compatible baseline report")

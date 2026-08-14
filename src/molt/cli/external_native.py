@@ -59,10 +59,10 @@ from molt.cli.source_extensions import (
     source_extension_manifest_runtime_python_imports,
 )
 from molt.cli.source_extension_link_requirements import (
-    SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
     parse_source_extension_link_requirements,
-    resolve_source_extension_link_arguments,
+    relocate_source_extension_link_inputs,
+    resolve_source_extension_link_requirements,
 )
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
@@ -1264,23 +1264,16 @@ def _validate_external_package_native_artifact(
         )
     )
     errors.extend(f"{package}: {error}" for error in link_requirement_errors)
-    link_arguments: tuple[str, ...] = ()
-    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
+    resolved_link_requirements: SourceExtensionLinkRequirements | None = None
     if link_requirements is not None:
-        resolved_link_arguments, resolution_errors = (
-            resolve_source_extension_link_arguments(
+        resolved_link_requirements, resolution_errors = (
+            resolve_source_extension_link_requirements(
                 link_requirements,
                 package_root=package_dir,
                 manifest_dir=manifest_path.parent,
             )
         )
         errors.extend(f"{package}: {error}" for error in resolution_errors)
-        if resolved_link_arguments is not None:
-            link_arguments = link_requirements.arguments
-            link_inputs = tuple(
-                (item.argument_index, item.path, item.sha256, item.prefix)
-                for item in link_requirements.inputs
-            )
     provided_capsules = _manifest_str_tuple(manifest, "provided_capsules")
     required_capsules = _manifest_object_closure_required_capsules(manifest)
     capsule_requirement_errors = _validate_manifest_source_capsule_requirements(
@@ -1482,8 +1475,13 @@ def _validate_external_package_native_artifact(
             init_symbol=init_symbol,
             runtime_linkage=runtime_linkage,
             artifact_kind=artifact_kind,
-            link_arguments=link_arguments,
-            link_inputs=link_inputs,
+            link_requirements=(
+                link_requirements
+                if resolved_link_requirements is not None
+                else SourceExtensionLinkRequirements(
+                    (target_triple or expected_target_triple).lower()
+                )
+            ),
             support_file_sha256=support_file_sha256,
             provided_capsules=provided_capsules,
             required_capsules=required_capsules,
@@ -2375,14 +2373,11 @@ def _stage_external_native_link_inputs(
     *,
     runtime_root: Path,
     package_source_root: Path,
-) -> tuple[Path, ...]:
-    staged_paths: list[Path] = []
-    for (
-        _argument_index,
-        relative_path,
-        expected_sha256,
-        _prefix,
-    ) in artifact.link_inputs:
+) -> tuple[tuple[str, Path], ...]:
+    staged_paths: list[tuple[str, Path]] = []
+    for link_input in artifact.link_requirements.inputs:
+        relative_path = link_input.path
+        expected_sha256 = link_input.sha256
         relative = Path(relative_path)
         candidates = (
             artifact.manifest_path.parent / relative,
@@ -2414,7 +2409,7 @@ def _stage_external_native_link_inputs(
             expected_sha256=expected_sha256,
             label=f"link input {relative_path}",
         )
-        staged_paths.append(staged_path)
+        staged_paths.append((relative_path, staged_path))
     return tuple(staged_paths)
 
 
@@ -2461,33 +2456,16 @@ def _stage_external_package_native_artifacts_for_build(
             runtime_root=runtime_root,
             package_source_root=package_source_root,
         )
-        staged_link_input_paths = _stage_external_native_link_inputs(
+        staged_link_inputs = _stage_external_native_link_inputs(
             artifact,
             runtime_root=runtime_root,
             package_source_root=package_source_root,
         )
-        staged_link_arguments, staged_link_argument_errors = (
-            resolve_source_extension_link_arguments(
-                SourceExtensionLinkRequirements(
-                    target_triple=artifact.target_triple,
-                    arguments=artifact.link_arguments,
-                    inputs=tuple(
-                        SourceExtensionLinkInput(
-                            argument_index=argument_index,
-                            path=path,
-                            sha256=sha256,
-                            prefix=prefix,
-                        )
-                        for argument_index, path, sha256, prefix in artifact.link_inputs
-                    ),
-                ),
-                package_root=runtime_root,
-                manifest_dir=staged_manifest_path.parent,
-            )
+        staged_link_requirements = relocate_source_extension_link_inputs(
+            artifact.link_requirements,
+            relocated_paths=dict(staged_link_inputs),
         )
-        if staged_link_argument_errors:
-            raise OSError("; ".join(staged_link_argument_errors))
-        assert staged_link_arguments is not None
+        staged_link_input_paths = tuple(path for _relative, path in staged_link_inputs)
         staged_artifacts.append(
             _StagedExternalPackageNativeArtifact(
                 package=artifact.package,
@@ -2507,8 +2485,7 @@ def _stage_external_package_native_artifacts_for_build(
                 init_symbol=artifact.init_symbol,
                 runtime_linkage=artifact.runtime_linkage,
                 artifact_kind=artifact.artifact_kind,
-                link_arguments=staged_link_arguments,
-                link_inputs=artifact.link_inputs,
+                link_requirements=staged_link_requirements,
                 staged_link_input_paths=staged_link_input_paths,
                 support_file_sha256=artifact.support_file_sha256,
                 provided_capsules=artifact.provided_capsules,

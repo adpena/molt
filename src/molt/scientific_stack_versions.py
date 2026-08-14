@@ -1,86 +1,46 @@
-"""Verified NumPy/SciPy/CPython version authority for package custody."""
+"""Verified NumPy/SciPy/CPython compatibility-matrix authority."""
 
 from __future__ import annotations
 
 import ast
 import os
 import re
-import subprocess
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+from molt.cli.source_extension_set_registry import (
+    SourceExtensionRegistry,
+    SourceExtensionSet,
+    SourceExtensionVariant,
+    load_source_extension_registry,
+    source_extension_custody_root,
+    source_extension_set_root,
+)
 from molt.target_python import (
-    TargetPythonVersion,
+    _parse_target_python_version,
     require_known_cpython_coverage_version,
 )
-from molt.dx import checkout_custody
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
-_PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
-_CUSTODY_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-SCIENTIFIC_EXTENSION_EXEC_CAPABILITY = "module.extension.exec"
 SCIENTIFIC_WITNESS_TARGET_TRIPLE = "wasm32-wasip1"
 SCIENTIFIC_WITNESS_ABI_TIER = "cpython-abi"
 
-
-@dataclass(frozen=True)
-class ScientificExtensionSpec:
-    module: str
-    target: str
-    python_exports: tuple[str, ...]
-    capabilities: tuple[str, ...]
-    provided_capsules: tuple[str, ...] = ()
-    exclude_linked_static_libraries: tuple[str, ...] = ()
+_PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 
 
-@dataclass(frozen=True)
-class ScientificExtensionSet:
-    package: str
-    name: str
-    seal_name: str
-    expected_identity_sha256: str
-    build_dependency_group: str
-    meson_setup_args: tuple[str, ...]
-    use_pkg_config: bool
-    required_installed_files: tuple[str, ...]
-    extensions: tuple[ScientificExtensionSpec, ...]
-
-
-@dataclass(frozen=True)
-class ScientificExtensionVariant:
-    """Complete custody coordinate for one target-specific extension set."""
-
-    cpython: str
-    abi_tier: str
-    target_triple: str
-
-    def __post_init__(self) -> None:
-        for field, value in (
-            ("cpython", self.cpython),
-            ("abi_tier", self.abi_tier),
-            ("target_triple", self.target_triple),
-        ):
-            if value != value.strip().lower() or not _CUSTODY_COMPONENT_RE.fullmatch(
-                value
-            ):
-                raise ValueError(
-                    f"scientific extension variant {field} must be a canonical "
-                    f"lowercase custody component, got {value!r}"
-                )
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScientificStackVersion:
     numpy: str
     scipy: str
     cpython: str
     numpy_repo_ref: str
     scipy_repo_ref: str
-    extension_sets: tuple[ScientificExtensionSet, ...]
+    extension_sets: tuple[SourceExtensionSet, ...]
+    source_extension_registry: SourceExtensionRegistry
 
     @property
     def numpy_requirement(self) -> str:
@@ -105,17 +65,13 @@ class ScientificStackVersion:
             "scientific_scipy_repo_ref": self.scipy_repo_ref,
         }
 
-
-def scientific_witness_variant(
-    *,
-    stack: ScientificStackVersion | None = None,
-) -> ScientificExtensionVariant:
-    selected = resolve_scientific_stack() if stack is None else stack
-    return ScientificExtensionVariant(
-        cpython=selected.cpython,
-        abi_tier=SCIENTIFIC_WITNESS_ABI_TIER,
-        target_triple=SCIENTIFIC_WITNESS_TARGET_TRIPLE,
-    )
+    def extension_set(self, package: str, name: str) -> SourceExtensionSet:
+        for extension_set in self.extension_sets:
+            if (extension_set.package, extension_set.name) == (package, name):
+                return extension_set
+        raise ValueError(
+            f"no scientific extension set {package}/{name} in {self.tuple_label}"
+        )
 
 
 def _config_path(config_path: Path | None) -> Path:
@@ -125,168 +81,128 @@ def _config_path(config_path: Path | None) -> Path:
     return Path(override) if override else DEFAULT_CONFIG_PATH
 
 
-def _version(value: Any, *, field: str, path: Path) -> str:
-    if not isinstance(value, str) or not _PUBLIC_VERSION_RE.fullmatch(value):
-        raise ValueError(f"{path}: {field} must be a dotted numeric version")
-    return value
+def _require_exact_keys(
+    value: dict[str, Any], *, expected: set[str], field: str, path: Path
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            f"{path}: {field} keys are invalid: "
+            f"missing={sorted(expected - actual)!r}, unknown={sorted(actual - expected)!r}"
+        )
 
 
 def _string(value: Any, *, field: str, path: Path) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{path}: {field} must be a non-empty string")
-    return value.strip()
-
-
-def _string_tuple(value: Any, *, field: str, path: Path) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"{path}: {field} must be a non-empty string array")
-    return tuple(_string(item, field=field, path=path) for item in value)
-
-
-def _capability_tuple(value: Any, *, field: str, path: Path) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        raise ValueError(f"{path}: {field} must be a string array")
-    capabilities = tuple(_string(item, field=field, path=path) for item in value)
-    if tuple(sorted(set(capabilities))) != capabilities:
-        raise ValueError(
-            f"{path}: {field} must be sorted and contain no duplicate capabilities"
-        )
-    return capabilities
-
-
-def _boolean(value: Any, *, field: str, path: Path) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{path}: {field} must be a boolean")
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError(f"{path}: {field} must be a canonical non-empty string")
     return value
 
 
-def _sha256(value: Any, *, field: str, path: Path) -> str:
+def _version(value: Any, *, field: str, path: Path) -> str:
     text = _string(value, field=field, path=path)
-    if not re.fullmatch(r"[0-9a-f]{64}", text):
-        raise ValueError(f"{path}: {field} must be a lowercase SHA-256 digest")
+    if _PUBLIC_VERSION_RE.fullmatch(text) is None:
+        raise ValueError(f"{path}: {field} must be a dotted numeric version")
     return text
 
 
-def _extension_sets(
-    value: Any, *, field: str, path: Path
-) -> tuple[ScientificExtensionSet, ...]:
+def _string_set(value: Any, *, field: str, path: Path) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
-        raise ValueError(f"{path}: {field} must be a non-empty table array")
-    sets: list[ScientificExtensionSet] = []
-    seen: set[tuple[str, str]] = set()
-    for set_index, raw_set in enumerate(value):
-        set_field = f"{field}[{set_index}]"
-        if not isinstance(raw_set, dict):
-            raise ValueError(f"{path}: {set_field} must be a table")
-        package = _string(
-            raw_set.get("package"), field=f"{set_field}.package", path=path
+        raise ValueError(f"{path}: {field} must be a non-empty string array")
+    values = tuple(_string(item, field=field, path=path) for item in value)
+    if tuple(sorted(set(values))) != values:
+        raise ValueError(f"{path}: {field} must be sorted and duplicate-free")
+    return values
+
+
+def _registry_path(value: Any, *, path: Path) -> Path:
+    raw = _string(value, field="source_extension_registry", path=path)
+    relative = PurePosixPath(raw)
+    if (
+        relative.is_absolute()
+        or raw in {".", ".."}
+        or ".." in relative.parts
+        or "\\" in raw
+        or str(relative) != raw
+    ):
+        raise ValueError(
+            f"{path}: source_extension_registry must be a canonical sibling-relative path"
         )
-        name = _string(raw_set.get("name"), field=f"{set_field}.name", path=path)
-        key = (package, name)
-        if key in seen:
-            raise ValueError(f"{path}: duplicate extension set {package}/{name}")
-        seen.add(key)
-        raw_extensions = raw_set.get("extensions")
-        if not isinstance(raw_extensions, list) or not raw_extensions:
+    return (path.parent / Path(*relative.parts)).resolve()
+
+
+def _extension_set_ref(value: str, *, field: str, path: Path) -> tuple[str, str]:
+    parts = value.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"{path}: {field} must be package/set")
+    return parts[0], parts[1]
+
+
+def _scientific_entry(
+    raw: dict[str, Any],
+    *,
+    index: int,
+    path: Path,
+    registry: SourceExtensionRegistry,
+) -> ScientificStackVersion:
+    field = f"verified[{index}]"
+    _require_exact_keys(
+        raw,
+        expected={"numpy", "scipy", "cpython", "extension_sets"},
+        field=field,
+        path=path,
+    )
+    numpy = _version(raw.get("numpy"), field=f"{field}.numpy", path=path)
+    scipy = _version(raw.get("scipy"), field=f"{field}.scipy", path=path)
+    cpython = _version(raw.get("cpython"), field=f"{field}.cpython", path=path)
+    try:
+        target_python = require_known_cpython_coverage_version(
+            _parse_target_python_version(cpython)
+        )
+    except ValueError as exc:
+        raise ValueError(f"{path}: {field}.cpython is invalid: {exc}") from exc
+    package_versions = {"numpy": numpy, "scipy": scipy}
+    extension_sets: list[SourceExtensionSet] = []
+    for ref_index, raw_ref in enumerate(
+        _string_set(
+            raw.get("extension_sets"), field=f"{field}.extension_sets", path=path
+        )
+    ):
+        package_name, set_name = _extension_set_ref(
+            raw_ref,
+            field=f"{field}.extension_sets[{ref_index}]",
+            path=path,
+        )
+        package_version = package_versions.get(package_name)
+        if package_version is None:
             raise ValueError(
-                f"{path}: {set_field}.extensions must be a non-empty table array"
+                f"{path}: {field}.extension_sets references non-scientific "
+                f"package {package_name!r}"
             )
-        extensions: list[ScientificExtensionSpec] = []
-        seen_modules: set[str] = set()
-        seen_targets: set[str] = set()
-        for extension_index, raw_extension in enumerate(raw_extensions):
-            extension_field = f"{set_field}.extensions[{extension_index}]"
-            if not isinstance(raw_extension, dict):
-                raise ValueError(f"{path}: {extension_field} must be a table")
-            module = _string(
-                raw_extension.get("module"),
-                field=f"{extension_field}.module",
-                path=path,
+        extension_set = registry.extension_set(package_name, package_version, set_name)
+        if not any(
+            expectation.variant.target_python == target_python
+            for expectation in extension_set.variants
+        ):
+            raise ValueError(
+                f"{path}: {raw_ref} has no registered CPython {cpython} variant"
             )
-            target = _string(
-                raw_extension.get("target"),
-                field=f"{extension_field}.target",
-                path=path,
-            )
-            python_exports = _string_tuple(
-                raw_extension.get("python_exports"),
-                field=f"{extension_field}.python_exports",
-                path=path,
-            )
-            capabilities = _capability_tuple(
-                raw_extension.get("capabilities"),
-                field=f"{extension_field}.capabilities",
-                path=path,
-            )
-            if SCIENTIFIC_EXTENSION_EXEC_CAPABILITY not in capabilities:
-                raise ValueError(
-                    f"{path}: {extension_field}.capabilities must include "
-                    f"{SCIENTIFIC_EXTENSION_EXEC_CAPABILITY!r}"
-                )
-            provided_capsules = _capability_tuple(
-                raw_extension.get("provided_capsules", []),
-                field=f"{extension_field}.provided_capsules",
-                path=path,
-            )
-            exclude_linked_static_libraries = _capability_tuple(
-                raw_extension.get("exclude_linked_static_libraries", []),
-                field=f"{extension_field}.exclude_linked_static_libraries",
-                path=path,
-            )
-            if module in seen_modules:
-                raise ValueError(f"{path}: duplicate extension module {module}")
-            if target in seen_targets:
-                raise ValueError(f"{path}: duplicate extension target {target}")
-            seen_modules.add(module)
-            seen_targets.add(target)
-            extensions.append(
-                ScientificExtensionSpec(
-                    module=module,
-                    target=target,
-                    python_exports=python_exports,
-                    capabilities=capabilities,
-                    provided_capsules=provided_capsules,
-                    exclude_linked_static_libraries=(exclude_linked_static_libraries),
-                )
-            )
-        sets.append(
-            ScientificExtensionSet(
-                package=package,
-                name=name,
-                seal_name=_string(
-                    raw_set.get("seal_name"),
-                    field=f"{set_field}.seal_name",
-                    path=path,
-                ),
-                expected_identity_sha256=_sha256(
-                    raw_set.get("expected_identity_sha256"),
-                    field=f"{set_field}.expected_identity_sha256",
-                    path=path,
-                ),
-                build_dependency_group=_string(
-                    raw_set.get("build_dependency_group"),
-                    field=f"{set_field}.build_dependency_group",
-                    path=path,
-                ),
-                meson_setup_args=_string_tuple(
-                    raw_set.get("meson_setup_args"),
-                    field=f"{set_field}.meson_setup_args",
-                    path=path,
-                ),
-                use_pkg_config=_boolean(
-                    raw_set.get("use_pkg_config"),
-                    field=f"{set_field}.use_pkg_config",
-                    path=path,
-                ),
-                required_installed_files=_capability_tuple(
-                    raw_set.get("required_installed_files"),
-                    field=f"{set_field}.required_installed_files",
-                    path=path,
-                ),
-                extensions=tuple(extensions),
-            )
+        extension_sets.append(extension_set)
+    referenced_packages = {item.package for item in extension_sets}
+    if referenced_packages != set(package_versions):
+        raise ValueError(
+            f"{path}: {field}.extension_sets must cover numpy and scipy exactly"
         )
-    return tuple(sets)
+    numpy_package = registry.package("numpy", numpy)
+    scipy_package = registry.package("scipy", scipy)
+    return ScientificStackVersion(
+        numpy=numpy,
+        scipy=scipy,
+        cpython=cpython,
+        numpy_repo_ref=numpy_package.source.commit,
+        scipy_repo_ref=scipy_package.source.commit,
+        extension_sets=tuple(extension_sets),
+        source_extension_registry=registry,
+    )
 
 
 def load_verified_support_matrix(
@@ -301,11 +217,31 @@ def load_verified_support_matrix(
         ) from exc
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"invalid scientific-stack config {path}: {exc}") from exc
-    if payload.get("schema_version") != 4:
-        raise ValueError(f"{path}: schema_version must be 4")
+    _require_exact_keys(
+        payload,
+        expected={
+            "schema_version",
+            "source_extension_registry",
+            "selection",
+            "verified",
+        },
+        field="root",
+        path=path,
+    )
+    if payload.get("schema_version") != 6:
+        raise ValueError(f"{path}: schema_version must be 6")
+    registry = load_source_extension_registry(
+        _registry_path(payload.get("source_extension_registry"), path=path)
+    )
     selection = payload.get("selection")
     if not isinstance(selection, dict):
         raise ValueError(f"{path}: [selection] table is required")
+    _require_exact_keys(
+        selection,
+        expected={"numpy", "scipy", "cpython"},
+        field="selection",
+        path=path,
+    )
     selected = (
         _version(selection.get("numpy"), field="selection.numpy", path=path),
         _version(selection.get("scipy"), field="selection.scipy", path=path),
@@ -319,43 +255,7 @@ def load_verified_support_matrix(
     for index, raw in enumerate(raw_entries):
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: verified[{index}] must be a table")
-        removed_fields = {
-            "numpy_seal_root_candidates",
-            "scipy_primary_seal_root_candidates",
-            "scipy_additional_seal_roots",
-        }.intersection(raw)
-        if removed_fields:
-            fields = ", ".join(sorted(removed_fields))
-            raise ValueError(
-                f"{path}: verified[{index}] uses removed schema-v1 fields: {fields}; "
-                "declare a typed extension_sets entry instead"
-            )
-        entry = ScientificStackVersion(
-            numpy=_version(
-                raw.get("numpy"), field=f"verified[{index}].numpy", path=path
-            ),
-            scipy=_version(
-                raw.get("scipy"), field=f"verified[{index}].scipy", path=path
-            ),
-            cpython=_version(
-                raw.get("cpython"), field=f"verified[{index}].cpython", path=path
-            ),
-            numpy_repo_ref=_string(
-                raw.get("numpy_repo_ref"),
-                field=f"verified[{index}].numpy_repo_ref",
-                path=path,
-            ),
-            scipy_repo_ref=_string(
-                raw.get("scipy_repo_ref"),
-                field=f"verified[{index}].scipy_repo_ref",
-                path=path,
-            ),
-            extension_sets=_extension_sets(
-                raw.get("extension_sets"),
-                field=f"verified[{index}].extension_sets",
-                path=path,
-            ),
-        )
+        entry = _scientific_entry(raw, index=index, path=path, registry=registry)
         key = (entry.numpy, entry.scipy, entry.cpython)
         if key in seen:
             raise ValueError(f"{path}: duplicate verified tuple {entry.tuple_label}")
@@ -370,8 +270,6 @@ def resolve_scientific_stack(
     selected, entries, path = load_verified_support_matrix(config_path)
     for entry in entries:
         if selected == (entry.numpy, entry.scipy, entry.cpython):
-            major, minor = (int(part) for part in entry.cpython.split(".", 1))
-            require_known_cpython_coverage_version(TargetPythonVersion(major, minor, 0))
             return entry
     verified = ", ".join(entry.tuple_label for entry in entries)
     numpy, scipy, cpython = selected
@@ -395,76 +293,31 @@ def apply_scientific_stack_substitutions(value: str) -> str:
 
 
 def scientific_custody_root() -> Path:
-    """Package-seal custody, independent of source-checkout location."""
-    return checkout_custody(ROOT, os.environ).custody_root
+    return source_extension_custody_root()
 
 
-def scientific_extension_set(
-    package: str,
-    name: str,
-    stack: ScientificStackVersion | None = None,
-) -> ScientificExtensionSet:
+def scientific_witness_variant(
+    *, stack: ScientificStackVersion | None = None
+) -> SourceExtensionVariant:
     selected = resolve_scientific_stack() if stack is None else stack
-    for extension_set in selected.extension_sets:
-        if (extension_set.package, extension_set.name) == (package, name):
-            return extension_set
-    raise ValueError(
-        f"no scientific extension set {package}/{name} in {selected.tuple_label}"
-    )
-
-
-def scientific_extension_set_root(
-    extension_set: ScientificExtensionSet,
-    *,
-    variant: ScientificExtensionVariant,
-    stack: ScientificStackVersion | None = None,
-) -> Path:
-    selected = resolve_scientific_stack() if stack is None else stack
-    configured = scientific_extension_set(
-        extension_set.package, extension_set.name, selected
-    )
-    if extension_set != configured:
-        raise ValueError(
-            f"scientific extension set {extension_set.package}/{extension_set.name} "
-            "does not match the selected verified-stack authority"
-        )
-    if variant.cpython != selected.cpython:
-        raise ValueError(
-            f"scientific extension variant CPython {variant.cpython} does not "
-            f"match selected verified-stack CPython {selected.cpython}"
-        )
-    version = {"numpy": selected.numpy, "scipy": selected.scipy}.get(
-        extension_set.package
-    )
-    if version is None:
-        raise ValueError(
-            f"unsupported scientific extension package {extension_set.package!r}"
-        )
-    root = scientific_custody_root()
-    return (
-        root
-        / "package-seals"
-        / extension_set.package
-        / version
-        / "variants"
-        / f"cpython-{variant.cpython}"
-        / variant.abi_tier
-        / variant.target_triple
-        / extension_set.seal_name
+    return SourceExtensionVariant(
+        target_python=_parse_target_python_version(selected.cpython),
+        abi_tier=SCIENTIFIC_WITNESS_ABI_TIER,
+        target_triple=SCIENTIFIC_WITNESS_TARGET_TRIPLE,
     )
 
 
 def scientific_witness_seal_root(
     package: str,
     *,
-    variant: ScientificExtensionVariant,
+    variant: SourceExtensionVariant,
     stack: ScientificStackVersion | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
-    return scientific_extension_set_root(
-        scientific_extension_set(package, "pact-witness", stack=selected),
+    return source_extension_set_root(
+        selected.extension_set(package, "pact-witness"),
         variant=variant,
-        stack=selected,
+        registry=selected.source_extension_registry,
     )
 
 
@@ -495,9 +348,7 @@ def read_numpy_seal_version(root: Path) -> str:
 
 
 def attest_numpy_witness_seal(
-    root: Path,
-    *,
-    stack: ScientificStackVersion | None = None,
+    root: Path, *, stack: ScientificStackVersion | None = None
 ) -> str:
     selected = resolve_scientific_stack() if stack is None else stack
     effective = read_numpy_seal_version(root)
@@ -507,76 +358,3 @@ def attest_numpy_witness_seal(
             f"effective={effective} root={root}"
         )
     return effective
-
-
-def verify_source_checkout(
-    package: str, root: Path, *, stack: ScientificStackVersion | None = None
-) -> None:
-    selected = resolve_scientific_stack() if stack is None else stack
-    expected = {"numpy": selected.numpy_repo_ref, "scipy": selected.scipy_repo_ref}.get(
-        package
-    )
-    if expected is None:
-        raise ValueError(f"unsupported scientific package {package!r}")
-    result = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    actual = result.stdout.strip()
-    if result.returncode != 0 or actual != expected:
-        detail = actual or result.stderr.strip() or f"returncode={result.returncode}"
-        raise ValueError(
-            f"{package} source checkout {root} does not match verified "
-            f"{selected.tuple_label}: expected {expected}, got {detail}"
-        )
-    status = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(root),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    dirty = tuple(line for line in status.stdout.splitlines() if line.strip())
-    if status.returncode != 0 or dirty:
-        detail = (
-            "; ".join(dirty[:8])
-            or status.stderr.strip()
-            or f"returncode={status.returncode}"
-        )
-        suffix = "" if len(dirty) <= 8 else f"; +{len(dirty) - 8} more"
-        raise ValueError(
-            f"{package} source checkout {root} is not a clean immutable input: "
-            f"{detail}{suffix}"
-        )
-
-
-def verify_cpython_abi_headers(
-    *, stack: ScientificStackVersion | None = None, repo_root: Path = ROOT
-) -> None:
-    selected = resolve_scientific_stack() if stack is None else stack
-    python_h = repo_root / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
-    text = python_h.read_text(encoding="utf-8")
-    major_match = re.search(r"^#define PY_MAJOR_VERSION ([0-9]+)$", text, re.MULTILINE)
-    minor_match = re.search(r"^#define PY_MINOR_VERSION ([0-9]+)$", text, re.MULTILINE)
-    actual = (
-        f"{major_match.group(1)}.{minor_match.group(1)}"
-        if major_match and minor_match
-        else "<unresolved>"
-    )
-    if actual != selected.cpython:
-        raise ValueError(
-            f"verified scientific stack requires CPython {selected.cpython}, but "
-            f"{python_h} declares {actual}"
-        )

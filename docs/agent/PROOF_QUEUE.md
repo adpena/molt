@@ -531,7 +531,8 @@ Root selection is authority-driven, not directory-discovery ordered. The queue
 admits exactly the versioned NumPy seal and the configured SciPy
 `pact-witness` set resolved from `config/scientific_stack_versions.toml`. The
 SciPy root lives under
-`C:\Molt\package-seals\scipy\<version>\pact_scipy_witness` on Windows (the
+`C:\Molt\package-seals\scipy\<version>\variants\cpython-<version>\`
+`cpython-abi\wasm32-wasip1\pact_scipy_witness` on Windows (the
 platform custody root, independent of `$MOLT_EXT_ROOT`) and must
 contain the exact configured four-module transaction; historical per-module
 roots under `tmp/` are evidence only and are never unioned or used as fallback.
