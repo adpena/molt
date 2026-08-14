@@ -1062,7 +1062,10 @@ fn bisect_insert(_py: &PyToken<'_>, seq_bits: u64, idx: i64, value_bits: u64) ->
                 if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                     dec_ref_bits(_py, name_bits);
                     let idx_bits = int_bits_from_i64(_py, idx);
-                    let _ = call_callable2(_py, call_bits, idx_bits, value_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_callable2(_py, call_bits, idx_bits, value_bits),
+                    );
                     dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {
                         return None;

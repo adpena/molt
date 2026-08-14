@@ -10,7 +10,7 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> b
         TYPE_ID_DICT | TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL | TYPE_ID_TUPLE
         | TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY | TYPE_ID_RANGE
         | TYPE_ID_MEMORYVIEW => true,
-        TYPE_ID_OBJECT => {
+        type_id if crate::object::heap_kind_has_class_shape(type_id) => {
             // Dict subclasses and arbitrary user mappings: a real `__getitem__`
             // method resolvable on the instance's class MRO.  Mirrors the
             // `TYPE_ID_OBJECT` subscript path in `molt_index`.
@@ -1527,7 +1527,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                                 dec_ref_bits(_py, name_bits);
                                 exception_stack_push();
-                                let _ = call_callable2(_py, call_bits, key_bits, val_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_callable2(_py, call_bits, key_bits, val_bits),
+                                );
                                 dec_ref_bits(_py, call_bits);
                                 if exception_pending(_py) {
                                     exception_stack_pop(_py);
@@ -1554,7 +1557,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                         dec_ref_bits(_py, name_bits);
                         exception_stack_push();
-                        let _ = call_callable2(_py, call_bits, key_bits, val_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable2(_py, call_bits, key_bits, val_bits),
+                        );
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             exception_stack_pop(_py);
@@ -1757,7 +1763,10 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                         dec_ref_bits(_py, name_bits);
                         exception_stack_push();
-                        let _ = call_callable1(_py, call_bits, key_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable1(_py, call_bits, key_bits),
+                        );
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             exception_stack_pop(_py);

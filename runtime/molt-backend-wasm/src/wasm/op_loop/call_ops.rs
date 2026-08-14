@@ -6,7 +6,7 @@ use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use wasm_encoder::Function;
 
 mod code_metadata;
@@ -16,6 +16,8 @@ mod function_object;
 mod local_value_ops;
 mod refcount_ops;
 mod site;
+
+pub(super) use site::CallRetentionLiveness;
 
 pub(super) enum CallOpEmission {
     NotHandled,
@@ -40,10 +42,10 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) arena_local: Option<u32>,
     pub(super) tail_call_count: &'a Cell<usize>,
     pub(super) ops: &'a [OpIR],
-    pub(super) last_use_local: &'m BTreeMap<String, usize>,
+    pub(super) call_liveness: &'m CallRetentionLiveness,
     pub(super) rc_skip_inc: &'m HashSet<usize>,
     pub(super) rc_skip_dec: &'m HashSet<String>,
-    pub(super) rel_idx: usize,
+    pub(super) call_live_idx: usize,
     pub(super) op_idx: usize,
     pub(super) try_stack_is_empty: bool,
 }
@@ -59,9 +61,7 @@ pub(super) fn emit_call_op(
     if let Some(emission) = handled(refcount_ops::emit_refcount_call_op(call_ctx, func, op)) {
         return emission;
     }
-    if let Some(emission) = handled(local_value_ops::emit_local_value_call_op(
-        call_ctx, func, op,
-    )) {
+    if let Some(emission) = handled(local_value_ops::emit_conversion_call_op(call_ctx, func, op)) {
         return emission;
     }
     if let Some(emission) = handled(dynamic::emit_dynamic_call_op(call_ctx, func, op)) {

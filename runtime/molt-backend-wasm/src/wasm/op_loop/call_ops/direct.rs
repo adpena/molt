@@ -82,29 +82,20 @@ fn emit_plain_call(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    let func_ir = call_ctx.func_ir;
     let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
-    let last_use_local = call_ctx.last_use_local;
-    let rel_idx = call_ctx.rel_idx;
+    let call_liveness = call_ctx.call_liveness;
+    let call_live_idx = call_ctx.call_live_idx;
 
     let target_name = op.s_value.as_ref().unwrap();
     let args_names = op.args.as_deref().unwrap_or(&[]);
     let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
     let out = direct_call_result_local(locals, op);
     let live_object_locals =
-        collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
+        collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param =
-        abi_returns_value && call_site_abi.returns_alias_param(target_name, args_names);
-    if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
-        eprintln!(
-            "[molt wasm return-alias] kind=call caller={} callee={}",
-            func_ir.name, target_name
-        );
-    }
     let func_idx = call_site_abi.function_index(target_name, "call");
     let bootstrap_call =
         func_idx == import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit];
@@ -121,7 +112,7 @@ fn emit_plain_call(
     emit_call(func, reloc_enabled, func_idx);
     normalize_direct_call_result(func, abi_returns_value, out.is_some());
     if let Some(out) = out {
-        store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+        store_call_result(func, out);
     }
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
@@ -132,31 +123,22 @@ fn emit_internal_call(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    let func_ir = call_ctx.func_ir;
     let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
     let arena_local = call_ctx.arena_local;
     let tail_call_count = call_ctx.tail_call_count;
-    let last_use_local = call_ctx.last_use_local;
-    let rel_idx = call_ctx.rel_idx;
+    let call_liveness = call_ctx.call_liveness;
+    let call_live_idx = call_ctx.call_live_idx;
 
     let target_name = op.s_value.as_ref().unwrap();
     let args_names = op.args.as_deref().unwrap_or(&[]);
     let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
     let out = direct_call_result_local(locals, op);
     let live_object_locals =
-        collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
+        collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param =
-        abi_returns_value && call_site_abi.returns_alias_param(target_name, args_names);
-    if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
-        eprintln!(
-            "[molt wasm return-alias] kind=call_internal caller={} callee={}",
-            func_ir.name, target_name
-        );
-    }
     let func_idx = call_site_abi.function_index(target_name, "call_internal");
     let is_tail_call = abi_returns_value
         && op.out.as_deref().is_some_and(|out_name| {
@@ -183,7 +165,7 @@ fn emit_internal_call(
     emit_call(func, reloc_enabled, func_idx);
     normalize_direct_call_result(func, abi_returns_value, out.is_some());
     if let Some(out) = out {
-        store_call_result(func, import_ids, reloc_enabled, out, returns_alias_param);
+        store_call_result(func, out);
     }
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
@@ -218,11 +200,11 @@ fn is_tail_call_candidate(
     call_ctx.tail_call_enabled
         && call_ctx.tail_call_eligible
         && call_ctx.try_stack_is_empty
-        && call_ctx.rel_idx + 1 < call_ctx.ops.len()
+        && call_ctx.op_idx + 1 < call_ctx.ops.len()
         && molt_ir::tir::op_kinds_generated::simpleir_return_shape(
-            call_ctx.ops[call_ctx.rel_idx + 1].kind.as_str(),
+            call_ctx.ops[call_ctx.op_idx + 1].kind.as_str(),
         ) == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value
-        && call_ctx.ops[call_ctx.rel_idx + 1]
+        && call_ctx.ops[call_ctx.op_idx + 1]
             .args
             .as_ref()
             .is_some_and(|args| args == &[out_name])

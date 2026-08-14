@@ -31,8 +31,8 @@ pub(super) fn emit_dynamic_call_op(
     let locals = call_ctx.locals;
     let const_cache = call_ctx.const_cache;
     let reloc_enabled = call_ctx.reloc_enabled;
-    let last_use_local = call_ctx.last_use_local;
-    let rel_idx = call_ctx.rel_idx;
+    let call_liveness = call_ctx.call_liveness;
+    let call_live_idx = call_ctx.call_live_idx;
     let op_idx = call_ctx.op_idx;
     match op.kind.as_str() {
         "call_guarded" => {
@@ -279,8 +279,8 @@ pub(super) fn emit_dynamic_call_op(
             let args_names = op.args.as_ref().unwrap();
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
-                last_use_local,
-                rel_idx,
+                call_liveness,
+                call_live_idx,
                 op.out.as_ref(),
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -341,8 +341,8 @@ pub(super) fn emit_dynamic_call_op(
                     let args_names = op.args.as_ref().unwrap();
                     let live_object_locals = collect_live_object_locals_for_call(
                         locals,
-                        last_use_local,
-                        rel_idx,
+                        call_liveness,
+                        call_live_idx,
                         op.out.as_ref(),
                     );
                     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -402,8 +402,8 @@ pub(super) fn emit_dynamic_call_op(
                 }
                 let live_object_locals = collect_live_object_locals_for_call(
                     locals,
-                    last_use_local,
-                    rel_idx,
+                    call_liveness,
+                    call_live_idx,
                     op.out.as_ref(),
                 );
                 retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -436,8 +436,8 @@ pub(super) fn emit_dynamic_call_op(
             let args_names = op.args.as_ref().unwrap();
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
-                last_use_local,
-                rel_idx,
+                call_liveness,
+                call_live_idx,
                 op.out.as_ref(),
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -478,8 +478,8 @@ pub(super) fn emit_dynamic_call_op(
             let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
-                last_use_local,
-                rel_idx,
+                call_liveness,
+                call_live_idx,
                 op.out.as_ref(),
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -517,8 +517,8 @@ pub(super) fn emit_dynamic_call_op(
             let out = locals[op.out.as_ref().unwrap()];
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
-                last_use_local,
-                rel_idx,
+                call_liveness,
+                call_live_idx,
                 op.out.as_ref(),
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);

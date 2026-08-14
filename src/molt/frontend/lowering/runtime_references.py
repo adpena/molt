@@ -110,11 +110,22 @@ class RuntimeReferenceMixin(_MixinBase):
         )
 
     def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue:
+        # Lazy by construction: the WASM ABI generator imports frontend type
+        # metadata while regenerating this fact, so eager module import would
+        # create a generated-source bootstrap cycle.
+        from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+
+        canonical_name = _canonical_intrinsic_runtime_name(runtime_name)
         arity = _intrinsic_arity_exact(runtime_name)
         if arity is None:
             raise KeyError(runtime_name)
+        if canonical_name in WASM_NON_RUNTIME_CALLABLE_INTRINSICS:
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                f"Intrinsic {canonical_name!r} is a raw non-callable ABI",
+            )
         return self._emit_runtime_function_with_defaults(
-            _canonical_intrinsic_runtime_name(runtime_name),
+            canonical_name,
             arity,
             _intrinsic_defaults_exact(runtime_name),
         )
@@ -255,14 +266,9 @@ class RuntimeReferenceMixin(_MixinBase):
             if not (isinstance(default, ast.Constant) and default.value is None):
                 return
         import_alias = None
-        if len(node.body) == 1 and isinstance(node.body[0], ast.Return):
-            ret_stmt = node.body[0]
-        elif (
-            len(node.body) == 2
-            and isinstance(node.body[0], ast.ImportFrom)
-            and isinstance(node.body[1], ast.Return)
-        ):
-            import_stmt = node.body[0]
+        body = list(node.body)
+        if body and isinstance(body[0], ast.ImportFrom):
+            import_stmt = body.pop(0)
             if not self._is_intrinsics_module_name(import_stmt.module):
                 return
             if len(import_stmt.names) != 1:
@@ -271,10 +277,43 @@ class RuntimeReferenceMixin(_MixinBase):
             if alias.name != "require_intrinsic":
                 return
             import_alias = alias.asname or alias.name
-            ret_stmt = node.body[1]
+
+        if len(body) == 1 and isinstance(body[0], ast.Return):
+            ret = body[0].value
+        elif (
+            len(body) == 3
+            and isinstance(body[0], ast.Assign)
+            and len(body[0].targets) == 1
+            and isinstance(body[0].targets[0], ast.Name)
+            and isinstance(body[1], ast.If)
+            and not body[1].orelse
+            and len(body[1].body) == 1
+            and isinstance(body[1].body[0], ast.Raise)
+            and isinstance(body[2], ast.Return)
+            and isinstance(body[2].value, ast.Name)
+            and body[2].value.id == body[0].targets[0].id
+        ):
+            # Strict stdlib modules commonly retain a callable guard around
+            # ``require_intrinsic``.  It is still a transparent intrinsic
+            # wrapper when the assigned value is checked only by
+            # ``if not callable(value): raise`` and then returned unchanged.
+            value_name = body[0].targets[0].id
+            test = body[1].test
+            if not (
+                isinstance(test, ast.UnaryOp)
+                and isinstance(test.op, ast.Not)
+                and isinstance(test.operand, ast.Call)
+                and isinstance(test.operand.func, ast.Name)
+                and test.operand.func.id == "callable"
+                and len(test.operand.args) == 1
+                and isinstance(test.operand.args[0], ast.Name)
+                and test.operand.args[0].id == value_name
+                and not test.operand.keywords
+            ):
+                return
+            ret = body[0].value
         else:
             return
-        ret = ret_stmt.value
         if (
             ret is None
             or not isinstance(ret, ast.Call)

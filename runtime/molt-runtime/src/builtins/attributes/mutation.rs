@@ -517,7 +517,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             Some(obj_ptr),
                             setattr_bits,
                         ) {
-                            let _ = call_callable2(_py, call_bits, attr_bits, val_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_callable2(_py, call_bits, attr_bits, val_bits),
+                            );
+                            dec_ref_bits(_py, call_bits);
                             dec_ref_bits(_py, attr_bits);
                             return MoltObject::none().bits() as i64;
                         }
@@ -540,7 +544,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                     );
                                 }
                                 let inst_bits = instance_bits_for_call(obj_ptr);
-                                let _ = call_function_obj2(_py, set_bits, inst_bits, val_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_function_obj2(_py, set_bits, inst_bits, val_bits),
+                                );
                                 dec_ref_bits(_py, attr_bits);
                                 return MoltObject::none().bits() as i64;
                             }
@@ -557,19 +564,27 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                 let method_obj = obj_from_bits(method_bits);
                                 if let Some(method_ptr) = method_obj.as_ptr() {
                                     if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                                        let _ = call_function_obj3(
+                                        crate::call::discard_owned_call_result(
                                             _py,
-                                            method_bits,
-                                            self_bits,
-                                            inst_bits,
-                                            val_bits,
+                                            call_function_obj3(
+                                                _py,
+                                                method_bits,
+                                                self_bits,
+                                                inst_bits,
+                                                val_bits,
+                                            ),
                                         );
                                     } else {
-                                        let _ =
-                                            call_callable2(_py, method_bits, inst_bits, val_bits);
+                                        crate::call::discard_owned_call_result(
+                                            _py,
+                                            call_callable2(_py, method_bits, inst_bits, val_bits),
+                                        );
                                     }
                                 } else {
-                                    let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                                    crate::call::discard_owned_call_result(
+                                        _py,
+                                        call_callable2(_py, method_bits, inst_bits, val_bits),
+                                    );
                                 }
                                 dec_ref_bits(_py, attr_bits);
                                 return MoltObject::none().bits() as i64;
@@ -636,9 +651,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
             }
-            if type_id == TYPE_ID_OBJECT {
+            if crate::object::heap_kind_has_class_shape(type_id) {
                 let _header = header_from_obj_ptr(obj_ptr);
-                if crate::object::object_poll_fn(obj_ptr) != 0 {
+                if type_id == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0 {
                     return attr_error_with_obj(
                         _py,
                         "object",
@@ -690,7 +705,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             setattr_bits,
                         )
                     {
-                        let _ = call_callable2(_py, call_bits, attr_bits, val_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable2(_py, call_bits, attr_bits, val_bits),
+                        );
+                        dec_ref_bits(_py, call_bits);
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }
@@ -717,7 +736,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                 );
                             }
                             let inst_bits = instance_bits_for_call(obj_ptr);
-                            let _ = call_function_obj2(_py, set_bits, inst_bits, val_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_function_obj2(_py, set_bits, inst_bits, val_bits),
+                            );
                             dec_ref_bits(_py, attr_bits);
                             return MoltObject::none().bits() as i64;
                         }
@@ -733,18 +755,27 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             let method_obj = obj_from_bits(method_bits);
                             if let Some(method_ptr) = method_obj.as_ptr() {
                                 if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                                    let _ = call_function_obj3(
+                                    crate::call::discard_owned_call_result(
                                         _py,
-                                        method_bits,
-                                        self_bits,
-                                        inst_bits,
-                                        val_bits,
+                                        call_function_obj3(
+                                            _py,
+                                            method_bits,
+                                            self_bits,
+                                            inst_bits,
+                                            val_bits,
+                                        ),
                                     );
                                 } else {
-                                    let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                                    crate::call::discard_owned_call_result(
+                                        _py,
+                                        call_callable2(_py, method_bits, inst_bits, val_bits),
+                                    );
                                 }
                             } else {
-                                let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_callable2(_py, method_bits, inst_bits, val_bits),
+                                );
                             }
                             dec_ref_bits(_py, attr_bits);
                             return MoltObject::none().bits() as i64;
@@ -1070,7 +1101,11 @@ pub(crate) unsafe fn del_attr_ptr(
                     if let Some(call_bits) =
                         class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), delattr_bits)
                     {
-                        let _ = call_callable1(_py, call_bits, attr_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable1(_py, call_bits, attr_bits),
+                        );
+                        dec_ref_bits(_py, call_bits);
                         return MoltObject::none().bits() as i64;
                     }
                     if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
@@ -1087,7 +1122,10 @@ pub(crate) unsafe fn del_attr_ptr(
                                 );
                             }
                             let inst_bits = instance_bits_for_call(obj_ptr);
-                            let _ = call_function_obj1(_py, del_bits, inst_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_function_obj1(_py, del_bits, inst_bits),
+                            );
                             return MoltObject::none().bits() as i64;
                         }
                         let del_bits = intern_static_name(
@@ -1102,13 +1140,21 @@ pub(crate) unsafe fn del_attr_ptr(
                             let method_obj = obj_from_bits(method_bits);
                             if let Some(method_ptr) = method_obj.as_ptr() {
                                 if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                                    let _ =
-                                        call_function_obj2(_py, method_bits, self_bits, inst_bits);
+                                    crate::call::discard_owned_call_result(
+                                        _py,
+                                        call_function_obj2(_py, method_bits, self_bits, inst_bits),
+                                    );
                                 } else {
-                                    let _ = call_callable1(_py, method_bits, inst_bits);
+                                    crate::call::discard_owned_call_result(
+                                        _py,
+                                        call_callable1(_py, method_bits, inst_bits),
+                                    );
                                 }
                             } else {
-                                let _ = call_callable1(_py, method_bits, inst_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_callable1(_py, method_bits, inst_bits),
+                                );
                             }
                             return MoltObject::none().bits() as i64;
                         }
@@ -1164,9 +1210,9 @@ pub(crate) unsafe fn del_attr_ptr(
             };
             return attr_error(_py, type_label, attr_name);
         }
-        if type_id == TYPE_ID_OBJECT {
+        if crate::object::heap_kind_has_class_shape(type_id) {
             let _header = header_from_obj_ptr(obj_ptr);
-            if crate::object::object_poll_fn(obj_ptr) != 0 {
+            if type_id == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0 {
                 return attr_error(_py, "object", attr_name);
             }
             let payload = object_payload_size(obj_ptr);
@@ -1207,10 +1253,15 @@ pub(crate) unsafe fn del_attr_ptr(
                             _ => false,
                         };
                         if is_default {
+                            dec_ref_bits(_py, call_bits);
                             return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
                         }
                     }
-                    let _ = call_callable1(_py, call_bits, attr_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_callable1(_py, call_bits, attr_bits),
+                    );
+                    dec_ref_bits(_py, call_bits);
                     return MoltObject::none().bits() as i64;
                 }
                 if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
@@ -1227,7 +1278,10 @@ pub(crate) unsafe fn del_attr_ptr(
                             );
                         }
                         let inst_bits = instance_bits_for_call(obj_ptr);
-                        let _ = call_function_obj1(_py, del_bits, inst_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_function_obj1(_py, del_bits, inst_bits),
+                        );
                         return MoltObject::none().bits() as i64;
                     }
                     let del_bits = intern_static_name(
@@ -1241,12 +1295,21 @@ pub(crate) unsafe fn del_attr_ptr(
                         let method_obj = obj_from_bits(method_bits);
                         if let Some(method_ptr) = method_obj.as_ptr() {
                             if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                                let _ = call_function_obj2(_py, method_bits, self_bits, inst_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_function_obj2(_py, method_bits, self_bits, inst_bits),
+                                );
                             } else {
-                                let _ = call_callable1(_py, method_bits, inst_bits);
+                                crate::call::discard_owned_call_result(
+                                    _py,
+                                    call_callable1(_py, method_bits, inst_bits),
+                                );
                             }
                         } else {
-                            let _ = call_callable1(_py, method_bits, inst_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_callable1(_py, method_bits, inst_bits),
+                            );
                         }
                         return MoltObject::none().bits() as i64;
                     }
@@ -1315,7 +1378,8 @@ pub(crate) unsafe fn object_setattr_raw(
 ) -> i64 {
     unsafe {
         let _header = header_from_obj_ptr(obj_ptr);
-        if crate::object::object_poll_fn(obj_ptr) != 0 {
+        if object_type_id(obj_ptr) == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0
+        {
             return attr_error_with_obj(
                 _py,
                 "object",
@@ -1359,7 +1423,10 @@ pub(crate) unsafe fn object_setattr_raw(
                         );
                     }
                     let inst_bits = instance_bits_for_call(obj_ptr);
-                    let _ = call_function_obj2(_py, set_bits, inst_bits, val_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_function_obj2(_py, set_bits, inst_bits, val_bits),
+                    );
                     return MoltObject::none().bits() as i64;
                 }
                 let set_bits =
@@ -1369,18 +1436,27 @@ pub(crate) unsafe fn object_setattr_raw(
                     let method_obj = obj_from_bits(method_bits);
                     if let Some(method_ptr) = method_obj.as_ptr() {
                         if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                            let _ = call_function_obj3(
+                            crate::call::discard_owned_call_result(
                                 _py,
-                                method_bits,
-                                desc_bits,
-                                inst_bits,
-                                val_bits,
+                                call_function_obj3(
+                                    _py,
+                                    method_bits,
+                                    desc_bits,
+                                    inst_bits,
+                                    val_bits,
+                                ),
                             );
                         } else {
-                            let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_callable2(_py, method_bits, inst_bits, val_bits),
+                            );
                         }
                     } else {
-                        let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable2(_py, method_bits, inst_bits, val_bits),
+                        );
                     }
                     return MoltObject::none().bits() as i64;
                 }
@@ -1498,7 +1574,10 @@ unsafe fn dataclass_setattr_inner(
                         );
                     }
                     let inst_bits = instance_bits_for_call(obj_ptr);
-                    let _ = call_function_obj2(_py, set_bits, inst_bits, val_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_function_obj2(_py, set_bits, inst_bits, val_bits),
+                    );
                     return MoltObject::none().bits() as i64;
                 }
                 let set_bits =
@@ -1508,18 +1587,27 @@ unsafe fn dataclass_setattr_inner(
                     let method_obj = obj_from_bits(method_bits);
                     if let Some(method_ptr) = method_obj.as_ptr() {
                         if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                            let _ = call_function_obj3(
+                            crate::call::discard_owned_call_result(
                                 _py,
-                                method_bits,
-                                desc_bits,
-                                inst_bits,
-                                val_bits,
+                                call_function_obj3(
+                                    _py,
+                                    method_bits,
+                                    desc_bits,
+                                    inst_bits,
+                                    val_bits,
+                                ),
                             );
                         } else {
-                            let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_callable2(_py, method_bits, inst_bits, val_bits),
+                            );
                         }
                     } else {
-                        let _ = call_callable2(_py, method_bits, inst_bits, val_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable2(_py, method_bits, inst_bits, val_bits),
+                        );
                     }
                     return MoltObject::none().bits() as i64;
                 }
@@ -1629,7 +1717,8 @@ pub(crate) unsafe fn object_delattr_raw(
     unsafe {
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         let _header = header_from_obj_ptr(obj_ptr);
-        if crate::object::object_poll_fn(obj_ptr) != 0 {
+        if object_type_id(obj_ptr) == TYPE_ID_OBJECT && crate::object::object_poll_fn(obj_ptr) != 0
+        {
             return attr_error_with_obj(
                 _py,
                 class_name_for_error(object_class_bits(obj_ptr)),
@@ -1665,7 +1754,10 @@ pub(crate) unsafe fn object_delattr_raw(
                     );
                 }
                 let inst_bits = instance_bits_for_call(obj_ptr);
-                let _ = call_function_obj1(_py, del_bits, inst_bits);
+                crate::call::discard_owned_call_result(
+                    _py,
+                    call_function_obj1(_py, del_bits, inst_bits),
+                );
                 return MoltObject::none().bits() as i64;
             }
             let del_bits =
@@ -1675,12 +1767,21 @@ pub(crate) unsafe fn object_delattr_raw(
                 let method_obj = obj_from_bits(method_bits);
                 if let Some(method_ptr) = method_obj.as_ptr() {
                     if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                        let _ = call_function_obj2(_py, method_bits, desc_bits, inst_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_function_obj2(_py, method_bits, desc_bits, inst_bits),
+                        );
                     } else {
-                        let _ = call_callable1(_py, method_bits, inst_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable1(_py, method_bits, inst_bits),
+                        );
                     }
                 } else {
-                    let _ = call_callable1(_py, method_bits, inst_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_callable1(_py, method_bits, inst_bits),
+                    );
                 }
                 return MoltObject::none().bits() as i64;
             }
@@ -1775,7 +1876,10 @@ unsafe fn dataclass_delattr_inner(
                         );
                     }
                     let inst_bits = instance_bits_for_call(obj_ptr);
-                    let _ = call_function_obj1(_py, del_bits, inst_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_function_obj1(_py, del_bits, inst_bits),
+                    );
                     return MoltObject::none().bits() as i64;
                 }
                 let del_bits = intern_static_name(
@@ -1788,12 +1892,21 @@ unsafe fn dataclass_delattr_inner(
                     let method_obj = obj_from_bits(method_bits);
                     if let Some(method_ptr) = method_obj.as_ptr() {
                         if object_type_id(method_ptr) == TYPE_ID_FUNCTION {
-                            let _ = call_function_obj2(_py, method_bits, desc_bits, inst_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_function_obj2(_py, method_bits, desc_bits, inst_bits),
+                            );
                         } else {
-                            let _ = call_callable1(_py, method_bits, inst_bits);
+                            crate::call::discard_owned_call_result(
+                                _py,
+                                call_callable1(_py, method_bits, inst_bits),
+                            );
                         }
                     } else {
-                        let _ = call_callable1(_py, method_bits, inst_bits);
+                        crate::call::discard_owned_call_result(
+                            _py,
+                            call_callable1(_py, method_bits, inst_bits),
+                        );
                     }
                     return MoltObject::none().bits() as i64;
                 }

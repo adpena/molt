@@ -143,14 +143,8 @@ def test_app_export_contract_seals_owned_result_boundary() -> None:
             "ownership": "owned",
         },
         "adapter": {
-            "strategy": "retain-result",
+            "strategy": "forward-owned-result",
             "symbol_prefix": "__molt_export_alias__",
-            "retain_import": {
-                "module": "molt_runtime",
-                "name": "molt_inc_ref_obj",
-                "parameters": ["i64"],
-                "results": [],
-            },
         },
     }
 

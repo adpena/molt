@@ -7,6 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.backend_cache import (
     _nm_candidate_binaries,
@@ -52,8 +53,12 @@ def _runtime_callable_symbols_file(
         stat = runtime_lib.stat()
     except OSError as exc:
         return None, f"runtime staticlib unreadable: {runtime_lib} ({exc})"
+    non_callable_digest = hashlib.sha256(
+        "\0".join(sorted(WASM_NON_RUNTIME_CALLABLE_INTRINSICS)).encode("utf-8")
+    ).hexdigest()[:16]
     cache_path = runtime_lib.with_name(
-        f"{runtime_lib.name}.callable_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
+        f"{runtime_lib.name}.callable_symbols.v2.{non_callable_digest}."
+        f"{stat.st_size}.{int(stat.st_mtime)}.txt"
     )
     if cache_path.exists():
         return cache_path, None
@@ -87,7 +92,11 @@ def _runtime_callable_symbols_file(
                 continue
             kind = parts[-2]
             name = _normalize_native_symbol_name(parts[-1])
-            if kind in ("T", "t") and name.startswith("molt_"):
+            if (
+                kind in ("T", "t")
+                and name.startswith("molt_")
+                and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+            ):
                 candidate_symbols.add(name)
         if not candidate_symbols:
             failures.append(f"{nm_bin}: produced no molt_* text symbols")
@@ -123,7 +132,10 @@ def _runtime_callable_symbols_digest(symbols_file: Path | None) -> str:
         return ""
     payload = json.dumps(
         {
-            "schema": "runtime-callable-symbols-v1",
+            "schema": "runtime-callable-symbols-v2",
+            "non_runtime_callable_intrinsics": sorted(
+                WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+            ),
             "symbols": symbols,
         },
         sort_keys=True,

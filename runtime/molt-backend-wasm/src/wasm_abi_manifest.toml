@@ -57,6 +57,14 @@ static_type = [
 ]
 
 non_runtime_callable_intrinsic = [
+  # Raw CPython-style borrowed-reference APIs are compiler/C-ABI primitives,
+  # never Python-callable function objects.  Every published callable obeys
+  # the single owned-result contract; direct intrinsic lowering retains these
+  # raw borrow semantics without exposing them through callable dispatch.
+  "molt_type_of_borrowed",
+  "molt_dict_getitem_borrowed",
+  "molt_list_getitem_borrowed",
+  "molt_tuple_getitem_borrowed",
   "molt_gpu_prim_create_tensor",
   "molt_gpu_prim_create_tensor_raw",
   "molt_gpu_prim_zeros",
@@ -263,6 +271,13 @@ runtime_name = "molt_cpython_abi_cext_call_trampoline"
 import_name = "cpython_abi_cext_call_trampoline"
 callable_arity = 3
 trampoline_abi = "call_frame"
+
+[[reserved_runtime_callable]]
+index = 23
+runtime_name = "molt_importlib_import_transaction"
+import_name = "importlib_import_transaction"
+callable_arity = 5
+callable_dispatch = "trampoline"
 
 
 [[import]]
@@ -843,6 +858,10 @@ type = 3
 
 [[import]]
 name = "type_of"
+type = 2
+
+[[import]]
+name = "type_of_borrowed"
 type = 2
 
 [[import]]
@@ -1734,6 +1753,10 @@ name = "dict_getitem"
 type = 3
 
 [[import]]
+name = "dict_getitem_borrowed"
+type = 3
+
+[[import]]
 name = "dict_inc"
 type = 5
 
@@ -1883,6 +1906,10 @@ callable_arity = 1
 
 [[import]]
 name = "list_append"
+type = 3
+
+[[import]]
+name = "list_getitem_borrowed"
 type = 3
 
 [[import]]
@@ -2093,6 +2120,10 @@ type = 2
 
 [[import]]
 name = "tuple_getitem"
+type = 3
+
+[[import]]
+name = "tuple_getitem_borrowed"
 type = 3
 
 [[import]]
@@ -3059,10 +3090,6 @@ type = 3
 [[import]]
 name = "importlib_import_transaction"
 type = 12
-runtime_name = "molt_importlib_import_transaction"
-callable_arity = 5
-shared_runtime_callable = true
-callable_dispatch = "trampoline"
 
 [[import]]
 name = "importlib_import_optional"
@@ -4855,6 +4882,12 @@ callable_arity = 3
 name = "weakref_eq"
 type = 3
 runtime_name = "molt_weakref_eq"
+callable_arity = 2
+
+[[import]]
+name = "weakref_ne"
+type = 3
+runtime_name = "molt_weakref_ne"
 callable_arity = 2
 
 [[import]]

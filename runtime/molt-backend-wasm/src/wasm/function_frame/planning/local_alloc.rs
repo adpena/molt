@@ -22,7 +22,10 @@ pub(super) fn ensure_frame_local(
         return idx;
     }
     if as_dead_out && !policy.read_vars.contains(name) && !policy.param_set.contains(name) {
-        locals.insert(name.to_string(), policy.dead_sink_idx);
+        // Preserve the physical slot's synthetic kind on every dead-output
+        // alias. Treating these names as ordinary Value locals lets call-site
+        // retention inspect and INCREF stale bytes left in the shared sink.
+        locals.insert_dead_sink_alias(name.to_string(), policy.dead_sink_idx);
         return policy.dead_sink_idx;
     }
     if let Some(repr) = policy.coalesced_map.get(name)

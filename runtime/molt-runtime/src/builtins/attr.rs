@@ -993,7 +993,9 @@ pub(crate) unsafe fn dir_collect_from_instance(
         // Instead, consult the runtime's internal dict storage for the handful of object
         // categories that actually have one.
         let dict_bits = match object_type_id(obj_ptr) {
-            TYPE_ID_OBJECT => instance_dict_bits(obj_ptr),
+            type_id if crate::object::heap_kind_has_class_shape(type_id) => {
+                instance_dict_bits(obj_ptr)
+            }
             TYPE_ID_DATACLASS => dataclass_dict_bits(obj_ptr),
             TYPE_ID_EXCEPTION => exception_dict_bits(obj_ptr),
             TYPE_ID_MODULE => module_dict_bits(obj_ptr),
@@ -1080,6 +1082,75 @@ fn function_globals_descriptor_bits(_py: &PyToken<'_>) -> u64 {
             MoltObject::from_ptr(prop_ptr).bits()
         },
     )
+}
+
+fn weakref_callback_descriptor_bits(_py: &PyToken<'_>) -> u64 {
+    init_atomic_bits(
+        _py,
+        &runtime_state(_py).special_cache.weakref_callback_descriptor,
+        || {
+            let getter_ptr = alloc_function_obj(_py, fn_addr!(crate::molt_weakref_callback_get), 1);
+            if getter_ptr.is_null() {
+                return 0;
+            }
+            unsafe {
+                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    getter_ptr,
+                    builtin_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(getter_ptr).bits());
+                    return 0;
+                }
+            }
+            let getter_bits = MoltObject::from_ptr(getter_ptr).bits();
+            let none_bits = MoltObject::none().bits();
+            let prop_ptr = alloc_property_obj(_py, getter_bits, none_bits, none_bits);
+            dec_ref_bits(_py, getter_bits);
+            if prop_ptr.is_null() {
+                return 0;
+            }
+            MoltObject::from_ptr(prop_ptr).bits()
+        },
+    )
+}
+
+/// Publish the native ``ReferenceType.__callback__`` descriptor into the
+/// canonical builtin class dictionary after the builtin-class anchor family
+/// itself has been published.
+///
+/// The descriptor depends on the already-published ``property`` and builtin
+/// function classes, so it cannot be constructed while the class graph is
+/// still being assembled.  Keeping it only as a lookup-time synthetic value
+/// made ``ReferenceType.__dict__`` and static descriptor inspection disagree
+/// with ordinary MRO lookup.  This post-publication step leaves one class-dict
+/// authority for get, set, delete, ``dir``, and introspection.
+pub(crate) fn install_weakref_callback_descriptor(_py: &PyToken<'_>) -> bool {
+    let descriptor_bits = weakref_callback_descriptor_bits(_py);
+    if descriptor_bits == 0 || exception_pending(_py) {
+        return false;
+    }
+    let reference_bits = builtin_classes(_py).reference_type;
+    let Some(reference_ptr) = obj_from_bits(reference_bits).as_ptr() else {
+        return false;
+    };
+    let dict_bits = unsafe { class_dict_bits(reference_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return false;
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return false;
+    }
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__callback__") else {
+        return false;
+    };
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, name_bits, descriptor_bits);
+    }
+    dec_ref_bits(_py, name_bits);
+    !exception_pending(_py)
 }
 
 pub(crate) unsafe fn class_attr_lookup_raw_mro(
@@ -1336,7 +1407,7 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     class_ptr: *mut u8,
-    visit: &mut dyn FnMut(*mut u64, u64),
+    visit: &mut dyn FnMut(u64, *mut u64, u64),
 ) {
     unsafe {
         let fields_bits = intern_static_name(
@@ -1347,7 +1418,7 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
         let mro = class_mro_view(_py, class_ptr);
         let payload = crate::object::object_payload_size(obj_ptr);
         let mut seen: Vec<usize> = Vec::new();
-        for class_bits in mro.iter().copied() {
+        for class_bits in mro.iter().rev().copied() {
             let Some(current_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 continue;
             };
@@ -1393,8 +1464,8 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
                 seen.push(offset);
                 let slot = obj_ptr.add(offset) as *mut u64;
                 let val = *slot;
-                if val != 0 && obj_from_bits(val).as_ptr().is_some() {
-                    visit(slot, val);
+                if val != 0 {
+                    visit(pair[0], slot, val);
                 }
             }
         }
@@ -1554,7 +1625,9 @@ pub(crate) unsafe fn attr_lookup_ptr_any(
     unsafe {
         crate::gil_assert();
         match object_type_id(obj_ptr) {
-            TYPE_ID_OBJECT => object_attr_lookup_raw(_py, obj_ptr, attr_bits),
+            type_id if crate::object::heap_kind_has_class_shape(type_id) => {
+                object_attr_lookup_raw(_py, obj_ptr, attr_bits)
+            }
             TYPE_ID_DATACLASS => dataclass_attr_lookup_raw(_py, obj_ptr, attr_bits),
             _ => attr_lookup_ptr(_py, obj_ptr, attr_bits),
         }
@@ -1751,9 +1824,50 @@ pub(crate) struct SlotsInfo {
     pub(crate) allows_weakref: bool,
 }
 
+/// Canonical admission policy for the two layout-owned instance attributes.
+/// This must run before MRO descriptor binding: builtin roots may publish
+/// class-level descriptors named `__dict__`/`__weakref__`, but those do not
+/// create storage on exact slots-only instances.
+pub(crate) unsafe fn class_instance_layout_attr_allowed(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<bool> {
+    unsafe {
+        let dict_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
+        if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
+            return Some(class_slots_info(_py, class_ptr).is_none_or(|info| info.allows_dict));
+        }
+        let weakref_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.weakref_name,
+            b"__weakref__",
+        );
+        if obj_eq(
+            _py,
+            obj_from_bits(attr_bits),
+            obj_from_bits(weakref_name_bits),
+        ) {
+            return Some(class_slots_info(_py, class_ptr).is_none_or(|info| info.allows_weakref));
+        }
+        None
+    }
+}
+
 pub(crate) unsafe fn class_slots_info(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<SlotsInfo> {
     unsafe {
         crate::gil_assert();
+        if MoltObject::from_ptr(class_ptr).bits() == builtin_classes(_py).reference_type {
+            // The native ReferenceType root has neither a managed instance
+            // dictionary nor weakref support. User subclasses without
+            // `__slots__` acquire both through the ordinary MRO scan below;
+            // slots-only KeyedRef intentionally acquires neither.
+            return Some(SlotsInfo {
+                allows_dict: false,
+                allows_weakref: false,
+            });
+        }
         let slots_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.slots_name, b"__slots__");
         let dict_name_bits =
@@ -2340,17 +2454,18 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             obj_from_bits(weakref_name_bits),
         ) {
             if let Some(class_ptr) = class_ptr_opt
-                && let Some(info) = class_slots_info(_py, class_ptr)
-                && !info.allows_weakref
+                && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
             {
                 return None;
             }
-            return Some(MoltObject::none().bits());
+            return Some(crate::object::weakref::weakref_head_for_target(
+                _py,
+                MoltObject::from_ptr(obj_ptr).bits(),
+            ));
         }
         if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
             if let Some(class_ptr) = class_ptr_opt
-                && let Some(info) = class_slots_info(_py, class_ptr)
-                && !info.allows_dict
+                && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
             {
                 return None;
             }
@@ -2461,7 +2576,7 @@ pub(crate) struct MethodIcResolution {
 /// Class-side resolution for the fused method fast path (everything except the
 /// per-instance shadow check).  Returns the resolved plain-function method plus
 /// the `(class_bits, class_version)` IC key and a `can_shadow` flag.  Returns
-/// `None` for any shape the unbound fast path does not cover (non-OBJECT type,
+/// `None` for any shape the unbound fast path does not cover (non-class type,
 /// custom `__getattribute__`, data descriptor, non-function attr).
 ///
 /// # Safety
@@ -2474,7 +2589,7 @@ pub(crate) unsafe fn object_method_ic_resolve(
     unsafe {
         crate::gil_assert();
         let type_id = object_type_id(obj_ptr);
-        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+        if !crate::object::heap_kind_has_class_shape(type_id) && type_id != TYPE_ID_DATACLASS {
             return None;
         }
         let class_bits = object_class_bits(obj_ptr);

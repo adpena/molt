@@ -119,12 +119,45 @@ class ComprehensionMixin(_MixinBase):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
-        # Generator expressions are lazy after the outermost iterable is
-        # evaluated. Eager materialisation changes exception and side-effect
-        # timing, so genexprs always use the poll-function lowering.
-        cell_vars = self._collect_comprehension_cell_vars(node)
+        # CPython evaluates AND iterates the outermost iterable at generator
+        # construction time; only the loop body and every nested iterable are
+        # lazy.  Transport that already-created iterator into the poll frame as
+        # an ordinary closure cell.  Deferring the outer expression into the
+        # state-machine body changes exception/side-effect ordering and also
+        # leaves its one-shot expression temporaries under the legacy poll RC
+        # lane instead of the enclosing function's DropInsertion authority.
         func_symbol = self._genexpr_symbol()
         poll_func_name = f"{func_symbol}_poll"
+        outer = node.generators[0]
+        outer_value = self.visit(outer.iter)
+        if outer_value is None:
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                "Unsupported generator-expression outer iterable",
+            )
+        outer_iter = (
+            self._emit_aiter(outer_value)
+            if outer.is_async
+            else self._emit_iter_new(outer_value)
+        )
+        outer_iter_name = f"__molt_genexpr_outer_iter_{self.genexpr_counter}"
+        outer_iter_expr = ast.copy_location(
+            ast.Name(id=outer_iter_name, ctx=ast.Load()), outer.iter
+        )
+        poll_outer = ast.comprehension(
+            target=outer.target,
+            iter=outer_iter_expr,
+            ifs=outer.ifs,
+            is_async=outer.is_async,
+        )
+        poll_node = ast.copy_location(
+            ast.GeneratorExp(
+                elt=node.elt,
+                generators=[poll_outer, *node.generators[1:]],
+            ),
+            node,
+        )
+        cell_vars = self._collect_comprehension_cell_vars(poll_node)
         prev_func = self.current_func_name
         free_vars: list[str] = []
         free_var_hints: dict[str, str] = {}
@@ -133,7 +166,7 @@ class ComprehensionMixin(_MixinBase):
         module_namedexpr_targets: set[str] = set()
         if self.current_func_name == "molt_main":
             module_namedexpr_targets = self._collect_namedexpr_targets_comprehension(
-                node
+                poll_node
             )
             if module_namedexpr_targets:
                 self.module_global_mutations.update(module_namedexpr_targets)
@@ -147,7 +180,8 @@ class ComprehensionMixin(_MixinBase):
                     self.globals.pop(name, None)
                     self.exact_locals.pop(name, None)
                     self.boxed_locals.pop(name, None)
-        free_vars = self._collect_free_vars_comprehension(node)
+        free_vars = self._collect_free_vars_comprehension(poll_node)
+        free_vars = [name for name in free_vars if name != outer_iter_name]
         if self.current_func_name == "molt_main":
             # CPython resolves module-scope comprehension names as globals, not
             # closure-captured cells. Capturing them here can clobber module
@@ -168,17 +202,24 @@ class ComprehensionMixin(_MixinBase):
                 free_var_hints[name] = hint or "Any"
             closure_items = self._closure_cells_for(free_vars)
             closure_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
+            self.emit(
+                MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
+            )
             has_closure = True
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.GENERATOR,
             poll_symbol=poll_func_name,
-            param_count=0,
+            # CPython passes the eagerly-created outer iterator as the hidden
+            # ``.0`` generator-function parameter. Model that as a real task
+            # payload parameter, not as a synthetic closure cell: payload
+            # layout then stays identical for direct genexprs and the
+            # list/set/dict materialization paths on every backend.
+            param_count=1,
             has_closure=has_closure,
             gen_control_size=GEN_CONTROL_SIZE,
         )
         yield_stmt = ast.Expr(value=ast.Yield(value=node.elt))
-        body = self._build_comprehension_body(node.generators, [yield_stmt])
+        body = self._build_comprehension_body(poll_node.generators, [yield_stmt])
         assigned = self._collect_assigned_names(body)
         del_targets = self._collect_deleted_names(body)
         prev_state = self._capture_function_state()
@@ -201,6 +242,8 @@ class ComprehensionMixin(_MixinBase):
             self.async_closure_offset = frame_plan.async_closure_offset
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
+        self.async_public_hints[outer_iter_name] = outer_iter.type_hint or "Any"
+        self._async_local_offset(outer_iter_name)
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         for name in cell_vars:
@@ -258,6 +301,7 @@ class ComprehensionMixin(_MixinBase):
         args: list[MoltValue] = []
         if has_closure and closure_val is not None:
             args.append(closure_val)
+        args.append(outer_iter)
         self.emit(
             MoltOp(
                 kind="ALLOC_TASK",

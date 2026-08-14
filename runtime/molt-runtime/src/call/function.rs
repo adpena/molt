@@ -8,9 +8,9 @@ use crate::{
     exception_stack_baseline_get, exception_stack_baseline_set, frame_stack_pop,
     frame_stack_push_function, function_arity, function_attr_bits, function_closure_bits,
     function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
-    inc_ref_bits, intern_static_name, is_truthy, molt_exception_clear, obj_from_bits,
-    object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
-    runtime_state, type_name,
+    intern_static_name, is_truthy, molt_exception_clear, obj_from_bits, object_type_id,
+    profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit, runtime_state,
+    type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -2876,30 +2876,15 @@ pub(crate) unsafe fn call_function_obj_trampoline(
                 func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
             }
         };
-        #[cfg(target_arch = "wasm32")]
-        inc_ref_bits(_py, res);
+        // The trampoline is the raw function-call boundary on every target:
+        // fresh results and argument aliases both arrive with the callee's one
+        // owned result reference. A WASM-only retain here duplicated every
+        // fresh heap result before CallArgs teardown and made trampoline
+        // dispatch observably leak relative to fixed-arity and native calls.
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
     }
-}
-
-/// Return an owned result when a direct call returns one of its borrowed args.
-///
-/// `call_function_obj_bound_vec` is intentionally raw because the CallArgs
-/// binder has its own builder-slot protection. Public direct-call boundaries
-/// use this helper so generated code and Rust intrinsics both observe the same
-/// owned-result ABI even when a Python function implements `return arg`.
-#[inline]
-pub(crate) unsafe fn protect_borrowed_args_aliased_return(
-    _py: &PyToken<'_>,
-    result: u64,
-    args: &[u64],
-) -> u64 {
-    if args.contains(&result) {
-        inc_ref_bits(_py, result);
-    }
-    result
 }
 
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
@@ -2915,8 +2900,7 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
         {
             return crate::call::bind::call_function_obj_via_positional_bind(_py, func_bits, args);
         }
-        let result = call_function_obj_bound_vec(_py, func_bits, args);
-        protect_borrowed_args_aliased_return(_py, result, args)
+        call_function_obj_bound_vec(_py, func_bits, args)
     }
 }
 
@@ -2986,8 +2970,7 @@ pub(crate) unsafe fn call_function_obj_bound_vec(
 mod tests {
     use super::{
         enforce_no_pending_on_success, fixed_arity_call_target_ptr,
-        fixed_arity_trampoline_target_ptr, protect_borrowed_args_aliased_return,
-        should_force_trampoline_for_fixed_arity_call,
+        fixed_arity_trampoline_target_ptr, should_force_trampoline_for_fixed_arity_call,
     };
     use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
@@ -3015,11 +2998,13 @@ mod tests {
         out
     }
 
-    extern "C" fn identity_returns_arg(arg_bits: u64) -> i64 {
+    extern "C" fn identity_returns_owned_arg(arg_bits: u64) -> i64 {
+        crate::molt_inc_ref_obj(arg_bits);
         arg_bits as i64
     }
 
     extern "C" fn return_varargs_tuple(_self_bits: u64, args_bits: u64, _kwargs_bits: u64) -> i64 {
+        crate::molt_inc_ref_obj(args_bits);
         args_bits as i64
     }
 
@@ -3089,12 +3074,12 @@ mod tests {
     }
 
     #[test]
-    fn public_vec_call_promotes_borrowed_arg_alias_return() {
+    fn public_vec_call_preserves_callee_owned_arg_alias_return() {
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                identity_returns_arg as *const () as usize as u64,
+                identity_returns_owned_arg as *const () as usize as u64,
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -3328,12 +3313,12 @@ mod tests {
     }
 
     #[test]
-    fn call_func_fast1_promotes_borrowed_arg_alias_return() {
+    fn call_func_fast1_preserves_callee_owned_arg_alias_return() {
         init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                identity_returns_arg as *const () as usize as u64,
+                identity_returns_owned_arg as *const () as usize as u64,
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -3350,16 +3335,6 @@ mod tests {
                 "call_func fast path returns an owned alias"
             );
 
-            let protected =
-                unsafe { protect_borrowed_args_aliased_return(_py, result, &[list_bits]) };
-            assert_eq!(protected, result);
-            assert_eq!(
-                ref_count(result),
-                3,
-                "canonical alias protector retains exactly once per returned owner"
-            );
-
-            dec_ref_bits(_py, protected);
             dec_ref_bits(_py, result);
             dec_ref_bits(_py, list_bits);
             dec_ref_bits(_py, func_bits);

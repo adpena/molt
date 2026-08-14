@@ -1,5 +1,4 @@
 use crate::builtins::frames::{frame_stack_pop, frame_stack_push_function};
-use crate::call::function::protect_borrowed_args_aliased_return;
 use crate::call::require_call_attr;
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
@@ -118,7 +117,8 @@ pub(crate) unsafe fn dispatch_init_subclass_hooks(
             for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
                 let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
             }
-            let _ = molt_call_bind(init_bits, builder_bits);
+            let init_result = molt_call_bind(init_bits, builder_bits);
+            crate::call::discard_owned_call_result(_py, init_result);
             dec_ref_bits(_py, init_bits);
             if exception_pending(_py) {
                 return false;
@@ -502,9 +502,17 @@ unsafe fn call_type_with_builder(
                             for (&k, &v) in kw_names.iter().zip(kw_values.iter()) {
                                 let _ = molt_callargs_push_kw(init_builder, k, v);
                             }
-                            let _init_result = molt_call_bind(init_bits, init_builder);
+                            let init_result = molt_call_bind(init_bits, init_builder);
+                            if !crate::call::class_init::consume_init_result(_py, init_result) {
+                                dec_ref_bits(_py, new_class_bits);
+                                if !kw_names.is_empty() {
+                                    dec_ref_bits(_py, kwargs_bits);
+                                }
+                                return MoltObject::none().bits();
+                            }
                         }
                         if exception_pending(_py) {
+                            dec_ref_bits(_py, new_class_bits);
                             if !kw_names.is_empty() {
                                 dec_ref_bits(_py, kwargs_bits);
                             }
@@ -1009,15 +1017,14 @@ unsafe fn call_type_with_builder(
             inc_ref_bits(_py, inst_bits);
             (*args_ptr).pos.insert(0, inst_bits);
         }
-        let _ = molt_call_bind(init_bits, builder_bits);
+        let init_result = molt_call_bind(init_bits, builder_bits);
         dec_ref_bits(_py, init_bits);
         // Full-binding `__init__` (`*args`/`**kwargs`/keyword-only) lands here
-        // instead of the IC fast path. If it raised, surface the exception
-        // rather than returning the partially-constructed instance — the IC fast
-        // path (try_call_bind_ic_fast TYPE_CALL lane) already does this; routing
-        // through the shared helper keeps the two paths from re-diverging
-        // (task #60).
-        crate::call::class_init::resolve_construct_after_init(_py, inst_bits)
+        // instead of the IC fast path. Consume and validate its owned result,
+        // surfacing either a pending exception or a non-None return rather than
+        // returning the partially-constructed instance. The IC fast path routes
+        // through the same authority.
+        crate::call::class_init::resolve_construct_after_init(_py, inst_bits, init_result)
     }
 }
 
@@ -1330,80 +1337,9 @@ pub(crate) unsafe fn callargs_detach_owned(
     }
 }
 
-/// Protect a call result from callargs cleanup.
-///
-/// When `molt_call_bind` (or its IC fast-path) calls the target function, the
-/// callee may return one of the values that was passed through the CallArgs
-/// builder. The `PtrDropGuard` will dec-ref the entire CallArgs (including all
-/// stored positional and keyword values) as soon as the enclosing scope exits.
-/// If the return value aliases a stored value, that dec-ref would free it before
-/// the caller can use it — a use-after-free.
-///
-/// This function checks whether `result` bit-equals any value in the CallArgs
-/// positional or keyword-value slots. If so, it inc-refs `result` so that the
-/// caller receives an independently-owned reference that survives the CallArgs
-/// cleanup.
-///
-/// # Safety
-/// `args_ptr` must be null or point to a valid `CallArgs`.
-unsafe fn protect_callargs_aliased_return(
-    _py: &PyToken<'_>,
-    result: u64,
-    args_ptr: *mut CallArgs,
-) -> u64 {
-    unsafe { protect_callargs_aliased_return_with_extra(_py, result, args_ptr, &[]) }
-}
-
-unsafe fn protect_bound_args_or_callargs_aliased_return(
-    _py: &PyToken<'_>,
-    result: u64,
-    args_ptr: *mut CallArgs,
-    bound_args: &[u64],
-) -> u64 {
-    unsafe {
-        if bound_args.contains(&result) {
-            inc_ref_bits(_py, result);
-            return result;
-        }
-        protect_callargs_aliased_return(_py, result, args_ptr)
-    }
-}
-
-/// Protect a call result from cleanup of builder-owned values plus any
-/// additional synthesized owned arguments passed outside the builder.
-///
-/// Some fast-path IC lanes synthesize a receiver locally instead of pushing it
-/// through `CallArgs`. If the callee returns that synthesized receiver (for
-/// example `return self`), the caller must still receive an owned reference
-/// that survives surrounding cleanup.
-unsafe fn protect_callargs_aliased_return_with_extra(
-    _py: &PyToken<'_>,
-    result: u64,
-    args_ptr: *mut CallArgs,
-    extra_owned: &[u64],
-) -> u64 {
-    unsafe {
-        if extra_owned.contains(&result) {
-            inc_ref_bits(_py, result);
-            return result;
-        }
-        if !args_ptr.is_null() {
-            let args = &*args_ptr;
-            for &val in args.pos.iter().chain(args.kw_values.iter()) {
-                if val == result {
-                    inc_ref_bits(_py, result);
-                    break;
-                }
-            }
-        }
-        result
-    }
-}
-
 unsafe fn call_capi_method_with_bound_args(
     _py: &PyToken<'_>,
     func_bits: u64,
-    args_ptr: *mut CallArgs,
     args: &CallArgs,
 ) -> u64 {
     unsafe {
@@ -1434,15 +1370,11 @@ unsafe fn call_capi_method_with_bound_args(
             kwargs_owned = true;
             MoltObject::from_ptr(dict_ptr).bits()
         };
-        let mut result = call_function_obj_bound_vec(_py, func_bits, &[tuple_bits, kwargs_bits]);
-        if result == tuple_bits || (kwargs_owned && result == kwargs_bits) {
-            inc_ref_bits(_py, result);
-        }
+        let result = call_function_obj_bound_vec(_py, func_bits, &[tuple_bits, kwargs_bits]);
         dec_ref_bits(_py, tuple_bits);
         if kwargs_owned {
             dec_ref_bits(_py, kwargs_bits);
         }
-        result = protect_callargs_aliased_return(_py, result, args_ptr);
         result
     }
 }
@@ -2412,8 +2344,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 && args.kw_names.is_empty()
                 && !function_raw_positional_call_needs_binding(_py, func_ptr, args.pos.len())
             {
-                let result = call_function_obj_bound_vec(_py, func_bits, args.pos.as_slice());
-                return protect_callargs_aliased_return(_py, result, args_ptr);
+                return call_function_obj_bound_vec(_py, func_bits, args.pos.as_slice());
             }
             let bind_kind_bits = function_attr_bits(
                 _py,
@@ -2428,33 +2359,21 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN)
             {
                 if let Some(bound_args) = builtin_args::bind_builtin_open(_py, args) {
-                    let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_bound_args_or_callargs_aliased_return(
-                        _py,
-                        result,
-                        args_ptr,
-                        bound_args.as_slice(),
-                    );
+                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
                 }
                 return MoltObject::none().bits();
             }
             if let Some(kind_bits) = bind_kind_bits
                 && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
             {
-                return call_capi_method_with_bound_args(_py, func_bits, args_ptr, args);
+                return call_capi_method_with_bound_args(_py, func_bits, args);
             }
             if fn_ptr == fn_addr!(dict_update_method) {
                 return builtin_args::bind_builtin_dict_update(_py, args);
             }
             if fn_ptr == fn_addr!(molt_open_builtin) {
                 if let Some(bound_args) = builtin_args::bind_builtin_open(_py, args) {
-                    let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_bound_args_or_callargs_aliased_return(
-                        _py,
-                        result,
-                        args_ptr,
-                        bound_args.as_slice(),
-                    );
+                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
                 }
                 return MoltObject::none().bits();
             }
@@ -2491,30 +2410,18 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     else {
                         return MoltObject::none().bits();
                     };
-                    let result = crate::builtins::exceptions::molt_exception_init_owned(
+                    return crate::builtins::exceptions::molt_exception_init_owned(
                         function_closure_bits(func_ptr),
                         bound_args[0],
                         bound_args[1],
                         bound_args[2],
                         bound_args[3],
                     );
-                    return protect_bound_args_or_callargs_aliased_return(
-                        _py,
-                        result,
-                        args_ptr,
-                        bound_args.as_slice(),
-                    );
                 }
                 if let Some(bound_args) =
                     builtin_args::bind_builtin_call(_py, func_bits, func_ptr, args)
                 {
-                    let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_bound_args_or_callargs_aliased_return(
-                        _py,
-                        result,
-                        args_ptr,
-                        bound_args.as_slice(),
-                    );
+                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
                 }
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -2919,13 +2826,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 return obj_bits;
             }
-            let result = call_function_obj_bound_vec(_py, func_bits, final_args.as_slice());
-            protect_bound_args_or_callargs_aliased_return(
-                _py,
-                result,
-                args_ptr,
-                final_args.as_slice(),
-            )
+            call_function_obj_bound_vec(_py, func_bits, final_args.as_slice())
         }
     })
 }
@@ -2938,7 +2839,7 @@ mod tests {
         clear_call_bind_ic_cache, ic_tls_insert, ic_tls_lookup, method_ic_call_plan,
         try_call_bind_ic_fast, type_epoch_matches, type_resolution_epoch_is_stable,
     };
-    use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
+    use super::trace_call_type_builder_enabled_raw;
     use crate::object::builders::{alloc_list, alloc_tuple};
     use crate::{
         TYPE_ID_OBJECT, dec_ref_bits, obj_from_bits, object_type_id, ptr_from_bits, runtime_state,
@@ -2952,7 +2853,8 @@ mod tests {
         }) as i64
     }
 
-    extern "C" fn compiled_identity_returns_arg(arg_bits: u64) -> i64 {
+    extern "C" fn compiled_identity_returns_owned_arg(arg_bits: u64) -> i64 {
+        crate::molt_inc_ref_obj(arg_bits);
         arg_bits as i64
     }
 
@@ -2971,7 +2873,8 @@ mod tests {
         });
     }
 
-    extern "C" fn compiled_second_arg_returns_arg(_first_bits: u64, second_bits: u64) -> i64 {
+    extern "C" fn compiled_second_arg_returns_owned_arg(_first_bits: u64, second_bits: u64) -> i64 {
+        crate::molt_inc_ref_obj(second_bits);
         second_bits as i64
     }
 
@@ -2984,37 +2887,12 @@ mod tests {
     }
 
     #[test]
-    fn protect_aliased_return_with_extra_inc_refs_synthesized_owner() {
-        crate::with_gil_entry_nopanic!(_py, {
-            let list_ptr = alloc_list(_py, &[MoltObject::from_int(1).bits()]);
-            assert!(!list_ptr.is_null());
-            let list_bits = MoltObject::from_ptr(list_ptr).bits();
-            let before =
-                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
-            let protected = unsafe {
-                protect_callargs_aliased_return_with_extra(
-                    _py,
-                    list_bits,
-                    std::ptr::null_mut(),
-                    &[list_bits],
-                )
-            };
-            assert_eq!(protected, list_bits);
-            let after =
-                unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
-            assert_eq!(after, before + 1);
-            crate::dec_ref_bits(_py, list_bits);
-            crate::dec_ref_bits(_py, list_bits);
-        });
-    }
-
-    #[test]
-    fn call_bind_builtin_full_binding_promotes_callargs_aliased_return() {
+    fn call_bind_builtin_full_binding_preserves_callee_owned_alias_return() {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_arg as *const (),
+                    compiled_identity_returns_owned_arg as *const (),
                 ),
                 1,
             );
@@ -3040,7 +2918,7 @@ mod tests {
                 unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
             assert_eq!(
                 rc, 1,
-                "call_bind must promote argument aliases before dropping CallArgs"
+                "CallArgs teardown must preserve the callee-owned return"
             );
 
             dec_ref_bits(_py, result_bits);
@@ -3049,12 +2927,12 @@ mod tests {
     }
 
     #[test]
-    fn call_bind_builtin_default_padded_argv_promotes_aliased_return() {
+    fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 crate::provenance::abi::expose_function_address(
-                    compiled_second_arg_returns_arg as *const (),
+                    compiled_second_arg_returns_owned_arg as *const (),
                 ),
                 2,
             );
@@ -3102,7 +2980,7 @@ mod tests {
                 unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
             assert_eq!(
                 after_call, 2,
-                "call_bind must promote returns aliasing default-padded argv"
+                "default cleanup must preserve the callee-owned return"
             );
 
             dec_ref_bits(_py, result_bits);
@@ -3116,12 +2994,10 @@ mod tests {
     // `resolve_construct_after_init` is the single authority every construct
     // path (the IC fast path AND the full-binding `call_type_with_builder`
     // ForwardArgs arm AND `call_class_init_with_args`) routes through after
-    // `__init__` runs. The invariant: it returns the instance iff no exception
-    // is pending; on a pending exception it drops the instance's owning
-    // reference and returns the `none` sentinel so the construct-site
-    // `check_exception` / IC propagation guards fire. A constructor `__init__`
-    // raise must NEVER be swallowed (it was, for full-binding `__init__`,
-    // before this fix).
+    // `__init__` runs. The invariant: it consumes the owned init result and
+    // returns the instance iff no exception is pending and the result was
+    // `None`; otherwise it drops the instance and returns the `none` sentinel
+    // so construct-site propagation guards fire.
     // ------------------------------------------------------------------
 
     #[test]
@@ -3134,8 +3010,13 @@ mod tests {
                 unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
             assert_eq!(crate::molt_exception_pending(), 0, "no exception expected");
             // No pending exception: the owning reference is handed back as-is.
-            let out =
-                unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
+            let out = unsafe {
+                crate::call::class_init::resolve_construct_after_init(
+                    _py,
+                    inst_bits,
+                    MoltObject::none().bits(),
+                )
+            };
             assert_eq!(out, inst_bits, "must return the constructed instance");
             let after =
                 unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
@@ -3170,8 +3051,13 @@ mod tests {
                 "exception must be pending"
             );
 
-            let out =
-                unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
+            let out = unsafe {
+                crate::call::class_init::resolve_construct_after_init(
+                    _py,
+                    inst_bits,
+                    MoltObject::none().bits(),
+                )
+            };
             assert!(
                 MoltObject::from_bits(out).is_none(),
                 "a pending __init__ exception must yield the None sentinel, not the instance"
@@ -3193,6 +3079,44 @@ mod tests {
             assert_eq!(crate::molt_exception_pending(), 0);
             // Release the extra reference taken above.
             dec_ref_bits(_py, inst_bits);
+        });
+    }
+
+    #[test]
+    fn resolve_construct_after_init_rejects_and_consumes_non_none_result() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let inst_ptr = alloc_list(_py, &[MoltObject::from_int(11).bits()]);
+            let result_ptr = alloc_list(_py, &[MoltObject::from_int(13).bits()]);
+            assert!(!inst_ptr.is_null());
+            assert!(!result_ptr.is_null());
+            let inst_bits = MoltObject::from_ptr(inst_ptr).bits();
+            let result_bits = MoltObject::from_ptr(result_ptr).bits();
+            super::inc_ref_bits(_py, inst_bits);
+            super::inc_ref_bits(_py, result_bits);
+            let inst_before =
+                unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).ref_count_snapshot() };
+            let result_before =
+                unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() };
+
+            let out = unsafe {
+                crate::call::class_init::resolve_construct_after_init(_py, inst_bits, result_bits)
+            };
+            assert!(MoltObject::from_bits(out).is_none());
+            assert_eq!(crate::molt_exception_pending(), 1);
+            assert_eq!(
+                unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).ref_count_snapshot() },
+                inst_before - 1,
+                "invalid __init__ return must consume the constructed instance"
+            );
+            assert_eq!(
+                unsafe { (*crate::object::header_from_obj_ptr(result_ptr)).ref_count_snapshot() },
+                result_before - 1,
+                "invalid __init__ return must consume its owned call result"
+            );
+
+            let _ = crate::molt_exception_clear();
+            dec_ref_bits(_py, inst_bits);
+            dec_ref_bits(_py, result_bits);
         });
     }
 
@@ -3464,7 +3388,7 @@ mod tests {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_arg as *const (),
+                    compiled_identity_returns_owned_arg as *const (),
                 ),
                 1,
             );
@@ -3478,7 +3402,7 @@ mod tests {
             };
             let entry = CallBindIcEntry {
                 fn_ptr: crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_arg as *const (),
+                    compiled_identity_returns_owned_arg as *const (),
                 ),
                 target_bits: 0,
                 class_bits: 0,

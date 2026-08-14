@@ -84,6 +84,33 @@ WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
 
 WASM_STATIC_TYPE_COUNT: int = 49
 
+WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({
+    "molt_dict_getitem_borrowed",
+    "molt_gpu_prim_binary",
+    "molt_gpu_prim_cast",
+    "molt_gpu_prim_create_tensor",
+    "molt_gpu_prim_create_tensor_raw",
+    "molt_gpu_prim_device",
+    "molt_gpu_prim_expand",
+    "molt_gpu_prim_flip",
+    "molt_gpu_prim_pad",
+    "molt_gpu_prim_permute",
+    "molt_gpu_prim_read_data_raw",
+    "molt_gpu_prim_reduce",
+    "molt_gpu_prim_reduce_all",
+    "molt_gpu_prim_reshape",
+    "molt_gpu_prim_shape",
+    "molt_gpu_prim_shrink",
+    "molt_gpu_prim_ternary",
+    "molt_gpu_prim_unary",
+    "molt_gpu_prim_zeros",
+    "molt_gpu_prim_zeros_dtype",
+    "molt_json_parse_scalar",
+    "molt_list_getitem_borrowed",
+    "molt_tuple_getitem_borrowed",
+    "molt_type_of_borrowed",
+})
+
 WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "types_bootstrap",
     "abc_bootstrap",
@@ -203,6 +230,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "super_builtin",
     "super_new",
     "type_of",
+    "type_of_borrowed",
     "bound_method_new",
     "closure_load",
     "closure_store",
@@ -395,6 +423,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "dict_from_obj",
     "dict_get",
     "dict_getitem",
+    "dict_getitem_borrowed",
     "dict_inc",
     "dict_items",
     "dict_keys",
@@ -428,6 +457,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "len_str",
     "len_tuple",
     "list_append",
+    "list_getitem_borrowed",
     "list_builder_append",
     "list_contains",
     "list_builder_finish",
@@ -478,6 +508,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "tuple_count",
     "tuple_from_list",
     "tuple_getitem",
+    "tuple_getitem_borrowed",
     "tuple_index",
     "zip_builtin",
     "ascii_from_obj",
@@ -1018,6 +1049,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "weakref_refs",
     "weakref_register",
     "weakref_eq",
+    "weakref_ne",
     "weakref_repr",
     "ws_close",
     "ws_connect",
@@ -1030,6 +1062,28 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "ws_send_obj",
     "ws_wait",
     "ws_wait_new",
+    "type_call",
+    "type_new",
+    "type_init",
+    "object_init",
+    "object_init_subclass",
+    "exception_new_bound",
+    "exception_init",
+    "exceptiongroup_init",
+    "types_mappingproxy_new",
+    "types_mappingproxy_init",
+    "types_method_new",
+    "types_method_init",
+    "types_simplenamespace_init",
+    "types_capsule_new",
+    "types_cell_new",
+    "types_dynamic_class_attr_init",
+    "types_coroutine",
+    "types_get_original_bases",
+    "types_prepare_class",
+    "types_resolve_bases",
+    "types_new_class",
+    "cpython_abi_cext_call_trampoline",
     "tk_available",
     "tk_app_new",
     "tk_quit",
@@ -3016,10 +3070,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "fcntl_f_setfd",
     "fcntl_fd_cloexec",
     "fcntl_o_nonblock",
-    "type_of_borrowed",
-    "dict_getitem_borrowed",
-    "list_getitem_borrowed",
-    "tuple_getitem_borrowed",
     "profile_epoch_reset",
     "profile_epoch_dump",
     "xml_element_new",
@@ -3309,7 +3359,6 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_importlib_find_spec_orchestrate", "importlib_find_spec_orchestrate", 5, "i64"),
     ("molt_importlib_frozen_external_payload", "importlib_frozen_external_payload", 2, "i64"),
     ("molt_importlib_frozen_payload", "importlib_frozen_payload", 2, "i64"),
-    ("molt_importlib_import_transaction", "importlib_import_transaction", 5, "i64"),
     ("molt_importlib_import_optional", "importlib_import_optional", 1, "i64"),
     ("molt_importlib_import_or_fallback", "importlib_import_or_fallback", 2, "i64"),
     ("molt_importlib_import_required", "importlib_import_required", 1, "i64"),
@@ -3613,6 +3662,7 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_weakref_refs", "weakref_refs", 1, "i64"),
     ("molt_weakref_register", "weakref_register", 3, "i64"),
     ("molt_weakref_eq", "weakref_eq", 2, "i64"),
+    ("molt_weakref_ne", "weakref_ne", 2, "i64"),
     ("molt_weakref_repr", "weakref_repr", 1, "i64"),
     ("molt_ws_close", "ws_close", 1, "void"),
     ("molt_ws_connect_obj", "ws_connect_obj", 1, "i64"),
@@ -5607,10 +5657,6 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_fcntl_f_setfd", "fcntl_f_setfd", 0, "i64"),
     ("molt_fcntl_fd_cloexec", "fcntl_fd_cloexec", 0, "i64"),
     ("molt_fcntl_o_nonblock", "fcntl_o_nonblock", 0, "i64"),
-    ("molt_type_of_borrowed", "type_of_borrowed", 1, "i64"),
-    ("molt_dict_getitem_borrowed", "dict_getitem_borrowed", 2, "i64"),
-    ("molt_list_getitem_borrowed", "list_getitem_borrowed", 2, "i64"),
-    ("molt_tuple_getitem_borrowed", "tuple_getitem_borrowed", 2, "i64"),
     ("molt_profile_epoch_reset", "profile_epoch_reset", 1, "i64"),
     ("molt_profile_epoch_dump", "profile_epoch_dump", 0, "i64"),
     ("molt_xml_element_new", "xml_element_new", 2, "i64"),
@@ -5678,9 +5724,14 @@ WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {
     for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS
 }
 
-WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {
-    runtime_name: arity
-    for _index, runtime_name, _import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES
+WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME: dict[str, tuple[str, int, str]] = {
+    runtime_name: (import_name, arity, "i64")
+    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES
+}
+
+WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT: dict[str, tuple[str, int, str]] = {
+    import_name: (runtime_name, arity, "i64")
+    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES
 }
 
 WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {
@@ -5688,19 +5739,24 @@ WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {
         runtime_name: arity
         for runtime_name, _import_name, arity, _result in WASM_RUNTIME_CALLABLE_IMPORTS
     },
-    **WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME,
+    **{
+        runtime_name: spec[1]
+        for runtime_name, spec in WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.items()
+    },
 }
 
 def wasm_runtime_callable_spec(name: str) -> tuple[str, int, str] | None:
     return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(
         name
-    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(name)
+    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(
+        name
+    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.get(
+        name
+    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT.get(name)
 
 def wasm_runtime_callable_arity(name: str) -> int | None:
     spec = wasm_runtime_callable_spec(name)
-    if spec is not None:
-        return spec[1]
-    return WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME.get(name)
+    return None if spec is None else spec[1]
 
 def wasm_runtime_callable_result(name: str) -> str | None:
     spec = wasm_runtime_callable_spec(name)
@@ -5825,6 +5881,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("super_builtin", ("i64", "i64"), ("i64",)),
     ("super_new", ("i64", "i64"), ("i64",)),
     ("type_of", ("i64",), ("i64",)),
+    ("type_of_borrowed", ("i64",), ("i64",)),
     ("bound_method_new", ("i64", "i64"), ("i64",)),
     ("closure_load", ("i64", "i64"), ("i64",)),
     ("closure_store", ("i64", "i64", "i64"), ("i64",)),
@@ -6017,6 +6074,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("dict_from_obj", ("i64",), ("i64",)),
     ("dict_get", ("i64", "i64", "i64"), ("i64",)),
     ("dict_getitem", ("i64", "i64"), ("i64",)),
+    ("dict_getitem_borrowed", ("i64", "i64"), ("i64",)),
     ("dict_inc", ("i64", "i64", "i64"), ("i64",)),
     ("dict_items", ("i64",), ("i64",)),
     ("dict_keys", ("i64",), ("i64",)),
@@ -6050,6 +6108,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("len_str", ("i64",), ("i64",)),
     ("len_tuple", ("i64",), ("i64",)),
     ("list_append", ("i64", "i64"), ("i64",)),
+    ("list_getitem_borrowed", ("i64", "i64"), ("i64",)),
     ("list_builder_append", ("i64", "i64"), ()),
     ("list_contains", ("i64", "i64"), ("i64",)),
     ("list_builder_finish", ("i64",), ("i64",)),
@@ -6100,6 +6159,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("tuple_count", ("i64", "i64"), ("i64",)),
     ("tuple_from_list", ("i64",), ("i64",)),
     ("tuple_getitem", ("i64", "i64"), ("i64",)),
+    ("tuple_getitem_borrowed", ("i64", "i64"), ("i64",)),
     ("tuple_index", ("i64", "i64"), ("i64",)),
     ("zip_builtin", ("i64", "i64"), ("i64",)),
     ("ascii_from_obj", ("i64",), ("i64",)),
@@ -6640,6 +6700,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("weakref_refs", ("i64",), ("i64",)),
     ("weakref_register", ("i64", "i64", "i64"), ("i64",)),
     ("weakref_eq", ("i64", "i64"), ("i64",)),
+    ("weakref_ne", ("i64", "i64"), ("i64",)),
     ("weakref_repr", ("i64",), ("i64",)),
     ("ws_close", ("i64",), ()),
     ("ws_connect", ("i32", "i64", "i32"), ("i32",)),
@@ -6652,6 +6713,28 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("ws_send_obj", ("i64", "i64"), ("i64",)),
     ("ws_wait", ("i64",), ("i64",)),
     ("ws_wait_new", ("i64", "i64", "i64"), ("i64",)),
+    ("type_call", ("i64",), ("i64",)),
+    ("type_new", ("i64", "i64", "i64", "i64", "i64"), ("i64",)),
+    ("type_init", ("i64", "i64", "i64", "i64", "i64"), ("i64",)),
+    ("object_init", ("i64",), ("i64",)),
+    ("object_init_subclass", ("i64",), ("i64",)),
+    ("exception_new_bound", ("i64", "i64"), ("i64",)),
+    ("exception_init", ("i64", "i64"), ("i64",)),
+    ("exceptiongroup_init", ("i64", "i64"), ("i64",)),
+    ("types_mappingproxy_new", ("i64", "i64"), ("i64",)),
+    ("types_mappingproxy_init", ("i64", "i64"), ("i64",)),
+    ("types_method_new", ("i64", "i64", "i64"), ("i64",)),
+    ("types_method_init", ("i64", "i64", "i64"), ("i64",)),
+    ("types_simplenamespace_init", ("i64", "i64", "i64"), ("i64",)),
+    ("types_capsule_new", ("i64",), ("i64",)),
+    ("types_cell_new", ("i64",), ("i64",)),
+    ("types_dynamic_class_attr_init", ("i64", "i64", "i64"), ("i64",)),
+    ("types_coroutine", ("i64",), ("i64",)),
+    ("types_get_original_bases", ("i64",), ("i64",)),
+    ("types_prepare_class", ("i64", "i64"), ("i64",)),
+    ("types_resolve_bases", ("i64", "i64"), ("i64",)),
+    ("types_new_class", ("i64", "i64"), ("i64",)),
+    ("cpython_abi_cext_call_trampoline", ("i64", "i64", "i64"), ("i64",)),
     ("tk_available", (), ("i64",)),
     ("tk_app_new", ("i64",), ("i64",)),
     ("tk_quit", ("i64",), ("i64",)),
@@ -8638,10 +8721,6 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("fcntl_f_setfd", (), ("i64",)),
     ("fcntl_fd_cloexec", (), ("i64",)),
     ("fcntl_o_nonblock", (), ("i64",)),
-    ("type_of_borrowed", ("i64",), ("i64",)),
-    ("dict_getitem_borrowed", ("i64", "i64"), ("i64",)),
-    ("list_getitem_borrowed", ("i64", "i64"), ("i64",)),
-    ("tuple_getitem_borrowed", ("i64", "i64"), ("i64",)),
     ("profile_epoch_reset", ("i64",), ("i64",)),
     ("profile_epoch_dump", (), ("i64",)),
     ("xml_element_new", ("i64", "i64"), ("i64",)),
@@ -9039,7 +9118,6 @@ WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {
         "molt_importlib_find_spec_orchestrate": "importlib_find_spec_orchestrate",
         "molt_importlib_frozen_external_payload": "importlib_frozen_external_payload",
         "molt_importlib_frozen_payload": "importlib_frozen_payload",
-        "molt_importlib_import_transaction": "importlib_import_transaction",
         "molt_importlib_import_optional": "importlib_import_optional",
         "molt_importlib_import_or_fallback": "importlib_import_or_fallback",
         "molt_importlib_import_required": "importlib_import_required",
@@ -9343,6 +9421,7 @@ WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {
         "molt_weakref_refs": "weakref_refs",
         "molt_weakref_register": "weakref_register",
         "molt_weakref_eq": "weakref_eq",
+        "molt_weakref_ne": "weakref_ne",
         "molt_weakref_repr": "weakref_repr",
         "molt_ws_close": "ws_close",
         "molt_ws_connect_obj": "ws_connect_obj",
@@ -11337,10 +11416,6 @@ WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {
         "molt_fcntl_f_setfd": "fcntl_f_setfd",
         "molt_fcntl_fd_cloexec": "fcntl_fd_cloexec",
         "molt_fcntl_o_nonblock": "fcntl_o_nonblock",
-        "molt_type_of_borrowed": "type_of_borrowed",
-        "molt_dict_getitem_borrowed": "dict_getitem_borrowed",
-        "molt_list_getitem_borrowed": "list_getitem_borrowed",
-        "molt_tuple_getitem_borrowed": "tuple_getitem_borrowed",
         "molt_profile_epoch_reset": "profile_epoch_reset",
         "molt_profile_epoch_dump": "profile_epoch_dump",
         "molt_xml_element_new": "xml_element_new",
@@ -11492,6 +11567,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("super_builtin", "molt_super_builtin"),
     ("super_new", "molt_super_new"),
     ("type_of", "molt_type_of"),
+    ("type_of_borrowed", "molt_type_of_borrowed"),
     ("bound_method_new", "molt_bound_method_new"),
     ("closure_load", "molt_closure_load"),
     ("closure_store", "molt_closure_store"),
@@ -11684,6 +11760,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("dict_from_obj", "molt_dict_from_obj"),
     ("dict_get", "molt_dict_get"),
     ("dict_getitem", "molt_dict_getitem"),
+    ("dict_getitem_borrowed", "molt_dict_getitem_borrowed"),
     ("dict_inc", "molt_dict_inc"),
     ("dict_items", "molt_dict_items"),
     ("dict_keys", "molt_dict_keys"),
@@ -11717,6 +11794,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("len_str", "molt_len_str"),
     ("len_tuple", "molt_len_tuple"),
     ("list_append", "molt_list_append"),
+    ("list_getitem_borrowed", "molt_list_getitem_borrowed"),
     ("list_builder_append", "molt_list_builder_append"),
     ("list_contains", "molt_list_contains"),
     ("list_builder_finish", "molt_list_builder_finish"),
@@ -11767,6 +11845,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("tuple_count", "molt_tuple_count"),
     ("tuple_from_list", "molt_tuple_from_list"),
     ("tuple_getitem", "molt_tuple_getitem"),
+    ("tuple_getitem_borrowed", "molt_tuple_getitem_borrowed"),
     ("tuple_index", "molt_tuple_index"),
     ("zip_builtin", "molt_zip_builtin"),
     ("ascii_from_obj", "molt_ascii_from_obj"),
@@ -12307,6 +12386,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("weakref_refs", "molt_weakref_refs"),
     ("weakref_register", "molt_weakref_register"),
     ("weakref_eq", "molt_weakref_eq"),
+    ("weakref_ne", "molt_weakref_ne"),
     ("weakref_repr", "molt_weakref_repr"),
     ("ws_close", "molt_ws_close"),
     ("ws_connect", "molt_ws_connect"),
@@ -12319,6 +12399,28 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("ws_send_obj", "molt_ws_send_obj"),
     ("ws_wait", "molt_ws_wait"),
     ("ws_wait_new", "molt_ws_wait_new"),
+    ("type_call", "molt_type_call"),
+    ("type_new", "molt_type_new"),
+    ("type_init", "molt_type_init"),
+    ("object_init", "molt_object_init"),
+    ("object_init_subclass", "molt_object_init_subclass"),
+    ("exception_new_bound", "molt_exception_new_bound"),
+    ("exception_init", "molt_exception_init"),
+    ("exceptiongroup_init", "molt_exceptiongroup_init"),
+    ("types_mappingproxy_new", "molt_types_mappingproxy_new"),
+    ("types_mappingproxy_init", "molt_types_mappingproxy_init"),
+    ("types_method_new", "molt_types_method_new"),
+    ("types_method_init", "molt_types_method_init"),
+    ("types_simplenamespace_init", "molt_types_simplenamespace_init"),
+    ("types_capsule_new", "molt_types_capsule_new"),
+    ("types_cell_new", "molt_types_cell_new"),
+    ("types_dynamic_class_attr_init", "molt_types_dynamic_class_attr_init"),
+    ("types_coroutine", "molt_types_coroutine"),
+    ("types_get_original_bases", "molt_types_get_original_bases"),
+    ("types_prepare_class", "molt_types_prepare_class"),
+    ("types_resolve_bases", "molt_types_resolve_bases"),
+    ("types_new_class", "molt_types_new_class"),
+    ("cpython_abi_cext_call_trampoline", "molt_cpython_abi_cext_call_trampoline"),
     ("tk_available", "molt_tk_available"),
     ("tk_app_new", "molt_tk_app_new"),
     ("tk_quit", "molt_tk_quit"),
@@ -14305,10 +14407,6 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("fcntl_f_setfd", "molt_fcntl_f_setfd"),
     ("fcntl_fd_cloexec", "molt_fcntl_fd_cloexec"),
     ("fcntl_o_nonblock", "molt_fcntl_o_nonblock"),
-    ("type_of_borrowed", "molt_type_of_borrowed"),
-    ("dict_getitem_borrowed", "molt_dict_getitem_borrowed"),
-    ("list_getitem_borrowed", "molt_list_getitem_borrowed"),
-    ("tuple_getitem_borrowed", "molt_tuple_getitem_borrowed"),
     ("profile_epoch_reset", "molt_profile_epoch_reset"),
     ("profile_epoch_dump", "molt_profile_epoch_dump"),
     ("xml_element_new", "molt_xml_element_new"),

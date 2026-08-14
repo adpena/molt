@@ -132,6 +132,12 @@ pub(crate) fn weakref_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> 
             fn_addr!(molt_weakref_eq),
             2,
         )),
+        "__ne__" => Some(builtin_func_bits(
+            _py,
+            &cache.weakref_ne,
+            fn_addr!(molt_weakref_ne),
+            2,
+        )),
         "__repr__" => Some(builtin_func_bits(
             _py,
             &cache.weakref_repr,

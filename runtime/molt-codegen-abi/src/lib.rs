@@ -823,10 +823,21 @@ impl MoltRefCount {
     where
         F: Fn() -> bool,
     {
+        self.try_retain_live_previous(is_deallocating).is_some()
+    }
+
+    /// Upgrade non-owning custody and return the linearized prior owner count.
+    /// Consumers that mirror ownership into a sidecar use this exact transition
+    /// value to update the sidecar in the same outer transaction.
+    #[inline(always)]
+    pub fn try_retain_live_previous<F>(&self, is_deallocating: F) -> Option<u32>
+    where
+        F: Fn() -> bool,
+    {
         let mut current = self.snapshot_acquire();
         loop {
             let Ok(next) = live_upgrade_next(current, is_deallocating()) else {
-                return false;
+                return None;
             };
             match self.0.compare_exchange_weak(
                 current,
@@ -834,7 +845,7 @@ impl MoltRefCount {
                 core::sync::atomic::Ordering::Acquire,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
-                Ok(_) => return true,
+                Ok(_) => return Some(current),
                 Err(observed) => current = observed,
             }
         }
@@ -1289,6 +1300,8 @@ mod tests {
         assert_eq!(counter.snapshot_owned(), 9);
         assert!(counter.try_retain_live(|| false));
         assert_eq!(counter.snapshot_acquire(), 10);
+        assert_eq!(counter.try_retain_live_previous(|| false), Some(10));
+        assert_eq!(counter.snapshot_acquire(), 11);
     }
 
     #[test]

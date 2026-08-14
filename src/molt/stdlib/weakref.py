@@ -66,16 +66,18 @@ _MISSING = object()
 class KeyedRef(ReferenceType):
     __slots__ = ("key",)
 
-    def __new__(cls, obj, callback, key):
-        return ReferenceType.__new__(cls, obj, callback)
+    def __new__(type, ob, callback, key):
+        self = ReferenceType.__new__(type, ob, callback)
+        self.key = key
+        return self
 
     def __init__(
         self,
-        obj: object,
+        ob: object,
         callback: Callable[[ReferenceType], object] | None,
         key: object,
     ) -> None:
-        self.key = key
+        ReferenceType.__init__(self, ob, callback)
 
 
 class ProxyType:
@@ -420,7 +422,6 @@ class WeakKeyDictionary:
         if _molt_weakcontainer_store_probe(state, key, value, key_hash):
             return
         key_ref = ReferenceType(key, self._remove)
-        key_ref._hash = key_hash
         _molt_weakcontainer_store_commit(
             state, key, value, key_ref, key_hash
         )
@@ -692,7 +693,6 @@ class WeakSet:
         if _molt_weakcontainer_store_probe(state, item, item, item_hash):
             return
         item_ref = ReferenceType(item, self._remove)
-        item_ref._hash = item_hash
         _molt_weakcontainer_store_commit(
             state, item, item, item_ref, item_hash
         )

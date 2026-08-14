@@ -364,6 +364,39 @@ class TestWasmOptReduction:
 class TestWasmOptAtomicPublication:
     """The canonical optimizer never exposes an unvalidated intermediate."""
 
+    def test_optimizer_staging_name_is_bounded_for_long_final_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tools.wasm_optimize as mod
+
+        source = tmp_path / "input.wasm"
+        destination = tmp_path / (("nested-atomic-output-" * 12) + ".wasm")
+        source.write_bytes(_exported_func_module("kept"))
+        _mock_wasm_opt_executable(mod, tmp_path, monkeypatch)
+        staged: list[Path] = []
+
+        def fake_guarded(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            staged_output = _staged_output_from_command(cmd)
+            staged.append(staged_output)
+            process = subprocess.CompletedProcess(cmd, 124, "", "timeout")
+            process.timed_out = True
+            return process
+
+        monkeypatch.setattr(
+            mod.harness_memory_guard, "guarded_completed_process", fake_guarded
+        )
+
+        result = mod.optimize(source, output_path=destination, level="Oz")
+
+        assert result["status"] == "timeout"
+        assert len(staged) == 1
+        assert staged[0].parent == destination.parent
+        assert staged[0].name.startswith(".wasm-opt-")
+        assert staged[0].suffix == ".wasm"
+        assert len(staged[0].name) <= 64
+        assert destination.name not in staged[0].name
+        assert not staged[0].exists()
+
     def test_o1_default_policy_does_not_converge(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -40,7 +40,12 @@ pub(super) fn emit_dispatch_op(
     match op.kind.as_str() {
         "state_switch" => {
             require_stateful(mode, func_ir, idx, op);
-            emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
+            let resume_state_local = locals
+                .resume_state_local
+                .expect("resume state local missing for stateful wasm");
+            func.instruction(&Instruction::LocalGet(resume_state_local));
+            func.instruction(&Instruction::LocalSet(locals.state_local));
+            func.instruction(&Instruction::Br(depth));
             true
         }
         "aiter" if mode == DispatchMode::Stateful => {
