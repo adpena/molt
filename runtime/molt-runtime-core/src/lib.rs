@@ -7,6 +7,8 @@
 pub use molt_obj_model::MoltObject;
 pub use molt_obj_model::{opaque_handle_bits, register_ptr, resolve_opaque_ptr, resolve_ptr};
 
+pub mod float_repr;
+
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)
 // ---------------------------------------------------------------------------

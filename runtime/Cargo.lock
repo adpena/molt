@@ -2570,6 +2570,7 @@ dependencies = [
  "libloading 0.9.0",
  "molt-cpython-abi-test-support",
  "molt-lang-obj-model",
+ "molt-runtime-platform",
  "once_cell",
  "parking_lot",
  "unicode-properties",
@@ -2721,6 +2722,8 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]

@@ -36,7 +36,6 @@ pub(crate) mod aux_header;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
-pub mod float_repr;
 pub(crate) mod foreign;
 pub(crate) mod gc;
 #[allow(dead_code)]
