@@ -18,6 +18,7 @@ from molt.cli.models import _ExternalNativeCallableExport
 from molt.cli.source_extension_link_requirements import (
     parse_source_extension_link_requirements,
 )
+from molt.cli.source_extension_target import source_extension_artifact_kind
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     native_callable_abi_choices,
@@ -44,9 +45,6 @@ _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
 _LIBMOLT_SOURCE_RUNTIME_LINKAGES = frozenset({"static_link"})
-_LIBMOLT_SOURCE_ARTIFACT_KINDS = frozenset(
-    {"wasm_relocatable_object", "static_archive"}
-)
 _EXTENSION_SUPPORT_FILE_SUFFIXES = (".molt.wasm", ".o", ".a", ".py")
 
 
@@ -139,9 +137,7 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
         if not isinstance(runtime_python_import_modules, list) or not all(
             isinstance(item, str) for item in runtime_python_import_modules
         ):
-            errors.append(
-                "runtime_python_import_modules must be a list of strings"
-            )
+            errors.append("runtime_python_import_modules must be a list of strings")
     return errors
 
 
@@ -643,12 +639,6 @@ def _extension_binary_suffix(target_triple: str | None = None) -> str:
     return ".so"
 
 
-def _manifest_target_is_wasm(target_triple: Any) -> bool:
-    return isinstance(target_triple, str) and target_triple.strip().lower().startswith(
-        "wasm32"
-    )
-
-
 def _host_target_triple() -> str:
     system = platform.system().lower()
     arch = platform.machine().lower() or "unknown"
@@ -793,30 +783,20 @@ def _validate_extension_manifest(
                     "libmolt_source extensions"
                 )
             artifact_kind = manifest.get("artifact_kind")
-            if (
-                artifact_kind is not None
-                and artifact_kind not in _LIBMOLT_SOURCE_ARTIFACT_KINDS
-            ):
-                errors.append(
-                    "artifact_kind must be one of "
-                    f"{sorted(_LIBMOLT_SOURCE_ARTIFACT_KINDS)} for "
-                    "libmolt_source extensions"
-                )
-            target_is_wasm = _manifest_target_is_wasm(manifest.get("target_triple"))
             if runtime_linkage == "static_link":
-                expected_artifact_kinds = (
-                    {"wasm_relocatable_object", "static_archive"}
-                    if target_is_wasm
-                    else {"static_archive"}
+                target_triple = manifest.get("target_triple")
+                expected_artifact_kind = (
+                    source_extension_artifact_kind(target_triple)
+                    if isinstance(target_triple, str)
+                    else None
                 )
-                if artifact_kind not in expected_artifact_kinds:
+                if artifact_kind != expected_artifact_kind:
                     errors.append(
                         "runtime_linkage 'static_link' target/artifact mismatch: "
                         f"target_triple={manifest.get('target_triple')!r} requires "
-                        f"one of {sorted(expected_artifact_kinds)}, found "
+                        f"{expected_artifact_kind!r}, found "
                         f"{artifact_kind!r}"
                     )
-                target_triple = manifest.get("target_triple")
                 if isinstance(target_triple, str):
                     _requirements, link_requirement_errors = (
                         parse_source_extension_link_requirements(

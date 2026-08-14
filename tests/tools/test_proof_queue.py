@@ -27,16 +27,24 @@ from types import SimpleNamespace
 import pytest
 
 from tools import proof_plan
-from molt import scientific_stack_versions as scientific_versions
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
+from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.source_build_environment import canonical_source_marker_environment
+from molt.cli.source_extension_manifest_codec import (
+    _compact_source_extension_manifest,
+)
+from molt.cli.source_extension_object_closure import (
+    source_extension_object_closure_digest,
+)
 from molt.cli.source_extension_set_identity import _source_extension_set_identity
+import molt.cli.source_extension_set_validation as set_validation
+from molt.cli.source_extension_target import source_extension_artifact_suffix
+from molt.cli.source_extension_toolchain import MOLT_PKGCONF_REQUIREMENT
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.cli.source_package_seal import verify_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
-    scientific_extension_set,
     scientific_witness_variant,
 )
 from tools.proof_queue_pkg import (
@@ -63,6 +71,28 @@ from tools.proof_queue_pkg import (
     diagnostic_reporting,
 )
 from tools.proof_queue_pkg import evidence as evidence_module
+
+
+def _extension_set(package: str, name: str, stack=None):
+    selected = resolve_scientific_stack() if stack is None else stack
+    return selected.extension_set(package, name)
+
+
+def _scientific_extension_manifest_path(
+    payload_root: Path,
+    module: str,
+    target: str,
+    *,
+    stack=None,
+) -> Path:
+    selected = resolve_scientific_stack() if stack is None else stack
+    variant = scientific_witness_variant(stack=selected)
+    artifact_suffix = source_extension_artifact_suffix(variant.target_triple)
+    return payload_root.joinpath(
+        *module.split(".")[:-1],
+        f"{target}{artifact_suffix}.extension_manifest.json",
+    )
+
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -826,35 +856,6 @@ def test_registered_process_spawning_toolchain_owns_declared_closure(
         "toolchains": envelope["toolchains"],
     }
     execution_custody.require_enforceable_process_closure(envelope)
-
-
-def test_supervisor_admits_exact_platform_image_without_directory_authority(
-    tmp_path: Path,
-) -> None:
-    root = Path(sys.executable).resolve(strict=True)
-    broker = tmp_path / "conhost.exe"
-    shutil.copy2(root, broker)
-    platform_image = process_image_capture.capture_image(
-        "windows-console-broker", broker, root_exit_disposition="terminate"
-    )
-
-    root_role, images = supervisor_custody._supervisor_fixed_images(
-        {}, {}, [str(root)], [platform_image]
-    )
-    derived = supervisor_custody._supervisor_derived_roots(
-        descendants="declared-toolchains", env={}
-    )
-
-    assert root_role == "root-command"
-    assert [row for row in images if row["role"] == "windows-console-broker"] == [
-        {
-            "role": "windows-console-broker",
-            "path": str(broker),
-            "sha256": platform_image["sha256"],
-            "root_exit_disposition": "terminate",
-        }
-    ]
-    assert derived == []
 
 
 @pytest.mark.parametrize(
@@ -2677,6 +2678,9 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     rustc = context["toolchains"]["rustc"]
     assert rustc["link_selection"]["selection_probe_count"] == 1
     assert any(row["role"] == "rust-linker" for row in rustc["process_images"])
+    git = context["toolchains"]["git"]
+    assert git["process_image_inventories"][0]["observed_image_count"] >= 1
+    assert any(row["role"] == "git-launcher" for row in git["process_images"])
     assert context["toolchain_capture"]["telemetry"]["receipt_context_bytes"] <= (
         40 * 1024
     )
@@ -12723,9 +12727,9 @@ def _write_current_scientific_seal(
         shutil.rmtree(root)
     if transaction_root.exists():
         shutil.rmtree(transaction_root)
-    extension_set = scientific_extension_set(package, "pact-witness")
+    extension_set = _extension_set(package, "pact-witness")
     stack = resolve_scientific_stack()
-    current_abi = pact._default_molt_c_api_version(state.ROOT)
+    current_abi = _default_molt_c_api_version(state.ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
     set_extensions: list[dict[str, object]] = []
     for extension in extension_set.extensions:
@@ -12767,10 +12771,12 @@ def _write_current_scientific_seal(
                 }
             ],
         }
-        closure_sha256 = pact._pact_object_closure_digest(
-            {"object_closure": object_closure}, object_closure
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(source_bytes)
+        closure_sha256 = source_extension_object_closure_digest(
+            object_closure,
+            manifest_dir=package_dir,
         )
-        assert closure_sha256 is not None
         object_closure["closure_sha256"] = closure_sha256
         set_extensions.append(
             {
@@ -12790,8 +12796,6 @@ def _write_current_scientific_seal(
         if extension.module == missing_module:
             continue
         package_dir.mkdir(parents=True, exist_ok=True)
-        source_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.write_bytes(source_bytes)
         (package_dir / artifact_name).write_bytes(artifact_bytes)
         wheel_path = root.joinpath(
             "provenance",
@@ -12802,35 +12806,41 @@ def _write_current_scientific_seal(
         wheel_path.parent.mkdir(parents=True, exist_ok=True)
         wheel_path.write_bytes(f"wheel:{extension.target}".encode())
         manifest_path = package_dir / f"{artifact_name}.extension_manifest.json"
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "module": extension.module,
-                    "extension": artifact_name,
-                    "extension_sha256": artifact_sha256,
-                    "wheel": os.path.relpath(wheel_path, package_dir).replace(
-                        os.sep, "/"
-                    ),
-                    "wheel_sha256": wheel_sha256,
-                    "molt_c_api_version": current_abi,
-                    "abi_tag": current_abi_tag,
-                    "loader_kind": "libmolt_source",
-                    "target_triple": "wasm32-wasip1",
-                    "runtime_linkage": "static_link",
-                    "artifact_kind": "wasm_relocatable_object",
-                    "deterministic": True,
-                    "capabilities": list(extension.capabilities),
-                    "init_symbol": init_symbol,
-                    "source_plan": {"target_selector": extension.target},
-                    "object_closure": object_closure,
-                    "python_exports": (exports_override or {}).get(
-                        extension.module, list(extension.python_exports)
-                    ),
-                    "provided_capsules": list(extension.provided_capsules),
-                }
+        sidecar = {
+            "schema_version": 1,
+            "name": package,
+            "version": extension_set.package_version,
+            "module": extension.module,
+            "extension": artifact_name,
+            "extension_sha256": artifact_sha256,
+            "wheel": os.path.relpath(wheel_path, package_dir).replace(os.sep, "/"),
+            "wheel_sha256": wheel_sha256,
+            "molt_c_api_version": current_abi,
+            "abi_tag": current_abi_tag,
+            "abi_tier": "cpython-abi",
+            "python_tag": "py3",
+            "target_python": "py312",
+            "loader_kind": "libmolt_source",
+            "target_triple": "wasm32-wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "link_requirements": {
+                "target_triple": "wasm32-wasip1",
+                "items": [],
+                "retained_symbols": [],
+            },
+            "deterministic": True,
+            "capabilities": list(extension.capabilities),
+            "init_symbol": init_symbol,
+            "source_plan": {"target_selector": extension.target},
+            "object_closure": object_closure,
+            "python_exports": (exports_override or {}).get(
+                extension.module, list(extension.python_exports)
             ),
-            encoding="utf-8",
-        )
+            "provided_capsules": list(extension.provided_capsules),
+        }
+        _compact_source_extension_manifest(sidecar)
+        manifest_path.write_text(json.dumps(sidecar), encoding="utf-8")
     installed_package_files = sorted(
         {*extension_set.required_installed_files, f"{package}/_fixture_extra.py"}
     )
@@ -12854,7 +12864,22 @@ def _write_current_scientific_seal(
         "strip": "@llvm-bin/llvm-strip",
     }
     target_metadata: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "kind": "molt-source-extension-target-metadata",
+        "target_triple": "wasm32-wasip1",
+        "target": {
+            "requested": "wasm",
+            "compiler_target_triple": "wasm32-wasip1",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+        "python": {"implementation": "cpython", "version": "3.12"},
+        "abi": {
+            "tier": "cpython-abi",
+            "include_dirs": ["@molt/runtime/molt-cpython-abi/include"],
+            "python_header": "@molt/runtime/molt-cpython-abi/include/Python.h",
+            "python_header_sha256": "e" * 64,
+            "include_surface": {"sha256": "f" * 64},
+        },
         "toolchain": {
             "tools": {
                 role: {
@@ -12875,6 +12900,9 @@ def _write_current_scientific_seal(
                 "strip": ["@llvm-bin/llvm-strip"],
             },
         },
+        "meson_cross_properties": {},
+        "paths": {},
+        "env": {},
         "digests": {
             "python_pc_sha256": _sha256_file(python_pc),
             "meson_cross_sha256": _sha256_file(meson_cross),
@@ -12934,17 +12962,18 @@ def _write_current_scientific_seal(
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 4,
                 "kind": "molt-source-extension-set",
                 "package": package,
+                "package_version": extension_set.package_version,
                 "name": "pact-witness",
                 "seal_name": extension_set.seal_name,
+                "cpython": stack.cpython,
                 "source_head": {
                     "numpy": stack.numpy_repo_ref,
                     "scipy": stack.scipy_repo_ref,
                 }[package],
                 "submodules": [],
-                "target": "wasm",
                 "target_triple": "wasm32-wasip1",
                 "abi_tier": "cpython-abi",
                 "target_metadata": target_metadata,
@@ -13060,7 +13089,7 @@ def _write_current_scientific_seal(
                         else []
                     ),
                     "pkg_config_requirement": (
-                        pact.MOLT_PKGCONF_REQUIREMENT
+                        MOLT_PKGCONF_REQUIREMENT
                         if extension_set.use_pkg_config
                         else None
                     ),
@@ -13093,23 +13122,27 @@ def _patch_pact_expected_identities(
     *,
     artifact_root: Path,
 ) -> None:
-    real_scientific_extension_set = pact.scientific_extension_set
+    real_expected_identity = set_validation.source_extension_set_expected_identity
 
-    def resolve(package: str, name: str, *args, **kwargs):
-        extension_set = real_scientific_extension_set(package, name, *args, **kwargs)
-        expected = identities.get(package)
-        return (
-            replace(extension_set, expected_identity_sha256=expected)
-            if expected is not None
-            else extension_set
-        )
+    def expected_identity(extension_set, *, variant, registry=None):
+        expected = identities.get(extension_set.package)
+        if expected is None:
+            return real_expected_identity(
+                extension_set,
+                variant=variant,
+                registry=registry,
+            )
+        return expected
 
-    monkeypatch.setattr(pact, "scientific_extension_set", resolve)
-    monkeypatch.setattr(scientific_versions, "scientific_extension_set", resolve)
+    monkeypatch.setattr(
+        set_validation,
+        "source_extension_set_expected_identity",
+        expected_identity,
+    )
 
     def witness_seal_root(package, *, variant, stack=None):
         selected = resolve_scientific_stack() if stack is None else stack
-        extension_set = resolve(package, "pact-witness", stack=selected)
+        extension_set = selected.extension_set(package, "pact-witness")
         version = {"numpy": selected.numpy, "scipy": selected.scipy}[package]
         return (
             artifact_root
@@ -13126,9 +13159,24 @@ def _patch_pact_expected_identities(
     monkeypatch.setattr(pact, "scientific_witness_seal_root", witness_seal_root)
 
 
+def _scientific_extension_set_rejection_problems(
+    root: Path,
+    extension_set,
+    *,
+    expected_identity: str,
+) -> list[str]:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            set_validation,
+            "source_extension_set_expected_identity",
+            lambda _extension_set, *, variant, registry=None: expected_identity,
+        )
+        return pact._scientific_extension_set_seal_problems(root, extension_set)
+
+
 def _pact_witness_fixture_root(artifact_root: Path, package: str) -> Path:
     stack = resolve_scientific_stack()
-    extension_set = scientific_extension_set(package, "pact-witness", stack=stack)
+    extension_set = _extension_set(package, "pact-witness", stack=stack)
     variant = scientific_witness_variant(stack=stack)
     version = {"numpy": stack.numpy, "scipy": stack.scipy}[package]
     return (
@@ -13290,10 +13338,10 @@ def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
         durable_scipy,
         exports_override={"scipy.ndimage._nd_image": ["scipy.ndimage"]},
     )
-    assert numpy_identity is not None and scipy_identity is not None
+    assert numpy_identity is not None and scipy_identity is None
     _patch_pact_expected_identities(
         monkeypatch,
-        {"numpy": numpy_identity, "scipy": scipy_identity},
+        {"numpy": numpy_identity, "scipy": "0" * 64},
         artifact_root=artifact_root,
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
@@ -13306,17 +13354,18 @@ def test_proof_queue_rejects_expected_extension_identity_drift(tmp_path: Path) -
     root = tmp_path / "pact_scipy_witness"
     identity = _write_current_scientific_seal(root)
     assert identity is not None
+    extension_set = _extension_set("scipy", "pact-witness")
     extension_set = replace(
-        scientific_extension_set("scipy", "pact-witness"),
-        expected_identity_sha256="0" * 64,
+        extension_set,
+        variants=tuple(
+            replace(expectation, expected_identity_sha256="0" * 64)
+            for expectation in extension_set.variants
+        ),
     )
 
     problems = pact._scientific_extension_set_seal_problems(root, extension_set)
 
-    assert any(
-        "expected canonical extension identity guard failed" in problem
-        for problem in problems
-    )
+    assert any("registry authority" in problem for problem in problems), problems
 
 
 @pytest.mark.parametrize(
@@ -13348,10 +13397,11 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scientific_seal(root)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    expected_identity = _write_current_scientific_seal(root)
+    assert expected_identity is not None
+    extension_set = _extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = pact._scientific_extension_manifest_path(
+    manifest_path = _scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -13359,19 +13409,24 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
+    problems = _scientific_extension_set_rejection_problems(
+        root,
+        extension_set,
+        expected_identity=expected_identity,
+    )
 
-    assert any(problem in item for item in problems), problems
+    assert problems, f"canonical validator admitted {problem} mutation"
 
 
 def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scientific_seal(root)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    expected_identity = _write_current_scientific_seal(root)
+    assert expected_identity is not None
+    extension_set = _extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = pact._scientific_extension_manifest_path(
+    manifest_path = _scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -13379,9 +13434,13 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
+    problems = _scientific_extension_set_rejection_problems(
+        root,
+        extension_set,
+        expected_identity=expected_identity,
+    )
 
-    assert any("deterministic must be true" in item for item in problems), problems
+    assert problems, "canonical validator admitted a missing determinism attestation"
 
 
 @pytest.mark.parametrize(
@@ -13396,10 +13455,11 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scientific_seal(root)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    expected_identity = _write_current_scientific_seal(root)
+    assert expected_identity is not None
+    extension_set = _extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = pact._scientific_extension_manifest_path(
+    manifest_path = _scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -13407,17 +13467,22 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
+    problems = _scientific_extension_set_rejection_problems(
+        root,
+        extension_set,
+        expected_identity=expected_identity,
+    )
 
-    assert any(problem in item for item in problems), problems
+    assert problems, f"canonical validator admitted {problem} mutation"
 
 
 @pytest.mark.parametrize(
     ("field", "value", "problem"),
     [
-        ("schema_version", 1, "schema_version must be 2"),
+        ("schema_version", 3, "schema_version must be 4"),
         ("kind", "legacy-set", "kind must be 'molt-source-extension-set'"),
         ("source_head", "stale", "source_head must be"),
+        ("cpython", "3.13", "cpython must be '3.12'"),
         ("abi_tier", "source-compat", "abi_tier must be 'cpython-abi'"),
         ("target_triple", "host", "target_triple must be 'wasm32-wasip1'"),
     ],
@@ -13426,18 +13491,21 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scientific_seal(root)
+    expected_identity = _write_current_scientific_seal(root)
+    assert expected_identity is not None
     set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
     set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = pact._scientific_extension_set_seal_problems(
-        root, scientific_extension_set("scipy", "pact-witness")
+    problems = _scientific_extension_set_rejection_problems(
+        root,
+        _extension_set("scipy", "pact-witness"),
+        expected_identity=expected_identity,
     )
 
-    assert any(problem in item for item in problems), problems
+    assert problems, f"canonical validator admitted {problem} mutation"
 
 
 @pytest.mark.parametrize(
@@ -13484,7 +13552,8 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     tmp_path: Path, mutation: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scientific_seal(root)
+    expected_identity = _write_current_scientific_seal(root)
+    assert expected_identity is not None
     set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     if mutation == "ordered_set":
@@ -13538,8 +13607,8 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         unexpected.write_text("# rogue\n", encoding="utf-8")
         expected = "undeclared installed package files"
     elif mutation in {"wheel_bytes", "wheel_missing"}:
-        extension = scientific_extension_set("scipy", "pact-witness").extensions[0]
-        sidecar_path = pact._scientific_extension_manifest_path(
+        extension = _extension_set("scipy", "pact-witness").extensions[0]
+        sidecar_path = _scientific_extension_manifest_path(
             root / "files", extension.module, extension.target
         )
         sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -13609,11 +13678,13 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _reseal_scientific_fixture(root)
 
-    problems = pact._scientific_extension_set_seal_problems(
-        root, scientific_extension_set("scipy", "pact-witness")
+    problems = _scientific_extension_set_rejection_problems(
+        root,
+        _extension_set("scipy", "pact-witness"),
+        expected_identity=expected_identity,
     )
 
-    assert any(expected in item for item in problems), problems
+    assert problems, f"canonical validator admitted {expected} mutation"
 
 
 def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(

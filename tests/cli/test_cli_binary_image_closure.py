@@ -21,6 +21,9 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
 )
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkRequirements,
+)
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 
@@ -506,7 +509,7 @@ def test_frontend_binary_image_analysis_labels_external_native_known_modules(
                 platform_tag="wasm32-wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
-                link_arguments=(),
+                link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
                 python_exports=("scipy.ndimage.distance_transform_edt",),
             ),
         )

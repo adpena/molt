@@ -17,15 +17,23 @@ import pytest
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
+from molt.cli import source_extension_set_validation as set_validation
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.source_extension_publication import (
     _source_extension_publication_custody,
 )
-from molt.scientific_stack_versions import (
-    ScientificExtensionSet,
-    ScientificExtensionSpec,
+from molt.cli.source_extension_object_closure import (
+    source_extension_object_closure_digest,
 )
+from molt.cli.source_extension_manifest_codec import _manifest_sequence
+from molt.cli.source_extension_set_registry import (
+    SourceExtensionSet,
+    SourceExtensionSource,
+    SourceExtensionSpec,
+    SourceExtensionVariant,
+)
+from molt.target_python import TargetPythonVersion
 
 
 _MODULES = (
@@ -118,33 +126,62 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{marker}:{module}", encoding="utf-8")
         artifact_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-        source_sha256 = hashlib.sha256(f"{path.stem}.c".encode()).hexdigest()
+        source_path = root.joinpath(
+            "provenance", "compiled-inputs", *module.split("."), "source.c"
+        )
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(f"{path.stem}.c", encoding="utf-8")
+        source_reference = os.path.relpath(source_path, path.parent).replace(
+            os.sep, "/"
+        )
+        source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        wheel_sha256 = hashlib.sha256(f"wheel:{module}".encode()).hexdigest()
+        object_closure = {
+            "schema_version": 1,
+            "root_symbol": f"PyInit_{module.rsplit('.', 1)[-1]}",
+            "runtime_symbols": [],
+            "objects": [
+                {
+                    "source": source_reference,
+                    "object": "0.o",
+                    "source_sha256": source_sha256,
+                    "object_sha256": "a" * 64,
+                    "defined_symbols": [],
+                    "undefined_symbols": [],
+                    "compile_command": ["clang"],
+                    "symbol_command": ["llvm-nm"],
+                    "dependencies": [],
+                }
+            ],
+        }
+        object_closure["closure_sha256"] = source_extension_object_closure_digest(
+            object_closure,
+            manifest_dir=path.parent,
+        )
+        wheel_path = root.joinpath(
+            "provenance", "wheels", *module.split("."), f"{path.stem}.whl"
+        )
+        wheel_path.parent.mkdir(parents=True, exist_ok=True)
+        wheel_path.write_text(f"wheel:{module}", encoding="utf-8")
         manifest = {
+            "name": "scipy",
+            "version": "1.18.0",
             "module": module,
+            "abi_tier": "cpython-abi",
+            "target_python": "py312",
+            "python_tag": "py3",
             "target_triple": "wasm32-wasip1",
+            "artifact_kind": "wasm_relocatable_object",
+            "deterministic": True,
+            "wheel": os.path.relpath(wheel_path, path.parent).replace(os.sep, "/"),
             "link_requirements": {
                 "target_triple": "wasm32-wasip1",
-                "arguments": [],
-                "inputs": [],
+                "items": [],
+                "retained_symbols": [],
             },
             "extension_sha256": artifact_sha256,
-            "wheel_sha256": f"wheel-{module}",
-            "object_closure": {
-                "closure_sha256": f"closure-{module}",
-                "objects": [
-                    {
-                        "source": f"{path.stem}.c",
-                        "object": "0.o",
-                        "source_sha256": source_sha256,
-                        "object_sha256": "a" * 64,
-                        "defined_symbols": [],
-                        "undefined_symbols": [],
-                        "compile_command": ["clang"],
-                        "symbol_command": ["llvm-nm"],
-                        "dependencies": [],
-                    }
-                ],
-            },
+            "wheel_sha256": wheel_sha256,
+            "object_closure": object_closure,
         }
         producer._compact_source_extension_manifest(manifest)
         path.with_name(path.name + ".extension_manifest.json").write_text(
@@ -188,8 +225,26 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
         "strip": ["llvm-strip"],
     }
     metadata: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "kind": "molt-source-extension-target-metadata",
+        "target_triple": "wasm32-wasip1",
+        "target": {
+            "requested": "wasm",
+            "compiler_target_triple": "wasm32-wasip1",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+        "python": {"implementation": "cpython", "version": "3.12"},
+        "abi": {
+            "tier": "cpython-abi",
+            "include_dirs": ["@molt/include"],
+            "python_header": "@molt/include/Python.h",
+            "python_header_sha256": "b" * 64,
+            "include_surface": {"sha256": "c" * 64},
+        },
         "toolchain": {"tools": tools, "commands": commands},
+        "meson_cross_properties": {},
+        "paths": {},
+        "env": {},
         "digests": {
             "python_pc_sha256": producer._sha256_file(python_pc),
             "meson_cross_sha256": producer._sha256_file(meson_cross),
@@ -203,6 +258,106 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
     return metadata
 
 
+def _write_meson_metadata(
+    root: Path, extension_set: SourceExtensionSet
+) -> dict[str, object]:
+    metadata_root = root / "provenance/metadata/meson"
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    intro_targets = metadata_root / "intro-targets.json"
+    compile_commands = metadata_root / "compile-commands.json"
+    intro_installed = metadata_root / "intro-installed.json"
+    config_tool_cross = metadata_root / "build-config-tools.cross"
+    intro_targets.write_text("[]\n", encoding="utf-8")
+    compile_commands.write_text("[]\n", encoding="utf-8")
+    intro_installed.write_text("{}\n", encoding="utf-8")
+    config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
+    return {
+        "driver": {
+            "kind": "build-environment",
+            "module": "mesonbuild.mesonmain",
+            "distribution": "meson",
+            "version": "1.9.0",
+        },
+        "backend": {
+            "distribution": "ninja",
+            "version": "1.13.0",
+            "path": "ninja.exe",
+            "sha256": "a" * 64,
+        },
+        "build_root": "@build",
+        "setup_args": list(extension_set.meson_setup_args),
+        "intro_targets_sha256": producer._sha256_file(intro_targets),
+        "compile_commands_sha256": producer._sha256_file(compile_commands),
+        "intro_installed_sha256": producer._sha256_file(intro_installed),
+        "config_tool_cross_sha256": producer._sha256_file(config_tool_cross),
+        "config_tools": [
+            {
+                "name": "pkg-config",
+                "path": "pkg-config.exe",
+                "distribution": "pkgconf",
+                "version": "3.0.1.post0",
+                "sha256": "b" * 64,
+            }
+        ],
+        "pkg_config_requirement": "pkgconf==3.0.1.post0",
+        "generated_inputs": [],
+    }
+
+
+def _build_environment_manifest() -> dict[str, object]:
+    marker_environment = build_environment.canonical_source_marker_environment()
+    requirements = ["meson==1.9.0", "ninja==1.13.0"]
+    custody_python = {
+        "implementation": marker_environment["implementation_name"],
+        "version": marker_environment["python_full_version"],
+        "platform": "test-platform",
+        "base_executable": Path(sys.executable).name,
+        "base_executable_sha256": "c" * 64,
+    }
+    custody_uv = {
+        "executable": "uv.exe",
+        "version": "uv 0.11.24",
+        "sha256": "d" * 64,
+    }
+    custody_address = {
+        "schema_version": 2,
+        "dependency_group": "source-build-scipy",
+        "dependency_group_requirements": requirements,
+        "uv_lock_sha256": "e" * 64,
+        "python": custody_python,
+        "uv": custody_uv,
+    }
+    custody = {
+        "environment_id": hashlib.sha256(
+            json.dumps(custody_address, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        **custody_address,
+    }
+    return {
+        "python": {
+            "implementation": marker_environment["implementation_name"],
+            "version": marker_environment["python_full_version"],
+            "executable": Path(sys.executable).name,
+        },
+        "requirements": requirements,
+        "marker_environment": marker_environment,
+        "active_requirements": requirements,
+        "resolved": [
+            {
+                "requirement": "meson==1.9.0",
+                "distribution": "meson",
+                "version": "1.9.0",
+            },
+            {
+                "requirement": "ninja==1.13.0",
+                "distribution": "ninja",
+                "version": "1.13.0",
+            },
+        ],
+        "custody": custody,
+    }
+
+
 def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
     parser = entrypoint_parser._build_entrypoint_parser()
     args = parser.parse_args(
@@ -211,8 +366,12 @@ def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
             "produce-set",
             "--package",
             "scipy",
+            "--package-version",
+            "1.18.0",
             "--module-set",
             "pact-witness",
+            "--python-version",
+            "3.12",
             "--source",
             "repos/scipy",
             "--build-root",
@@ -223,13 +382,37 @@ def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
 
     assert args.extension_command == "produce-set"
     assert args.package == "scipy"
+    assert args.package_version == "1.18.0"
     assert args.module_set == "pact-witness"
+    assert args.python_version == "3.12"
     assert args.target == "wasm"
     assert args.abi_tier == "cpython-abi"
     assert args.expected_identity_sha256 is None
     assert args.expected_candidate_identity_sha256 is None
     assert not hasattr(args, "module")
     assert not hasattr(args, "deterministic")
+
+    native = parser.parse_args(
+        [
+            "extension",
+            "produce-set",
+            "--package",
+            "scipy",
+            "--package-version",
+            "1.18.0",
+            "--module-set",
+            "pact-witness",
+            "--python-version",
+            "3.12",
+            "--source",
+            "repos/scipy",
+            "--build-root",
+            "build/scipy-native",
+            "--target",
+            "aarch64-apple-darwin",
+        ]
+    )
+    assert native.target == "aarch64-apple-darwin"
 
 
 def test_produce_set_dispatches_complete_set(
@@ -247,8 +430,12 @@ def test_produce_set_dispatches_complete_set(
             "produce-set",
             "--package",
             "scipy",
+            "--package-version",
+            "1.18.0",
             "--module-set",
             "pact-witness",
+            "--python-version",
+            "3.12",
             "--source",
             "repos/scipy",
             "--build-root",
@@ -276,7 +463,9 @@ def test_produce_set_dispatches_complete_set(
     assert calls == [
         {
             "package": "scipy",
+            "package_version": "1.18.0",
             "module_set": "pact-witness",
+            "python_version": "3.12",
             "source": "repos/scipy",
             "build_root": "build/scipy-wasm",
             "target": "wasm",
@@ -519,6 +708,8 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         provided_capsules=(),
         exclude_linked_static_libraries=(),
         target="wasm",
+        target_python=TargetPythonVersion(3, 12, 0),
+        package_version="1.18.0",
         abi_tier="cpython-abi",
         tool_commands={"ld": ("/tools/wasm-ld",)},
         backend=backend,
@@ -527,6 +718,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     assert actual is expected
     assert len(calls) == 1
     assert calls[0]["deterministic"] is True
+    assert calls[0]["python_version"] == "3.12"
     assert calls[0]["source_plan"] == str(intro)
     assert calls[0]["source_plan_build_root"] == str(build)
     assert calls[0]["source_plan_compile_commands"] == str(compile_commands)
@@ -570,6 +762,9 @@ def test_producer_audit_enforces_exact_consumer_contract() -> None:
         "runtime_linkage": "static_link",
         "artifact_kind": "wasm_relocatable_object",
         "target_triple": "wasm32-wasip1",
+        "target_python": "py312",
+        "python_tag": "py3",
+        "version": "1.18.0",
         "abi_tier": "cpython-abi",
         "molt_c_api_version": current_abi,
         "abi_tag": f"molt_abi{current_abi.split('.', 1)[0]}",
@@ -579,6 +774,8 @@ def test_producer_audit_enforces_exact_consumer_contract() -> None:
         manifest,
         module="scipy.ndimage._nd_image",
         expected_target_triple="wasm32-wasip1",
+        expected_target_python=TargetPythonVersion(3, 12, 0),
+        expected_package_version="1.18.0",
     )
     manifest["deterministic"] = False
     with pytest.raises(producer.SourceExtensionProducerError, match="deterministic"):
@@ -586,6 +783,8 @@ def test_producer_audit_enforces_exact_consumer_contract() -> None:
             manifest,
             module="scipy.ndimage._nd_image",
             expected_target_triple="wasm32-wasip1",
+            expected_target_python=TargetPythonVersion(3, 12, 0),
+            expected_package_version="1.18.0",
         )
 
 
@@ -1207,7 +1406,9 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     result = producer._run_locked_source_extension_producer(
         environment,
         package="numpy",
+        package_version="2.5.1",
         module_set="pact-witness",
+        python_version="3.12",
         source="source-root",
         build_root="build-root",
         target="wasm",
@@ -1225,8 +1426,12 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
         "produce-set",
         "--package",
         "numpy",
+        "--package-version",
+        "2.5.1",
         "--module-set",
         "pact-witness",
+        "--python-version",
+        "3.12",
         "--source",
         "source-root",
         "--build-root",
@@ -1324,7 +1529,9 @@ def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
     assert (
         producer.produce_source_extension_set(
             package="numpy",
+            package_version="2.5.1",
             module_set="pact-witness",
+            python_version="3.12",
             source=str(source),
             build_root=str(tmp_path / "build"),
         )
@@ -1439,11 +1646,13 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
         build_root=build,
         intro_targets=build / "meson-info/intro-targets.json",
         intro_installed=build / "meson-info/intro-installed.json",
-        extension_set=ScientificExtensionSet(
+        extension_set=SourceExtensionSet(
             package="numpy",
+            package_version="2.5.1",
+            source=SourceExtensionSource("git", "a" * 40),
             name="pact-witness",
             seal_name="numpy-witness",
-            expected_identity_sha256="a" * 64,
+            variants=(),
             build_dependency_group="source-build-numpy",
             meson_setup_args=(),
             use_pkg_config=False,
@@ -1517,21 +1726,25 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
         backend=backend,
         build_root=build,
         intro_targets=intro_targets,
-        extension_set=ScientificExtensionSet(
+        extension_set=SourceExtensionSet(
             package="scipy",
+            package_version="1.18.0",
+            source=SourceExtensionSource("git", "a" * 40),
             name="pact-witness",
             seal_name="scipy-witness",
-            expected_identity_sha256="a" * 64,
+            variants=(),
             build_dependency_group="source-build-scipy",
             meson_setup_args=(),
             use_pkg_config=False,
             required_installed_files=(),
             extensions=(
-                ScientificExtensionSpec(
+                SourceExtensionSpec(
                     module="scipy.ndimage._ni_label",
                     target="_ni_label",
                     python_exports=("scipy.ndimage._ni_label",),
                     capabilities=(),
+                    provided_capsules=(),
+                    exclude_linked_static_libraries=(),
                 ),
             ),
         ),
@@ -1745,27 +1958,44 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
 ) -> None:
     publish = tmp_path / "publish"
     _write_complete_root(publish, marker="new")
-    extension_set = ScientificExtensionSet(
+    extension_set = SourceExtensionSet(
         package="scipy",
+        package_version="1.18.0",
+        source=SourceExtensionSource("git", "a" * 40),
         name="pact-witness",
         seal_name="pact_scipy_witness",
-        expected_identity_sha256="a" * 64,
+        variants=(),
         build_dependency_group="source-build-scipy",
         meson_setup_args=(),
         use_pkg_config=True,
         required_installed_files=(),
         extensions=tuple(
-            ScientificExtensionSpec(
+            SourceExtensionSpec(
                 module=module,
                 target=module.rsplit(".", 1)[-1],
                 python_exports=(module,),
                 capabilities=(),
+                provided_capsules=(),
+                exclude_linked_static_libraries=(),
             )
             for module in _MODULES
         ),
+        required_config_tools=("pkg-config",),
     )
     set_manifest = {
+        "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+        "kind": "molt-source-extension-set",
+        "package": "scipy",
+        "name": "pact-witness",
+        "seal_name": "pact_scipy_witness",
+        "source_head": "a" * 40,
+        "submodules": [],
+        "build_environment": _build_environment_manifest(),
+        "meson": _write_meson_metadata(publish, extension_set),
+        "cpython": "3.12",
+        "abi_tier": "cpython-abi",
         "target_triple": "wasm32-wasip1",
+        "package_version": "1.18.0",
         "target_metadata": _write_target_metadata(publish),
         "installed_package_files": [],
         "extensions": [
@@ -1783,24 +2013,66 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
                     .with_suffix(".molt.wasm")
                     .read_bytes()
                 ).hexdigest(),
-                "wheel_sha256": f"wheel-{spec.module}",
-                "object_closure_sha256": f"closure-{spec.module}",
+                "wheel_sha256": hashlib.sha256(
+                    f"wheel:{spec.module}".encode()
+                ).hexdigest(),
+                "object_closure_sha256": json.loads(
+                    publish.joinpath(*spec.module.split("."))
+                    .with_suffix(".molt.wasm.extension_manifest.json")
+                    .read_text(encoding="utf-8")
+                )["object_closure"]["closure_sha256"],
             }
             for spec in extension_set.extensions
         ],
     }
-    producer._validate_complete_publish_root(
+    variant = SourceExtensionVariant(
+        target_python=TargetPythonVersion(3, 12, 0),
+        abi_tier="cpython-abi",
+        target_triple="wasm32-wasip1",
+    )
+    set_validation.validate_source_extension_set_publish_root(
         publish_root=publish,
         extension_set=extension_set,
+        variant=variant,
         set_manifest=set_manifest,
     )
-    set_manifest["extensions"][0]["target"] = "wrong-target"
+    target_metadata = set_manifest["target_metadata"]
+    assert isinstance(target_metadata, dict)
+    target_metadata["schema_version"] = 2
     with pytest.raises(
-        producer.SourceExtensionProducerError, match="typed extension contracts"
+        set_validation.SourceExtensionSetValidationError,
+        match="target metadata contract",
     ):
-        producer._validate_complete_publish_root(
+        set_validation.validate_source_extension_set_publish_root(
             publish_root=publish,
             extension_set=extension_set,
+            variant=variant,
+            set_manifest=set_manifest,
+        )
+    target_metadata["schema_version"] = 3
+    target_facts = target_metadata["target"]
+    assert isinstance(target_facts, dict)
+    target_facts["artifact_kind"] = "static_archive"
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError,
+        match="canonical target plan",
+    ):
+        set_validation.validate_source_extension_set_publish_root(
+            publish_root=publish,
+            extension_set=extension_set,
+            variant=variant,
+            set_manifest=set_manifest,
+        )
+    target_facts["artifact_kind"] = "wasm_relocatable_object"
+    set_manifest["extensions"][0]["target"] = "wrong-target"
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError,
+        match="typed extension contracts",
+    ):
+        set_validation.validate_source_extension_set_publish_root(
+            publish_root=publish,
+            extension_set=extension_set,
+            variant=variant,
             set_manifest=set_manifest,
         )
     set_manifest["extensions"][0]["target"] = extension_set.extensions[0].target
@@ -1810,10 +2082,41 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
     duplicate.parent.mkdir(parents=True)
     duplicate.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(producer.SourceExtensionProducerError, match="unexpected"):
-        producer._validate_complete_publish_root(
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError, match="unexpected"
+    ):
+        set_validation.validate_source_extension_set_publish_root(
             publish_root=publish,
             extension_set=extension_set,
+            variant=variant,
+            set_manifest=set_manifest,
+        )
+    duplicate.unlink()
+    opposite_variant = (
+        publish / "scipy/ndimage/_nd_image.molt.a.extension_manifest.json"
+    )
+    opposite_variant.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError, match="unexpected"
+    ):
+        set_validation.validate_source_extension_set_publish_root(
+            publish_root=publish,
+            extension_set=extension_set,
+            variant=variant,
+            set_manifest=set_manifest,
+        )
+    opposite_variant.unlink()
+    opposite_artifact = publish / "scipy/ndimage/_nd_image.molt.a"
+    opposite_artifact.write_bytes(b"opposite-target")
+
+    with pytest.raises(
+        set_validation.SourceExtensionSetValidationError, match="unexpected"
+    ):
+        set_validation.validate_source_extension_set_publish_root(
+            publish_root=publish,
+            extension_set=extension_set,
+            variant=variant,
             set_manifest=set_manifest,
         )
 
@@ -1881,6 +2184,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     manifest = {
         "module": module,
         "target_triple": "wasm32-wasip1",
+        "link_requirements": {
+            "target_triple": "wasm32-wasip1",
+            "items": [],
+            "retained_symbols": [],
+        },
         "extension": artifact.name,
         "wheel": wheel.name,
         "wheel_sha256": raw_wheel_sha256,
@@ -1943,7 +2251,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     ]
     expected_capsule = "numpy.core._multiarray_umath._ARRAY_API"
     assert staged_manifest["object_closure"]["required_capsules"] == [expected_capsule]
-    assert producer._manifest_sequence(
+    assert _manifest_sequence(
         staged_manifest,
         staged_manifest["object_closure"]["objects"][0],
         "required_capsules",
@@ -1971,7 +2279,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
         assert embedded["object_closure"]["required_capsules"] == [expected_capsule]
-        assert producer._manifest_sequence(
+        assert _manifest_sequence(
             embedded,
             embedded["object_closure"]["objects"][0],
             "required_capsules",
@@ -2010,7 +2318,15 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     commands.write_text("[]\n", encoding="utf-8")
     installed.write_text("{}\n", encoding="utf-8")
     raw_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "kind": "molt-source-extension-target-metadata",
+        "target_triple": "wasm32-wasip1",
+        "target": {
+            "requested": "wasm",
+            "compiler_target_triple": "wasm32-wasip1",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+        "python": {"implementation": "cpython", "version": "3.12"},
         "paths": {"out_dir": str(metadata_root)},
         "digests": {
             "python_pc_sha256": "stale",

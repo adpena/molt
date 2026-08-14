@@ -18,6 +18,9 @@ from tests.cli.native_link_test_support import (
     SOURCE_FINGERPRINT,
     static_archive_bytes,
 )
+from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkRequirements,
+)
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -1212,7 +1215,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         source_fingerprint: dict[str, object],
         stdlib_obj_path: Path | None = None,
         external_static_archives: tuple[Path, ...] = (),
-        external_link_arguments: tuple[str, ...] = (),
+        external_link_requirements: tuple[SourceExtensionLinkRequirements, ...] = (),
         bolt_requested: bool = False,
     ) -> SimpleNamespace:
         del output_obj, stub_path, target_triple, sysroot_path, profile
@@ -1220,7 +1223,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         del stdlib_obj_path
         del bolt_requested
         assert not external_static_archives
-        assert not external_link_arguments
+        assert not external_link_requirements
         captured_runtime_libs.append(runtime_lib)
         return SimpleNamespace(
             command=("clang", str(runtime_lib), "-o", str(output_binary)),
@@ -1504,7 +1507,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         platform_tag="x86_64_unknown_linux_gnu",
         runtime_linkage="static_link",
         artifact_kind="static_archive",
-        link_arguments=(),
+        link_requirements=SourceExtensionLinkRequirements("x86_64-unknown-linux-gnu"),
     )
     native_plan = cli._ExternalPackageNativeArtifactPlan(artifacts=(artifact,))
     _stub_backend_binary_ensure(monkeypatch, tmp_path)

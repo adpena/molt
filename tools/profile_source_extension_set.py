@@ -17,13 +17,14 @@ from pathlib import Path
 
 from molt.cli.extension_manifest import _host_target_triple
 from molt.cli.source_package_seal import verify_source_package_seal
-from molt.cli.source_extension_target import resolve_source_extension_target_plan
-from molt.scientific_stack_versions import (
-    ScientificExtensionVariant,
-    resolve_scientific_stack,
-    scientific_extension_set,
-    scientific_extension_set_root,
+from molt.cli.source_extension_set_registry import (
+    SourceExtensionVariant,
+    load_source_extension_registry,
+    source_extension_set,
+    source_extension_set_root,
 )
+from molt.cli.source_extension_target import resolve_source_extension_target_plan
+from molt.target_python import _parse_target_python_version
 from tools.perf_calibration import run_and_measure
 
 try:
@@ -59,7 +60,9 @@ def _tree_metrics(root: Path) -> dict[str, int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", required=True)
+    parser.add_argument("--package-version", required=True)
     parser.add_argument("--module-set", required=True)
+    parser.add_argument("--python-version", required=True)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--build-root", required=True, type=Path)
     parser.add_argument("--target", default="wasm")
@@ -70,11 +73,12 @@ def main(argv: list[str] | None = None) -> int:
 
     source = args.source.expanduser().resolve()
     build_root = args.build_root.expanduser().resolve()
-    stack = resolve_scientific_stack()
-    extension_set = scientific_extension_set(
+    registry = load_source_extension_registry()
+    extension_set = source_extension_set(
         args.package,
+        args.package_version,
         args.module_set,
-        stack=stack,
+        registry=registry,
     )
     target_plan = resolve_source_extension_target_plan(
         args.target,
@@ -82,14 +86,14 @@ def main(argv: list[str] | None = None) -> int:
         host_platform=sys.platform,
         host_arch=platform.machine(),
     )
-    destination = scientific_extension_set_root(
+    destination = source_extension_set_root(
         extension_set,
-        variant=ScientificExtensionVariant(
-            cpython=stack.cpython,
+        variant=SourceExtensionVariant(
+            target_python=_parse_target_python_version(args.python_version),
             abi_tier=args.abi_tier,
             target_triple=target_plan.target_triple,
         ),
-        stack=stack,
+        registry=registry,
     )
     command = [
         sys.executable,
@@ -99,8 +103,12 @@ def main(argv: list[str] | None = None) -> int:
         "produce-set",
         "--package",
         args.package,
+        "--package-version",
+        args.package_version,
         "--module-set",
         args.module_set,
+        "--python-version",
+        args.python_version,
         "--source",
         str(source),
         "--build-root",
@@ -121,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": 1,
         "kind": "source-extension-set-profile",
         "package": args.package,
+        "package_version": args.package_version,
         "module_set": args.module_set,
+        "python_version": args.python_version,
         "source": str(source),
         "source_head": _git_head(source),
         "build_root": str(build_root),

@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -56,15 +55,9 @@ from molt.cli.external_native import (
 )
 from molt.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
-from molt.cli.llvm_wasi_tools import (
-    LlvmToolRole,
-    resolve_explicit_tool_command,
-    resolve_llvm_wasi_tool_family,
-)
 from molt.cli.models import (
     BuildProfile,
 )
-from molt.cli.native_toolchain import _zig_target_query
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -78,11 +71,11 @@ from molt.target_python import (
 )
 from molt.cli.setup_readiness import _ensure_rustup_target
 from molt.cli.source_extension_toolchain import (
+    _compiler_sysroot_arg_value,
     _materialize_source_extension_target_metadata,
     _normalize_source_extension_abi_tier,
-    _normalize_source_extension_metadata_target,
-    _resolve_source_extension_wasm_toolchain,
-    _source_extension_c_commands,
+    _normalize_source_extension_python_version,
+    _resolve_source_extension_toolchain,
     _source_extension_include_dirs_for_abi_tier,
     _source_extension_python_header_for_abi_tier,
 )
@@ -103,20 +96,6 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 _SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
 
 
-def _sysroot_arg_value(args: list[str]) -> str | None:
-    index = 0
-    while index < len(args):
-        part = args[index]
-        if part in {"--sysroot", "-isysroot"}:
-            if index + 1 < len(args):
-                return args[index + 1]
-            return ""
-        if part.startswith("--sysroot="):
-            return part.split("=", 1)[1]
-        index += 1
-    return None
-
-
 def _extension_source_text_by_path(source_paths: list[Path]) -> dict[Path, str]:
     return {
         source_path: source_path.read_text(encoding="utf-8", errors="replace")
@@ -128,6 +107,7 @@ def extension_metadata(
     *,
     target: str | None = None,
     out_dir: str | None = None,
+    python_version: str | None = None,
     abi_tier: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
@@ -139,9 +119,17 @@ def extension_metadata(
         return root_error
     assert root is not None
     try:
-        target_triple = _normalize_source_extension_metadata_target(target)
+        target_plan = resolve_source_extension_target_plan(
+            target,
+            host_target_triple=_host_target_triple(),
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
         normalized_abi_tier = _normalize_source_extension_abi_tier(abi_tier)
-    except ValueError as exc:
+        normalized_python_version = _normalize_source_extension_python_version(
+            python_version
+        )
+    except (RuntimeError, ValueError) as exc:
         return _fail(str(exc), json_output, command="extension-metadata")
 
     output_root = Path(out_dir).expanduser() if out_dir else Path("dist")
@@ -150,7 +138,8 @@ def extension_metadata(
     metadata, errors = _materialize_source_extension_target_metadata(
         molt_root=root,
         out_dir=output_root,
-        target_triple=target_triple,
+        target_plan=target_plan,
+        python_version=normalized_python_version,
         abi_tier=normalized_abi_tier,
     )
     if metadata is None:
@@ -784,37 +773,33 @@ def extension_build(
         assert source_c_api_requirements is not None
 
     effective_tool_commands: Mapping[str, Sequence[str]] = tool_commands or {}
-    cc_cmd: list[str] = []
     wasi_sysroot: Path | None = None
-    if wasm_static_link:
-        target_arg = runtime_target_triple or "wasm32-wasip1"
-        if not effective_tool_commands:
-            wasm_toolchain = _resolve_source_extension_wasm_toolchain()
-            if not wasm_toolchain.ok:
-                return _fail(
-                    "WASM source-extension build requires a valid wasm compiler "
-                    "and linker toolchain: " + wasm_toolchain.detail,
-                    json_output,
-                    command="extension-build",
-                )
-            effective_tool_commands = _source_extension_c_commands(
-                toolchain=wasm_toolchain,
-                target_triple=target_arg,
-            )
-            wasi_sysroot = wasm_toolchain.wasi_sysroot
-        cc_cmd = list(effective_tool_commands.get("c", ()))
-        if not cc_cmd:
+    if not effective_tool_commands:
+        try:
+            resolved_toolchain = _resolve_source_extension_toolchain(target_plan)
+        except (OSError, RuntimeError, ValueError) as exc:
             return _fail(
-                "Canonical LLVM/WASI tool authority has no C compiler command.",
+                "Source-extension build requires a valid canonical "
+                f"compiler/archive/symbol tool family: {exc}",
                 json_output,
                 command="extension-build",
             )
-        explicit_sysroot = _sysroot_arg_value([*cc_cmd, *compile_args])
+        effective_tool_commands = resolved_toolchain.commands
+        wasi_sysroot = resolved_toolchain.wasi_sysroot
+    cc_cmd = list(effective_tool_commands.get("c", ()))
+    if not cc_cmd:
+        return _fail(
+            "Canonical source-extension tool authority has no C compiler command.",
+            json_output,
+            command="extension-build",
+        )
+    if wasm_static_link:
+        explicit_sysroot = _compiler_sysroot_arg_value([*cc_cmd, *compile_args])
         if explicit_sysroot is not None:
             wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
-        if wasi_sysroot is None:
+        if wasi_sysroot is None and target_plan.target_triple == "wasm32-wasip1":
             wasi_sysroot = resolve_wasi_sysroot()
-        if wasi_sysroot is None:
+        if target_plan.target_triple == "wasm32-wasip1" and wasi_sysroot is None:
             return _fail(
                 "WASM extension build requires a WASI sysroot containing "
                 "include/errno.h. Set MOLT_WASI_SYSROOT, WASI_SYSROOT, or "
@@ -822,130 +807,16 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-    elif runtime_target_triple:
-        cross_cc = os.environ.get("MOLT_CROSS_CC")
-        target_arg = runtime_target_triple
-        if cross_cc:
-            try:
-                cc_cmd = list(
-                    resolve_explicit_tool_command(
-                        cross_cc,
-                        label="MOLT_CROSS_CC",
-                    )
-                )
-            except ValueError as exc:
-                return _fail(
-                    str(exc),
-                    json_output,
-                    command="extension-build",
-                )
-        elif shutil.which("zig"):
-            try:
-                cc_cmd = [
-                    *resolve_explicit_tool_command("zig", label="zig"),
-                    "cc",
-                ]
-            except ValueError as exc:
-                return _fail(
-                    str(exc),
-                    json_output,
-                    command="extension-build",
-                )
-            normalized = _zig_target_query(runtime_target_triple)
-            if normalized != runtime_target_triple:
-                warnings.append(
-                    f"Zig target normalized to {normalized} from {runtime_target_triple}."
-                )
-            target_arg = normalized
-        else:
-            return _fail(
-                "Cross-target extension build requires zig or MOLT_CROSS_CC "
-                f"(missing for {runtime_target_triple}).",
-                json_output,
-                command="extension-build",
-            )
-        if not cc_cmd:
-            return _fail(
-                "Compiler command is empty. Set MOLT_CROSS_CC or install zig.",
-                json_output,
-                command="extension-build",
-            )
-        cc_cmd.extend(["-target", target_arg])
-    elif not effective_tool_commands:
-        try:
-            cc_cmd = list(
-                resolve_explicit_tool_command(
-                    os.environ.get("CC", "clang"),
-                    label="CC",
-                )
-            )
-        except ValueError as exc:
-            return _fail(
-                str(exc),
-                json_output,
-                command="extension-build",
-            )
-
     if not wasm_static_link:
-        try:
-            if effective_tool_commands:
-                native_commands = {
-                    role: tuple(command)
-                    for role, command in effective_tool_commands.items()
-                }
-            else:
-                explicit_native_tools: dict[LlvmToolRole, tuple[str, ...]] = {
-                    "cc": tuple(cc_cmd)
-                }
-                configured_cxx = os.environ.get(
-                    "MOLT_CROSS_CXX" if runtime_target_triple else "CXX",
-                    "",
-                ).strip()
-                if configured_cxx:
-                    explicit_native_tools["cxx"] = resolve_explicit_tool_command(
-                        configured_cxx,
-                        label="MOLT_CROSS_CXX" if runtime_target_triple else "CXX",
-                    )
-                elif Path(cc_cmd[0]).name.lower() in {"zig", "zig.exe"}:
-                    explicit_native_tools["cxx"] = (
-                        cc_cmd[0],
-                        "c++",
-                        *cc_cmd[2:],
-                    )
-                native_family = resolve_llvm_wasi_tool_family(
-                    explicit_commands=explicit_native_tools,
-                    sibling_directories=(Path(cc_cmd[0]).parent,),
-                )
-                native_commands = {
-                    role: tool.command
-                    for role, tool in {
-                        "c": native_family.cc,
-                        "cpp": native_family.cxx,
-                        "ar": native_family.ar,
-                        "nm": native_family.nm,
-                        "ranlib": native_family.ranlib,
-                    }.items()
-                    if tool is not None
-                }
-                # Explicit compiler selection is target policy.  Family
-                # discovery supplies sibling archive and symbol tools; it must
-                # never replace the compiler command or its target arguments.
-                native_commands["c"] = explicit_native_tools["cc"]
-                if "cxx" in explicit_native_tools:
-                    native_commands["cpp"] = explicit_native_tools["cxx"]
-        except (OSError, ValueError) as exc:
-            return _fail(
-                f"Native source-extension tool family is invalid: {exc}",
-                json_output,
-                command="extension-build",
-            )
         required_native_roles = {"c", "ar", "nm"}
         if any(
             path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES
             for path in source_paths
         ):
             required_native_roles.add("cpp")
-        missing_native_roles = sorted(required_native_roles - native_commands.keys())
+        missing_native_roles = sorted(
+            required_native_roles - effective_tool_commands.keys()
+        )
         if missing_native_roles:
             return _fail(
                 "Native static source-extension builds require one canonical LLVM "
@@ -954,8 +825,6 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-        effective_tool_commands = native_commands
-        cc_cmd = list(native_commands["c"])
 
     dist_name = _normalize_name(str(project_name)).replace("-", "_")
     wheel_version = _wheel_version_token(str(project_version))
@@ -976,7 +845,9 @@ def extension_build(
     init_symbol = f"PyInit_{module_parts[-1]}"
     compile_commands: list[list[str]] = []
     link_command: list[str] = []
-    wasi_sysroot_path = str(wasi_sysroot) if wasm_static_link else None
+    wasi_sysroot_path = (
+        str(wasi_sysroot) if wasm_static_link and wasi_sysroot is not None else None
+    )
 
     with tempfile.TemporaryDirectory(prefix="molt_ext_build_", dir=output_root) as td:
         build_tmp = Path(td)
@@ -1517,7 +1388,6 @@ def extension_build(
             + [str(path) for path in include_paths],
             "python_header": str(python_header),
             "extra_compile_args": compile_args,
-            "extra_link_args": list(link_requirements.arguments),
             "source_date_epoch": build_env.get("SOURCE_DATE_EPOCH"),
         }
         manifest_payload: dict[str, Any] = {

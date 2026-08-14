@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog
+    from molt.cli.source_extension_link_requirements import (
+        SourceExtensionLinkRequirements,
+    )
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
@@ -783,8 +786,7 @@ class _ExternalPackageNativeArtifact:
     platform_tag: str
     runtime_linkage: str
     artifact_kind: str
-    link_arguments: tuple[str, ...]
-    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
+    link_requirements: SourceExtensionLinkRequirements
     init_symbol: str = ""
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
@@ -820,16 +822,7 @@ class _ExternalPackageNativeArtifact:
             "init_symbol": self.init_symbol,
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
-            "link_arguments": list(self.link_arguments),
-            "link_inputs": [
-                {
-                    "argument_index": argument_index,
-                    "path": path,
-                    "sha256": sha256,
-                    "prefix": prefix,
-                }
-                for argument_index, path, sha256, prefix in self.link_inputs
-            ],
+            "link_requirements": self.link_requirements.manifest_payload(),
             "support_file_sha256": [
                 {"path": rel_path, "sha256": digest}
                 for rel_path, digest in self.support_file_sha256
@@ -1334,8 +1327,7 @@ class _StagedExternalPackageNativeArtifact:
     platform_tag: str
     runtime_linkage: str
     artifact_kind: str
-    link_arguments: tuple[str, ...]
-    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
+    link_requirements: SourceExtensionLinkRequirements
     staged_link_input_paths: tuple[Path, ...] = ()
     init_symbol: str = ""
     support_file_sha256: tuple[tuple[str, str], ...] = ()
@@ -1365,16 +1357,7 @@ class _StagedExternalPackageNativeArtifact:
             "init_symbol": self.init_symbol,
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
-            "link_arguments": list(self.link_arguments),
-            "link_inputs": [
-                {
-                    "argument_index": argument_index,
-                    "path": path,
-                    "sha256": sha256,
-                    "prefix": prefix,
-                }
-                for argument_index, path, sha256, prefix in self.link_inputs
-            ],
+            "link_requirements": self.link_requirements.manifest_payload(),
             "staged_link_input_paths": [
                 str(path) for path in self.staged_link_input_paths
             ],

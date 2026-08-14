@@ -490,6 +490,7 @@ def _dispatch_entrypoint_command(
             return _extension_commands.extension_metadata(
                 target=args.target,
                 out_dir=args.out_dir,
+                python_version=args.python_version,
                 abi_tier=args.abi_tier,
                 json_output=args.json,
                 verbose=args.verbose,
@@ -497,7 +498,9 @@ def _dispatch_entrypoint_command(
         if args.extension_command == "produce-set":
             return produce_source_extension_set(
                 package=args.package,
+                package_version=args.package_version,
                 module_set=args.module_set,
+                python_version=args.python_version,
                 source=args.source,
                 build_root=args.build_root,
                 target=args.target,

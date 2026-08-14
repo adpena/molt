@@ -25,6 +25,7 @@ from molt.cli.source_extension_reproducibility import (
     _residual_producer_paths,
 )
 from molt.cli.source_extension_set_identity import (
+    SOURCE_EXTENSION_SET_SCHEMA_VERSION,
     _source_extension_reproduction_comparison,
     _source_extension_set_identity,
 )
@@ -101,6 +102,12 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
         )
     return {
         "module": "pkg._native",
+        "target_triple": "wasm32-wasip1",
+        "link_requirements": {
+            "target_triple": "wasm32-wasip1",
+            "items": [],
+            "retained_symbols": [],
+        },
         "build": {
             "compiler": ["clang"],
             "extra_compile_args": ["-DVALUE=1", "-DVALUE=2", "-DVALUE=1"],
@@ -278,15 +285,29 @@ def _write_identity_fixture(
     source = root / "pkg/__init__.py"
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n", encoding="utf-8")
+    artifact_path = root / "pkg/_native.molt.wasm"
+    artifact_path.write_bytes(artifact.encode("ascii"))
+    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
     payload = {
         "schema_version": 1,
+        "version": "1.0.0",
         "module": "pkg._native",
-        "extension_sha256": artifact,
+        "extension_sha256": artifact_sha256,
         "wheel_sha256": "b" * 64,
+        "python_tag": "py3",
+        "target_python": "py312",
+        "abi_tier": "cpython-abi",
         "target_triple": "wasm32-wasip1",
+        "artifact_kind": "wasm_relocatable_object",
         "capabilities": ["module.extension.exec"],
         "python_exports": ["pkg"],
+        "provided_capsules": [],
+        "link_requirements": {
+            "target_triple": "wasm32-wasip1",
+            "items": [],
+            "retained_symbols": [],
+        },
         "source_plan": {"target_selector": "_native"},
         "build": {"producer_root": producer_root},
         "object_closure": {
@@ -309,12 +330,16 @@ def _write_identity_fixture(
             ],
         },
     }
+    payload = _compact_source_extension_manifest(payload)
     sidecar.write_text(json.dumps(payload), encoding="utf-8")
     set_manifest = {
+        "schema_version": SOURCE_EXTENSION_SET_SCHEMA_VERSION,
         "kind": "molt-source-extension-set",
         "package": "pkg",
+        "package_version": "1.0.0",
         "name": "test",
         "seal_name": "pkg-test",
+        "cpython": "3.12",
         "source_head": "e" * 40,
         "submodules": [],
         "target": "wasm",
@@ -344,10 +369,72 @@ def _write_identity_fixture(
     )
     return {
         "pkg/__init__.py": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "pkg/_native.molt.wasm": artifact_sha256,
         "pkg/_native.molt.wasm.extension_manifest.json": hashlib.sha256(
             sidecar.read_bytes()
         ).hexdigest(),
     }
+
+
+@pytest.mark.parametrize("suffix", [".molt.wasm", ".molt.a"])
+def test_extension_identity_rejects_extra_raw_artifact(
+    tmp_path: Path, suffix: str
+) -> None:
+    root = tmp_path / suffix.removeprefix(".")
+    inventory = _write_identity_fixture(
+        root, producer_root="/producer/host", artifact="a" * 64
+    )
+    extra = root / f"pkg/extra{suffix}"
+    extra.write_bytes(b"unregistered")
+    inventory[extra.relative_to(root).as_posix()] = hashlib.sha256(
+        extra.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="artifact inventory differs from typed set"):
+        _source_extension_set_identity(root, inventory_sha256=inventory)
+
+
+def test_extension_identity_rejects_artifact_sidecar_digest_drift(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "digest-drift"
+    inventory = _write_identity_fixture(
+        root, producer_root="/producer/host", artifact="a" * 64
+    )
+    artifact = root / "pkg/_native.molt.wasm"
+    artifact.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="artifact bytes differ from sidecar"):
+        _source_extension_set_identity(root, inventory_sha256=inventory)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_python", "py313"),
+        ("target_triple", "x86_64-unknown-linux-gnu"),
+        ("abi_tier", "source-compat"),
+        ("artifact_kind", "static_archive"),
+        ("module", "pkg._other"),
+    ],
+)
+def test_extension_identity_rejects_sidecar_variant_drift(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    root = tmp_path / field
+    inventory = _write_identity_fixture(
+        root, producer_root="/producer/host", artifact="a" * 64
+    )
+    sidecar = root / "pkg/_native.molt.wasm.extension_manifest.json"
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    payload[field] = value
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    inventory[sidecar.relative_to(root).as_posix()] = hashlib.sha256(
+        sidecar.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="extension sidecar"):
+        _source_extension_set_identity(root, inventory_sha256=inventory)
 
 
 def test_canonical_identity_is_cross_platform_while_attestation_remains_exact(

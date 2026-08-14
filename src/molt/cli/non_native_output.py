@@ -57,6 +57,9 @@ from molt.cli.runtime_wasm_validation import (
     _is_reusable_wasm_artifact,
     _validate_wasm_structural,
 )
+from molt.cli.source_extension_link_requirements import (
+    render_source_extension_link_arguments,
+)
 from molt.cli.wasm import (
     _effective_split_worker_table_base,
     _generate_split_worker_js,
@@ -581,7 +584,11 @@ def _wasm_static_link_arguments(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> tuple[str, ...]:
     return tuple(
-        argument for artifact in artifacts for argument in artifact.link_arguments
+        argument
+        for artifact in artifacts
+        for argument in render_source_extension_link_arguments(
+            artifact.link_requirements
+        )
     )
 
 
