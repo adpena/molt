@@ -68,10 +68,7 @@ def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> floa
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from tools.memory_guard_core.common import (  # noqa: E402
-    utc_compact_timestamp as _utc_compact_timestamp,
-    utc_timestamp as _utc_timestamp,
-)
+from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.memory_limits import (  # noqa: E402
     DEFAULT_GLOBAL_FRACTION_OF_USABLE as DEFAULT_GLOBAL_FRACTION_OF_USABLE,
     DEFAULT_HARD_MAX_CHILD_RLIMIT_GB as DEFAULT_HARD_MAX_CHILD_RLIMIT_GB,
@@ -163,7 +160,9 @@ from tools import win_job as _win_job  # noqa: E402
 WindowsJobCleanup = _win_job.WindowsJobCleanup
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
+from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
+from tools.memory_guard_core import reporting as _reporting  # noqa: E402
 from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     ChildExitResourceUsage as ChildExitResourceUsage,
@@ -443,23 +442,6 @@ def _prune_active_guard_markers() -> None:
                 marker.unlink()
 
 
-def _load_json_string_list(environ: Mapping[str, str], name: str) -> list[str]:
-    raw = environ.get(name)
-    if not raw:
-        raise ValueError(f"{name} is required")
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{name} is invalid JSON") from exc
-    if not isinstance(decoded, list) or not all(
-        isinstance(item, str) for item in decoded
-    ):
-        raise ValueError(f"{name} must be a JSON string list")
-    if not decoded:
-        raise ValueError(f"{name} command must not be empty")
-    return decoded
-
-
 def _apply_child_resource_limit(limit_kb: int) -> None:
     if limit_kb <= 0:
         return
@@ -644,50 +626,11 @@ def _cargo_interruption_reason(
     return None
 
 
-WINDOWS_PROCESS_SIGNAL_EXIT_CODES = frozenset(
-    code
-    for code in (
-        int(signal.SIGTERM),
-        int(getattr(signal, "SIGBREAK", 0)),
-    )
-    if code > 0
-)
-
-_CONVENTIONAL_SIGNAL_NAMES = {
-    1: "SIGHUP",
-    2: "SIGINT",
-    3: "SIGQUIT",
-    6: "SIGABRT",
-    9: "SIGKILL",
-    15: "SIGTERM",
-}
-
-
 def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
-    conventional_shell_status = False
-    if returncode < 0:
-        signo = -returncode
-    elif 129 <= returncode <= 192:
-        signo = returncode - 128
-        conventional_shell_status = True
-    elif (
-        _is_windows_process_model() and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES
-    ):
-        signo = returncode
-    else:
-        return None
-    with contextlib.suppress(ValueError):
-        signame = signal.Signals(signo).name
-        return {
-            "signal": signo,
-            "name": signame,
-            "conventional_shell_status": conventional_shell_status,
-        }
-    return {
-        "signal": signo,
-        "name": _CONVENTIONAL_SIGNAL_NAMES.get(signo),
-        "conventional_shell_status": conventional_shell_status,
-    }
+    return _reporting.exit_signal_payload(
+        returncode,
+        windows_process_model=_is_windows_process_model(),
+    )
 
 
 def _returncode_looks_signal(returncode: int) -> bool:
@@ -712,27 +655,7 @@ def _append_guard_message(
 def _sampling_telemetry_payload(
     telemetry: GuardSamplingTelemetry | None,
 ) -> dict[str, object] | None:
-    if telemetry is None:
-        return None
-    return {
-        "attempts": telemetry.attempts,
-        "successes": telemetry.successes,
-        "transient_failures": telemetry.transient_failures,
-        "enforcement_complete": telemetry.enforcement_complete,
-        "first_transient_failure_at": telemetry.first_transient_failure_at,
-        "last_transient_failure_at": telemetry.last_transient_failure_at,
-        "last_transient_error": telemetry.last_transient_error,
-        "source": telemetry.source,
-        "wall_time_s": telemetry.wall_time_s,
-        "cpu_time_s": telemetry.cpu_time_s,
-        "max_wall_time_s": telemetry.max_wall_time_s,
-        "max_cpu_time_s": telemetry.max_cpu_time_s,
-        "process_rows": telemetry.process_rows,
-        "max_process_rows": telemetry.max_process_rows,
-        "observer_wall_time_s": telemetry.observer_wall_time_s,
-        "observer_cpu_time_s": telemetry.observer_cpu_time_s,
-        "observer_cpu_duty_cycle": telemetry.observer_cpu_duty_cycle,
-    }
+    return _reporting.sampling_telemetry_payload(telemetry)
 
 
 def run_guarded(
@@ -2248,315 +2171,16 @@ def exit_signal_payload(returncode: int) -> dict[str, object] | None:
 _exit_signal_payload = exit_signal_payload
 
 
-def _elapsed_text(elapsed_s: float | None) -> str:
-    return "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
-
-
-def _limit_text(limit_gb: float | None) -> str:
-    return "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
-
-
-def _child_identity_text(child: GuardedChildProcess | None) -> str:
-    if child is None:
-        return "child_pid=unknown child_pgid=unknown child_sid=unknown"
-    return f"child_pid={child.pid} child_pgid={child.pgid} child_sid={child.sid}"
-
-
 def _incident_payload(result: GuardResult) -> dict[str, object] | None:
-    orphan_reasons = {
-        "tracked_orphan_cleanup",
-        "repo_scoped_orphan_cleanup",
-    }
-    final_orphan_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    final_primary_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    for report in result.termination_reports:
-        for action in report.actions:
-            if (
-                report.reason == "tracked_orphan_cleanup"
-                and action.target_kind == "process"
-                and action.target_id == report.root_pid
-            ):
-                continue
-            # A successful Popen-handle reap is the terminal authority for the
-            # directly owned child PID.  Reconcile it with an earlier PID-level
-            # failure while leaving every descendant/group target independent.
-            target_kind = (
-                "process"
-                if action.target_kind == "owned_child_handle"
-                else action.target_kind
-            )
-            key = (target_kind, action.target_id)
-            if report.reason in orphan_reasons:
-                final_orphan_actions[key] = action
-            else:
-                final_primary_actions[key] = action
-    incomplete_orphan_actions = [
-        action
-        for action in final_orphan_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
-    incomplete_primary_actions = [
-        action
-        for action in final_primary_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
-    candidate_pids = sorted(
-        {
-            action.target_id
-            for action in incomplete_orphan_actions
-            if action.target_kind == "process"
-        }
-    )
-
-    primary_candidate_pids = sorted(
-        {
-            action.target_id
-            for action in incomplete_primary_actions
-            if action.target_kind == "process"
-        }
-    )
-
-    def cleanup_truth(default: str) -> str:
-        if (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        ):
-            return default
-        if not incomplete_orphan_actions and not incomplete_primary_actions:
-            return default
-        return (
-            "process cleanup incomplete; no unverified process was reported as "
-            "cleaned or used to trigger Cargo quarantine"
-        )
-
-    def attach_guard_custody(payload: dict[str, object]) -> dict[str, object]:
-        child_payload = guarded_child_process_payload(result.child_process)
-        if child_payload is not None:
-            payload["child_process"] = child_payload
-        if result.termination_reports:
-            payload["termination_reports"] = termination_reports_payload(
-                result.termination_reports
-            )
-        exact_job_completed = (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        )
-        if incomplete_orphan_actions and not exact_job_completed:
-            payload["orphan_cleanup_status"] = "incomplete"
-            payload["orphan_cleanup_candidate_pids"] = candidate_pids
-        if incomplete_primary_actions and not exact_job_completed:
-            payload["process_tree_cleanup_status"] = "incomplete"
-            payload["process_tree_cleanup_candidate_pids"] = primary_candidate_pids
-        return payload
-
-    guard_signal_payload = (
-        None
-        if result.guard_signal is None
-        else _exit_signal_payload(128 + result.guard_signal)
-    )
-    if (
-        result.guard_signal is not None
-        and result.violation is None
-        and not result.timed_out
-    ):
-        payload: dict[str, object] = {
-            "reason": "guard_interrupted",
-            "cleanup": cleanup_truth(
-                "terminated tracked process tree and post-baseline Molt process groups"
-                if result.orphaned_process_groups
-                else "terminated tracked process tree"
-            ),
-            "recorded_at": _utc_timestamp(),
-            "elapsed_s": result.elapsed_s,
-            "signal": guard_signal_payload,
-            "next_action": (
-                "Inspect the parent host/control-plane signal source and child "
-                "logs; the guard parent received the signal and wrote this "
-                "summary before exiting."
-            ),
-        }
-        if result.orphaned_process_groups:
-            payload["process_groups"] = list(result.orphaned_process_groups)
-        return attach_guard_custody(payload)
-    if result.violation is not None:
-        cleanup = cleanup_truth(
-            "classified command as failed from child exit resource usage"
-            if result.violation.scope == "process_rusage"
-            else "terminated tracked process tree"
-        )
-        payload: dict[str, object] = {
-            "reason": "rss_limit_exceeded",
-            "cleanup": cleanup,
-            "recorded_at": _utc_timestamp(),
-            "elapsed_s": result.elapsed_s,
-            "next_action": (
-                "Inspect child logs and allocations, lower parallelism/input size, "
-                "or raise the relevant memory guard RSS limit if the workload is "
-                "expected."
-            ),
-        }
-        if guard_signal_payload is not None:
-            payload["guard_signal"] = guard_signal_payload
-        return attach_guard_custody(payload)
-    if result.timed_out:
-        payload: dict[str, object] = {
-            "reason": "timeout",
-            "cleanup": cleanup_truth(
-                "terminated tracked process tree and post-baseline Molt process groups"
-                if result.orphaned_process_groups
-                else "terminated tracked process tree"
-            ),
-            "recorded_at": _utc_timestamp(),
-            "elapsed_s": result.elapsed_s,
-            "next_action": (
-                "Inspect child logs for a hang or oversized workload; raise the "
-                "guard timeout only for intentional long-running work."
-            ),
-        }
-        if result.orphaned_process_groups:
-            payload["process_groups"] = list(result.orphaned_process_groups)
-        if guard_signal_payload is not None:
-            payload["guard_signal"] = guard_signal_payload
-        return attach_guard_custody(payload)
-    if incomplete_orphan_actions:
-        return attach_guard_custody(
-            {
-                "reason": "orphan_cleanup_incomplete",
-                "cleanup": (
-                    "no unverified process was reported as cleaned or used to "
-                    "trigger Cargo quarantine"
-                ),
-                "recorded_at": _utc_timestamp(),
-                "elapsed_s": result.elapsed_s,
-                "candidate_pids": candidate_pids,
-                "next_action": (
-                    "Inspect custody identities and termination actions; repair "
-                    "the child lifecycle or sampler authority before retrying cleanup."
-                ),
-            }
-        )
-    if result.orphaned_process_groups:
-        return attach_guard_custody(
-            {
-                "reason": "orphaned_processes_cleaned",
-                "cleanup": "terminated tracked orphan descendants; group ids recorded",
-                "recorded_at": _utc_timestamp(),
-                "elapsed_s": result.elapsed_s,
-                "process_groups": list(result.orphaned_process_groups),
-                "next_action": (
-                    "Inspect child process lifecycle and logs; make helpers shut down "
-                    "explicitly, or run intentional warm daemons inside a suite-level "
-                    "sentinel that drains at scope exit."
-                ),
-            }
-        )
-    exit_signal = _exit_signal_payload(result.returncode)
-    if exit_signal is not None:
-        cleanup = (
-            "quarantined Cargo incremental state"
-            if result.cargo_incremental_quarantine is not None
-            and result.cargo_incremental_quarantine.moved_paths
-            else "none_by_guard"
-        )
-        return attach_guard_custody(
-            {
-                "reason": "signal_exit",
-                "cleanup": cleanup,
-                "recorded_at": _utc_timestamp(),
-                "elapsed_s": result.elapsed_s,
-                "signal": exit_signal,
-                "next_action": (
-                    "Inspect child stderr/logs or the host signal source; the memory "
-                    "guard did not classify this as an RSS limit trip."
-                ),
-            }
-        )
-    return None
+    return _reporting.incident_payload(result, signal_payload=_exit_signal_payload)
 
 
-def _write_summary_json(
-    path: str,
-    *,
-    command: Sequence[str],
-    cwd: str | Path | None,
-    environ: Mapping[str, str],
-    max_rss_kb: int,
-    max_total_rss_kb: int | None,
-    max_global_rss_kb: int | None,
-    child_rlimit_kb: int | None,
-    timeout_s: float | None,
-    poll_interval_s: float,
-    result: GuardResult,
-) -> None:
-    summary_path = Path(path)
-    if summary_path.parent:
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-    incident = _incident_payload(result)
-    payload = {
-        "command": list(command),
-        "returncode": result.returncode,
-        "elapsed_s": result.elapsed_s,
-        "max_rss_kb": max_rss_kb,
-        "max_rss_gb": max_rss_kb / (1024 * 1024),
-        "max_total_rss_kb": max_total_rss_kb,
-        "max_total_rss_gb": (
-            None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
-        ),
-        "child_rlimit_kb": child_rlimit_kb,
-        "child_rlimit_gb": (
-            None if child_rlimit_kb is None else child_rlimit_kb / (1024 * 1024)
-        ),
-        "violation": _rss_record_payload(result.violation),
-        "peak": _rss_record_payload(result.peak),
-        "peak_total": _rss_record_payload(result.peak_total),
-        "peak_job_commit_bytes": result.peak_job_commit_bytes,
-        "windows_job_cleanup": windows_job_cleanup_payload(result.windows_job_cleanup),
-        "timed_out": result.timed_out,
-        "orphaned_process_groups": list(result.orphaned_process_groups),
-        "child_process": guarded_child_process_payload(result.child_process),
-        "termination_reports": termination_reports_payload(result.termination_reports),
-        "sampling_telemetry": _sampling_telemetry_payload(result.sampling_telemetry),
-        "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(
-            result.cargo_incremental_quarantine
-        ),
-        "limit_at_violation": (
-            None
-            if result.limit_at_violation is None
-            else memory_limits_payload(result.limit_at_violation)
-        ),
-        "exit_signal": (
-            None
-            if (
-                result.violation is not None
-                or result.timed_out
-                or result.guard_signal is not None
-            )
-            else _exit_signal_payload(result.returncode)
-        ),
-        "guard_signal": (
-            None
-            if result.guard_signal is None
-            else _exit_signal_payload(128 + result.guard_signal)
-        ),
-        "incident": incident,
-    }
-    if incident is not None:
-        payload["repro"] = repro_context_payload(
-            command=command,
-            cwd=cwd,
-            environ=environ,
-            max_process_rss_kb=max_rss_kb,
-            max_total_rss_kb=max_total_rss_kb,
-            max_global_rss_kb=max_global_rss_kb,
-            child_rlimit_kb=child_rlimit_kb,
-            timeout_s=timeout_s,
-            poll_interval_s=poll_interval_s,
-            summary_json=path,
-            incident_pid=result.violation.pid if result.violation is not None else None,
-        )
-    summary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+def _write_summary_json(path: str, **kwargs: object) -> None:
+    _reporting.write_summary_json(
+        path,
+        **kwargs,
+        signal_payload=_exit_signal_payload,
+        repro_context_provider=repro_context_payload,
     )
 
 
@@ -2565,54 +2189,15 @@ def _write_worker_exit_summary_json(
     *,
     worker_returncode: int,
 ) -> bool:
-    """Terminalize a running summary when the Windows wrapper outlives its worker."""
-    summary_path = Path(path)
-    try:
-        payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    status = payload.get("status")
-    if (
-        status not in {"running", "child_running"}
-        or payload.get("returncode") is not None
-    ):
-        return False
-
-    recorded_at = _utc_timestamp()
-    exit_signal = _exit_signal_payload(worker_returncode)
-    payload["status"] = "guard_worker_exited_without_final_summary"
-    payload["returncode"] = worker_returncode
-    payload["worker_returncode"] = worker_returncode
-    payload["worker_exit_signal"] = exit_signal
-    payload["recorded_at"] = recorded_at
-    payload["incident"] = {
-        "reason": "guard_worker_exited_without_final_summary",
-        "cleanup": "none_by_wrapper",
-        "recorded_at": recorded_at,
-        "previous_status": status,
-        "worker_returncode": worker_returncode,
-        "worker_exit_signal": exit_signal,
-        "next_action": (
-            "Inspect the guard worker, child logs, and parent host/control-plane "
-            "signal source. The public memory_guard wrapper preserved terminal "
-            "custody because the internal worker exited before writing the final "
-            "summary."
-        ),
-    }
-    summary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    return _reporting.write_worker_exit_summary_json(
+        path,
+        worker_returncode=worker_returncode,
+        signal_payload=_exit_signal_payload,
     )
-    return True
 
 
 def _default_incident_summary_path() -> Path:
-    stamp = _utc_compact_timestamp()
-    return (
-        ROOT / "tmp" / "memory_guard" / "incidents" / (f"{stamp}-pid{os.getpid()}.json")
-    )
+    return _reporting.default_incident_summary_path(ROOT)
 
 
 def _prune_default_incident_summaries(
@@ -2620,234 +2205,56 @@ def _prune_default_incident_summaries(
     *,
     keep: int = DEFAULT_INCIDENT_SUMMARY_KEEP,
 ) -> None:
-    if keep <= 0:
-        return
-    try:
-        paths = sorted(
-            (path for path in directory.glob("*.json") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return
-    for path in paths[keep:]:
-        with contextlib.suppress(OSError):
-            path.unlink()
+    _reporting.prune_default_incident_summaries(directory, keep=keep)
 
 
-def _write_running_summary_json(
-    path: str,
-    *,
-    command: Sequence[str],
-    cwd: str | Path | None,
-    environ: Mapping[str, str],
-    max_rss_kb: int,
-    max_total_rss_kb: int | None,
-    max_global_rss_kb: int | None,
-    child_rlimit_kb: int | None,
-    timeout_s: float | None,
-    poll_interval_s: float,
-    child_process: GuardedChildProcess | None = None,
-) -> None:
-    summary_path = Path(path)
-    if summary_path.parent:
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-    child_payload = guarded_child_process_payload(child_process)
-    payload = {
-        "command": list(command),
-        "returncode": None,
-        "recorded_at": _utc_timestamp(),
-        "status": "running",
-        "max_rss_kb": max_rss_kb,
-        "max_rss_gb": max_rss_kb / (1024 * 1024),
-        "max_total_rss_kb": max_total_rss_kb,
-        "max_total_rss_gb": (
-            None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
-        ),
-        "child_rlimit_kb": child_rlimit_kb,
-        "child_rlimit_gb": (
-            None if child_rlimit_kb is None else child_rlimit_kb / (1024 * 1024)
-        ),
-        "violation": None,
-        "peak": None,
-        "peak_total": None,
-        "peak_job_commit_bytes": None,
-        "timed_out": False,
-        "orphaned_process_groups": [],
-        "child_process": child_payload,
-        "termination_reports": [],
-        "sampling_telemetry": None,
-        "cargo_incremental_quarantine": None,
-        "limit_at_violation": None,
-        "exit_signal": None,
-        "guard_signal": None,
-        "incident": {
-            "reason": "child_running" if child_payload is not None else "guard_started",
-            "cleanup": "pending",
-            "recorded_at": _utc_timestamp(),
-            "next_action": (
-                "If this file remains in running status, the guard parent was "
-                "terminated before it could write the final summary; use the "
-                "child_process identity, repro block, and host/control-plane "
-                "samples below."
-            ),
-        },
-        "repro": repro_context_payload(
-            command=command,
-            cwd=cwd,
-            environ=environ,
-            max_process_rss_kb=max_rss_kb,
-            max_total_rss_kb=max_total_rss_kb,
-            max_global_rss_kb=max_global_rss_kb,
-            child_rlimit_kb=child_rlimit_kb,
-            timeout_s=timeout_s,
-            poll_interval_s=poll_interval_s,
-            summary_json=path,
-            incident_pid=None if child_process is None else child_process.pid,
-        ),
-    }
-    summary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+def _write_running_summary_json(path: str, **kwargs: object) -> None:
+    _reporting.write_running_summary_json(
+        path,
+        **kwargs,
+        repro_context_provider=repro_context_payload,
     )
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run a command with a process-tree/process-group RSS ceiling."
+    return _cli_contract.parser(
+        default_poll_interval_sec=DEFAULT_POLL_INTERVAL_SEC,
+        default_samples_max_mb=DEFAULT_SAMPLES_MAX_MB,
+        hard_max_rss_gb=DEFAULT_HARD_MAX_RSS_GB,
+        hard_max_global_rss_gb=DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
     )
-    parser.add_argument(
-        "--max-rss-gb",
-        "--max-process-rss-gb",
-        dest="max_rss_gb",
-        type=float,
-        default=None,
-        help=(
-            "Abort if any child process exceeds this RSS; must be "
-            f"<{DEFAULT_HARD_MAX_RSS_GB:g}GB "
-            "(default: adaptive from live available memory)."
-        ),
-    )
-    parser.add_argument(
-        "--max-total-rss-gb",
-        "--max-tree-rss-gb",
-        "--max-group-rss-gb",
-        dest="max_total_rss_gb",
-        type=float,
-        default=None,
-        help=(
-            "Abort if the watched process tree exceeds this aggregate RSS; "
-            f"must be <{DEFAULT_HARD_MAX_RSS_GB:g}GB "
-            "(default: adaptive from live available memory)."
-        ),
-    )
-    parser.add_argument(
-        "--max-global-rss-gb",
-        type=float,
-        default=None,
-        help=(
-            "Record and constrain the resolved host-wide RSS custody budget; "
-            f"must be <{DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g}GB "
-            "(default: adaptive from live available memory)."
-        ),
-    )
-    parser.add_argument(
-        "--poll-interval",
-        type=float,
-        default=DEFAULT_POLL_INTERVAL_SEC,
-        help=(
-            "Process sampling interval in seconds "
-            f"(default: {DEFAULT_POLL_INTERVAL_SEC})."
-        ),
-    )
-    parser.add_argument(
-        "--summary-json",
-        help="Write command result, violation, and peak RSS details as JSON.",
-    )
-    parser.add_argument(
-        "--samples-jsonl",
-        help="Append per-poll peak and process-tree RSS samples as JSONL.",
-    )
-    parser.add_argument(
-        "--samples-max-mb",
-        type=float,
-        default=DEFAULT_SAMPLES_MAX_MB,
-        help=(
-            "Rotate --samples-jsonl after this many MB; set <=0 to disable "
-            f"rotation (default: {DEFAULT_SAMPLES_MAX_MB})."
-        ),
-    )
-    parser.add_argument(
-        "--stream",
-        choices=("stderr", "stdout", "json-stderr", "json-stdout"),
-        default="",
-        help="Emit per-poll guard samples to this stream without writing artifacts.",
-    )
-    parser.add_argument(
-        "--child-rlimit-gb",
-        type=float,
-        default=None,
-        help=(
-            "Apply an RLIMIT_RSS backstop to the direct guarded child before "
-            "exec; defaults to the adaptive per-process RSS budget and never "
-            "constrains sparse virtual-address reservations. Set <=0 to disable "
-            "this layer."
-        ),
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        help="Abort the command if wall-clock runtime exceeds this many seconds.",
-    )
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    return parser
 
 
 def _load_internal_command(environ: Mapping[str, str]) -> list[str] | None:
-    if environ.get(INTERNAL_WORKER_ENV) != "1":
-        return None
-    return _load_json_string_list(environ, INTERNAL_COMMAND_ENV)
+    return _cli_contract.load_internal_command(
+        environ,
+        worker_env_name=INTERNAL_WORKER_ENV,
+        command_env_name=INTERNAL_COMMAND_ENV,
+    )
 
 
 def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, str]:
-    child_env = dict(environ)
-    for key in _INTERNAL_ENV_KEYS:
-        child_env.pop(key, None)
-    return child_env
+    return _cli_contract.child_env_without_internal_keys(
+        environ,
+        internal_env_keys=_INTERNAL_ENV_KEYS,
+    )
 
 
 def _worker_env(environ: Mapping[str, str], command: Sequence[str]) -> dict[str, str]:
-    worker_env = dict(environ)
-    worker_env[INTERNAL_COMMAND_ENV] = json.dumps(list(command))
-    worker_env[INTERNAL_WORKER_ENV] = "1"
-    return worker_env
+    return _cli_contract.worker_env(
+        environ,
+        command,
+        worker_env_name=INTERNAL_WORKER_ENV,
+        command_env_name=INTERNAL_COMMAND_ENV,
+    )
 
 
 def _worker_argv(args: argparse.Namespace) -> list[str]:
-    worker_args = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--poll-interval",
-        str(args.poll_interval),
-    ]
-    if args.max_rss_gb is not None:
-        worker_args.extend(["--max-rss-gb", str(args.max_rss_gb)])
-    if args.max_total_rss_gb is not None:
-        worker_args.extend(["--max-total-rss-gb", str(args.max_total_rss_gb)])
-    if args.max_global_rss_gb is not None:
-        worker_args.extend(["--max-global-rss-gb", str(args.max_global_rss_gb)])
-    if args.summary_json:
-        worker_args.extend(["--summary-json", args.summary_json])
-    if args.samples_jsonl:
-        worker_args.extend(["--samples-jsonl", args.samples_jsonl])
-        worker_args.extend(["--samples-max-mb", str(args.samples_max_mb)])
-    if args.stream:
-        worker_args.extend(["--stream", args.stream])
-    if args.child_rlimit_gb is not None:
-        worker_args.extend(["--child-rlimit-gb", str(args.child_rlimit_gb)])
-    if args.timeout is not None:
-        worker_args.extend(["--timeout", str(args.timeout)])
-    return worker_args
+    return _cli_contract.worker_argv(
+        args,
+        python_executable=sys.executable,
+        script_path=Path(__file__).resolve(),
+    )
 
 
 def main(
@@ -3055,153 +2462,15 @@ def main(
                 f"memory_guard: failed to write incident summary JSON: {exc}",
                 file=sys.stderr,
             )
-    if result.violation is not None:
-        violation_limits = result.limit_at_violation
-        limit_gb = (
-            (
-                violation_limits.max_total_rss_gb
-                if violation_limits is not None
-                else max_total_rss_gb
-            )
-            if result.violation.scope == "process_tree"
-            else (
-                violation_limits.max_process_rss_gb
-                if violation_limits is not None
-                else max_rss_gb
-            )
-        )
-        incident_at = _utc_timestamp()
-        cleanup = (
-            "classified command as failed from child exit resource usage"
-            if result.violation.scope == "process_rusage"
-            else "terminated tracked process tree to prevent orphaned Molt subprocesses"
-        )
-        time_label = (
-            "observed_at" if result.violation.scope == "process_rusage" else "killed_at"
-        )
-        print(
-            "memory_guard: RSS limit exceeded; "
-            f"{cleanup}: {time_label}={incident_at} "
-            f"elapsed={_elapsed_text(result.elapsed_s)} "
-            f"{_child_identity_text(result.child_process)} "
-            f"pid={result.violation.pid} "
-            f"rss={result.violation.rss_gb:.2f}GB "
-            f"limit={_limit_text(limit_gb)} "
-            f"scope={result.violation.scope} "
-            f"command={result.violation.command}",
-            file=sys.stderr,
-        )
-        print(
-            "memory_guard: next action: inspect child logs and allocations for "
-            "runaway work; lower parallelism/input size, or if expected raise the "
-            "relevant *_MAX_PROCESS_RSS_GB/*_MAX_TOTAL_RSS_GB limit.",
-            file=sys.stderr,
-        )
-    if result.timed_out:
-        incident_at = _utc_timestamp()
-        print(
-            "memory_guard: timeout after "
-            f"{0.0 if args.timeout is None else args.timeout:.2f}s; "
-            "terminated tracked process tree to prevent orphaned Molt "
-            f"subprocesses: killed_at={incident_at} "
-            f"elapsed={_elapsed_text(result.elapsed_s)} "
-            f"{_child_identity_text(result.child_process)}",
-            file=sys.stderr,
-        )
-        print(
-            "memory_guard: next action: inspect child logs for a hang or oversized "
-            "workload; raise --timeout only for intentional long-running work.",
-            file=sys.stderr,
-        )
-    if result.orphaned_process_groups:
-        incident_at = _utc_timestamp()
-        pgids = ",".join(str(pgid) for pgid in result.orphaned_process_groups)
-        print(
-            "memory_guard: orphaned child processes detected after command exit; "
-            "terminated tracked process groups to prevent accumulation: "
-            f"killed_at={incident_at} elapsed={_elapsed_text(result.elapsed_s)} "
-            f"pgids={pgids} reason=direct child exited while descendants were "
-            "still live",
-            file=sys.stderr,
-        )
-        print(
-            "memory_guard: next action: inspect child process lifecycle and logs; "
-            "make helpers shut down explicitly, or run intentional warm daemons "
-            "inside a suite-level sentinel that drains at scope exit.",
-            file=sys.stderr,
-        )
-    exit_signal = _exit_signal_payload(result.returncode)
-    if result.guard_signal is not None:
-        guard_signal_payload = _exit_signal_payload(128 + result.guard_signal)
-        signame = (
-            guard_signal_payload["name"]
-            if guard_signal_payload is not None
-            and guard_signal_payload["name"] is not None
-            else f"signal {result.guard_signal}"
-        )
-        print(
-            "memory_guard: guard parent received "
-            f"{signame}; summary written after terminating the tracked child tree: "
-            f"observed_at={_utc_timestamp()} "
-            f"elapsed={_elapsed_text(result.elapsed_s)} "
-            f"{_child_identity_text(result.child_process)}",
-            file=sys.stderr,
-        )
-        print(
-            (
-                "memory_guard: next action: inspect the parent host/control-plane "
-                "signal source and child logs; the RSS limit incident remains "
-                "the primary classification."
-                if result.violation is not None
-                else (
-                    "memory_guard: next action: inspect the parent host/control-plane "
-                    "signal source and child logs; the timeout incident remains "
-                    "the primary classification."
-                    if result.timed_out
-                    else "memory_guard: next action: inspect the parent "
-                    "host/control-plane signal source and child logs; this was "
-                    "not classified as an RSS limit trip."
-                )
-            ),
-            file=sys.stderr,
-        )
-        exit_signal = None
-    if exit_signal is not None and result.violation is None and not result.timed_out:
-        signame = exit_signal["name"] or f"signal {exit_signal['signal']}"
-        print(
-            "memory_guard: command exited with "
-            f"{signame} status ({result.returncode}); no RSS violation observed: "
-            f"observed_at={_utc_timestamp()} "
-            f"elapsed={_elapsed_text(result.elapsed_s)}",
-            file=sys.stderr,
-        )
-        print(
-            "memory_guard: next action: inspect child stderr/logs or host signal "
-            "source, including the direct-child RLIMIT_RSS backstop; "
-            "the guard did not classify this as an RSS limit trip.",
-            file=sys.stderr,
-        )
-    if result.cargo_incremental_quarantine is not None:
-        print(
-            _cargo_incremental_quarantine_message(result.cargo_incremental_quarantine),
-            file=sys.stderr,
-        )
-        if result.cargo_incremental_quarantine.errors:
-            print(
-                "memory_guard: cargo incremental quarantine errors: "
-                f"{'; '.join(result.cargo_incremental_quarantine.errors)}",
-                file=sys.stderr,
-            )
-            print(
-                "memory_guard: next action: run `molt clean --apply "
-                "--kill-processes` if stale Cargo state still blocks rebuilds.",
-                file=sys.stderr,
-            )
-    if repro_payload is not None:
-        print(
-            f"memory_guard: repro context: {repro_context_line(repro_payload)}",
-            file=sys.stderr,
-        )
+    _reporting.emit_terminal_report(
+        result,
+        timeout_s=args.timeout,
+        max_rss_gb=max_rss_gb,
+        max_total_rss_gb=max_total_rss_gb,
+        repro_payload=repro_payload,
+        signal_payload=_exit_signal_payload,
+        stderr=sys.stderr,
+    )
     return result.returncode
 
 
