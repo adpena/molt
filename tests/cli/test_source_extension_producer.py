@@ -121,6 +121,12 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
         source_sha256 = hashlib.sha256(f"{path.stem}.c".encode()).hexdigest()
         manifest = {
             "module": module,
+            "target_triple": "wasm32-wasip1",
+            "link_requirements": {
+                "target_triple": "wasm32-wasip1",
+                "arguments": [],
+                "inputs": [],
+            },
             "extension_sha256": artifact_sha256,
             "wheel_sha256": f"wheel-{module}",
             "object_closure": {
@@ -490,7 +496,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         manifest={"distribution": "ninja"},
     )
     monkeypatch.setattr(
-        producer.commands,
+        producer.extension_commands,
         "extension_build",
         lambda **kwargs: calls.append(kwargs) or 0,
     )
@@ -569,10 +575,18 @@ def test_producer_audit_enforces_exact_consumer_contract() -> None:
         "abi_tag": f"molt_abi{current_abi.split('.', 1)[0]}",
     }
 
-    producer._audit_producer_contract(manifest, module="scipy.ndimage._nd_image")
+    producer._audit_producer_contract(
+        manifest,
+        module="scipy.ndimage._nd_image",
+        expected_target_triple="wasm32-wasip1",
+    )
     manifest["deterministic"] = False
     with pytest.raises(producer.SourceExtensionProducerError, match="deterministic"):
-        producer._audit_producer_contract(manifest, module="scipy.ndimage._nd_image")
+        producer._audit_producer_contract(
+            manifest,
+            module="scipy.ndimage._nd_image",
+            expected_target_triple="wasm32-wasip1",
+        )
 
 
 def test_source_build_environment_noop_records_exact_resolutions(
@@ -1751,6 +1765,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         ),
     )
     set_manifest = {
+        "target_triple": "wasm32-wasip1",
         "target_metadata": _write_target_metadata(publish),
         "installed_package_files": [],
         "extensions": [
@@ -1865,6 +1880,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     }
     manifest = {
         "module": module,
+        "target_triple": "wasm32-wasip1",
         "extension": artifact.name,
         "wheel": wheel.name,
         "wheel_sha256": raw_wheel_sha256,

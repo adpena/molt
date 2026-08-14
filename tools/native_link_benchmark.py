@@ -878,6 +878,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         Path(path).expanduser().resolve(strict=True)
         for path in args.external_static_archive
     )
+    external_link_arguments = tuple(args.external_link_argument)
     for index, archive in enumerate(external_archives):
         inputs[f"external_archive_{index}"] = archive
     inputs["runtime_link_manifest"] = native_link_dependency_manifest_path(
@@ -909,6 +910,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             source_fingerprint=source_fingerprint,
             stdlib_obj_path=inputs.get("stdlib"),
             external_static_archives=external_archives,
+            external_link_arguments=external_link_arguments,
             bolt_requested=args.bolt,
         )
 
@@ -1141,6 +1143,15 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Checksummed source-extension archive included in the measured final link",
+    )
+    parser.add_argument(
+        "--external-link-argument",
+        action="append",
+        default=[],
+        help=(
+            "Source-extension final-link argument included in the measured link; "
+            "use --external-link-argument=<value> for values beginning with '-'"
+        ),
     )
     parser.add_argument("--compare", help="drift-compatible baseline report")
     parser.add_argument(

@@ -33,11 +33,14 @@ from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
 from molt.scientific_stack_versions import (
+    SCIENTIFIC_WITNESS_ABI_TIER,
+    SCIENTIFIC_WITNESS_TARGET_TRIPLE,
     ScientificExtensionSet,
     ScientificStackVersion,
     resolve_scientific_stack,
     scientific_extension_set,
-    scientific_extension_set_root,
+    scientific_witness_seal_root,
+    scientific_witness_variant,
 )
 from tools.proof_queue_pkg import policy, runner, state
 
@@ -174,8 +177,8 @@ def _scientific_extension_set_manifest_problems(
             "scipy": stack.scipy_repo_ref,
         }[extension_set.package],
         "target": "wasm",
-        "target_triple": "wasm32-wasip1",
-        "abi_tier": "cpython-abi",
+        "target_triple": SCIENTIFIC_WITNESS_TARGET_TRIPLE,
+        "abi_tier": SCIENTIFIC_WITNESS_ABI_TIER,
     }
     for field, expected in expected_scalars.items():
         if manifest.get(field) != expected:
@@ -739,8 +742,11 @@ def _scientific_extension_set_seal_validation(
             problems.append(f"{extension.module}: stale abi_tag")
         if manifest.get("loader_kind") != "libmolt_source":
             problems.append(f"{extension.module}: loader_kind must be libmolt_source")
-        if manifest.get("target_triple") != "wasm32-wasip1":
-            problems.append(f"{extension.module}: target_triple must be wasm32-wasip1")
+        if manifest.get("target_triple") != SCIENTIFIC_WITNESS_TARGET_TRIPLE:
+            problems.append(
+                f"{extension.module}: target_triple must be "
+                f"{SCIENTIFIC_WITNESS_TARGET_TRIPLE}"
+            )
         if manifest.get("runtime_linkage") != "static_link":
             problems.append(f"{extension.module}: runtime_linkage must be static_link")
         if manifest.get("artifact_kind") != "wasm_relocatable_object":
@@ -983,13 +989,18 @@ def _scientific_extension_set_seal_problems(
     return _scientific_extension_set_seal_validation(root, extension_set, stack)[0]
 
 
-def _pact_witness_native_roots(repo_root: Path = state.ROOT) -> list[Path]:
+def _pact_witness_extension_roots(repo_root: Path = state.ROOT) -> list[Path]:
     del repo_root
     stack = resolve_scientific_stack()
+    variant = scientific_witness_variant(stack=stack)
     roots: list[Path] = []
     for package, display_name in (("numpy", "NumPy"), ("scipy", "SciPy")):
         extension_set = scientific_extension_set(package, "pact-witness", stack=stack)
-        durable_root = scientific_extension_set_root(extension_set, stack=stack)
+        durable_root = scientific_witness_seal_root(
+            package,
+            variant=variant,
+            stack=stack,
+        )
         problems, verified_payload_root = (
             _scientific_extension_set_seal_validation(
                 durable_root, extension_set, stack
@@ -1023,7 +1034,7 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
         "MOLT_MODULE_ROOTS": "",
         "MOLT_EXTERNAL_STATIC_PACKAGES": "",
     }
-    roots = _pact_witness_native_roots(repo_root)
+    roots = _pact_witness_extension_roots(repo_root)
     if roots:
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(root) for root in roots)
         env["MOLT_EXTERNAL_STATIC_PACKAGES"] = "numpy scipy"

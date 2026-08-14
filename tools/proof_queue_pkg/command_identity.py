@@ -12,6 +12,7 @@ import subprocess
 from typing import Any, Mapping, Sequence
 
 from tools import proof_plan
+from tools.toolchain_content_path import resolve_content_path
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 
@@ -607,12 +608,17 @@ def _tool_identity(
                 f"{name} content-path probe failed: "
                 + (resolved.stderr.strip() or resolved.stdout.strip())
             )
-        candidate = Path(resolved.stdout.strip())
-        if not candidate.is_file():
-            raise ValueError(
-                f"{name} content-path probe returned no executable: {candidate}"
+        try:
+            content_path = resolve_content_path(
+                path,
+                resolved.stdout,
+                strategy=str(
+                    policy.data.get("content_path_strategy", "executable-path")
+                ),
+                probe_cwd=probe_cwd,
             )
-        content_path = candidate.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
         content_resolver_identity = _executable_identity(resolver)
     process_images: list[dict[str, object]] = []
     launcher_image = process_image_capture.capture_image(f"{name}-launcher", path)

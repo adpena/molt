@@ -50,6 +50,7 @@ authority_inputs = [
   "tools/fuzz_compiler.py",
   "tools/proof_plan.py",
   "tools/proof_executor.py",
+  "tools/toolchain_content_path.py",
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
@@ -222,6 +223,7 @@ setup_evidence = [
 [[toolchain_policy]]
 name = "cargo"
 executable = "cargo"
+dependencies = ["rustc", "git"]
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "cargo"]
@@ -231,6 +233,18 @@ setup_evidence = [
   "rust-toolchain.toml::channel = \"1.96.1\"",
   ".github/actions/setup-project/action.yml::rustup toolchain install",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
+]
+
+[[toolchain_policy]]
+name = "git"
+executable = "git"
+content_path_command = ["git", "--exec-path"]
+content_path_strategy = "git-exec-path"
+version_args = ["--version"]
+version_pattern = '^git version 2\.'
+setup_value = "2.x"
+setup_evidence = [
+  ".github/workflows/ci.yml::actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
 ]
 
 [[toolchain_policy]]

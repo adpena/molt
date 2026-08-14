@@ -10,7 +10,17 @@ from typing import Any, Mapping, Sequence
 
 
 _FORBIDDEN_OUTPUT_ARGUMENTS = frozenset({"-o", "--output", "/out"})
-_FORBIDDEN_LINK_MODES = frozenset({"-shared", "--shared", "/dll"})
+_FORBIDDEN_LINK_MODES = frozenset(
+    {
+        "-shared",
+        "--shared",
+        "/dll",
+        "-dynamiclib",
+        "-bundle",
+        "-mdll",
+        "-wl,-shared",
+    }
+)
 _STATIC_INPUT_SUFFIXES = frozenset({".a", ".lib", ".o", ".obj", ".molt.wasm"})
 _SEALED_PATH_PREFIXES = (
     "-Wl,-force_load,",
@@ -49,6 +59,18 @@ def _is_bare_library_name(path: str) -> bool:
     )
 
 
+def _is_bare_provider_name(value: str) -> bool:
+    path = Path(value)
+    return (
+        bool(value)
+        and not path.is_absolute()
+        and path.name == value
+        and "/" not in value
+        and "\\" not in value
+        and value not in {".", ".."}
+    )
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -79,8 +101,12 @@ def _validate_argument_modes(arguments: Sequence[str]) -> None:
         zip(arguments, lowered, strict=True)
     ):
         option = argument.split(":", 1)[0]
-        if option in _FORBIDDEN_OUTPUT_ARGUMENTS or any(
-            argument.startswith(f"{item}=") for item in _FORBIDDEN_OUTPUT_ARGUMENTS
+        if (
+            option in _FORBIDDEN_OUTPUT_ARGUMENTS
+            or argument.startswith("-o")
+            or any(
+                argument.startswith(f"{item}=") for item in _FORBIDDEN_OUTPUT_ARGUMENTS
+            )
         ):
             raise ValueError(
                 "source-extension final link requirements cannot select an output path"
@@ -93,13 +119,14 @@ def _validate_argument_modes(arguments: Sequence[str]) -> None:
             raise ValueError(
                 "source-extension final link requirements cannot contain an output operand"
             )
-        if argument.startswith("@"):
+        if argument.startswith("@") or argument.startswith("-wl,@"):
             raise ValueError(
                 "source-extension final link requirements cannot contain response files"
             )
         if (
             raw_argument.startswith("-L")
             or raw_argument.startswith("-Wl,-L")
+            or raw_argument.startswith("-Wl,--library-path")
             or raw_argument.upper().startswith("/LIBPATH:")
         ):
             raise ValueError(
@@ -111,6 +138,7 @@ def _validate_argument_modes(arguments: Sequence[str]) -> None:
             or raw_argument.startswith("-T")
             or raw_argument.startswith("--script=")
             or raw_argument.startswith("-Wl,-T,")
+            or raw_argument.startswith("-Wl,-T")
             or raw_argument.startswith("-Wl,--script=")
             or raw_argument.startswith("-Wl,--version-script=")
             or raw_argument.startswith("-Wl,-exported_symbols_list,")
@@ -120,24 +148,48 @@ def _validate_argument_modes(arguments: Sequence[str]) -> None:
                 "source-extension final link requirements cannot contain unsealed linker "
                 "script/export paths"
             )
+        if raw_argument.upper().startswith("/DEFAULTLIB:") and not (
+            _is_bare_provider_name(raw_argument.split(":", 1)[1])
+        ):
+            raise ValueError(
+                "source-extension /DEFAULTLIB requirements must name a bare "
+                "system provider, not a path"
+            )
+
+
+def validate_source_extension_link_arguments(
+    arguments: Sequence[str],
+) -> tuple[str, ...]:
+    """Validate already-resolved final-link arguments without republishing inputs."""
+
+    normalized = tuple(str(argument).strip() for argument in arguments)
+    if any(not argument for argument in normalized):
+        raise ValueError("source-extension final link arguments must be non-empty")
+    _validate_argument_modes(normalized)
+    return normalized
 
 
 def _resolve_source_path(path: str, roots: Sequence[Path]) -> Path | None:
+    resolved_roots = tuple(root.resolve() for root in roots)
     candidate = Path(path).expanduser()
     candidates = (
         (candidate,)
         if candidate.is_absolute()
         else tuple(root / candidate for root in roots)
     )
-    return next(
-        (
-            resolved
-            for item in candidates
-            if item.is_file()
-            for resolved in (item.resolve(),)
-        ),
-        None,
-    )
+    for item in candidates:
+        if not item.is_file():
+            continue
+        resolved = item.resolve()
+        if not any(
+            resolved == root or resolved.is_relative_to(root) for root in resolved_roots
+        ):
+            raise ValueError(
+                "source-extension final link input escapes declared source roots: "
+                + str(resolved)
+            )
+        return resolved
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +269,7 @@ def source_extension_link_requirements(
             )
             continue
         arguments.append(argument)
-    _validate_argument_modes(arguments)
+    validate_source_extension_link_arguments(arguments)
     return SourceExtensionLinkRequirements(
         target_triple=target_triple,
         arguments=tuple(arguments),

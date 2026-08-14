@@ -31,6 +31,9 @@ from molt.cli.native_link_plan import (
     native_link_policy,
     resolve_native_target_spec,
 )
+from molt.cli.source_extension_link_requirements import (
+    validate_source_extension_link_arguments,
+)
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
@@ -293,6 +296,14 @@ def _build_native_link_plan(
         host_platform=host_platform,
         host_arch=host_arch,
     )
+    try:
+        external_link_arguments = validate_source_extension_link_arguments(
+            external_link_arguments
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            f"External source-extension link requirements are invalid: {exc}"
+        ) from exc
     selected_linker_name = native_linker_name_from_driver_command(
         link_cmd,
         hinted=linker_hint,

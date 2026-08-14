@@ -28,7 +28,7 @@ fi
 export MOLT_MEMORY_GUARD_POLL_SEC="${MOLT_MEMORY_GUARD_POLL_SEC:-2.0}"
 export MOLT_STDLIB_PROFILE=full
 export MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"
-SCIENTIFIC_WITNESS_ROOTS="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'from molt.cli.source_package_seal import verify_source_package_seal; from molt.scientific_stack_versions import numpy_witness_seal_root, scipy_witness_seal_root; print(";".join(str(verify_source_package_seal(root()).payload_root) for root in (numpy_witness_seal_root, scipy_witness_seal_root)))')"
+SCIENTIFIC_WITNESS_ROOTS="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'from molt.cli.source_package_seal import verify_source_package_seal; from molt.scientific_stack_versions import resolve_scientific_stack, scientific_witness_seal_root, scientific_witness_variant; stack = resolve_scientific_stack(); variant = scientific_witness_variant(stack=stack); print(";".join(str(verify_source_package_seal(scientific_witness_seal_root(package, variant=variant, stack=stack)).payload_root) for package in ("numpy", "scipy")))')"
 if [ -z "$SCIENTIFIC_WITNESS_ROOTS" ]; then
   echo "canonical scientific witness seals are missing or invalid" >&2
   echo "produce each with: molt extension produce-set --package <numpy|scipy> --module-set pact-witness --source <verified-checkout> --build-root <fresh-build-root>" >&2
