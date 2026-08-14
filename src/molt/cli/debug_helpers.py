@@ -13,6 +13,7 @@ import subprocess
 from contextlib import redirect_stdout
 from typing import Any, Mapping, cast
 
+from molt.cli import script_commands as _script_commands
 from molt.cli.capability_spec import _split_tokens
 from molt.cli.models import BuildProfile
 from molt.dx import development_artifact_env
@@ -504,7 +505,7 @@ def _handle_debug_repro(
         mode = "compare"
     else:
         inner_rc, inner_payload = cli_module._capture_json_cli_result(
-            cli_module._commands.run_script,
+            _script_commands.run_script,
             str(source_path),
             None,
             [],
@@ -624,7 +625,7 @@ def _handle_debug_trace(
     cli_module = _cli_module()
     with cli_module._temporary_env_overrides(trace_env):
         inner_rc, inner_payload = cli_module._capture_json_cli_result(
-            cli_module._commands.run_script,
+            _script_commands.run_script,
             str(source_path),
             None,
             [],

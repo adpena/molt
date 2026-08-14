@@ -60,7 +60,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (23)
+### large_source_file (22)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -74,10 +74,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4504 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4313 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4131 lines (ceiling 4000) | `runtime/molt-passes/src/tir/cache.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3390 lines (ceiling 2500) | `src/molt/cli/commands.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 3210 lines (ceiling 2500) | `tools/memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2955 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2928 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2926 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2926 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2868 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2672 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |

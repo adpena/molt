@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence, cast
 
-from molt.cli import commands as _commands
+from molt.cli import extension_commands as _extension_commands
+from molt.cli import quality_commands as _quality_commands
+from molt.cli import script_commands as _script_commands
 from molt.cli import debug_helpers as _debug_helpers
 from molt.cli import factgraph as _factgraph
 from molt.cli import runtime_build as _runtime_build
@@ -57,7 +59,7 @@ def _dispatch_entrypoint_command(
     cfg_capabilities: Any,
 ) -> int:
     if args.command == "internal-batch-build-server":
-        return _commands._internal_batch_build_server(
+        return _quality_commands._internal_batch_build_server(
             json_output=args.json,
             verbose=args.verbose,
             build_fn=build_fn,
@@ -439,7 +441,7 @@ def _dispatch_entrypoint_command(
                 or extension_cfg.get("source_plan_exclude_linked_static_libraries")
                 or extension_cfg.get("source-plan-exclude-linked-static-libraries")
             )
-            return _commands.extension_build(
+            return _extension_commands.extension_build(
                 project=args.project or extension_cfg.get("project"),
                 out_dir=args.out_dir
                 or extension_cfg.get("out_dir")
@@ -485,7 +487,7 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "metadata":
-            return _commands.extension_metadata(
+            return _extension_commands.extension_metadata(
                 target=args.target,
                 out_dir=args.out_dir,
                 abi_tier=args.abi_tier,
@@ -656,7 +658,7 @@ def _dispatch_entrypoint_command(
             # Inject --target into build_args so run_script_cross handles it
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", run_target])
-            return _commands._run_script_cross(
+            return _script_commands._run_script_cross(
                 run_target,
                 args.file,
                 args.module,
@@ -678,7 +680,7 @@ def _dispatch_entrypoint_command(
             # MLIR target: build to get MLIR text (no JIT in run mode yet).
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", "mlir"])
-            return _commands._run_script_cross(
+            return _script_commands._run_script_cross(
                 run_target,
                 args.file,
                 args.module,
@@ -696,7 +698,7 @@ def _dispatch_entrypoint_command(
                 io_mode=getattr(args, "io_mode", None),
                 type_gate=getattr(args, "type_gate", False),
             )
-        return _commands.run_script(
+        return _script_commands.run_script(
             args.file,
             args.module,
             _strip_leading_double_dash(args.script_args),
@@ -766,7 +768,7 @@ def _dispatch_entrypoint_command(
             or run_cfg.get("capabilities")
             or cfg_capabilities
         )
-        return _commands.compare(
+        return _script_commands.compare(
             args.file,
             args.module,
             python_exe,
@@ -781,7 +783,7 @@ def _dispatch_entrypoint_command(
         )
     if args.command == "parity-run":
         python_exe = args.python or args.python_version
-        return _commands.parity_run(
+        return _script_commands.parity_run(
             args.file,
             args.module,
             python_exe,
@@ -811,7 +813,7 @@ def _dispatch_entrypoint_command(
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(test_cfg.get("trusted"), False)
-        return _commands.test(
+        return _quality_commands.test(
             args.suite,
             args.path,
             args.python_version,
@@ -839,7 +841,7 @@ def _dispatch_entrypoint_command(
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(diff_cfg.get("trusted"), False)
-        return _commands.diff(
+        return _script_commands.diff(
             args.path,
             args.python_version,
             cast(BuildProfile | None, diff_profile),
@@ -848,7 +850,7 @@ def _dispatch_entrypoint_command(
             args.verbose,
         )
     if args.command == "bench":
-        return _commands.bench(
+        return _quality_commands.bench(
             args.wasm,
             _strip_leading_double_dash(args.bench_args),
             args.bench_script,
@@ -856,13 +858,13 @@ def _dispatch_entrypoint_command(
             args.verbose,
         )
     if args.command == "profile":
-        return _commands.profile(
+        return _quality_commands.profile(
             _strip_leading_double_dash(args.profile_args),
             args.json,
             args.verbose,
         )
     if args.command == "lint":
-        return _commands.lint(args.json, args.verbose)
+        return _quality_commands.lint(args.json, args.verbose)
     if args.command == "setup":
         return setup(args.json, args.verbose, args.strict)
     if args.command == "doctor":
@@ -1106,7 +1108,7 @@ def _dispatch_entrypoint_command(
         deploy_build_profile = args.build_profile
         if getattr(args, "release", False) and not deploy_build_profile:
             deploy_build_profile = "release"
-        return _commands._deploy(
+        return _script_commands._deploy(
             platform=args.platform,
             file_path=args.file,
             module=args.module,

@@ -15,6 +15,9 @@ from typing import Any, Mapping
 from molt.cli.capability_spec import _split_tokens
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
+from molt.cli.source_extension_link_requirements import (
+    parse_source_extension_link_requirements,
+)
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     native_callable_abi_choices,
@@ -40,9 +43,9 @@ _PYMETHODDEF_ENTRY_RE = re.compile(
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
-_LIBMOLT_SOURCE_RUNTIME_LINKAGES = frozenset({"host_resolved", "static_link"})
+_LIBMOLT_SOURCE_RUNTIME_LINKAGES = frozenset({"static_link"})
 _LIBMOLT_SOURCE_ARTIFACT_KINDS = frozenset(
-    {"shared_library", "wasm_relocatable_object", "static_archive"}
+    {"wasm_relocatable_object", "static_archive"}
 )
 _EXTENSION_SUPPORT_FILE_SUFFIXES = (".molt.wasm", ".o", ".a", ".py")
 
@@ -800,31 +803,46 @@ def _validate_extension_manifest(
                     "libmolt_source extensions"
                 )
             target_is_wasm = _manifest_target_is_wasm(manifest.get("target_triple"))
-            if runtime_linkage == "host_resolved":
-                if target_is_wasm:
+            if runtime_linkage == "static_link":
+                expected_artifact_kinds = (
+                    {"wasm_relocatable_object", "static_archive"}
+                    if target_is_wasm
+                    else {"static_archive"}
+                )
+                if artifact_kind not in expected_artifact_kinds:
                     errors.append(
-                        "runtime_linkage 'host_resolved' is invalid for wasm "
-                        "libmolt_source extensions"
+                        "runtime_linkage 'static_link' target/artifact mismatch: "
+                        f"target_triple={manifest.get('target_triple')!r} requires "
+                        f"one of {sorted(expected_artifact_kinds)}, found "
+                        f"{artifact_kind!r}"
                     )
-                if artifact_kind not in (None, "shared_library"):
+                target_triple = manifest.get("target_triple")
+                if isinstance(target_triple, str):
+                    _requirements, link_requirement_errors = (
+                        parse_source_extension_link_requirements(
+                            manifest,
+                            expected_target_triple=target_triple,
+                        )
+                    )
+                    errors.extend(link_requirement_errors)
+                object_closure = manifest.get("object_closure")
+                if not isinstance(object_closure, Mapping):
                     errors.append(
-                        "runtime_linkage 'host_resolved' requires artifact_kind "
-                        "'shared_library'"
+                        "static_link libmolt_source extensions require object_closure"
                     )
-            elif runtime_linkage == "static_link":
-                if not target_is_wasm:
-                    errors.append(
-                        "runtime_linkage 'static_link' requires a wasm32 target_triple"
-                    )
-                if artifact_kind not in (
-                    None,
-                    "wasm_relocatable_object",
-                    "static_archive",
-                ):
-                    errors.append(
-                        "runtime_linkage 'static_link' requires artifact_kind "
-                        "'wasm_relocatable_object' or 'static_archive'"
-                    )
+                else:
+                    objects = object_closure.get("objects")
+                    if not isinstance(objects, list) or not objects:
+                        errors.append(
+                            "static_link libmolt_source object_closure.objects must "
+                            "be non-empty"
+                        )
+                    closure_sha256 = object_closure.get("closure_sha256")
+                    if not isinstance(closure_sha256, str) or not closure_sha256:
+                        errors.append(
+                            "static_link libmolt_source object_closure.closure_sha256 "
+                            "must be non-empty"
+                        )
 
     manifest_abi_tag: str | None = None
     abi_tag_value = manifest.get("abi_tag")

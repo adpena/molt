@@ -160,6 +160,14 @@ class _SourceExtensionObjectClosure:
             "root_symbol": self.init_symbol,
             "init_symbol_owner": self.init_symbol_owner.object_path.name,
             "closure_sha256": self.closure_sha256,
+            "defined_symbols": sorted(
+                {
+                    symbol
+                    for fact in self.objects
+                    for symbol in fact.defined_symbols
+                }
+            ),
+            "undefined_symbols": list(self.runtime_symbols),
             "runtime_symbols": list(self.runtime_symbols),
             "required_capsules": required_capsules,
             "project_generated_c_api_prefixes": list(
@@ -294,6 +302,7 @@ class _SourceExtensionBuildPlan:
     include_dirs: tuple[Path, ...]
     compile_args: tuple[str, ...]
     link_args: tuple[str, ...]
+    folded_static_archives: tuple[str, ...]
     digest: str
 
     def manifest_payload(self) -> dict[str, Any]:
@@ -324,6 +333,7 @@ class _SourceExtensionBuildPlan:
             "include_dirs": [str(path) for path in self.include_dirs],
             "compile_args": list(self.compile_args),
             "link_args": list(self.link_args),
+            "folded_static_archives": list(self.folded_static_archives),
         }
 
     def source_paths(self) -> tuple[Path, ...]:
@@ -825,6 +835,16 @@ def _meson_link_archive_names(target: Mapping[str, Any]) -> set[str]:
     return names
 
 
+def _meson_target_archive_basenames(target: Mapping[str, Any]) -> set[str]:
+    raw = target.get("filename")
+    return {
+        base
+        for value in (raw if isinstance(raw, list) else (raw,))
+        if isinstance(value, str)
+        and (base := Path(value.replace("\\", "/")).name)
+    }
+
+
 def _ninja_logical_lines(path: Path) -> tuple[str, ...]:
     try:
         raw_lines = path.read_text(encoding="utf-8").splitlines()
@@ -1175,15 +1195,9 @@ def _load_meson_intro_targets_source_extension_plan(
     if excluded_linked_static_libraries:
         excluded = {name.strip().lower() for name in excluded_linked_static_libraries}
 
-        def _target_archive_basenames(entry: Mapping[str, Any]) -> set[str]:
+        def _target_archive_names(entry: Mapping[str, Any]) -> set[str]:
             names: set[str] = set()
-            raw = entry.get("filename")
-            for value in raw if isinstance(raw, list) else (raw,):
-                if not isinstance(value, str):
-                    continue
-                base = Path(value.replace("\\", "/")).name
-                if not base:
-                    continue
+            for base in _meson_target_archive_basenames(entry):
                 names.add(base.lower())
                 # Also accept the bare library stem (``npymath`` for
                 # ``libnpymath.a``) so callers can name it either way.
@@ -1199,8 +1213,17 @@ def _load_meson_intro_targets_source_extension_plan(
         linked_static_targets = [
             linked_target
             for linked_target in linked_static_targets
-            if not (_target_archive_basenames(linked_target) & excluded)
+            if not (_target_archive_names(linked_target) & excluded)
         ]
+    folded_static_archives = tuple(
+        sorted(
+            {
+                archive
+                for linked_target in linked_static_targets
+                for archive in _meson_target_archive_basenames(linked_target)
+            }
+        )
+    )
     combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
     skipped_generated_sources: list[Path] = []
     for linked_target in linked_static_targets:
@@ -1476,6 +1499,7 @@ def _load_meson_intro_targets_source_extension_plan(
         include_dirs=_dedupe_paths(include_dirs),
         compile_args=tuple(compile_args),
         link_args=_meson_link_args(target),
+        folded_static_archives=folded_static_archives,
         digest="",
     )
     return (
@@ -1499,6 +1523,7 @@ def _load_meson_intro_targets_source_extension_plan(
             include_dirs=plan.include_dirs,
             compile_args=plan.compile_args,
             link_args=plan.link_args,
+            folded_static_archives=plan.folded_static_archives,
             digest=_source_extension_build_plan_digest(plan),
         ),
         [],
