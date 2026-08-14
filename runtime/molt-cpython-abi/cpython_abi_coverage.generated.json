@@ -18,10 +18,10 @@
     "molt-private": 40,
     "private": 61,
     "private-representation": 1,
-    "public-version-specific": 148,
-    "stable-abi": 437,
+    "public-version-specific": 149,
+    "stable-abi": 440,
     "stable-values-version-specific-layout": 1,
-    "total": 699,
+    "total": 703,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -1275,6 +1275,13 @@
       "source": "runtime/molt-cpython-abi/src/api/memory.rs",
       "stability": "stable-abi",
       "surface": "function",
+      "symbol": "PyGC_Collect",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
       "symbol": "PyGC_Disable",
       "verified_at": "3.12"
     },
@@ -1283,6 +1290,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyGC_Enable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyGC_IsEnabled",
       "verified_at": "3.12"
     },
     {
@@ -2640,6 +2654,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyObject_GC_IsFinalized",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GC_IsTracked",
       "verified_at": "3.12"
     },
     {
@@ -4964,6 +4985,13 @@
       "stability": "public-version-specific",
       "surface": "data",
       "symbol": "mut",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "native_gc_node_visit",
       "verified_at": "3.12"
     }
   ],

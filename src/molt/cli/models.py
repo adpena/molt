@@ -781,9 +781,10 @@ class _ExternalPackageNativeArtifact:
     abi_tag: str
     target_triple: str
     platform_tag: str
+    runtime_linkage: str
+    artifact_kind: str
+    link_arguments: tuple[str, ...]
     init_symbol: str = ""
-    runtime_linkage: str = "host_resolved"
-    artifact_kind: str = "shared_library"
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
@@ -818,6 +819,7 @@ class _ExternalPackageNativeArtifact:
             "init_symbol": self.init_symbol,
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
+            "link_arguments": list(self.link_arguments),
             "support_file_sha256": [
                 {"path": rel_path, "sha256": digest}
                 for rel_path, digest in self.support_file_sha256
@@ -1320,9 +1322,10 @@ class _StagedExternalPackageNativeArtifact:
     abi_tag: str
     target_triple: str
     platform_tag: str
+    runtime_linkage: str
+    artifact_kind: str
+    link_arguments: tuple[str, ...]
     init_symbol: str = ""
-    runtime_linkage: str = "host_resolved"
-    artifact_kind: str = "shared_library"
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
@@ -1350,6 +1353,7 @@ class _StagedExternalPackageNativeArtifact:
             "init_symbol": self.init_symbol,
             "runtime_linkage": self.runtime_linkage,
             "artifact_kind": self.artifact_kind,
+            "link_arguments": list(self.link_arguments),
             "support_file_sha256": [
                 {"path": rel_path, "sha256": digest}
                 for rel_path, digest in self.support_file_sha256

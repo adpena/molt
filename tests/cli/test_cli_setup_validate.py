@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli import commands as cli_commands
+from molt.cli import process_execution, quality_commands, script_commands
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 
@@ -361,7 +361,7 @@ def test_cli_run_command_uses_memory_guard_prefix(
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
 
-    rc = cli_commands._run_command(
+    rc = process_execution._run_command(
         ["python3", "-c", "print('ok')"],
         cwd=ROOT,
         env={"PATH": "/usr/bin"},
@@ -403,7 +403,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
 
-    result = cli_commands._run_command_timed(
+    result = process_execution._run_command_timed(
         ["python3", "-c", "print('ok')"],
         cwd=ROOT,
         env={"PATH": "/usr/bin"},
@@ -699,11 +699,11 @@ def test_cli_diff_command_uses_diff_memory_guard(
         return 0
 
     monkeypatch.setattr(
-        cli_commands, "_find_molt_root", lambda *args: ROOT, raising=True
+        script_commands, "_find_molt_root", lambda *args: ROOT, raising=True
     )
-    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command, raising=True)
+    monkeypatch.setattr(script_commands, "_run_command", fake_run_command, raising=True)
 
-    assert cli_commands.diff(None, None) == 0
+    assert script_commands.diff(None, None) == 0
 
     assert calls
     assert calls[0]["memory_guard_prefix"] == "MOLT_DIFF"
@@ -727,43 +727,49 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
 
     def fake_run_command_timed(
         cmd: list[str], **kwargs: object
-    ) -> cli_commands._TimedResult:
+    ) -> process_execution._TimedResult:
         prefixes.append(kwargs.get("memory_guard_prefix"))
         commands.append(list(cmd))
         if len(prefixes) == 1:
-            return cli_commands._TimedResult(0, "ok\n", "", 0.01)
+            return process_execution._TimedResult(0, "ok\n", "", 0.01)
         if len(prefixes) == 2:
-            return cli_commands._TimedResult(
+            return process_execution._TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
             )
-        return cli_commands._TimedResult(0, "ok\n", "", 0.01)
+        return process_execution._TimedResult(0, "ok\n", "", 0.01)
 
     monkeypatch.setattr(
-        cli_commands, "_find_project_root", lambda start: project, raising=True
+        script_commands, "_find_project_root", lambda start: project, raising=True
     )
     monkeypatch.setattr(
-        cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True
+        script_commands,
+        "_find_molt_root",
+        lambda start, cwd=None: ROOT,
+        raising=True,
     )
     monkeypatch.setattr(
-        cli_commands,
+        script_commands,
         "resolve_python_selector",
         lambda exe, **_kwargs: ("py", "-3.14"),
         raising=True,
     )
     monkeypatch.setattr(
-        cli_commands,
+        script_commands,
         "_resolve_binary_output",
         lambda output: built_binary,
         raising=True,
     )
     monkeypatch.setattr(
-        cli_commands, "_run_command_timed", fake_run_command_timed, raising=True
+        script_commands,
+        "_run_command_timed",
+        fake_run_command_timed,
+        raising=True,
     )
 
-    rc = cli_commands.compare(str(entry), None, "3.14", [])
+    rc = script_commands.compare(str(entry), None, "3.14", [])
 
     assert rc == 0
     assert prefixes == ["MOLT_DIFF", "MOLT_DIFF", "MOLT_DIFF"]
@@ -811,10 +817,13 @@ def test_cli_cross_run_uses_cross_memory_guard(
         return result
 
     monkeypatch.setattr(
-        cli_commands, "_find_project_root", lambda start: project, raising=True
+        script_commands, "_find_project_root", lambda start: project, raising=True
     )
     monkeypatch.setattr(
-        cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True
+        script_commands,
+        "_find_molt_root",
+        lambda start, cwd=None: ROOT,
+        raising=True,
     )
     monkeypatch.setattr(
         cli_build_inputs,
@@ -823,19 +832,22 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
     monkeypatch.setattr(
-        cli_commands, "_run_wrapper_build", fake_run_wrapper_build, raising=True
+        script_commands, "_run_wrapper_build", fake_run_wrapper_build, raising=True
     )
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command, raising=True
+        script_commands,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
     )
     monkeypatch.setattr(
-        cli_commands.shutil,
+        script_commands.shutil,
         "which",
         lambda name: "/usr/bin/wasmtime" if name == "wasmtime" else None,
         raising=True,
     )
 
-    rc = cli_commands._run_script_cross(
+    rc = script_commands._run_script_cross(
         "wasm",
         str(entry),
         None,
@@ -858,13 +870,43 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
         calls.append({"cmd": cmd, **kwargs})
         return 0
 
-    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command, raising=True)
+    monkeypatch.setattr(
+        quality_commands, "_run_command", fake_run_command, raising=True
+    )
 
-    assert cli_commands.bench(wasm=False, bench_args=["--smoke"]) == 0
+    assert quality_commands.bench(wasm=False, bench_args=["--smoke"]) == 0
 
     assert calls
     assert calls[0]["memory_guard_prefix"] == "MOLT_BENCH"
     assert "tools/bench.py" in calls[0]["cmd"]
+
+
+def test_cli_pytest_uses_shared_uv_project_python_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        calls.append({"cmd": cmd, **kwargs})
+        return 0
+
+    monkeypatch.setattr(
+        quality_commands, "_find_molt_root", lambda _cwd: ROOT, raising=True
+    )
+    monkeypatch.setattr(
+        quality_commands, "_run_command", fake_run_command, raising=True
+    )
+
+    assert quality_commands.test("pytest", None, None, []) == 0
+    assert calls[0]["cmd"] == [
+        "uv",
+        "run",
+        "--python",
+        quality_commands.DEFAULT_UV_PROJECT_PYTHON,
+        "pytest",
+        "-q",
+    ]
+    assert calls[0]["memory_guard_prefix"] == "MOLT_TEST_SUITE"
 
 
 def test_cli_validate_uses_family_memory_guard_prefixes(
@@ -1082,12 +1124,12 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
         assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(cli_commands, "DxProject", FakeDxProject, raising=True)
+    monkeypatch.setattr(quality_commands, "DxProject", FakeDxProject, raising=True)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed, raising=True
+        quality_commands, "_run_completed_command", fake_run_completed, raising=True
     )
 
-    assert cli_commands.lint(json_output=False, verbose=False) == 0
+    assert quality_commands.lint(json_output=False, verbose=False) == 0
     assert calls == [["python3", "-m", "ruff", "check", "."]]
 
 

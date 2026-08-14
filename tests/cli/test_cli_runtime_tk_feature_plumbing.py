@@ -12,7 +12,7 @@ import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
-from molt.cli import commands as cli_commands
+from molt.cli import quality_commands as cli_commands
 from molt.cli import link_pipeline as cli_link_pipeline
 from tests.cli.native_link_test_support import (
     SOURCE_FINGERPRINT,

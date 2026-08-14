@@ -35,7 +35,8 @@ from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
-from molt.cli import commands as cli_commands
+from molt.cli import wrapper_build as cli_wrapper_build
+from molt.cli import script_commands as cli_commands
 from molt.cli import config_resolution as cli_config_resolution
 from molt.cli import external_native as cli_external_native
 from molt.cli import frontend_execution as cli_frontend_execution
@@ -19967,9 +19968,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         "runtime_execution_enter": "molt_runtime_execution_enter",
         "runtime_execution_leave": "molt_runtime_execution_leave",
     }
-    assert linked_manifest["abi"]["linked_self_imports"] == [
-        "molt_isolate_import"
-    ]
+    assert linked_manifest["abi"]["linked_self_imports"] == ["molt_isolate_import"]
     assert linked_manifest["modules"]["linked"] == {
         "path": linked_wasm.name,
         "size": linked_wasm.stat().st_size,
@@ -22560,9 +22559,9 @@ def test_run_uses_build_profile_flag_for_nested_build(
         return 0
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
@@ -22628,9 +22627,9 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
         return 0
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
@@ -22684,9 +22683,9 @@ def test_run_script_uses_build_json_output_for_binary_path(
         return 0
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
@@ -22745,9 +22744,9 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
 
@@ -22794,9 +22793,9 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
         return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
 
     rc = cli_commands.run_script(
@@ -22868,10 +22867,12 @@ def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tool-a"
+    )
 
     contract, duration, error_code = cli._run_wrapper_build(
         file_path=str(entry),
@@ -22906,8 +22907,10 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
     )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tool-a"
+    )
 
     resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(entry),
@@ -22941,7 +22944,7 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     common_kwargs = {
         "file_path": str(entry),
@@ -23008,8 +23011,10 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
     )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tool-a"
+    )
 
     resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(entry),
@@ -23043,7 +23048,7 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     common_kwargs = {
         "file_path": str(entry),
@@ -23093,8 +23098,10 @@ def test_run_wrapper_build_manifest_caches_module_entries(
     )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tool-a"
+    )
 
     resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=None,
@@ -23128,7 +23135,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     common_kwargs = {
         "file_path": None,
@@ -23203,7 +23210,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
@@ -23279,7 +23286,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
@@ -23350,9 +23357,9 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
@@ -23426,9 +23433,9 @@ def test_deploy_roblox_honors_build_json_output_override(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
 
     rc = cli_commands._deploy(
@@ -23504,9 +23511,9 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         return 0
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
     monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -24852,7 +24859,7 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         return cli._TimedResult(0, "ok\n", "", 0.01)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(
         cli_commands,
         "resolve_python_selector",
@@ -28580,6 +28587,8 @@ def test_runtime_callable_symbol_digest_changes_backend_cache_identity() -> None
 
     assert variant_a != variant_b
     assert "runtime_callables=" in variant_a
+
+
 def test_backend_compiler_fingerprint_env_is_concurrent_compile_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

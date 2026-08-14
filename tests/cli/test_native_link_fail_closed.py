@@ -4,7 +4,7 @@ import inspect
 from pathlib import Path
 import subprocess
 
-from molt.cli import backend_output_pipeline, commands, native_toolchain
+from molt.cli import backend_output_pipeline, extension_commands, native_toolchain
 from molt.cli import link_pipeline
 
 
@@ -181,7 +181,7 @@ def test_bolt_script_emits_atomic_phase_telemetry_when_requested() -> None:
 
 
 def test_extension_link_applies_identity_policy_after_user_link_arguments() -> None:
-    source = inspect.getsource(commands.extension_build)
+    source = inspect.getsource(extension_commands.extension_build)
     policy = source.index("_source_extension_link_policy_args(")
     user_args = source.rindex("link_command.extend(link_args)", 0, policy)
     run = source.index("link_result = _run_completed_command(", policy)
@@ -206,7 +206,7 @@ def test_native_link_identity_and_fallback_policy_has_one_source_authority() -> 
             )
 
     main_link = inspect.getsource(link_pipeline._prepare_native_link)
-    extension_link = inspect.getsource(commands.extension_build)
+    extension_link = inspect.getsource(extension_commands.extension_build)
     extension_policy = inspect.getsource(
         __import__(
             "molt.cli.source_extensions",
