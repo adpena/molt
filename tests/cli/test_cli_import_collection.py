@@ -67,7 +67,7 @@ from molt.cli.models import (
     _FrontendWorkerResourceDecision,
     _StagedExternalPackageNativeArtifact,
 )
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
@@ -110,7 +110,7 @@ RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_CALLABLE_SYMBOLS = importlib.import_module("molt.cli.runtime_callable_symbols")
 NATIVE_LINK_COMMAND = importlib.import_module("molt.cli.native_link_command")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
-TARGET_PYTHON = importlib.import_module("molt.cli.target_python")
+TARGET_PYTHON = importlib.import_module("molt.target_python")
 
 
 _STATIC_ARCHIVE_SYMBOL_FACTS: dict[Path, tuple[frozenset[str], frozenset[str]]] = {}

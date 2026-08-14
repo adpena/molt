@@ -78,7 +78,7 @@ from molt.cli.models import (
 )
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 
 _PreparedFrontendPipelineBundle = tuple[
     _PreparedFrontendRunTicket,

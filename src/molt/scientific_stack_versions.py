@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     require_known_cpython_coverage_version,
 )

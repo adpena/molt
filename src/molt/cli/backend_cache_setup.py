@@ -47,7 +47,7 @@ from molt.cli.models import (
     _ModuleGraphMetadata,
 )
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 
 _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 1
 

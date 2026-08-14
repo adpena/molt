@@ -59,7 +59,7 @@ from molt.cli.project_roots import (
     _has_project_markers,
     _require_molt_root,
 )
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,

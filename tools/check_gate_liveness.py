@@ -35,7 +35,7 @@ from tools import lane_maturity, powerplay_acceptance  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
 from tools import gen_cpython_coverage  # noqa: E402
-from molt.cli.target_python import (  # noqa: E402
+from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
     require_verified_target_python,
 )

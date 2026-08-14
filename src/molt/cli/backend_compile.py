@@ -69,7 +69,7 @@ from molt.cli.runtime_callable_symbols import (
 )
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 from molt.wasm_artifact import (
     _read_wasm_data_end,
     _read_wasm_memory_min_bytes,

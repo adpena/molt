@@ -37,7 +37,7 @@ from molt.cli.module_registry import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli import required_features as _required_features
 from molt.cli import runtime_features as _runtime_features
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 
 
 def _append_module_code_slot_ops(

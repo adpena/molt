@@ -1261,7 +1261,7 @@ def _r6_target_version_parity_spec(
         "scopes": [
             "src/molt/python_interpreter.py",
             "tests/molt_diff.py",
-            "src/molt/cli/target_python.py",
+            "src/molt/target_python.py",
             "src/molt/stdlib/sys.py",
             "src/molt/stdlib/stat.py",
             "src/molt/stdlib/queue.py",

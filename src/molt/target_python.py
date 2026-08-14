@@ -43,7 +43,7 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
 }
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
 _CPYTHON_COVERAGE_CONFIG = (
-    Path(__file__).resolve().parents[3] / "config" / "cpython_coverage.toml"
+    Path(__file__).resolve().parents[2] / "config" / "cpython_coverage.toml"
 )
 
 # Single authority for the set of supported target-Python short versions

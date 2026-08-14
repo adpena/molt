@@ -112,7 +112,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "c0bf9916b7e5235f41c7d409d9fbb4b287de9836defc3b3f88708473c61be137",
+  "authority_sha256": "1bae0f080cf9f47876caf682be0306d7e150cec5f433e7993ddf32bd87ea7d57",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -4135,7 +4135,7 @@
           "src/molt/frontend/_types.py",
           "runtime/molt-runtime/src/object/type_ids.rs",
           "runtime/molt-runtime/src/builtins/exceptions.rs",
-          "src/molt/cli/target_python.py",
+          "src/molt/target_python.py",
           "tools/stdlib_module_union.py",
           "tools/gen_stdlib_module_union.py",
           "tools/check_table_drift.py",
