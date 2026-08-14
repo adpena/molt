@@ -127,11 +127,16 @@ the legacy transport surface has already been normalized into SSA values.
   callable export must carry `native_callable_export`,
   `native_callable_binding`, and `native_callable_abi`; binding must be either
   `module_attr` or `direct_symbol`; `direct_symbol` also requires
-  `native_callable_symbol`. `native_callable_abi` must be one of the canonical
-  native callable ABI tokens: `molt.object_call_v1`,
-  `molt.object_callargs_v1`, or `molt.forward_f32_v1`.
+  `native_callable_symbol`. `native_callable_abi` must be declared by the
+  canonical `runtime/native_callable_abi.toml` registry; Python and Rust
+  consumers and the browser host use its checked-in generated projections
+  rather than maintaining their own token, signature, binding, or arity tables.
   Native callable identity lives only in those metadata fields; `invoke_ffi.args`
-  contains ABI payload values and must not include a synthesized Python callee.
+  must be present and contains ABI payload values, not a synthesized Python
+  callee. For a fixed-arity ABI, its length must equal the registry's payload
+  arity plus one real callable-handle operand for `module_attr`; a
+  `direct_symbol` call has payload operands only. SimpleIR and TIR both enforce
+  that generated arity contract before native or WASM code generation.
   Backends must fail closed if executable ABI dispatch for the declared export
   is absent. WASM currently executes `direct_symbol`
   `molt.object_call_v1` and `molt.object_callargs_v1` through a native import

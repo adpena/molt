@@ -1,4 +1,104 @@
 use super::support::*;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use wasm_encoder::{
+    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, LinkingSection,
+    Module, SymbolTable, TypeSection, ValType,
+};
+
+struct RemoveNativeCallableTemp(PathBuf);
+
+impl Drop for RemoveNativeCallableTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn native_callable_wasm_temp_dir() -> (PathBuf, RemoveNativeCallableTemp) {
+    let path = std::env::temp_dir().join(format!(
+        "molt-wasm-native-callable-link-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&path).expect("create WASM native callable link temp dir");
+    (path.clone(), RemoveNativeCallableTemp(path))
+}
+
+fn real_execution_tool(tool: PathBuf, required_env: &str, purpose: &str) -> Option<PathBuf> {
+    let available = Command::new(&tool)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if available {
+        return Some(tool);
+    }
+    if std::env::var_os("CI").is_some()
+        || std::env::var_os(required_env).is_some()
+        || std::env::var_os("MOLT_REQUIRE_REAL_NATIVE_CALLABLE_EXECUTION_TESTS").is_some()
+    {
+        panic!(
+            "real {purpose} is required but `{}` is unavailable",
+            tool.display()
+        );
+    }
+    eprintln!(
+        "SKIP real {purpose}: `{}` is unavailable; set {required_env}=1 to make this a hard failure",
+        tool.display()
+    );
+    None
+}
+
+fn wasm_ld_path() -> PathBuf {
+    std::env::var_os("MOLT_WASM_LD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("wasm-ld"))
+}
+
+fn run_execution_command(command: &mut Command, purpose: &str) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{purpose}: failed to start: {error}"));
+    assert!(
+        output.status.success(),
+        "{purpose}: status={}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn wasm_native_callable_provider_object(symbol: &str, sentinel: i64) -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    let mut exports = ExportSection::new();
+    exports.export(symbol, ExportKind::Func, 0);
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::I64Const(sentinel));
+    body.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&body);
+    let mut symbols = SymbolTable::new();
+    symbols.function(
+        SymbolTable::WASM_SYM_EXPORTED | SymbolTable::WASM_SYM_NO_STRIP,
+        0,
+        Some(symbol),
+    );
+    let mut linking = LinkingSection::new();
+    linking.symbol_table(&symbols);
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+    module.section(&linking);
+    module.finish()
+}
 
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
@@ -145,6 +245,91 @@ fn native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol()
             "native callable invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
         );
     }
+}
+
+#[test]
+fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
+    const SYMBOL: &str = "molt_nativepkg_ndimage_distance_transform_edt";
+    const SENTINEL: i64 = 0x45A1_7E57_D15C_A11E;
+    let Some(wasm_ld) = real_execution_tool(
+        wasm_ld_path(),
+        "MOLT_REQUIRE_REAL_WASM_LD_TESTS",
+        "wasm-ld native callable final-link proof",
+    ) else {
+        return;
+    };
+    let Some(node) = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "Node native callable execution proof",
+    ) else {
+        return;
+    };
+    let mut execution_ir = wasm_native_callable_ir("molt.object_call_v1");
+    execution_ir.functions[0].params.clear();
+    let mut payload = wasm_test_op("const", Some("arg"), vec![]);
+    payload.value = Some(1);
+    execution_ir.functions[0].ops.insert(0, payload);
+    let app_object = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: true,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(execution_ir);
+    let provider_object = wasm_native_callable_provider_object(SYMBOL, SENTINEL);
+    let (temp, _remove_temp) = native_callable_wasm_temp_dir();
+    let app_path = temp.join("native_callable_app.o.wasm");
+    let provider_path = temp.join("native_callable_provider.o.wasm");
+    let linked_path = temp.join("native_callable_linked.wasm");
+    let script_path = temp.join("verify_native_callable.cjs");
+    fs::write(&app_path, app_object).expect("write relocatable native callable app");
+    fs::write(&provider_path, provider_object).expect("write relocatable native callable provider");
+    run_execution_command(
+        Command::new(&wasm_ld)
+            .arg("--no-entry")
+            .arg("--import-memory")
+            .arg("--import-table")
+            .arg("--export=molt_main")
+            .arg("-o")
+            .arg(&linked_path)
+            .arg(&app_path)
+            .arg(&provider_path),
+        "final-link relocatable app and native callable provider with wasm-ld",
+    );
+    let linked = fs::read(&linked_path).expect("read final-linked native callable WASM");
+    wasmparser::Validator::new()
+        .validate_all(&linked)
+        .expect("final-linked native callable WASM must validate");
+    fs::write(
+        &script_path,
+        format!(
+            r#"const fs = require('fs');
+const bytes = fs.readFileSync(process.argv[2]);
+const env = {{
+  memory: new WebAssembly.Memory({{initial: 256}}),
+  __indirect_function_table: new WebAssembly.Table({{initial: 8192, element: 'anyfunc'}}),
+}};
+const wasmModule = new WebAssembly.Module(bytes);
+const imports = {{env}};
+for (const entry of WebAssembly.Module.imports(wasmModule)) {{
+  if (entry.module === 'env') continue;
+  imports[entry.module] ??= {{}};
+  imports[entry.module][entry.name] = () => 0n;
+}}
+WebAssembly.instantiate(wasmModule, imports).then((instance) => {{
+  const actual = instance.exports.molt_main();
+  const expected = BigInt('{SENTINEL}');
+  if (actual !== expected) throw new Error(`direct-symbol ABI returned ${{actual}}, expected ${{expected}}`);
+}}).catch((error) => {{ console.error(error); process.exit(1); }});
+"#
+        ),
+    )
+    .expect("write Node native callable verifier");
+    run_execution_command(
+        Command::new(&node).arg(&script_path).arg(&linked_path),
+        "execute final-linked native callable WASM in Node",
+    );
 }
 
 #[test]

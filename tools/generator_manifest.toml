@@ -136,6 +136,22 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_native_callable_abi.py"
+outputs = [
+  "src/molt/native_callable_abi.py",
+  "runtime/molt-ir/src/native_callable_abi.rs",
+  "wasm/native_callable_abi_generated.js",
+]
+source = "runtime/native_callable_abi.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_native_callable_abi.py --check"
+toolchains = ["rustfmt"]
+idempotent = true
+sync_test = "tests/test_gen_native_callable_abi.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_runtime_profile_schema.py"
 outputs = [
   "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",
@@ -221,6 +237,7 @@ source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/brows
 upstream_generators = [
   "tools/gen_target_feature_manifest.py",
   "tools/gen_wasm_abi.py",
+  "tools/gen_native_callable_abi.py",
 ]
 check_mode = true
 check_command = "tools/gen_browser_asset_graph.py --check"

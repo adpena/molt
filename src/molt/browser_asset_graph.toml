@@ -55,6 +55,12 @@ source_type = "script"
 authority = "wasm-loader-bridge"
 
 [[asset]]
+path = "native_callable_abi_generated.js"
+role = "browser"
+source_type = "module"
+authority = "native-callable-abi"
+
+[[asset]]
 path = "molt_vfs_browser.js"
 role = "browser"
 source_type = "module"

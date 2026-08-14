@@ -28,10 +28,9 @@ from molt.frontend.sema import (
     stateful_function_result_type_hint,
 )
 from molt.native_callable_abi import (
-    NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
-    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_abi_choices,
     native_callable_fixed_arity,
+    native_callable_requires_direct_symbol_binding,
     native_callable_uses_callargs,
     normalize_native_callable_abi,
 )
@@ -175,10 +174,9 @@ class CallModuleDispatchMixin(_MixinBase):
                     f"ABI tokens: {native_callable_abi_choices()}"
                 ),
             )
-        if binding == "module_attr" and normalized_abi in {
-            NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
-            NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
-        }:
+        if binding == "module_attr" and native_callable_requires_direct_symbol_binding(
+            normalized_abi
+        ):
             raise FrontendRejection(
                 Diagnostic.IMPORT_RESOLUTION,
                 f"native callable export '{qualified_name}' uses module_attr direct-symbol ABI",
