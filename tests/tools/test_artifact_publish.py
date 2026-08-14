@@ -44,6 +44,35 @@ def test_publish_validated_outputs_replaces_only_complete_staged_set(
     assert not staged_b.exists()
 
 
+def test_staging_and_backup_components_are_bounded_independently_of_final_name(
+    tmp_path: Path,
+) -> None:
+    module = _load_artifact_publish()
+    final = tmp_path / (("long-output-name-" * 20) + ".wasm")
+
+    staged = module.staged_output_path(
+        final,
+        purpose="wasm-opt",
+        suffix=".wasm",
+    )
+    backup = module.staged_output_path(
+        final,
+        purpose="backup",
+        suffix=".old",
+    )
+
+    assert staged.parent == final.parent
+    assert backup.parent == final.parent
+    assert staged.name.startswith(".wasm-opt-")
+    assert backup.name.startswith(".backup-")
+    assert staged.suffix == ".wasm"
+    assert backup.suffix == ".old"
+    assert len(staged.name) <= 64
+    assert len(backup.name) <= 64
+    assert final.name not in staged.name
+    assert final.name not in backup.name
+
+
 def test_publish_validated_outputs_missing_staged_preserves_old_final_bytes(
     tmp_path: Path,
 ) -> None:

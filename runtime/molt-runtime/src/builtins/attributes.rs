@@ -6,9 +6,9 @@ use std::sync::atomic::Ordering;
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
-    attr_lookup_ptr_allow_missing, awaitable_await_func_bits, class_own_slot_field_offset,
-    class_slots_info, clear_attribute_error_if_pending, exception_is_attribute_error,
-    object_attr_lookup_raw,
+    attr_lookup_ptr_allow_missing, awaitable_await_func_bits, class_instance_layout_attr_allowed,
+    class_own_slot_field_offset, class_slots_info, clear_attribute_error_if_pending,
+    exception_is_attribute_error, object_attr_lookup_raw,
 };
 use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::exceptions::{
@@ -305,10 +305,12 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 return Some(bits);
             }
         }
-        if !matches!(
-            type_id,
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS | TYPE_ID_TYPE | TYPE_ID_EXCEPTION
-        ) {
+        if !crate::object::heap_kind_has_class_shape(type_id)
+            && !matches!(
+                type_id,
+                TYPE_ID_DATACLASS | TYPE_ID_TYPE | TYPE_ID_EXCEPTION
+            )
+        {
             let class_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.class_name, b"__class__");
             if obj_eq(
@@ -574,17 +576,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 return Some(bound_bits);
             }
         }
-        if type_id == TYPE_ID_WEAKREF
-            && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
-            && name == "__callback__"
-        {
-            return Some(crate::molt_weakref_callback(
-                MoltObject::from_ptr(obj_ptr).bits(),
-            ));
-        }
         let class_bits = object_class_bits(obj_ptr);
         if class_bits != 0
-            && type_id != TYPE_ID_OBJECT
+            && !crate::object::heap_kind_has_class_shape(type_id)
             && type_id != TYPE_ID_DATACLASS
             && type_id != TYPE_ID_EXCEPTION
             && type_id != TYPE_ID_FUNCTION
@@ -1639,6 +1633,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     ) {
                         exception_stack_push();
                         let res_bits = call_callable1(_py, call_bits, attr_bits);
+                        dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             let exc_bits = molt_exception_last_pending();
                             if exception_matches_builtin_name(_py, exc_bits, "AttributeError") {
@@ -1666,6 +1661,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                     ) {
                                         let getattr_res =
                                             call_callable1(_py, getattr_call_bits, attr_bits);
+                                        dec_ref_bits(_py, getattr_call_bits);
                                         if exception_pending(_py) {
                                             return None;
                                         }
@@ -1843,6 +1839,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         )
                     {
                         let res_bits = call_callable1(_py, call_bits, attr_bits);
+                        dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             return None;
                         }
@@ -1852,7 +1849,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
             }
             return None;
         }
-        if type_id == TYPE_ID_OBJECT {
+        if crate::object::heap_kind_has_class_shape(type_id) {
             let header = header_from_obj_ptr(obj_ptr);
             if (*header).load_metadata_flags() & HEADER_FLAG_COROUTINE != 0
                 && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -1981,6 +1978,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     exception_stack_push();
                     let res_bits = call_callable1(_py, call_bits, attr_bits);
+                    dec_ref_bits(_py, call_bits);
                     if getattr_candidate {
                         traceback_suppress_exit();
                     }
@@ -2002,6 +2000,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             ) {
                                 exception_stack_push();
                                 let getattr_res = call_callable1(_py, getattr_call_bits, attr_bits);
+                                dec_ref_bits(_py, getattr_call_bits);
                                 if exception_pending(_py) {
                                     exception_stack_pop(_py);
                                     return None;
@@ -2118,22 +2117,21 @@ pub(crate) unsafe fn attr_lookup_ptr(
             ) {
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && let Some(info) = class_slots_info(_py, class_ptr)
-                    && !info.allows_weakref
+                    && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
                 {
                     return None;
                 }
-                return Some(MoltObject::none().bits());
+                return Some(crate::object::weakref::weakref_head_for_target(
+                    _py,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                ));
             }
             let dict_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
             if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && let Some(info) = class_slots_info(_py, class_ptr)
-                    && !info.allows_dict
+                    && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
                 {
                     return None;
                 }
@@ -2277,6 +2275,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), getattr_bits)
                 {
                     let res_bits = call_callable1(_py, call_bits, attr_bits);
+                    dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {
                         return None;
                     }
@@ -2483,7 +2482,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             // through the class MRO (TYPE_ID_OBJECT, TYPE_ID_DATACLASS, TYPE_ID_TYPE).
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
-                if type_id == TYPE_ID_OBJECT
+                if crate::object::heap_kind_has_class_shape(type_id)
                     || type_id == TYPE_ID_DATACLASS
                     || type_id == TYPE_ID_TYPE
                 {
@@ -2528,7 +2527,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             // Try to populate the result IC for cacheable types.
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
-                if (type_id == TYPE_ID_OBJECT
+                if (crate::object::heap_kind_has_class_shape(type_id)
                     || type_id == TYPE_ID_DATACLASS
                     || type_id == TYPE_ID_TYPE)
                     && out != 0

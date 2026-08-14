@@ -804,6 +804,22 @@ fn gc_trace_enabled() -> bool {
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_GC").as_deref() == Ok("1"))
 }
 
+/// Optional type-filtered reference-deduction ledger for cycle-collector
+/// diagnostics. The environment is parsed once, so the collector's hot path is
+/// a single predictable `Option` check when disabled. A numeric heap type id
+/// reports each candidate's effective refcount, every internal-edge
+/// subtraction that targets that type, and the reachable source that re-roots
+/// a zero-trial-count candidate during propagation.
+fn gc_trace_type_filter() -> Option<u32> {
+    static TYPE_ID: OnceLock<Option<u32>> = OnceLock::new();
+    *TYPE_ID.get_or_init(|| {
+        std::env::var("MOLT_TRACE_GC_TYPE")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|&type_id| super::is_valid_heap_type_id(type_id))
+    })
+}
+
 /// MayFormCycle: `true` when an object of this `type_id` can transitively hold a
 /// reference cycle and must therefore be tracked by the collector. The complement
 /// (GREEN) is sound-conservative: a GREEN object provably cannot be part of a cycle,
@@ -1643,8 +1659,18 @@ unsafe fn release_node_pin(py: &PyToken<'_>, node: GcNode) {
     match node {
         GcNode::Runtime(ptr) => {
             let header = unsafe { header_from_obj_ptr(ptr.0) };
+            let flags = unsafe { (*header).load_synchronized_flags() };
             unsafe { (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED) };
-            unsafe { dec_ref_ptr(py, ptr.0) };
+            if flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+                let previous =
+                    unsafe { (*header).release_owned("cycle collector pin release") }.previous();
+                if previous <= 1 {
+                    eprintln!("molt fatal: ABI-view GC pin lost its stable view hold");
+                    std::process::abort();
+                }
+            } else {
+                unsafe { dec_ref_ptr(py, ptr.0) };
+            }
         }
         GcNode::Native(address) => {
             native_gc_set_pinned(address, false);
@@ -2204,6 +2230,14 @@ unsafe fn deduce_subset(
         refs[candidate_index] = unsafe { effective_node_refcount(node) };
         marks[candidate_index] = 1;
         if let Some(ptr) = node.runtime_ptr() {
+            if gc_trace_type_filter()
+                .is_some_and(|type_id| unsafe { object_type_id(ptr) } == type_id)
+            {
+                eprintln!(
+                    "molt gc ref init: index={candidate_index} ptr=0x{:x} refs={}",
+                    ptr as usize, refs[candidate_index]
+                );
+            }
             unsafe { header_set_collecting(ptr, true) };
         }
     };
@@ -2222,7 +2256,16 @@ unsafe fn deduce_subset(
             if let Some(&child_index) = index.get(&child)
                 && marks[child_index] == 1
             {
+                let before = refs[child_index];
                 refs[child_index] -= 1;
+                if child.runtime_ptr().is_some_and(|ptr| {
+                    gc_trace_type_filter().is_some_and(|type_id| object_type_id(ptr) == type_id)
+                }) {
+                    eprintln!(
+                        "molt gc ref subtract: source={:?} child={:?} refs={}→{}",
+                        candidates[candidate_index].node, child, before, refs[child_index]
+                    );
+                }
             }
         });
     };
@@ -2237,6 +2280,19 @@ unsafe fn deduce_subset(
     }
 
     let mut seed = |candidate_index: usize| {
+        if candidates[candidate_index]
+            .node
+            .runtime_ptr()
+            .is_some_and(|ptr| {
+                gc_trace_type_filter()
+                    .is_some_and(|type_id| unsafe { object_type_id(ptr) } == type_id)
+            })
+        {
+            eprintln!(
+                "molt gc ref final: index={candidate_index} node={:?} refs={}",
+                candidates[candidate_index].node, refs[candidate_index]
+            );
+        }
         if refs[candidate_index] > 0 {
             marks[candidate_index] = 2;
             scratch_push(queue, candidate_index);
@@ -2258,6 +2314,17 @@ unsafe fn deduce_subset(
                 if let Some(&child_index) = index.get(&child)
                     && marks[child_index] == 1
                 {
+                    if child.runtime_ptr().is_some_and(|ptr| {
+                        gc_trace_type_filter().is_some_and(|type_id| object_type_id(ptr) == type_id)
+                    }) {
+                        eprintln!(
+                            "molt gc ref reroot: source={:?} source_refs={} child={:?} child_refs={}",
+                            candidates[candidate_index].node,
+                            refs[candidate_index],
+                            child,
+                            refs[child_index]
+                        );
+                    }
                     marks[child_index] = 2;
                     scratch_push(queue, child_index);
                 }

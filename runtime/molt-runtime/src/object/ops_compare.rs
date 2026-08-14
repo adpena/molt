@@ -42,7 +42,7 @@ pub(crate) enum CompareBoolOutcome {
 }
 
 #[derive(Clone, Copy)]
-enum CompareValueOutcome {
+pub(crate) enum CompareValueOutcome {
     Value(u64),
     NotComparable,
     Error,
@@ -833,7 +833,7 @@ pub(crate) fn rich_compare_bool(
     CompareBoolOutcome::NotComparable
 }
 
-fn rich_compare_value(
+pub(crate) fn rich_compare_value(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,

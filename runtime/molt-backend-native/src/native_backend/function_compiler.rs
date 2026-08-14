@@ -1648,7 +1648,6 @@ impl SimpleBackend {
                         &self.declared_func_arities,
                         function_has_ret,
                         defined_functions,
-                        return_alias_summaries,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
                         &mut tracked_obj_vars,
@@ -1657,7 +1656,6 @@ impl SimpleBackend {
                         &mut tracked_vars_set,
                         &mut entry_vars,
                         &mut already_decrefed,
-                        local_inc_ref_obj,
                         local_dec_ref_obj,
                         &nbc,
                     );

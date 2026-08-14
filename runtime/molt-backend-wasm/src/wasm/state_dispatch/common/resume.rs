@@ -100,4 +100,19 @@ pub(in crate::wasm::state_dispatch) fn emit_stateful_resume_prelude(
         );
     }
     func.instruction(&Instruction::End);
+
+    // Every host poll invocation must execute the real SimpleIR entry prefix
+    // through the ordinary stateful dispatcher: that prefix may contain
+    // exception checks and other control edges, so replaying it as a plain
+    // instruction slice is unsound. Preserve the remapped target separately,
+    // start dispatch at operation zero, and let state_switch transfer to the
+    // saved initial/resume target after the prefix has seeded its block-arg
+    // carriers.
+    let resume_state_local = locals
+        .resume_state_local
+        .expect("resume state local missing for stateful wasm");
+    func.instruction(&Instruction::LocalGet(locals.state_local));
+    func.instruction(&Instruction::LocalSet(resume_state_local));
+    func.instruction(&Instruction::I64Const(0));
+    func.instruction(&Instruction::LocalSet(locals.state_local));
 }

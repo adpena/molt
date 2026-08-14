@@ -1835,8 +1835,7 @@ _APP_EXPORT_IDENTITY_PREFIX = "__molt_app_export_identity__"
 def _app_export_identity_maps(
     adapter_symbol_map: Mapping[str, str],
     target_symbol_map: Mapping[str, str],
-    retain_symbol_name: str | None,
-) -> tuple[dict[str, str], dict[str, str], str | None, dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Create optimizer-stable exports for exact adapter call identity.
 
     Binaryen may discard linker/name metadata and renumber functions. Temporary
@@ -1859,16 +1858,9 @@ def _app_export_identity_maps(
         target_identity[public_name] = target_export
         identity_exports[adapter_export] = adapter_symbol
         identity_exports[target_export] = target_symbol
-    retain_identity = None
-    if adapter_identity:
-        if retain_symbol_name is None:
-            raise ValueError("app export adapters have no retain-call identity")
-        retain_identity = f"{_APP_EXPORT_IDENTITY_PREFIX}retain"
-        identity_exports[retain_identity] = retain_symbol_name
     return (
         adapter_identity,
         target_identity,
-        retain_identity,
         identity_exports,
     )
 
@@ -1897,7 +1889,6 @@ def _publish_app_export_identity_markers(
     public_export_names: Sequence[str],
     adapter_symbol_map: Mapping[str, str],
     target_symbol_map: Mapping[str, str],
-    retain_symbol_name: str,
     identity_exports: Mapping[str, str],
 ) -> bytes:
     """Prove exact pre-optimizer identities, then publish durable markers."""
@@ -1907,7 +1898,6 @@ def _publish_app_export_identity_markers(
         public_export_names,
         adapter_symbol_map=adapter_symbol_map,
         target_symbol_map=target_symbol_map,
-        retain_symbol_name=retain_symbol_name,
     )
     updated = _ensure_function_exports_by_symbol_names(
         data,
@@ -1943,7 +1933,7 @@ def _app_export_surface_error(
             adapter = call_abi.get("adapter")
             if (
                 isinstance(adapter, Mapping)
-                and adapter.get("strategy") == "retain-result"
+                and adapter.get("strategy") == "forward-owned-result"
             ):
                 _validate_app_export_adapters(data, tuple(sorted(expected)))
         except ValueError as exc:
@@ -3384,6 +3374,23 @@ def _callable_app_end(layout: CallableTableLayout) -> int:
     return layout.finalized_app_base + layout.app_entry_count
 
 
+def _monolithic_linked_callable_growth_base(
+    layout: CallableTableLayout,
+) -> int | None:
+    """Return the first slot wasm-ld may allocate for address-taken functions.
+
+    A compiler-owned fixed prefix or app row is immutable across the final
+    monolithic link.  Linker-created table entries therefore belong after the
+    entire published app region.  A truly empty layout has no occupancy anchor,
+    so preserve wasm-ld's compact default allocation in that case.
+    """
+
+    layout.validate()
+    if layout.fixed_prefix_len == 0 and layout.app_entry_count == 0:
+        return None
+    return _callable_app_end(layout)
+
+
 class _CallableTableEntryPlan:
     __slots__ = (
         "app_indices",
@@ -3928,10 +3935,8 @@ def _run_wasm_ld_with_custodied_inputs(
         if name in export_symbol_map
     }
     app_adapter_symbol_map: dict[str, str] = {}
-    app_retain_symbol_name: str | None = None
     app_adapter_identity_map: dict[str, str] = {}
     app_target_identity_map: dict[str, str] = {}
-    app_retain_identity_name: str | None = None
     app_identity_exports: dict[str, str] = {}
     preserved_output_exports = list(
         dict.fromkeys(
@@ -3986,23 +3991,14 @@ def _run_wasm_ld_with_custodied_inputs(
             print(f"Wasm link failed: {exc}", file=sys.stderr)
             return 1
         export_symbol_map.update(app_adapter_symbol_map)
-        adapter_spec = app_call_abi.get("adapter")
-        if isinstance(adapter_spec, Mapping):
-            retain_spec = adapter_spec.get("retain_import")
-            if isinstance(retain_spec, Mapping):
-                retain_name = retain_spec.get("name")
-                if isinstance(retain_name, str):
-                    app_retain_symbol_name = retain_name
         try:
             (
                 app_adapter_identity_map,
                 app_target_identity_map,
-                app_retain_identity_name,
                 app_identity_exports,
             ) = _app_export_identity_maps(
                 app_adapter_symbol_map,
                 app_target_symbol_map,
-                app_retain_symbol_name,
             )
         except ValueError as exc:
             print(f"Wasm link failed: {exc}", file=sys.stderr)
@@ -4120,13 +4116,15 @@ def _run_wasm_ld_with_custodied_inputs(
         "--export-if-defined=__indirect_function_table",
         "--export-if-defined=molt_set_wasm_table_base",
     ]
-    if (
-        output_callable_layout is not None
-        and output_callable_layout.fixed_prefix_len > 0
-    ):
+    linked_callable_growth_base = (
+        _monolithic_linked_callable_growth_base(output_callable_layout)
+        if output_callable_layout is not None
+        else None
+    )
+    if linked_callable_growth_base is not None:
         cmd.insert(
             cmd.index("--import-table") + 1,
-            f"--table-base={_callable_app_end(output_callable_layout)}",
+            f"--table-base={linked_callable_growth_base}",
         )
     # Force-export symbols that were rewritten but missing from the
     # non-relocatable runtime â€” they exist in the relocatable runtime
@@ -4324,13 +4322,11 @@ def _run_wasm_ld_with_custodied_inputs(
             linked_bytes = restored_linked_bytes
         if app_adapter_symbol_map:
             try:
-                assert app_retain_symbol_name is not None
                 linked_bytes = _publish_app_export_identity_markers(
                     linked_bytes,
                     public_export_names=contract_app_exports,
                     adapter_symbol_map=app_adapter_symbol_map,
                     target_symbol_map=app_target_symbol_map,
-                    retain_symbol_name=app_retain_symbol_name,
                     identity_exports=app_identity_exports,
                 )
             except ValueError as exc:
@@ -4409,7 +4405,6 @@ def _run_wasm_ld_with_custodied_inputs(
                     contract_app_exports,
                     adapter_symbol_map=app_adapter_identity_map,
                     target_symbol_map=app_target_identity_map,
-                    retain_symbol_name=app_retain_identity_name,
                 )
             except ValueError as exc:
                 print(
@@ -4692,13 +4687,11 @@ def _run_wasm_ld_with_custodied_inputs(
                     )
             if app_adapter_symbol_map:
                 try:
-                    assert app_retain_symbol_name is not None
                     rewritten_data = _publish_app_export_identity_markers(
                         rewritten_data,
                         public_export_names=contract_app_exports,
                         adapter_symbol_map=app_adapter_symbol_map,
                         target_symbol_map=app_target_symbol_map,
-                        retain_symbol_name=app_retain_symbol_name,
                         identity_exports=app_identity_exports,
                     )
                 except ValueError as exc:
@@ -4765,7 +4758,6 @@ def _run_wasm_ld_with_custodied_inputs(
                         contract_app_exports,
                         adapter_symbol_map=app_adapter_identity_map,
                         target_symbol_map=app_target_identity_map,
-                        retain_symbol_name=app_retain_identity_name,
                     )
                     optimized_app = _strip_app_export_identity_markers(
                         optimized_app,

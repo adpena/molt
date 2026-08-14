@@ -140,7 +140,8 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
     let bridge = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/bridge.rs"))
         .expect("read bridge lifetime authority");
     for required in [
-        "runtime_last_ref_dropped",
+        "transition_runtime_owner_add",
+        "transition_runtime_owner_release",
         "has_direct_c_refs",
         "retire_runtime_object_deferred",
         "gc_ref_adjustment",

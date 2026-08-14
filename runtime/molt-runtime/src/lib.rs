@@ -723,7 +723,8 @@ pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
 pub use crate::builtins::weakref_type::{
     molt_weakref_call, molt_weakref_callback_get, molt_weakref_eq, molt_weakref_hash,
-    molt_weakref_init, molt_weakref_new, molt_weakref_reference_type, molt_weakref_repr,
+    molt_weakref_init, molt_weakref_ne, molt_weakref_new, molt_weakref_reference_type,
+    molt_weakref_repr,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;

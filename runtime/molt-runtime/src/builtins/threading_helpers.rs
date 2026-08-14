@@ -146,7 +146,10 @@ pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bi
             if !trace_obj.is_none() {
                 let none_bits = MoltObject::none().bits();
                 let call_str = make_string_bits(py, "call");
-                let _ = call_callable3(py, trace_bits, none_bits, call_str, none_bits);
+                crate::call::discard_owned_call_result(
+                    py,
+                    call_callable3(py, trace_bits, none_bits, call_str, none_bits),
+                );
                 crate::dec_ref_bits(py, call_str);
             }
 
@@ -154,7 +157,10 @@ pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bi
             if !profile_obj.is_none() {
                 let none_bits = MoltObject::none().bits();
                 let call_str = make_string_bits(py, "call");
-                let _ = call_callable3(py, profile_bits, none_bits, call_str, none_bits);
+                crate::call::discard_owned_call_result(
+                    py,
+                    call_callable3(py, profile_bits, none_bits, call_str, none_bits),
+                );
                 crate::dec_ref_bits(py, call_str);
             }
 

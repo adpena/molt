@@ -944,6 +944,7 @@ def _intrinsic_runtime_callable_imports(
     static_types: list[dict],
     imports: list[dict],
     non_runtime_callable_intrinsics: set[str],
+    reserved_runtime_callables: set[str],
 ) -> list[dict]:
     rust_exports = _rust_export_signatures()
     type_indices = _static_type_index_by_signature(static_types)
@@ -958,6 +959,8 @@ def _intrinsic_runtime_callable_imports(
     synthesized: list[dict] = []
     missing_static_types: list[str] = []
     for runtime_name, arity, result in _intrinsic_signature_rows():
+        if runtime_name in reserved_runtime_callables:
+            continue
         if runtime_name in explicit_runtime_names:
             if runtime_name in non_runtime_callable_intrinsics:
                 raise WasmAbiManifestError(
@@ -1147,51 +1150,20 @@ def _validate_witness_frontier_reserved_callables(
         )
 
 
-def _non_reserved_import_name_references(
-    data: dict, reserved_import_names: set[str]
-) -> set[str]:
-    refs: set[str] = set()
-
-    def visit(value: object) -> None:
-        if isinstance(value, dict):
-            import_name = value.get("import_name")
-            if isinstance(import_name, str) and import_name in reserved_import_names:
-                refs.add(import_name)
-            deps = value.get("deps")
-            if isinstance(deps, list):
-                refs.update(
-                    dep
-                    for dep in deps
-                    if isinstance(dep, str) and dep in reserved_import_names
-                )
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    for section, value in data.items():
-        if section in {"import", "reserved_runtime_callable"}:
-            continue
-        visit(value)
-    return refs
-
-
-def _validate_reserved_runtime_callable_import_absence(
+def _materialize_reserved_runtime_callable_imports(
     static_types: list[dict],
     imports: list[dict],
     reserved_callables: list[dict],
-    non_reserved_import_refs: set[str],
 ) -> None:
+    """Derive required transport imports from reserved callable authority."""
     type_indices = _static_type_index_by_signature(static_types)
+    reserved_by_runtime_name = {
+        entry["runtime_name"]: entry for entry in reserved_callables
+    }
     explicit_imports_by_name = {
         entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
     }
-    explicit_runtime_names = {
-        entry["runtime_name"]
-        for entry in imports
-        if isinstance(entry.get("runtime_name"), str)
-    }
+    rust_exports = _rust_export_signatures()
     missing_static_types: list[str] = []
     for entry in reserved_callables:
         runtime_name = entry["runtime_name"]
@@ -1204,20 +1176,38 @@ def _validate_reserved_runtime_callable_import_absence(
                 _format_runtime_callable_signature(runtime_name, params, "i64")
             )
             continue
+        if not _runtime_symbol_available_on_wasm(runtime_name):
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} has no wasm32 target"
+            )
+        expected = (params, "i64")
+        signatures = rust_exports.get(runtime_name)
+        if not signatures:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} is missing its Rust export"
+            )
+        if signatures != {expected}:
+            rendered = ", ".join(
+                f"({', '.join(actual_params)}) -> {result}"
+                for actual_params, result in sorted(signatures)
+            )
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} expected "
+                f"{_format_runtime_callable_signature(runtime_name, params, 'i64')}; "
+                f"Rust exports {rendered}"
+            )
         existing_entry = explicit_imports_by_name.get(import_name)
-        if existing_entry is not None:
-            if import_name not in non_reserved_import_refs:
-                raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} import name "
-                    f"{import_name!r} must be owned only by reserved_runtime_callable, "
-                    "not duplicated in [[import]]"
-                )
+        if existing_entry is None:
+            existing_entry = {"name": import_name, "type": type_idx}
+            imports.append(existing_entry)
+            explicit_imports_by_name[import_name] = existing_entry
+        else:
             existing_type = existing_entry.get("type")
             if not isinstance(existing_type, int) or not (
                 0 <= existing_type < len(static_types)
             ):
                 raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} dual-use import "
+                    f"reserved runtime callable {runtime_name!r} transport import "
                     f"{import_name!r} has invalid static type {existing_type!r}"
                 )
             existing_signature = static_types[existing_type]
@@ -1226,7 +1216,7 @@ def _validate_reserved_runtime_callable_import_absence(
                 or tuple(existing_signature["results"]) != results
             ):
                 raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} dual-use import "
+                    f"reserved runtime callable {runtime_name!r} transport import "
                     f"{import_name!r} uses static type {existing_type}; expected "
                     f"{_format_runtime_callable_signature(runtime_name, params, 'i64')}"
                 )
@@ -1234,15 +1224,22 @@ def _validate_reserved_runtime_callable_import_absence(
                 existing_entry.get("runtime_name") is not None
                 or existing_entry.get("callable_arity") is not None
                 or existing_entry.get("callable_result") is not None
+                or existing_entry.get("shared_runtime_callable") is not None
+                or existing_entry.get("callable_dispatch") is not None
             ):
                 raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} dual-use import "
-                    "must not duplicate callable metadata in [[import]]"
+                    f"reserved runtime callable {runtime_name!r} transport import "
+                    "must not duplicate reserved callable metadata in [[import]]"
                 )
-        if runtime_name in explicit_runtime_names:
+    for import_entry in imports:
+        runtime_name = import_entry.get("runtime_name")
+        reserved_entry = reserved_by_runtime_name.get(runtime_name)
+        if reserved_entry is not None:
             raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} must be owned only "
-                "by reserved_runtime_callable, not duplicated in [[import]]"
+                f"reserved runtime callable {runtime_name!r} is duplicated by "
+                f"callable [[import]] {import_entry.get('name')!r}; "
+                "[[reserved_runtime_callable]] owns callable metadata and "
+                f"[[import]] {reserved_entry['import_name']!r} is transport-only"
             )
     if missing_static_types:
         raise WasmAbiManifestError(
@@ -1585,9 +1582,8 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
     reserved_callables = _validate_reserved_runtime_callables(data)
     _validate_witness_frontier_reserved_callables(data, reserved_callables)
-    reserved_import_names = {entry["import_name"] for entry in reserved_callables}
-    non_reserved_import_refs = _non_reserved_import_name_references(
-        data, reserved_import_names
+    _materialize_reserved_runtime_callable_imports(
+        static_types, imports, reserved_callables
     )
     non_runtime_callable_intrinsics = set(
         _validate_string_list(
@@ -1607,18 +1603,13 @@ def validate_loaded_manifest(
             static_types,
             imports,
             non_runtime_callable_intrinsics,
+            {entry["runtime_name"] for entry in reserved_callables},
         )
     )
     _remove_target_unavailable_wasm_imports(imports)
     _annotate_runtime_callable_features(
         imports,
         reject_existing=reject_manual_runtime_features,
-    )
-    _validate_reserved_runtime_callable_import_absence(
-        static_types,
-        imports,
-        reserved_callables,
-        non_reserved_import_refs,
     )
     seen_imports: set[str] = set()
     seen_runtime_names: set[str] = set()

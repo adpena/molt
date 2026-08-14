@@ -761,8 +761,11 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if args.pos.len() != entry.arity as usize {
                 return None;
             }
-            let result = call_function_obj_bound_vec(_py, call_bits, args.pos.as_slice());
-            return Some(protect_callargs_aliased_return(_py, result, args_ptr));
+            return Some(call_function_obj_bound_vec(
+                _py,
+                call_bits,
+                args.pos.as_slice(),
+            ));
         }
 
         if entry.kind == CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC {
@@ -786,12 +789,10 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             for (idx, arg) in args.pos.iter().copied().enumerate() {
                 argv[idx + 1] = arg;
             }
-            let result = call_function_obj_bound_vec(_py, func_bits, &argv[..args.pos.len() + 1]);
-            return Some(protect_callargs_aliased_return_with_extra(
+            return Some(call_function_obj_bound_vec(
                 _py,
-                result,
-                args_ptr,
-                &[self_bits],
+                func_bits,
+                &argv[..args.pos.len() + 1],
             ));
         }
 
@@ -822,13 +823,10 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             for (idx, arg) in args.pos.iter().copied().enumerate() {
                 argv[idx + 1] = arg;
             }
-            let result =
-                call_function_obj_bound_vec(_py, entry.target_bits, &argv[..args.pos.len() + 1]);
-            return Some(protect_callargs_aliased_return_with_extra(
+            return Some(call_function_obj_bound_vec(
                 _py,
-                result,
-                args_ptr,
-                &[call_bits],
+                entry.target_bits,
+                &argv[..args.pos.len() + 1],
             ));
         }
 
@@ -943,7 +941,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // call path. The freshly allocated instance's original ref remains
             // the constructor result; no extra callee-owned self lane exists.
             frame_stack_push_function(_py, code_bits, init_ptr);
-            let _init_result = if closure_bits != 0 {
+            let init_result = if closure_bits != 0 {
                 match args.pos.len() {
                     0 => {
                         let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
@@ -1020,13 +1018,13 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             frame_stack_pop(_py);
             recursion_guard_exit();
             // Same post-`__init__` resolution as every other constructor path:
-            // on a pending exception, drop the instance and yield `none` so the
-            // construct-site `check_exception` / IC propagation guards fire. The
-            // full-binding lane (call_type_with_builder ForwardArgs) routes
-            // through the identical helper — neither can silently swallow a
-            // constructor raise (task #60).
+            // consume and validate the owned result, then drop the instance and
+            // yield `none` on either a pending exception or a non-None return.
+            // The full-binding lane routes through the identical authority.
             return Some(crate::call::class_init::resolve_construct_after_init(
-                _py, inst_bits,
+                _py,
+                inst_bits,
+                init_result,
             ));
         }
 
@@ -1133,10 +1131,9 @@ unsafe fn call_method_ic_dispatch(
                     argv[supplied..supplied + missing]
                         .copy_from_slice(&def_elems[start..start + missing]);
                 }
-                let result = call_function_obj_bound_vec(_py, func_bits, &argv[..fixed_arity]);
-                Some(protect_borrowed_args_aliased_return(
+                Some(call_function_obj_bound_vec(
                     _py,
-                    result,
+                    func_bits,
                     &argv[..fixed_arity],
                 ))
             };
@@ -1518,8 +1515,7 @@ unsafe fn call_super_method_ic_dispatch(
             for (idx, a) in args.iter().copied().enumerate() {
                 argv[idx + 1] = a;
             }
-            let result = call_function_obj_bound_vec(_py, func_bits, &argv[..args.len() + 1]);
-            protect_borrowed_args_aliased_return(_py, result, &argv[..args.len() + 1])
+            call_function_obj_bound_vec(_py, func_bits, &argv[..args.len() + 1])
         };
 
         // Per-site super IC: validate `type(self)` + layout version and

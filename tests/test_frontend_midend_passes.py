@@ -22,6 +22,32 @@ def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     return gen.map_ops_to_json(ops)
 
 
+def test_genexpr_outer_iterator_is_eager_and_frame_owned() -> None:
+    source = """
+def outer():
+    return [1, 2]
+
+gen = (value for value in outer())
+"""
+    gen = SimpleTIRGenerator(module_name="genexpr_eager", source_path="probe.py")
+    gen.visit(ast.parse(source))
+    functions = {fn["name"]: fn for fn in gen.to_json()["functions"]}
+    module_ops = functions["molt_main"]["ops"]
+    poll_ops = functions["genexpr_eager__genexpr_1_poll"]["ops"]
+
+    iter_index = next(i for i, op in enumerate(module_ops) if op["kind"] == "iter")
+    alloc_index = next(
+        i for i, op in enumerate(module_ops) if op["kind"] == "alloc_task"
+    )
+    assert iter_index < alloc_index
+    assert module_ops[alloc_index]["args"], "outer iterator cell must enter task payload"
+    assert any(op["kind"] == "closure_load" for op in poll_ops)
+    assert not any(
+        op["kind"] == "module_get_global" and op.get("s_value") == "outer"
+        for op in poll_ops
+    ), "outer iterable expression must not be deferred into the poll state machine"
+
+
 def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
     source_path = Path(future_module.__file__)
     gen = SimpleTIRGenerator(module_name="__future__", source_path=str(source_path))

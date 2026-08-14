@@ -500,37 +500,6 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_numeric_result(
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_protect_borrowed_args_aliased_return(
-    builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
-    result: Value,
-    args: &[Value],
-    local_inc_ref_obj: FuncRef,
-    _nbc: &crate::NanBoxConsts,
-) {
-    let Some((first, rest)) = args.split_first() else {
-        return;
-    };
-    let mut aliases_arg = builder.ins().icmp(IntCC::Equal, result, *first);
-    for arg in rest {
-        let aliases_next = builder.ins().icmp(IntCC::Equal, result, *arg);
-        aliases_arg = builder.ins().bor(aliases_arg, aliases_next);
-    }
-
-    let retain_block = builder.create_block();
-    let cont_block = builder.create_block();
-    brif_block(builder, aliases_arg, retain_block, &[], cont_block, &[]);
-
-    switch_to_block_materialized(builder, retain_block);
-    seal_block_once(builder, sealed_blocks, retain_block);
-    emit_inc_ref_obj(builder, result, local_inc_ref_obj);
-    jump_block(builder, cont_block, &[]);
-
-    switch_to_block_materialized(builder, cont_block);
-    seal_block_once(builder, sealed_blocks, cont_block);
-}
-
-#[cfg(feature = "native-backend")]
 #[inline]
 pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_for_name(
     name: &str,

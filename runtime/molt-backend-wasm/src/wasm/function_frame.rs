@@ -53,6 +53,7 @@ impl WasmFunctionFrame {
     pub(super) fn dispatch_locals(&self) -> Option<NonLinearDispatchLocals> {
         self.dispatch_locals.map(|locals| NonLinearDispatchLocals {
             state_local: locals.state_local,
+            resume_state_local: locals.resume_state_local,
             block_map_base_local: locals.block_map_base_local,
             return_local: locals.return_local,
             self_ptr_local: locals.self_ptr_local,

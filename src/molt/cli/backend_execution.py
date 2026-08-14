@@ -73,6 +73,8 @@ _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
     "MOLT_DUMP_CLIF_FILE_FILTER",
     "MOLT_DUMP_FINAL_FUNC_IR",
     "MOLT_DUMP_IR",
+    "MOLT_DUMP_IR_FILE",
+    "MOLT_DEBUG_WASM_LOCALS_FUNC",
     # Optimization-pass instruments (mirrors the backend's
     # DAEMON_REQUEST_ENV_KEYS — an instrument is useless if the CLI strips
     # its env key before the daemon sees it).

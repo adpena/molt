@@ -5,6 +5,7 @@ use wasm_encoder::ValType;
 pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     DispatchSelfPtr,
     DispatchState,
+    DispatchResumeState,
     DispatchBlockMapBase,
     DispatchReturn,
     DispatchStateRemapBase,
@@ -82,6 +83,10 @@ mod tests {
             Some(WasmFrameAnonymousLocal::DispatchState)
         );
         assert_eq!(
+            locals.anonymous_kind(dispatch.resume_state_local.unwrap()),
+            Some(WasmFrameAnonymousLocal::DispatchResumeState)
+        );
+        assert_eq!(
             locals.anonymous_kind(dispatch.block_map_base_local),
             Some(WasmFrameAnonymousLocal::DispatchBlockMapBase)
         );
@@ -112,8 +117,9 @@ mod tests {
                 ValType::I64,
                 ValType::I64,
                 ValType::I64,
+                ValType::I64,
             ]
         );
-        assert_eq!(local_count, 12);
+        assert_eq!(local_count, 13);
     }
 }

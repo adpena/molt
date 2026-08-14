@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -294,15 +293,12 @@ def optimize(
         converge=converge,
         apply_level=apply_level,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
-        prefix=f".{output_path.name}.wasm-opt-",
+    staged_output = artifact_publish.staged_output_path(
+        output_path,
+        purpose="wasm-opt",
         suffix=".wasm",
-        dir=output_path.parent,
-        delete=False,
     )
-    staged_output = Path(handle.name)
-    handle.close()
+    staged_output.touch(exist_ok=False)
     cmd = [wasm_opt, *pipeline]
     cmd.extend([str(input_path), "-o", str(staged_output)])
 

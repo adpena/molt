@@ -109,7 +109,6 @@ pub fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     }
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
     if std::env::var("MOLT_DUMP_IR_FILE").as_deref() == Ok("1") {
-        let _ = std::fs::create_dir_all("logs");
         let sanitized = func_ir
             .name
             .chars()
@@ -118,7 +117,9 @@ pub fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
                 _ => '_',
             })
             .collect::<String>();
-        let path = std::path::Path::new("logs").join(format!("ir_dump_{sanitized}.log"));
-        let _ = std::fs::write(path, &out);
+        let _ = crate::debug_artifacts::write_debug_artifact(
+            format!("simpleir/final/{sanitized}.log"),
+            &out,
+        );
     }
 }

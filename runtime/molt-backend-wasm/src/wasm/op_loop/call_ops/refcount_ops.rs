@@ -13,7 +13,7 @@ pub(super) fn emit_refcount_call_op(
             emit_inc_ref_like(call_ctx, func, op);
             CallOpEmission::Handled
         }
-        "dec_ref" | "release" => {
+        "dec_ref" | "release" | "del_boundary" => {
             emit_dec_ref_like(call_ctx, func, op);
             CallOpEmission::Handled
         }
@@ -27,7 +27,7 @@ fn emit_inc_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         .first()
         .expect("inc_ref/borrow requires one source arg");
     let src = call_ctx.locals[src_name];
-    if !call_ctx.rc_skip_inc.contains(&call_ctx.rel_idx) {
+    if !call_ctx.rc_skip_inc.contains(&call_ctx.op_idx) {
         func.instruction(&Instruction::LocalGet(src));
         emit_call(
             func,
@@ -45,11 +45,14 @@ fn emit_inc_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
 }
 
 fn emit_dec_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, op: &OpIR) {
-    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
+    let args_names = op
+        .args
+        .as_ref()
+        .expect("dec_ref/release/del_boundary args missing");
     let src_name = args_names
         .first()
-        .expect("dec_ref/release requires one source arg");
-    if call_ctx.rc_skip_inc.contains(&call_ctx.rel_idx)
+        .expect("dec_ref/release/del_boundary requires one source arg");
+    if call_ctx.rc_skip_inc.contains(&call_ctx.op_idx)
         || call_ctx.rc_skip_dec.contains(src_name.as_str())
     {
         return;

@@ -253,13 +253,38 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     }
 }
 
+/// Consume and validate an owned `__init__` result.
+///
+/// Python's `__init__` contract is stricter than an ordinary statement-like
+/// call: a successful result must be `None`.  This helper consumes the result
+/// on every path and raises the canonical `TypeError` for any other value.
+#[inline]
+pub(crate) unsafe fn consume_init_result(_py: &PyToken<'_>, init_result_bits: u64) -> bool {
+    let call_failed = exception_pending(_py);
+    let invalid_type = if call_failed || obj_from_bits(init_result_bits).is_none() {
+        None
+    } else {
+        Some(type_name(_py, obj_from_bits(init_result_bits)).into_owned())
+    };
+    crate::call::discard_owned_call_result(_py, init_result_bits);
+    if call_failed {
+        return false;
+    }
+    let Some(type_name) = invalid_type else {
+        return true;
+    };
+    let message = format!("__init__() should return None, not '{type_name}'");
+    let _ = raise_exception::<u64>(_py, "TypeError", &message);
+    false
+}
+
 /// Resolve a constructor's return value after `__init__` has run.
 ///
 /// `inst_bits` carries the single owning reference that the constructor path
 /// would otherwise hand back to the caller (the freshly constructed instance).
-/// If `__init__` raised, CPython propagates that exception out of the
-/// `ClassName(...)` construct expression and the instance is discarded; mirror
-/// that here by dropping the owning reference and returning the `none` sentinel.
+/// `init_result_bits` is the owned result returned by `__init__`.  If the call
+/// raised or returned a non-`None` value, CPython propagates the exception out
+/// of the `ClassName(...)` construct expression and discards the instance.
 /// Returning `none` is load-bearing: every downstream propagation guard keys off
 /// `result.is_none() && exception_pending(_py)` (the IC dispatch guards) and the
 /// frontend's post-construct `check_exception` only fires on the `none` result.
@@ -274,10 +299,15 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
 /// # Safety
 /// `inst_bits` must be the sole owning reference produced by the constructor at
 /// the point of the call (exactly the reference the caller's `return inst_bits`
-/// would have transferred). On the exception path that one reference is dropped.
+/// would have transferred). `init_result_bits` must be the owning reference
+/// returned by the call. On either failure path both references are consumed.
 #[inline]
-pub(crate) unsafe fn resolve_construct_after_init(_py: &PyToken<'_>, inst_bits: u64) -> u64 {
-    if exception_pending(_py) {
+pub(crate) unsafe fn resolve_construct_after_init(
+    _py: &PyToken<'_>,
+    inst_bits: u64,
+    init_result_bits: u64,
+) -> u64 {
+    if !unsafe { consume_init_result(_py, init_result_bits) } {
         dec_ref_bits(_py, inst_bits);
         return MoltObject::none().bits();
     }
@@ -546,10 +576,10 @@ pub(crate) unsafe fn construct_exception_from_args(
             }
         } else {
             let init_result = call(init_bits, None, pos, true);
-            dec_ref_bits(_py, init_result);
             dec_ref_bits(_py, init_bits);
+            return resolve_construct_after_init(_py, inst_bits, init_result);
         }
-        resolve_construct_after_init(_py, inst_bits)
+        inst_bits
     }
 }
 
@@ -1070,32 +1100,35 @@ pub(crate) unsafe fn call_class_init_with_args(
             InitArgPolicy::RejectConstructorArgs if !args.is_empty() => {
                 let class_name = class_name_for_error(class_bits);
                 let msg = format!("{class_name}() takes no arguments");
+                dec_ref_bits(_py, init_bits);
+                dec_ref_bits(_py, inst_bits);
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
             InitArgPolicy::RejectConstructorArgs | InitArgPolicy::SkipObjectInit => {
+                dec_ref_bits(_py, init_bits);
                 return inst_bits;
             }
             InitArgPolicy::ForwardArgs => {}
         }
-        // Inc-ref the instance before passing to __init__. The compiled
-        // __init__ receives `self` as a block param and the function
-        // epilogue dec-refs all tracked locals (including self). Without
-        // this extra inc-ref, the dec-ref drops the instance to refcount 0,
-        // freeing it — and the caller's inst_bits becomes a dangling pointer.
-        inc_ref_bits(_py, inst_bits);
+        // Every callable ABI borrows Python arguments, including a bound
+        // `__init__` receiver. The freshly allocated instance's original owner
+        // is the constructor result; the owned bound-method handle separately
+        // pins `self` for the duration of this call. Adding a callable-category
+        // retain here creates a hidden second result owner on backends whose
+        // compiled parameters correctly follow the shared borrowed convention.
         let builder_bits = molt_callargs_new(args.len() as u64, 0);
         if builder_bits == 0 {
-            dec_ref_bits(_py, inst_bits);
+            dec_ref_bits(_py, init_bits);
             return inst_bits;
         }
         for &arg in args {
             let _ = molt_callargs_push_pos(builder_bits, arg);
         }
-        let _ = molt_call_bind(init_bits, builder_bits);
-        // If `__init__` (including a full-binding `*args`/`**kwargs`/keyword-only
-        // signature) raised, propagate it instead of returning the
-        // partially-constructed instance (task #60, args-slice construct lane).
-        resolve_construct_after_init(_py, inst_bits)
+        let init_result = molt_call_bind(init_bits, builder_bits);
+        dec_ref_bits(_py, init_bits);
+        // Consume and validate the owned `__init__` result. A pending exception
+        // or non-None return discards the partially-constructed instance.
+        resolve_construct_after_init(_py, inst_bits, init_result)
     }
 }
 
@@ -1360,6 +1393,13 @@ mod tests {
     use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
     use crate::*;
 
+    extern "C" fn compiled_init_borrows_self(self_bits: u64) -> i64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            assert!(!obj_from_bits(self_bits).is_none());
+            MoltObject::none().bits()
+        }) as i64
+    }
+
     #[test]
     fn class_instance_allocation_publishes_only_after_class_edge_initialization() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -1376,6 +1416,56 @@ mod tests {
             assert!(header.gc_is_published());
             assert_eq!(unsafe { object_class_bits(inst_ptr) }, class_bits);
             dec_ref_bits(_py, inst_bits);
+        });
+    }
+
+    #[test]
+    fn generic_class_init_returns_only_the_constructor_result_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(
+                    compiled_init_borrows_self as *const (),
+                ),
+                1,
+            );
+            assert!(!init_ptr.is_null());
+            let init_bits = MoltObject::from_ptr(init_ptr).bits();
+            let name_ptr = alloc_string(_py, b"GenericCtor");
+            let init_name_ptr = alloc_string(_py, b"__init__");
+            assert!(!name_ptr.is_null());
+            assert!(!init_name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let init_name_bits = MoltObject::from_ptr(init_name_ptr).bits();
+            let attrs = [init_name_bits, init_bits];
+            let bases = [builtin_classes(_py).object];
+            let class_bits = unsafe {
+                crate::object::ops::molt_guarded_class_def(
+                    name_bits,
+                    crate::provenance::abi::expose_address(bases.as_ptr()),
+                    bases.len() as u64,
+                    crate::provenance::abi::expose_address(attrs.as_ptr()),
+                    1,
+                    std::mem::size_of::<u64>() as i64,
+                    0,
+                    0,
+                )
+            };
+            let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+            let result_bits = unsafe { call_class_init_with_args(_py, class_ptr, &[]) };
+            let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live instance");
+            assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_OBJECT);
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(result_ptr)).ref_count_snapshot() },
+                1,
+                "generic class construction must preserve exactly its result owner while __init__ borrows self"
+            );
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, init_name_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, class_bits);
+            dec_ref_bits(_py, init_bits);
         });
     }
 

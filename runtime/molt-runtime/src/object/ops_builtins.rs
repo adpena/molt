@@ -1047,17 +1047,10 @@ pub extern "C" fn molt_call_func_dispatch(
                     false,
                 );
             if force_trampoline {
-                let result = unsafe {
+                return unsafe {
                     crate::call::function::call_function_obj_trampoline(
                         _py,
                         effective_func,
-                        effective_args,
-                    )
-                };
-                return unsafe {
-                    crate::call::function::protect_borrowed_args_aliased_return(
-                        _py,
-                        result,
                         effective_args,
                     )
                 };
@@ -1338,8 +1331,6 @@ fn molt_call_func_direct(
         }
     }
     let result = unsafe { molt_guarded_call_dispatch(call_target, args.as_ptr(), args.len()) };
-    let result =
-        unsafe { crate::call::function::protect_borrowed_args_aliased_return(_py, result, args) };
     if obj_from_bits(callable_bits).as_ptr().is_some() {
         frame_stack_pop(_py);
     }
@@ -1563,12 +1554,7 @@ pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 1) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    let result = crate::call::function::call_function_obj1(_py, func_bits, a0);
-                    return crate::call::function::protect_borrowed_args_aliased_return(
-                        _py,
-                        result,
-                        &[a0],
-                    );
+                    return crate::call::function::call_function_obj1(_py, func_bits, a0);
                 }
                 let args = [a0];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -1586,12 +1572,7 @@ pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 2) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    let result = crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
-                    return crate::call::function::protect_borrowed_args_aliased_return(
-                        _py,
-                        result,
-                        &[a0, a1],
-                    );
+                    return crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
                 }
                 let args = [a0, a1];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -1609,13 +1590,7 @@ pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 3) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    let result =
-                        crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
-                    return crate::call::function::protect_borrowed_args_aliased_return(
-                        _py,
-                        result,
-                        &[a0, a1, a2],
-                    );
+                    return crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
                 }
                 let args = [a0, a1, a2];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -1703,7 +1678,8 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
         if let Some(obj_ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(obj_ptr);
-                if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
+                if crate::object::heap_kind_has_class_shape(type_id) || type_id == TYPE_ID_DATACLASS
+                {
                     let class_bits = object_class_bits(obj_ptr);
                     if class_bits != 0
                         && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
@@ -2058,7 +2034,8 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let type_id = unsafe { object_type_id(ptr) };
-        if type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS {
+        if !crate::object::heap_kind_has_class_shape(type_id) && type_id != crate::TYPE_ID_DATACLASS
+        {
             return MoltObject::none().bits();
         }
 
@@ -2106,14 +2083,7 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
                 MoltObject::from_ptr(tuple_ptr).bits()
             }
             (Some(d), None) => d,
-            (None, None) => {
-                // CPython returns self.__dict__ which may be empty {}.
-                let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
-                if dict_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                MoltObject::from_ptr(dict_ptr).bits()
-            }
+            (None, None) => MoltObject::none().bits(),
         }
     })
 }
@@ -2125,57 +2095,32 @@ fn object_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<
     if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
         return None;
     }
-    let class_dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
-    let class_dict_ptr = obj_from_bits(class_dict_bits).as_ptr()?;
-    if unsafe { object_type_id(class_dict_ptr) } != crate::TYPE_ID_DICT {
-        return None;
-    }
-    let offsets_name_bits =
-        crate::builtins::attr::attr_name_bits_from_bytes(_py, b"__molt_field_offsets__")?;
-    let offsets_bits = unsafe { crate::dict_get_in_place(_py, class_dict_ptr, offsets_name_bits) };
-    dec_ref_bits(_py, offsets_name_bits);
-    if exception_pending(_py) {
-        return None;
-    }
-    let offsets_bits = offsets_bits?;
-    let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
-    if unsafe { object_type_id(offsets_ptr) } != crate::TYPE_ID_DICT {
-        return None;
-    }
-
     let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
     if state_ptr.is_null() {
         return None;
     }
     let state_bits = MoltObject::from_ptr(state_ptr).bits();
-    let mut wrote_any = false;
-    let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
-    let mut idx = 0usize;
-    while idx + 1 < pairs.len() {
-        let name_bits = pairs[idx];
-        let offset_bits = pairs[idx + 1];
-        idx += 2;
-        let offset = obj_from_bits(offset_bits).as_int().filter(|&v| v >= 0)?;
-        let value_bits = unsafe { crate::object_field_get_ptr_raw(_py, ptr, offset as usize) };
-        if exception_pending(_py) {
-            dec_ref_bits(_py, state_bits);
-            return None;
-        }
-        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
-            dec_ref_bits(_py, value_bits);
-            continue;
-        }
-        unsafe {
-            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
-        }
-        dec_ref_bits(_py, value_bits);
-        if exception_pending(_py) {
-            dec_ref_bits(_py, state_bits);
-            return None;
-        }
-        wrote_any = true;
+    let mut fields = Vec::new();
+    unsafe {
+        crate::builtins::attr::for_each_object_inline_field_ptr(
+            _py,
+            ptr,
+            class_ptr,
+            &mut |name_bits, _slot, value_bits| {
+                if !crate::builtins::methods::is_missing_bits(_py, value_bits) {
+                    fields.push((name_bits, value_bits));
+                }
+            },
+        );
     }
-    if !wrote_any {
+    for (name_bits, value_bits) in fields.iter().rev().copied() {
+        unsafe { crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits) };
+    }
+    if exception_pending(_py) {
+        dec_ref_bits(_py, state_bits);
+        return None;
+    }
+    if fields.is_empty() {
         dec_ref_bits(_py, state_bits);
         return None;
     }
@@ -2370,7 +2315,9 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
                 let found = match type_id {
-                    TYPE_ID_OBJECT => object_attr_lookup_raw(_py, obj_ptr, name_bits),
+                    type_id if crate::object::heap_kind_has_class_shape(type_id) => {
+                        object_attr_lookup_raw(_py, obj_ptr, name_bits)
+                    }
                     TYPE_ID_DATACLASS => dataclass_attr_lookup_raw(_py, obj_ptr, name_bits),
                     _ => attr_lookup_ptr(_py, obj_ptr, name_bits),
                 };
@@ -2544,7 +2491,7 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
                 let builtins = builtin_classes(_py);
                 let is_dict_subclass =
                     type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
-                let res = if type_id == TYPE_ID_OBJECT || is_dict_subclass {
+                let res = if crate::object::heap_kind_has_class_shape(type_id) || is_dict_subclass {
                     object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
                 } else if type_id == TYPE_ID_DATACLASS {
                     dataclass_setattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name, val_bits)
@@ -2594,7 +2541,7 @@ pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
                 let builtins = builtin_classes(_py);
                 let is_dict_subclass =
                     type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
-                let res = if type_id == TYPE_ID_OBJECT || is_dict_subclass {
+                let res = if crate::object::heap_kind_has_class_shape(type_id) || is_dict_subclass {
                     object_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
                 } else if type_id == TYPE_ID_DATACLASS {
                     dataclass_delattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name)

@@ -49,6 +49,7 @@ unsafe fn classed_attr_lookup_without_dict_inner(
             }
             exception_stack_push();
             let res_bits = call_callable1(_py, call_bits, attr_bits);
+            dec_ref_bits(_py, call_bits);
             if getattr_candidate {
                 traceback_suppress_exit();
             }
@@ -67,6 +68,7 @@ unsafe fn classed_attr_lookup_without_dict_inner(
                         class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), getattr_bits)
                     {
                         let getattr_res = call_callable1(_py, getattr_call_bits, attr_bits);
+                        dec_ref_bits(_py, getattr_call_bits);
                         if exception_pending(_py) {
                             return None;
                         }
@@ -118,6 +120,7 @@ unsafe fn classed_attr_lookup_without_dict_inner(
                 class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), getattr_bits)
         {
             let res_bits = call_callable1(_py, call_bits, attr_bits);
+            dec_ref_bits(_py, call_bits);
             if exception_pending(_py) {
                 return None;
             }
@@ -593,6 +596,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                     }
                     exception_stack_push();
                     let res_bits = call_callable1(_py, call_bits, attr_bits);
+                    dec_ref_bits(_py, call_bits);
                     if getattr_candidate {
                         traceback_suppress_exit();
                     }
@@ -615,6 +619,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                                 getattr_bits,
                             ) {
                                 let getattr_res = call_callable1(_py, getattr_call_bits, attr_bits);
+                                dec_ref_bits(_py, getattr_call_bits);
                                 if exception_pending(_py) {
                                     return None;
                                 }

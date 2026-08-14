@@ -569,9 +569,12 @@ fn prebuilt_direct_refcount_lifetime_witness(bits: u64) {
             .map(|identity| identity.as_handle()),
         Some(bits)
     );
-    assert_eq!(
-        GLOBAL_BRIDGE.runtime_owner_dropped_to_view_hold(bits),
-        Some(false),
+    let release = GLOBAL_BRIDGE
+        .transition_runtime_owner_release(bits, 0, || 2, || {})
+        .expect("managed runtime owner release");
+    assert_eq!(release.previous(), 2);
+    assert!(
+        !release.should_finalize(),
         "direct C reference must retain the canonical view after owner drop"
     );
     let retained = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };

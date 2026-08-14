@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn raw_borrowed_intrinsics_keep_transport_without_callable_publication() {
+    for runtime_name in [
+        "molt_type_of_borrowed",
+        "molt_dict_getitem_borrowed",
+        "molt_list_getitem_borrowed",
+        "molt_tuple_getitem_borrowed",
+    ] {
+        assert!(
+            crate::wasm_abi::wasm_runtime_import(runtime_name).is_some(),
+            "{runtime_name} must retain its direct compiler/C-ABI transport"
+        );
+        assert_eq!(
+            crate::wasm_abi::runtime_callable_import(runtime_name),
+            None,
+            "{runtime_name} must not be published as a Python callable"
+        );
+    }
+}
+
+#[test]
 fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
     let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
     import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());

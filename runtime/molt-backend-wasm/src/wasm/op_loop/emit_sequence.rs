@@ -1,7 +1,7 @@
 use super::super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::super::control_flow::ControlKind;
 use super::WasmFunctionEmitContext;
-use super::call_ops::{CallOpContext, CallOpEmission, emit_call_op};
+use super::call_ops::{CallOpContext, CallOpEmission, CallRetentionLiveness, emit_call_op};
 use super::control_ops::{ControlOpContext, emit_control_op};
 use super::core_runtime_ops::emit_core_runtime_op;
 use super::local_slot_ops::emit_local_slot_op;
@@ -46,26 +46,11 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let arena_local = frame.arena_local();
         let tail_call_count = self.tail_call_count;
 
-        let last_use_local: BTreeMap<String, usize> = {
-            let mut lu = BTreeMap::new();
-            for (i, op) in ops.iter().enumerate() {
-                if let Some(var) = &op.var
-                    && var != "none"
-                {
-                    lu.insert(var.clone(), i);
-                }
-                if let Some(args) = &op.args {
-                    for name in args {
-                        if name != "none" {
-                            lu.insert(name.clone(), i);
-                        }
-                    }
-                }
-            }
-            lu
-        };
-        let (rc_skip_inc, rc_skip_dec) =
-            crate::passes::compute_rc_coalesce_skips(ops, &last_use_local);
+        // Call-boundary retention is a path-local value-epoch fact, unlike RC
+        // coalescing. Build it over the exact plain/jumpful/stateful emission
+        // region so future definitions sharing a physical local cannot retain
+        // stale bits from an already-released SSA value.
+        let call_liveness = CallRetentionLiveness::for_region(ops);
         let mut known_raw_ints: BTreeMap<u32, i64> = BTreeMap::new();
         let mut skip_next = false;
 
@@ -155,11 +140,13 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 tail_call_eligible,
                 arena_local,
                 tail_call_count,
-                ops,
-                last_use_local: &last_use_local,
-                rc_skip_inc: &rc_skip_inc,
-                rc_skip_dec: &rc_skip_dec,
-                rel_idx,
+                // Call-site adjacency remains function-wide even when
+                // stateful/jumpful emission presents one slice at a time.
+                ops: &func_ir.ops,
+                call_liveness: &call_liveness,
+                rc_skip_inc: &self.analysis.rc_skip_inc,
+                rc_skip_dec: &self.analysis.rc_skip_dec,
+                call_live_idx: rel_idx,
                 op_idx,
                 try_stack_is_empty: try_stack.is_empty(),
             };

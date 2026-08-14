@@ -145,7 +145,11 @@ pub fn compute_rc_coalesce_skips(
 
 /// Build a last-use map: for each variable name, the index of the last op that
 /// references it (via `var`, `args`, or `out`).
-fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     let mut last_use = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
         if let Some(var) = &op.var

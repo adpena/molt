@@ -446,33 +446,17 @@ def _build_app_adapter_input(
     arities: tuple[int, ...],
     *,
     target_result_type: int = 0x7E,
-    include_retain_import: bool = True,
 ) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
-    type_payload = bytearray(write_varuint(len(arities) + 1))
+    type_payload = bytearray(write_varuint(len(arities)))
     for arity in arities:
         type_payload.append(0x60)
         type_payload.extend(write_varuint(arity))
         type_payload.extend(bytes([0x7E]) * arity)
         type_payload.extend(write_varuint(1))
         type_payload.append(target_result_type)
-    retain_type_idx = len(arities)
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
-    type_payload.extend(write_varuint(0))
     sections.append((1, bytes(type_payload)))
-
-    import_count = 0
-    if include_retain_import:
-        import_payload = bytearray(write_varuint(1))
-        import_payload.extend(wasm_link._write_string("molt_runtime"))
-        import_payload.extend(wasm_link._write_string("molt_inc_ref_obj"))
-        import_payload.append(0x00)
-        import_payload.extend(write_varuint(retain_type_idx))
-        sections.append((2, bytes(import_payload)))
-        import_count = 1
 
     func_payload = bytearray(write_varuint(len(arities)))
     for type_idx in range(len(arities)):
@@ -483,7 +467,7 @@ def _build_app_adapter_input(
     for index in range(len(arities)):
         export_payload.extend(wasm_link._write_string(f"probe__f{index}"))
         export_payload.append(0x00)
-        export_payload.extend(write_varuint(import_count + index))
+        export_payload.extend(write_varuint(index))
     sections.append((7, bytes(export_payload)))
 
     code_payload = bytearray(write_varuint(len(arities)))
@@ -504,19 +488,11 @@ def _build_app_adapter_input(
     )
     module = wasm_link._build_sections(sections)
     symbols: list[tuple[str, int, int]] = []
-    if include_retain_import:
-        symbols.append(
-            (
-                "molt_inc_ref_obj",
-                0,
-                wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
-            )
-        )
     for index in range(len(arities)):
         symbols.append(
             (
-                f"__molt_output_export_{import_count + index}",
-                import_count + index,
+                f"__molt_output_export_{index}",
+                index,
                 wasm_link.FLAG_BINDING_GLOBAL
                 | wasm_link.FLAG_EXPLICIT_NAME
                 | wasm_link.FLAG_EXPORTED
@@ -592,7 +568,7 @@ def _code_relocations(wasm_bytes: bytes) -> list[tuple[int, int, int]]:
     return []
 
 
-def test_app_export_adapters_sweep_arity_and_owned_result_boundary(
+def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "output.wasm"
@@ -616,20 +592,20 @@ def test_app_export_adapters_sweep_arity_and_owned_result_boundary(
         "probe__f2": f"{prefix}probe__f2",
     }
     exports = wasm_link._collect_function_exports(adapted)
-    assert exports[f"{prefix}probe__f0"] == 4
-    assert exports[f"{prefix}probe__f1"] == 5
-    assert exports[f"{prefix}probe__f2"] == 6
+    assert exports[f"{prefix}probe__f0"] == 3
+    assert exports[f"{prefix}probe__f1"] == 4
+    assert exports[f"{prefix}probe__f2"] == 5
     assert set(adapter_map.values()).issubset(
         parse_wasm_linking_symbols(adapted).defined_names
     )
     assert _defined_function_bodies(adapted)[-3:] == [
-        bytes.fromhex("01017e108180808000220010808080800020000b"),
-        bytes.fromhex("01017e2000108280808000220110808080800020010b"),
-        bytes.fromhex("01017e200020012002108380808000220310808080800020030b"),
+        bytes.fromhex("001080808080000b"),
+        bytes.fromhex("0020001081808080000b"),
+        bytes.fromhex("002000200120021082808080000b"),
     ]
     relocations = _code_relocations(adapted)
-    assert [entry[0] for entry in relocations] == [0] * 6
-    assert [entry[2] for entry in relocations] == [1, 0, 2, 0, 3, 0]
+    assert [entry[0] for entry in relocations] == [0] * 3
+    assert [entry[2] for entry in relocations] == [0, 1, 2]
 
 
 def test_app_export_adapter_validator_replaces_raw_target_identity(
@@ -650,8 +626,8 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
         temp_dir.cleanup()
 
     target_map = {
-        "probe__f0": "__molt_output_export_1",
-        "probe__f1": "__molt_output_export_2",
+        "probe__f0": "__molt_output_export_0",
+        "probe__f1": "__molt_output_export_1",
     }
     with pytest.raises(ValueError, match="points to raw target"):
         wasm_link._validate_app_export_adapters(
@@ -659,7 +635,6 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
             ("probe__f0", "probe__f1"),
             adapter_symbol_map=adapter_map,
             target_symbol_map=target_map,
-            retain_symbol_name="molt_inc_ref_obj",
         )
 
     restored = wasm_link._restore_public_output_exports(adapted, adapter_map)
@@ -668,7 +643,6 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
         ("probe__f0", "probe__f1"),
         adapter_symbol_map=adapter_map,
         target_symbol_map=target_map,
-        retain_symbol_name="molt_inc_ref_obj",
     )
     wasm_link._validate_app_export_adapters(restored, ("probe__f0", "probe__f1"))
     exports = wasm_link._collect_function_exports(restored)
@@ -679,40 +653,6 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
     }
     assert exports["probe__f0"] == symbols[adapter_map["probe__f0"]]
     assert exports["probe__f0"] != symbols[target_map["probe__f0"]]
-
-
-def test_app_export_adapter_validator_accepts_optimizer_parameter_temp(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "output.wasm"
-    output.write_bytes(_build_app_adapter_input((1,)))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
-    try:
-        adapted_path, adapter_map = wasm_link._inject_app_export_adapters(
-            output,
-            temp_dir,
-            public_export_names=("probe__f0",),
-            call_abi=_app_adapter_call_abi(),
-        )
-        adapted = wasm_link._restore_public_output_exports(
-            adapted_path.read_bytes(), adapter_map
-        )
-    finally:
-        temp_dir.cleanup()
-
-    # Binaryen O1 reuses parameter 0 after forwarding it instead of retaining
-    # the generated extra local.  The target -> tee -> retain -> reload dataflow
-    # and both exact call identities remain unchanged.
-    optimized_body = bytes.fromhex("002000108180808000220010808080800020000b")
-    optimized = _replace_defined_function_body(adapted, 1, optimized_body)
-
-    wasm_link._validate_app_export_adapters(
-        optimized,
-        ("probe__f0",),
-        adapter_symbol_map=adapter_map,
-        target_symbol_map={"probe__f0": "__molt_output_export_1"},
-        retain_symbol_name="molt_inc_ref_obj",
-    )
 
 
 def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_call(
@@ -735,25 +675,22 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
         temp_dir.cleanup()
 
     target_map = {
-        "probe__f0": "__molt_output_export_1",
-        "probe__f1": "__molt_output_export_2",
+        "probe__f0": "__molt_output_export_0",
+        "probe__f1": "__molt_output_export_1",
     }
     (
         adapter_identity,
         target_identity,
-        retain_identity,
         identity_exports,
     ) = wasm_link._app_export_identity_maps(
         adapter_map,
         target_map,
-        "molt_inc_ref_obj",
     )
     with_identity = wasm_link._publish_app_export_identity_markers(
         adapted,
         public_export_names=("probe__f0", "probe__f1"),
         adapter_symbol_map=adapter_map,
         target_symbol_map=target_map,
-        retain_symbol_name="molt_inc_ref_obj",
         identity_exports=identity_exports,
     )
     metadata_free = wasm_link.strip_wasm_publication_sections(
@@ -766,15 +703,13 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
         ("probe__f0", "probe__f1"),
         adapter_symbol_map=adapter_identity,
         target_symbol_map=target_identity,
-        retain_symbol_name=retain_identity,
     )
 
-    # Keep the canonical retained-result shape but redirect f0's retain call
-    # from the imported ownership primitive (index 0) to raw target f1 (index 2).
-    # Shape-only validation cannot identify that semantic corruption; the
-    # optimizer-stable identity exports must reject it after metadata removal.
-    wrong_retain = bytes.fromhex("01017e2000108180808000220110828080800020010b")
-    corrupted = _replace_defined_function_body(metadata_free, 2, wrong_retain)
+    # Keep the canonical forwarding shape but redirect f0 from raw target f0
+    # to raw target f1. Shape-only validation cannot identify that semantic
+    # corruption; optimizer-stable identity exports must reject it.
+    wrong_target = bytes.fromhex("0020001081808080000b")
+    corrupted = _replace_defined_function_body(metadata_free, 2, wrong_target)
     wasm_link._validate_app_export_adapters(corrupted, ("probe__f0",))
     with pytest.raises(ValueError, match="does not call"):
         wasm_link._validate_app_export_adapters(
@@ -782,7 +717,6 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
             ("probe__f0", "probe__f1"),
             adapter_symbol_map=adapter_identity,
             target_symbol_map=target_identity,
-            retain_symbol_name=retain_identity,
         )
 
     stripped = wasm_link._strip_app_export_identity_markers(
@@ -795,20 +729,23 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     )
 
 
-def test_app_export_adapters_fail_closed_without_ownership_import(
+def test_app_export_adapters_have_no_ownership_import_dependency(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "output.wasm"
-    output.write_bytes(_build_app_adapter_input((0,), include_retain_import=False))
+    output.write_bytes(_build_app_adapter_input((0,)))
     temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
     try:
-        with pytest.raises(ValueError, match="requires runtime ownership import"):
-            wasm_link._inject_app_export_adapters(
-                output,
-                temp_dir,
-                public_export_names=("probe__f0",),
-                call_abi=_app_adapter_call_abi(),
-            )
+        adapted_path, _adapter_map = wasm_link._inject_app_export_adapters(
+            output,
+            temp_dir,
+            public_export_names=("probe__f0",),
+            call_abi=_app_adapter_call_abi(),
+        )
+        imports = wasm_link._collect_imports(adapted_path.read_bytes())
+        assert all(
+            name != "molt_inc_ref_obj" for _module, name, _kind, _desc in imports
+        )
     finally:
         temp_dir.cleanup()
 
@@ -1277,6 +1214,21 @@ def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> 
         (10, [2]),
         (8, [0, 1]),
     ]
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (wasm_link.CallableTableLayout(0, 0, 2848, 3130), 5978),
+        (wasm_link.CallableTableLayout(1, 81, 2794, 2), 2796),
+        (wasm_link.CallableTableLayout(0, 0, 2848, 0), None),
+    ],
+)
+def test_monolithic_linker_growth_starts_after_compiler_owned_rows(
+    layout: wasm_link.CallableTableLayout,
+    expected: int | None,
+) -> None:
+    assert wasm_link._monolithic_linked_callable_growth_base(layout) == expected
 
 
 def test_monolithic_callable_merge_preserves_realistic_runtime_gap_and_app() -> None:
@@ -5379,31 +5331,21 @@ def test_run_wasm_ld_force_exports_user_module_exports(
 
     sections: list[tuple[int, bytes]] = []
     type_payload = bytearray()
-    type_payload.extend(write_varuint(2))
+    type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
     type_payload.extend(write_varuint(0))
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
-    type_payload.extend(write_varuint(0))
     sections.append((1, bytes(type_payload)))
-    import_payload = bytearray(write_varuint(1))
-    import_payload.extend(wasm_link._write_string("molt_runtime"))
-    import_payload.extend(wasm_link._write_string("molt_inc_ref_obj"))
-    import_payload.append(0x00)
-    import_payload.extend(write_varuint(1))
-    sections.append((2, bytes(import_payload)))
     func_payload = write_varuint(4) + b"".join(write_varuint(0) for _ in range(4))
     sections.append((3, bytes(func_payload)))
     export_payload = bytearray()
     export_payload.extend(write_varuint(4))
     for name, index in (
-        ("main_molt__init", 1),
-        ("main_molt__ocr_tokens", 2),
-        ("main_molt___private_helper", 3),
-        ("molt_main", 4),
+        ("main_molt__init", 0),
+        ("main_molt__ocr_tokens", 1),
+        ("main_molt___private_helper", 2),
+        ("molt_main", 3),
     ):
         export_payload.extend(wasm_link._write_string(name))
         export_payload.append(0x00)
@@ -5420,7 +5362,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
         (
             0,
             wasm_link._build_custom_section(
-                "reloc.CODE", write_varuint(4) + write_varuint(0)
+                "reloc.CODE", write_varuint(3) + write_varuint(0)
             ),
         )
     )
@@ -5432,17 +5374,11 @@ def test_run_wasm_ld_force_exports_user_module_exports(
                 _build_symbol_subsection(
                     [
                         _function_symbol_entry(
-                            flags=wasm_link.FLAG_UNDEFINED
-                            | wasm_link.FLAG_EXPLICIT_NAME,
-                            index=0,
-                            name="molt_inc_ref_obj",
-                        ),
-                        _function_symbol_entry(
                             flags=wasm_link.FLAG_BINDING_GLOBAL
                             | wasm_link.FLAG_EXPLICIT_NAME
                             | wasm_link.FLAG_EXPORTED
                             | wasm_link.FLAG_NO_STRIP,
-                            index=1,
+                            index=0,
                             name="__molt_output_export_0",
                         ),
                         _function_symbol_entry(
@@ -5450,7 +5386,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
                             | wasm_link.FLAG_EXPLICIT_NAME
                             | wasm_link.FLAG_EXPORTED
                             | wasm_link.FLAG_NO_STRIP,
-                            index=2,
+                            index=1,
                             name="__molt_output_export_1",
                         ),
                         _function_symbol_entry(
@@ -5458,7 +5394,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
                             | wasm_link.FLAG_EXPLICIT_NAME
                             | wasm_link.FLAG_EXPORTED
                             | wasm_link.FLAG_NO_STRIP,
-                            index=3,
+                            index=2,
                             name="__molt_output_export_2",
                         ),
                         _function_symbol_entry(
@@ -5466,7 +5402,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
                             | wasm_link.FLAG_EXPLICIT_NAME
                             | wasm_link.FLAG_EXPORTED
                             | wasm_link.FLAG_NO_STRIP,
-                            index=4,
+                            index=3,
                             name="molt_main",
                         ),
                     ]
@@ -5480,7 +5416,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     runtime = tmp_path / "runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_inc_ref_obj"))
+    runtime.write_bytes(_build_exported_runtime_module("runtime_only"))
     output.write_bytes(output_bytes)
     contract_path = _write_app_export_contract(
         tmp_path / "app_export_contract.json",

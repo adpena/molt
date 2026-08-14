@@ -766,7 +766,7 @@ def test_split_runtime_app_exports_host_init(
 
 
 @pytest.mark.slow
-def test_split_runtime_host_export_calls_decode_result_repr(
+def test_split_runtime_host_export_calls_preserve_owned_results(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "host_call_smoke.py"
@@ -780,7 +780,10 @@ def test_split_runtime_host_export_calls_decode_result_repr(
         "def infer(width: int, height: int, rgb: bytes, prompt_ids: list[int], max_new_tokens: int) -> list[int]:\n"
         "    if _state is None:\n"
         "        raise RuntimeError('not initialized')\n"
-        "    return [width, height, len(rgb), max_new_tokens, _state[0], len(_state[1])] + prompt_ids\n",
+        "    return [width, height, len(rgb), max_new_tokens, _state[0], len(_state[1])] + prompt_ids\n"
+        "\n"
+        "def alias(values: list[int]) -> list[int]:\n"
+        "    return values\n",
         encoding="utf-8",
     )
     calls_path = tmp_path / "calls.json"
@@ -804,6 +807,10 @@ def test_split_runtime_host_export_calls_decode_result_repr(
                             {"kind": "list_int", "value": [7, 8, 9]},
                             {"kind": "int", "value": 3},
                         ],
+                    },
+                    {
+                        "export": "host_call_smoke__alias",
+                        "args": [{"kind": "list_int", "value": [4, 5, 6]}],
                     },
                 ]
             }
@@ -829,6 +836,7 @@ def test_split_runtime_host_export_calls_decode_result_repr(
     results = json.loads(run.stdout)
     assert results[0]["result_repr"] == "None"
     assert results[1]["result_repr"] == "[8, 4, 24, 3, 13, 7, 7, 8, 9]"
+    assert results[2]["result_repr"] == "[4, 5, 6]"
 
 
 def test_linked_host_export_attribute_error_does_not_return_none(

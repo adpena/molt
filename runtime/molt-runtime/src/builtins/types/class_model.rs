@@ -387,7 +387,7 @@ pub extern "C" fn molt_type_new(
                     let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
                 }
             }
-            let _ = molt_call_bind(init_bits, builder_bits);
+            crate::call::discard_owned_call_result(_py, molt_call_bind(init_bits, builder_bits));
             dec_ref_bits(_py, init_bits);
             if exception_pending(_py) {
                 if bases_owned {

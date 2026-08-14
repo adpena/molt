@@ -195,6 +195,21 @@ fn trace_exception_rc() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_EXC_RC").as_deref() == Ok("1"))
 }
 
+/// Cached physical-type filter for refcount ownership transitions. Paired with
+/// `MOLT_TRACE_GC_TYPE`, this exposes the producer/consumer ledger and the
+/// collector's internal-edge deductions for any generated heap kind without a
+/// type-specific diagnostic lane or a hot-path environment lookup.
+#[inline]
+fn trace_rc_type_filter() -> Option<u32> {
+    static TYPE_ID: OnceLock<Option<u32>> = OnceLock::new();
+    *TYPE_ID.get_or_init(|| {
+        std::env::var("MOLT_TRACE_RC_TYPE")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|&type_id| is_valid_heap_type_id(type_id))
+    })
+}
+
 #[inline]
 fn trace_decref_zero_function_all() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -352,14 +367,50 @@ impl MoltHeader {
         }
     }
 
+    /// Retain an externally owned runtime edge and update a canonical ABI-view
+    /// bias in the same bridge transaction. `flags` must be a synchronized
+    /// snapshot taken while the caller's existing owner keeps the header live.
+    #[inline(always)]
+    pub(crate) fn retain_owned_mirrored(
+        &self,
+        bits: u64,
+        count: usize,
+        label: &str,
+        flags: u32,
+    ) -> u32 {
+        if flags & HEADER_FLAG_IMMORTAL != 0 {
+            return self.ref_count.snapshot_owned();
+        }
+        if flags & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+            return self.retain_owned(count, label);
+        }
+        let internal_pins = u32::from(flags & HEADER_FLAG_GC_PINNED != 0);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .transition_runtime_owner_add(bits, true, internal_pins, || {
+                Some(self.retain_owned(count, label))
+            })
+            .unwrap_or_else(|| {
+                eprintln!("molt fatal: canonical ABI view disappeared during owned retain");
+                std::process::abort();
+            })
+    }
+
     /// Upgrade registry custody to one ordinary owner only while the object is live.
     #[inline(always)]
     pub(crate) fn try_retain_live(&self) -> bool {
-        if self.has_flag(HEADER_FLAG_DEALLOCATING | HEADER_FLAG_IMMORTAL) {
-            return false;
+        self.try_retain_live_previous().is_some()
+    }
+
+    /// Checked registry upgrade with the exact pre-increment count for mirrored
+    /// ABI-view ownership transitions.
+    #[inline(always)]
+    pub(crate) fn try_retain_live_previous(&self) -> Option<u32> {
+        const REJECTED: u32 = HEADER_FLAG_REVIVAL_WINDOW | HEADER_FLAG_DEALLOCATING;
+        if self.has_flag(REJECTED | HEADER_FLAG_IMMORTAL) {
+            return None;
         }
         self.ref_count
-            .try_retain_live(|| self.has_flag(HEADER_FLAG_DEALLOCATING))
+            .try_retain_live_previous(|| self.has_flag(REJECTED))
     }
 
     /// Release one owned reference. A terminal result carries the acquire
@@ -422,6 +473,13 @@ impl MoltHeader {
         has_stable_view_hold: bool,
     ) -> RefCountRevivalWindow<'_> {
         let expected = u32::from(has_stable_view_hold);
+        // Publish the non-upgradeable lifecycle state before exposing the
+        // internal rc pin. A registry reader can therefore never mistake the
+        // finalizer/weakref window for an ordinary live owner.
+        if self.fetch_or_flags(HEADER_FLAG_REVIVAL_WINDOW) & HEADER_FLAG_REVIVAL_WINDOW != 0 {
+            eprintln!("molt fatal: object opened a nested revival window");
+            std::process::abort();
+        }
         match self.ref_count.open_revival_window(has_stable_view_hold) {
             Ok(baseline) => baseline,
             Err(previous) => {
@@ -436,7 +494,7 @@ impl MoltHeader {
     #[inline(always)]
     pub(crate) fn close_revival_window(&self, window: RefCountRevivalWindow<'_>) -> u32 {
         let expected = window.baseline();
-        match window.close() {
+        let previous = match window.close() {
             Ok(previous) => previous,
             Err(actual) => {
                 eprintln!(
@@ -444,7 +502,12 @@ impl MoltHeader {
                 );
                 std::process::abort();
             }
+        };
+        if self.fetch_and_flags(!HEADER_FLAG_REVIVAL_WINDOW) & HEADER_FLAG_REVIVAL_WINDOW == 0 {
+            eprintln!("molt fatal: object closed a missing revival window");
+            std::process::abort();
         }
+        previous
     }
 }
 
@@ -883,6 +946,10 @@ pub(crate) const NEWLINE_KIND_CR: u8 = 1 << 1;
 pub(crate) const NEWLINE_KIND_CRLF: u8 = 1 << 2;
 
 pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = molt_codegen_abi::HEADER_FLAG_HAS_PTRS;
+/// Transient internal finalizer/weakref pin. Non-owning registries must not
+/// upgrade this pin into an external owner; ordinary owned resurrection remains
+/// legal until death commits with `DEALLOCATING`.
+pub(crate) const HEADER_FLAG_REVIVAL_WINDOW: u32 = 1 << 1;
 pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
 pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
@@ -963,8 +1030,9 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 31] = [
+const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_HAS_PTRS,
+    HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_GEN_RUNNING,
     HEADER_FLAG_GEN_STARTED,
     HEADER_FLAG_SPAWN_RETAIN,
@@ -1203,6 +1271,14 @@ pub(crate) unsafe fn class_instance_type_id(class_ptr: *mut u8) -> u32 {
     } else {
         encoded as u32
     }
+}
+
+/// Whether this heap kind uses the shared Python class/slot/dict instance
+/// layout. Attribute and lifetime consumers must query this generated policy
+/// instead of re-listing individual physical type IDs.
+#[inline]
+pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
+    heap_shape_policy(type_id) == Some(HeapShapePolicy::Class)
 }
 
 pub(crate) unsafe fn class_set_instance_type_id(class_ptr: *mut u8, type_id: u32) -> bool {
@@ -2166,9 +2242,11 @@ pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
-        // Only `TYPE_ID_OBJECT` instances reserve a trailing `__dict__` slot in their payload.
-        // Calling this on other builtins (int/str/tuple/etc.) is UB (and can misalign).
-        if object_type_id(ptr) != TYPE_ID_OBJECT {
+        // Every generated class-shaped heap kind reserves the trailing managed
+        // `__dict__` word in its instance payload. Physical heap IDs must not
+        // reclassify that shared shape: doing so strands subtype dictionaries
+        // outside attribute lookup, GC traversal, and cycle clearing.
+        if !heap_kind_has_class_shape(object_type_id(ptr)) {
             return std::ptr::null_mut();
         }
         let payload = object_payload_size(ptr);
@@ -2803,10 +2881,11 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             );
             std::process::abort();
         }
-        if (*header_ptr).has_flag(HEADER_FLAG_IMMORTAL) {
+        let header_flags = (*header_ptr).load_synchronized_flags();
+        if header_flags & HEADER_FLAG_IMMORTAL != 0 {
             return;
         }
-        if (*header_ptr).has_flag(HEADER_FLAG_DEALLOCATING) {
+        if header_flags & HEADER_FLAG_DEALLOCATING != 0 {
             eprintln!("molt fatal: owned INCREF attempted after terminal death");
             std::process::abort();
         }
@@ -2824,12 +2903,23 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             let old = (*header_ptr).owned_ref_count_snapshot();
             eprintln!("EXC_RC_INC ptr=0x{:x} {}→{}", ptr as usize, old, old + 1);
         }
-        let previous = (*header_ptr).retain_owned(1, "inc_ref_ptr");
-        let new_count = previous + 1;
-        if previous == 1 && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-            let bits = MoltObject::from_ptr(ptr).bits();
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
+        if trace_rc_type_filter() == Some(type_id) {
+            let old = (*header_ptr).owned_ref_count_snapshot();
+            eprintln!(
+                "MOLT_RC_INC type={} ptr=0x{:x} {}→{}",
+                type_id,
+                ptr as usize,
+                old,
+                old + 1
+            );
         }
+        let previous = (*header_ptr).retain_owned_mirrored(
+            MoltObject::from_ptr(ptr).bits(),
+            1,
+            "inc_ref_ptr",
+            header_flags,
+        );
+        let new_count = previous + 1;
         if debug_rc_object() {
             let header = &*header_ptr;
             if header.type_id == TYPE_ID_OBJECT && object_class_edge_is_borrowed(ptr) {
@@ -2871,18 +2961,26 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
             );
             std::process::abort();
         }
-        if (*header_ptr).has_flag(HEADER_FLAG_IMMORTAL) {
+        let header_flags = (*header_ptr).load_synchronized_flags();
+        if header_flags & HEADER_FLAG_IMMORTAL != 0 {
             return;
         }
-        if (*header_ptr).has_flag(HEADER_FLAG_DEALLOCATING) {
+        if header_flags & HEADER_FLAG_DEALLOCATING != 0 {
             eprintln!("molt fatal: owned batched INCREF attempted after terminal death");
             std::process::abort();
         }
-        let previous = (*header_ptr).retain_owned(count as usize, "inc_ref_n_ptr");
+        let previous = (*header_ptr).retain_owned_mirrored(
+            MoltObject::from_ptr(ptr).bits(),
+            count as usize,
+            "inc_ref_n_ptr",
+            header_flags,
+        );
         let new_count = previous + count;
-        if previous == 1 && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-            let bits = MoltObject::from_ptr(ptr).bits();
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
+        if trace_rc_type_filter() == Some(type_id) {
+            eprintln!(
+                "MOLT_RC_INC_N type={} ptr=0x{:x} {}→{} by={}",
+                type_id, ptr as usize, previous, new_count, count
+            );
         }
         if debug_rc_object() {
             let header = &*header_ptr;
@@ -3330,10 +3428,36 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
         // Do not make dec_ref idempotent: a stale post-free pointer may already
         // alias allocator metadata or a different object, so continuing would
         // corrupt unrelated runtime state.
-        let release = (*header_ptr).release_owned("dec_ref_ptr");
-        let prev = release.previous();
+        let (prev, should_finalize) = if header_flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let internal_pins = u32::from(header_flags & HEADER_FLAG_GC_PINNED != 0);
+            let transition = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .transition_runtime_owner_release(
+                    bits,
+                    internal_pins,
+                    || (*header_ptr).release_owned("dec_ref_ptr").previous(),
+                    || (*header_ptr).restore_stable_view_hold(),
+                )
+                .unwrap_or_else(|| {
+                    eprintln!("molt fatal: canonical ABI view disappeared during owner release");
+                    std::process::abort();
+                });
+            (transition.previous(), transition.should_finalize())
+        } else {
+            let release = (*header_ptr).release_owned("dec_ref_ptr");
+            (release.previous(), release.reached_zero())
+        };
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
             eprintln!("EXC_RC_DEC ptr=0x{:x} {}→{}", ptr as usize, prev, prev - 1);
+        }
+        if trace_rc_type_filter() == Some(type_id) {
+            eprintln!(
+                "MOLT_RC_DEC type={} ptr=0x{:x} {}→{}",
+                type_id,
+                ptr as usize,
+                prev,
+                prev.saturating_sub(1)
+            );
         }
         if type_id == TYPE_ID_OBJECT && debug_object_rc() {
             if prev == 1 {
@@ -3373,32 +3497,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 prev.saturating_sub(1)
             );
         }
-        let view_hold_is_final = if prev == 2 && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-            let bits = MoltObject::from_ptr(ptr).bits();
-            match molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_dropped_to_view_hold(bits) {
-                Some(true) => {
-                    // Keep the stable view hold. A distinct revival pin is
-                    // added only if arbitrary finalizer/weakref code will run.
-                    true
-                }
-                Some(false) => return,
-                None => false,
-            }
-        } else {
-            false
-        };
-        if prev == 1 && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-            let may_finalize = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .runtime_last_ref_dropped(MoltObject::from_ptr(ptr).bits());
-            // Restore the stable view hold that this terminal decrement is
-            // attempting to consume. Finalization owns a distinct pin above
-            // it; direct C roots retain the restored hold without entering.
-            (*header_ptr).restore_stable_view_hold();
-            if !may_finalize {
-                return;
-            }
-        }
-        if release.reached_zero() || view_hold_is_final {
+        if should_finalize {
             if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
                 eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
             }
@@ -4455,14 +4554,20 @@ mod tests {
 
         let ordinary_revival = refcount_header(0, 0);
         let ordinary_window = ordinary_revival.open_revival_window(false);
+        assert!(ordinary_revival.has_flag(super::HEADER_FLAG_REVIVAL_WINDOW));
+        assert!(!ordinary_revival.try_retain_live());
         assert_eq!(ordinary_window.baseline(), 1);
         assert_eq!(ordinary_revival.close_revival_window(ordinary_window), 1);
+        assert!(!ordinary_revival.has_flag(super::HEADER_FLAG_REVIVAL_WINDOW));
         assert_eq!(ordinary_revival.ref_count_snapshot(), 0);
 
         let view_revival = refcount_header(1, 0);
         let view_window = view_revival.open_revival_window(true);
+        assert!(view_revival.has_flag(super::HEADER_FLAG_REVIVAL_WINDOW));
+        assert!(!view_revival.try_retain_live());
         assert_eq!(view_window.baseline(), 2);
         assert_eq!(view_revival.close_revival_window(view_window), 2);
+        assert!(!view_revival.has_flag(super::HEADER_FLAG_REVIVAL_WINDOW));
         assert_eq!(view_revival.ref_count_snapshot(), 1);
     }
 

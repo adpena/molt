@@ -14,7 +14,6 @@ mod trampoline_emit;
 
 use crate::SimpleIR;
 use crate::TrampolineSpec;
-use crate::passes::ReturnAliasSummary;
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
 use crate::wasm_data::DataSegmentRef;
@@ -77,13 +76,11 @@ impl WasmCallableTablePlan {
         &'a self,
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
-        return_alias_summaries: &'a BTreeMap<String, ReturnAliasSummary>,
     ) -> WasmCallableCallSiteAbi<'a> {
         WasmCallableCallSiteAbi::from_table_plan(
             self,
             escaped_callable_targets,
             call_func_spill_offset,
-            return_alias_summaries,
         )
     }
 

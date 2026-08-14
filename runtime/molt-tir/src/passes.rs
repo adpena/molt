@@ -50,7 +50,9 @@ pub use self::profile_order::apply_profile_order;
 pub use self::purity::{
     SimpleIrScalarPurityFacts, simple_ir_op_is_provably_nonthrowing_with_facts,
 };
-pub use self::rc_coalescing::{build_const_int_map, compute_rc_coalesce_skips, rc_coalescing};
+pub use self::rc_coalescing::{
+    build_const_int_map, build_last_use_map, compute_rc_coalesce_skips, rc_coalescing,
+};
 pub use self::runtime_exit::inject_runtime_exit;
 pub use self::split_field_deforestation::deforest_split_field_reads;
 pub use self::stateful_loops::rewrite_stateful_loops;

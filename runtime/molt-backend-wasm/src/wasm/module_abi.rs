@@ -26,7 +26,7 @@ use type_layout::WasmModuleTypeLayout;
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
-        mut ir: SimpleIR,
+        ir: SimpleIR,
         lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
     ) -> WasmCompileOutput {
@@ -98,16 +98,10 @@ impl WasmBackend {
         callable_table.validate_ir_call_target_closure(&ir);
 
         let import_ids = self.import_ids.clone();
-        let return_alias_summaries = super::compile_pipeline::with_defined_function_bodies(
-            &mut ir.functions,
-            |defined_functions| crate::passes::compute_return_alias_summaries(defined_functions),
-        );
-
         let compile_ctx = CompileFuncContext {
             call_site_abi: callable_table.call_site_abi(
                 &escaped_callable_targets,
                 host_surface.call_func_spill_offset,
-                &return_alias_summaries,
             ),
             import_ids: &import_ids,
             native_callable_imports: &native_callable_imports,

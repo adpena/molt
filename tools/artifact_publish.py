@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Callable
@@ -10,11 +12,36 @@ from typing import Any
 from pathlib import Path
 
 
-def staged_output_path(final: Path, *, root: Path | None = None) -> Path:
-    """Return a same-directory hidden staging path for a final artifact."""
+_STAGING_PURPOSE_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def staged_output_path(
+    final: Path,
+    *,
+    root: Path | None = None,
+    purpose: str = "stage",
+    suffix: str = ".tmp",
+) -> Path:
+    """Return a bounded same-directory staging path for a final artifact.
+
+    Final artifact names may already approach the Windows component/path limits.
+    Embedding that name again in a temporary component recursively amplifies the
+    path and makes otherwise-valid publications fail before their external tool
+    can start.  One digest-keyed authority keeps every staging and backup
+    component bounded while preserving same-filesystem atomic replacement.
+    """
     stage_root = final.parent if root is None else root
     stage_root.mkdir(parents=True, exist_ok=True)
-    return stage_root / f".{final.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    normalized_purpose = _STAGING_PURPOSE_RE.sub(
+        "-", purpose.strip().casefold()
+    ).strip("-")
+    if not normalized_purpose:
+        normalized_purpose = "stage"
+    normalized_purpose = normalized_purpose[:16]
+    identity = hashlib.sha256(os.fsencode(str(final))).hexdigest()[:12]
+    return stage_root / (
+        f".{normalized_purpose}-{identity}-{uuid.uuid4().hex}{suffix}"
+    )
 
 
 def fsync_parent(path: Path) -> None:
@@ -110,8 +137,10 @@ def publish_validated_outputs(pairs: list[tuple[Path, Path]]) -> None:
             final.parent.mkdir(parents=True, exist_ok=True)
             backup: Path | None = None
             if final.exists() or final.is_symlink():
-                backup = final.with_name(
-                    f".{final.name}.{os.getpid()}.{uuid.uuid4().hex}.old"
+                backup = staged_output_path(
+                    final,
+                    purpose="backup",
+                    suffix=".old",
                 )
                 os.replace(final, backup)
                 backups.append((final, backup))

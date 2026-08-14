@@ -5,16 +5,18 @@ use crate::wasm::constant_ops::emit_seeded_runtime_const_op;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
+use std::fmt::Write as _;
 use wasm_encoder::{Function, Instruction};
 
 impl WasmFunctionFrame {
-    pub(in crate::wasm) fn emit_debug_local_map(&self, func_ir: &FunctionIR) {
-        if std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok().as_deref()
-            != Some(func_ir.name.as_str())
-        {
+    pub(in crate::wasm) fn emit_debug_local_map(&self, func_ir: &FunctionIR, func_index: u32) {
+        let Some(filter) = std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok() else {
+            return;
+        };
+        if filter != "1" && !func_ir.name.contains(&filter) {
             return;
         }
-        eprintln!("WASM_DEBUG_FUNC {}", func_ir.name);
+        let mut dump = format!("WASM_DEBUG_FUNC {} index={func_index}\n", func_ir.name);
         for (idx, op) in func_ir.ops.iter().enumerate() {
             let mut mentioned: Vec<String> = Vec::new();
             if let Some(args) = &op.args {
@@ -32,11 +34,25 @@ impl WasmFunctionFrame {
                 .into_iter()
                 .filter_map(|name| self.locals.get(&name).map(|slot| format!("{name}->{slot}")))
                 .collect();
-            eprintln!(
+            let _ = writeln!(
+                dump,
                 "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?}",
                 idx, op.kind, op.var, op.out, op.args, mapped
             );
         }
+        eprint!("{dump}");
+        let sanitized: String = func_ir
+            .name
+            .chars()
+            .map(|ch| match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => ch,
+                _ => '_',
+            })
+            .collect();
+        let _ = crate::debug_artifacts::write_debug_artifact(
+            format!("wasm/locals/{sanitized}.log"),
+            &dump,
+        );
     }
 
     pub(in crate::wasm) fn emit_dispatch_seed_initializers(

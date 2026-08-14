@@ -3,7 +3,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
+from molt.compat import CompatibilityError
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend._types import BUILTIN_FUNC_SPECS, _builtin_func_abi_arity
 
@@ -463,16 +466,10 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
 
 
 def test_async_with_serializes_metadata_region_as_label_valued_handler_entry() -> None:
-    source = (
-        "async def f(cm):\n"
-        "    async with cm:\n"
-        "        return 1\n"
-    )
+    source = "async def f(cm):\n    async with cm:\n        return 1\n"
     ir = compile_to_tir(source)
     poll_ops = next(
-        func["ops"]
-        for func in ir["functions"]
-        if func["name"].endswith("__f_poll")
+        func["ops"] for func in ir["functions"] if func["name"].endswith("__f_poll")
     )
     starts = [op for op in poll_ops if op.get("kind") == "try_start"]
     assert starts
@@ -480,11 +477,7 @@ def test_async_with_serializes_metadata_region_as_label_valued_handler_entry() -
     assert None not in labels
     assert all(isinstance(label, int) for label in labels)
     assert labels.issubset(
-        {
-            op.get("value")
-            for op in poll_ops
-            if op.get("kind") == "try_end"
-        }
+        {op.get("value") for op in poll_ops if op.get("kind") == "try_end"}
     )
 
 
@@ -706,6 +699,19 @@ def test_local_warnings_intrinsic_wrapper_lowers_known_intrinsic() -> None:
     assert _has_builtin_func(source, "molt_getargv")
 
 
+def test_local_callable_guard_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "def _require_callable_intrinsic(name: str):\n"
+        "    value = _require_intrinsic(name)\n"
+        "    if not callable(value):\n"
+        "        raise RuntimeError(f'{name} intrinsic unavailable')\n"
+        "    return value\n"
+        "_HOOK = _require_callable_intrinsic('molt_gc_collect')\n"
+    )
+    assert _has_builtin_func(source, "molt_gc_collect")
+
+
 def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
     source = (
         "def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):\n"
@@ -724,6 +730,26 @@ def test_intrinsic_require_lowers_to_public_runtime_symbol() -> None:
     assert not _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
     assert _has_builtin_func(source, "molt_async_sleep")
     assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
+
+
+@pytest.mark.parametrize(
+    "runtime_name",
+    [
+        "molt_type_of_borrowed",
+        "molt_dict_getitem_borrowed",
+        "molt_list_getitem_borrowed",
+        "molt_tuple_getitem_borrowed",
+    ],
+)
+def test_raw_borrowed_intrinsic_cannot_be_published_as_callable(
+    runtime_name: str,
+) -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        f"_HOOK = _require_intrinsic({runtime_name!r})\n"
+    )
+    with pytest.raises(CompatibilityError, match="raw non-callable ABI"):
+        compile_to_tir(source)
 
 
 def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
@@ -2102,11 +2128,7 @@ def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
     ), (
         "expected globals-escaped class constructor to lower via call_bind on the class object"
     )
-    assert all(
-        op.get("kind")
-        not in {"alloc_class"}
-        for op in main_ops
-    ), (
+    assert all(op.get("kind") not in {"alloc_class"} for op in main_ops), (
         "globals-escaped class constructor should not lower via synthetic object allocation"
     )
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
