@@ -18,7 +18,7 @@ from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
 )
-from tools.proof_queue_pkg import command_envelope
+from tools.proof_queue_pkg import command_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -399,7 +399,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             command = json.loads(str(command_json))
             if not isinstance(command, list):
                 raise ValueError(f"proof run {run_id!r} command is not a list")
-            authority = command_envelope.admission_envelope(
+            authority = command_admission.admission_envelope(
                 [str(value) for value in command]
             )
             conn.execute(

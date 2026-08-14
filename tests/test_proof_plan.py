@@ -14,7 +14,7 @@ import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tools import check_subprocess_guard_coverage, gen_proof_plan, proof_plan
-from tools.proof_queue_pkg import command_envelope as proof_command_envelope
+from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 
@@ -32,18 +32,38 @@ def _sealed_terminal_context(
             "postcompletion": toolchains,
             "identical": True,
         }
+    envelope = context.get("command_envelope")
+    process_closure = (
+        envelope.get("process_closure") if isinstance(envelope, dict) else None
+    )
+    if (
+        sys.platform == "win32"
+        and isinstance(process_closure, dict)
+        and process_closure.get("descendants") == "declared-toolchains"
+    ):
+        platform_images = [
+            {
+                "path": sys.executable,
+                "sha256": hashlib.sha256(sys.executable.encode()).hexdigest(),
+            }
+        ]
+        context["platform_process_custody"] = {
+            "prelaunch": platform_images,
+            "postcompletion_sha256": (
+                supervisor_custody._canonical_payload_sha256(platform_images)
+            ),
+            "identical": True,
+        }
     context.update(
         {
             "run_id": run_id,
             "execution_nonce_sha256": "9" * 64,
         }
     )
-    context["terminal_evidence_sha256"] = (
-        proof_command_envelope.terminal_evidence_sha256(
-            context,
-            run_id=run_id,
-            returncode=0,
-        )
+    context["terminal_evidence_sha256"] = supervisor_custody.terminal_evidence_sha256(
+        context,
+        run_id=run_id,
+        returncode=0,
     )
     return context
 
@@ -1642,7 +1662,7 @@ def test_heavy_queue_projects_the_same_receipt_schema(
     summary = tmp_path / "summary.json"
     summary.write_text(json.dumps({"peak_total": {"rss_kb": 64}}), encoding="utf-8")
     command = ["cargo", "test"]
-    envelope = proof_command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     toolchains = {
         name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
         for name in envelope["toolchains"]
@@ -1704,7 +1724,7 @@ def test_heavy_queue_projects_the_same_receipt_schema(
 
 def test_heavy_queue_reuses_persisted_execution_receipt_context() -> None:
     command = ["cargo", "test"]
-    envelope = proof_command_envelope.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(command)
     toolchains = {
         name: {"identity_sha256": hashlib.sha256(name.encode()).hexdigest()}
         for name in envelope["toolchains"]
