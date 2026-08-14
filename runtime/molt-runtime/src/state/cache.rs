@@ -496,6 +496,7 @@ define_method_cache! {
     weakref_init,
     weakref_call,
     weakref_eq,
+    weakref_ne,
     weakref_repr,
     weakref_hash,
     object_dir,

@@ -2363,7 +2363,7 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
             if type_id == TYPE_ID_FILE_HANDLE {
                 return true;
             }
-            if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
+            if crate::object::heap_kind_has_class_shape(type_id) || type_id == TYPE_ID_DATACLASS {
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__bool__") {
                     let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, name_bits);
                     dec_ref_bits(_py, name_bits);

@@ -1187,6 +1187,28 @@ enum BridgeLifecycle {
     FinalizingPin,
 }
 
+/// Result of one header release linearized with its canonical ABI-view
+/// lifecycle. `should_finalize` means the bridge has already published the
+/// `FinalizingPin` gate, so no later non-owning runtime upgrade can reopen the
+/// view-hold-only baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeOwnerRelease {
+    previous: u32,
+    should_finalize: bool,
+}
+
+impl RuntimeOwnerRelease {
+    #[inline]
+    pub const fn previous(self) -> u32 {
+        self.previous
+    }
+
+    #[inline]
+    pub const fn should_finalize(self) -> bool {
+        self.should_finalize
+    }
+}
+
 impl BridgeLifecycle {
     #[inline]
     fn has_c_bias(self) -> bool {
@@ -4103,6 +4125,11 @@ impl ObjectBridge {
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;
                 return ManagedDecref::Alive;
             }
+            // Publish the terminal handoff before returning to the runtime
+            // header release. Checked non-owning upgrades lock this same entry
+            // and must not slip between the C-zero verdict and that release.
+            unsafe { (*ptr).ob_refcnt = 1 };
+            entry.lifecycle = BridgeLifecycle::FinalizingPin;
             return ManagedDecref::ReleaseRuntimeHold(bits);
         }
     }
@@ -4279,69 +4306,154 @@ impl ObjectBridge {
         Some(RetiredRuntimeView { entry: Some(entry) })
     }
 
-    /// Called after a runtime decrement leaves only the view's strong hold.
-    /// `Some(true)` means the internal C bias was the last C reference and the
-    /// caller must consume the view hold as the final runtime reference.
-    /// `Some(false)` retains the view for direct CPython C references.
-    pub fn runtime_owner_dropped_to_view_hold(&self, bits: AbiHandle) -> Option<bool> {
+    /// Add one runtime owner while holding the canonical ABI-view lifecycle
+    /// lock. The supplied header transition therefore cannot race the mirrored
+    /// `RuntimeOwned <-> ViewHoldOnly` bias or the `FinalizingPin` terminal gate.
+    /// Non-owning callers pass `allow_finalizing = false`; ordinary owned
+    /// resurrection inside Python finalizer code passes `true`.
+    pub fn transition_runtime_owner_add<F>(
+        &self,
+        bits: AbiHandle,
+        allow_finalizing: bool,
+        internal_pins: u32,
+        retain: F,
+    ) -> Option<u32>
+    where
+        F: FnOnce() -> Option<u32>,
+    {
         let addr = {
             let handle = self.handle_shard(bits).lock();
             let entry = handle.to_py.get(&bits)?;
             entry.view.py_obj().addr()
         };
-        let (address, mut handle) = self.lock_address_then_handle(addr, bits);
+        let (_address, mut handle) = self.lock_address_then_handle(addr, bits);
         let entry = handle.to_py.get_mut(&bits)?;
-        match entry.lifecycle {
-            BridgeLifecycle::FinalizingPin => return Some(false),
-            BridgeLifecycle::ViewHoldOnly => {
+        if entry.lifecycle == BridgeLifecycle::FinalizingPin && !allow_finalizing {
+            return None;
+        }
+        let previous = retain()?;
+        let semantic_previous = previous.checked_sub(internal_pins).unwrap_or_else(|| {
+            eprintln!(
+                "molt fatal: ABI runtime-owner add underflow previous={previous} internal_pins={internal_pins}"
+            );
+            std::process::abort();
+        });
+        match (semantic_previous, entry.lifecycle) {
+            (1, BridgeLifecycle::ViewHoldOnly) => {
+                let py_obj = entry.view.py_obj();
+                let refs = unsafe { (*py_obj).ob_refcnt };
+                let Some(with_bias) = checked_c_ref_increment(refs) else {
+                    abort_refcount_invariant("runtime owner add", refs, entry.lifecycle);
+                };
+                unsafe { (*py_obj).ob_refcnt = with_bias };
+                entry.lifecycle = BridgeLifecycle::RuntimeOwned;
+            }
+            (_, BridgeLifecycle::ViewHoldOnly) => {
                 eprintln!(
-                    "molt fatal: canonical ABI view lost runtime-owner bias before owner drop"
+                    "molt fatal: view-hold-only ABI lifecycle had multiple runtime owners before add"
                 );
                 std::process::abort();
             }
-            BridgeLifecycle::RuntimeOwned => {}
+            (_, BridgeLifecycle::RuntimeOwned | BridgeLifecycle::FinalizingPin) => {}
         }
-        let py_obj = entry.view.py_obj();
-        let refs = unsafe { (*py_obj).ob_refcnt };
-        let Some(remaining) = checked_c_refs_without_bias(refs, true) else {
-            abort_refcount_invariant("runtime owner drop", refs, entry.lifecycle);
-        };
-        unsafe { (*py_obj).ob_refcnt = remaining };
-        entry.lifecycle = BridgeLifecycle::ViewHoldOnly;
-        if remaining != 0 {
-            return Some(false);
-        }
-        drop(handle);
-        drop(address);
-        Some(true)
+        Some(previous)
     }
-}
 
-// Runtime-owner transitions, finalization pins, GC adjustments, and zero-ref classification.
-impl ObjectBridge {
-    /// Resolve the runtime's last-reference transition while preserving the
-    /// canonical view through finalization. Any still-attached runtime bias is
-    /// detached first. `false` means direct C references retain the view hold;
-    /// `true` means the caller may consume that hold and enter finalization.
-    pub fn runtime_last_ref_dropped(&self, bits: AbiHandle) -> bool {
-        let mut handle = self.handle_shard(bits).lock();
-        let Some(entry) = handle.to_py.get_mut(&bits) else {
-            return true;
+    /// Release one runtime owner as the inverse transaction. A terminal result
+    /// publishes `FinalizingPin` before either bridge lock is released; checked
+    /// weakref retention consequently rejects the stable view baseline before
+    /// the runtime exposes its internal revival pin.
+    pub fn transition_runtime_owner_release<F, R>(
+        &self,
+        bits: AbiHandle,
+        internal_pins: u32,
+        release: F,
+        restore_stable_view_hold: R,
+    ) -> Option<RuntimeOwnerRelease>
+    where
+        F: FnOnce() -> u32,
+        R: FnOnce(),
+    {
+        let addr = {
+            let handle = self.handle_shard(bits).lock();
+            let entry = handle.to_py.get(&bits)?;
+            entry.view.py_obj().addr()
         };
-        let py_obj = entry.view.py_obj();
-        match entry.lifecycle {
-            BridgeLifecycle::FinalizingPin => return false,
-            BridgeLifecycle::RuntimeOwned => {
-                let refs = unsafe { (*py_obj).ob_refcnt };
-                let Some(remaining) = checked_c_refs_without_bias(refs, true) else {
-                    abort_refcount_invariant("last runtime reference drop", refs, entry.lifecycle);
-                };
-                unsafe { (*py_obj).ob_refcnt = remaining };
-                entry.lifecycle = BridgeLifecycle::ViewHoldOnly;
+        let (_address, mut handle) = self.lock_address_then_handle(addr, bits);
+        let entry = handle.to_py.get_mut(&bits)?;
+        let previous = release();
+        let semantic_previous = previous.checked_sub(internal_pins).unwrap_or_else(|| {
+            eprintln!(
+                "molt fatal: ABI runtime-owner release underflow previous={previous} internal_pins={internal_pins}"
+            );
+            std::process::abort();
+        });
+        if semantic_previous > 2 {
+            if entry.lifecycle == BridgeLifecycle::ViewHoldOnly {
+                eprintln!("molt fatal: view-hold-only ABI lifecycle retained multiple owners");
+                std::process::abort();
             }
-            BridgeLifecycle::ViewHoldOnly => {}
+            return Some(RuntimeOwnerRelease {
+                previous,
+                should_finalize: false,
+            });
         }
-        unsafe { (*py_obj).ob_refcnt == 0 }
+        let py_obj = entry.view.py_obj();
+        if semantic_previous == 2 {
+            match entry.lifecycle {
+                BridgeLifecycle::FinalizingPin => {
+                    return Some(RuntimeOwnerRelease {
+                        previous,
+                        should_finalize: false,
+                    });
+                }
+                BridgeLifecycle::ViewHoldOnly => {
+                    eprintln!(
+                        "molt fatal: canonical ABI view lost runtime-owner bias before owner drop"
+                    );
+                    std::process::abort();
+                }
+                BridgeLifecycle::RuntimeOwned => {}
+            }
+        } else {
+            if semantic_previous != 1 {
+                eprintln!(
+                    "molt fatal: invalid stable-view runtime release previous={previous} internal_pins={internal_pins} lifecycle={:?}",
+                    entry.lifecycle
+                );
+                std::process::abort();
+            }
+            if entry.lifecycle == BridgeLifecycle::FinalizingPin {
+                restore_stable_view_hold();
+                return Some(RuntimeOwnerRelease {
+                    previous,
+                    should_finalize: true,
+                });
+            }
+        }
+        if entry.lifecycle == BridgeLifecycle::RuntimeOwned {
+            let refs = unsafe { (*py_obj).ob_refcnt };
+            let Some(remaining) = checked_c_refs_without_bias(refs, true) else {
+                abort_refcount_invariant("runtime owner drop", refs, entry.lifecycle);
+            };
+            unsafe { (*py_obj).ob_refcnt = remaining };
+            entry.lifecycle = BridgeLifecycle::ViewHoldOnly;
+        }
+        if semantic_previous == 1 {
+            restore_stable_view_hold();
+        }
+        if unsafe { (*py_obj).ob_refcnt } != 0 {
+            return Some(RuntimeOwnerRelease {
+                previous,
+                should_finalize: false,
+            });
+        }
+        unsafe { (*py_obj).ob_refcnt = 1 };
+        entry.lifecycle = BridgeLifecycle::FinalizingPin;
+        Some(RuntimeOwnerRelease {
+            previous,
+            should_finalize: true,
+        })
     }
 
     /// Rebase an immortal managed view onto the ordinary runtime-owner bias
@@ -4411,6 +4523,13 @@ impl ObjectBridge {
         let Some(entry) = handle.to_py.get_mut(&bits) else {
             return;
         };
+        if entry.lifecycle == BridgeLifecycle::FinalizingPin {
+            if unsafe { (*entry.view.py_obj()).ob_refcnt } < 1 {
+                eprintln!("molt fatal: canonical ABI view lost its published finalizing pin");
+                std::process::abort();
+            }
+            return;
+        }
         if entry.lifecycle != BridgeLifecycle::ViewHoldOnly {
             eprintln!(
                 "molt fatal: canonical ABI view finalization began outside ViewHoldOnly: {:?}",
@@ -4485,33 +4604,6 @@ impl ObjectBridge {
             entry.view.py_obj().addr()
         };
         self.remove_managed_view(bits, addr);
-    }
-
-    /// Attach the runtime-owner C bias on the view-hold-only -> externally
-    /// runtime-owned transition. The runtime calls this before publishing the
-    /// new non-view strong reference.
-    pub fn runtime_owner_added_from_view_hold(&self, bits: AbiHandle) {
-        let mut handle = self.handle_shard(bits).lock();
-        let Some(entry) = handle.to_py.get_mut(&bits) else {
-            return;
-        };
-        match entry.lifecycle {
-            BridgeLifecycle::RuntimeOwned | BridgeLifecycle::FinalizingPin => return,
-            BridgeLifecycle::ViewHoldOnly => {}
-        }
-        let py_obj = entry.view.py_obj();
-        unsafe {
-            if crate::abi_types::is_immortal_refcnt((*py_obj).ob_refcnt) {
-                eprintln!("molt fatal: managed canonical ABI view was made immortal");
-                std::process::abort();
-            }
-            let refs = (*py_obj).ob_refcnt;
-            let Some(with_bias) = checked_c_ref_increment(refs) else {
-                abort_refcount_invariant("runtime owner add", refs, entry.lifecycle);
-            };
-            (*py_obj).ob_refcnt = with_bias;
-        }
-        entry.lifecycle = BridgeLifecycle::RuntimeOwned;
     }
 }
 
@@ -4596,7 +4688,6 @@ impl ObjectBridge {
             self.remove_managed_view(bits, addr);
             return CRefZero::ViewRetained;
         }
-        let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
         {
             let mut handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get_mut(&bits) else {
@@ -4606,11 +4697,14 @@ impl ObjectBridge {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 return CRefZero::ViewRetained;
             }
+            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
             if runtime_refs > 1 {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;
                 return CRefZero::ViewRetained;
             }
+            unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
+            entry.lifecycle = BridgeLifecycle::FinalizingPin;
         }
         CRefZero::ReleaseRuntimeHold
     }
@@ -5793,6 +5887,7 @@ mod bridge_concurrency_tests {
 #[cfg(test)]
 mod bridge_publication_race_tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -5988,8 +6083,159 @@ mod bridge_publication_race_tests {
 
         bridge.prepare_runtime_immortal_for_shutdown(bits);
         assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
-        assert!(bridge.runtime_last_ref_dropped(bits));
+        let release = bridge
+            .transition_runtime_owner_release(bits, 0, || 1, || {})
+            .expect("immortal shutdown owner release");
+        assert!(release.should_finalize());
+        bridge.begin_finalization(bits);
+        bridge.finish_finalization(bits, false);
         assert_eq!(unsafe { (*ptr).ob_refcnt }, 0);
         assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    #[test]
+    fn runtime_owner_transition_publishes_terminal_gate_before_unlock() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let bits = MoltObject::from_int(60_002).bits();
+        let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+        let runtime_refs = AtomicU32::new(2);
+
+        let release = bridge
+            .transition_runtime_owner_release(
+                bits,
+                0,
+                || runtime_refs.fetch_sub(1, Ordering::AcqRel),
+                || panic!("stable view hold must not be restored for 2 -> 1"),
+            )
+            .expect("runtime owner release");
+        assert_eq!(release.previous(), 2);
+        assert!(release.should_finalize());
+        assert_eq!(runtime_refs.load(Ordering::Acquire), 1);
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+
+        let retain_called = std::cell::Cell::new(false);
+        assert_eq!(
+            bridge.transition_runtime_owner_add(bits, false, 0, || {
+                retain_called.set(true);
+                Some(runtime_refs.fetch_add(1, Ordering::AcqRel))
+            }),
+            None,
+        );
+        assert!(!retain_called.get());
+        bridge.begin_finalization(bits);
+        bridge.finish_finalization(bits, false);
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 0);
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    #[test]
+    fn runtime_owner_add_and_drop_update_view_bias_in_one_transaction() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let bits = MoltObject::from_int(60_003).bits();
+        let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+        assert_eq!(unsafe { bridge.managed_incref_pyobj(ptr) }, Some(bits));
+        let runtime_refs = AtomicU32::new(2);
+
+        let release = bridge
+            .transition_runtime_owner_release(
+                bits,
+                0,
+                || runtime_refs.fetch_sub(1, Ordering::AcqRel),
+                || panic!("stable view hold must not be restored for 2 -> 1"),
+            )
+            .expect("runtime owner release");
+        assert!(!release.should_finalize());
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+        assert_eq!(
+            bridge.transition_runtime_owner_add(bits, false, 0, || {
+                Some(runtime_refs.fetch_add(1, Ordering::AcqRel))
+            }),
+            Some(1),
+        );
+        assert_eq!(runtime_refs.load(Ordering::Acquire), 2);
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 2);
+    }
+
+    #[test]
+    fn runtime_owner_transition_excludes_internal_gc_pin_from_liveness() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let bits = MoltObject::from_int(60_005).bits();
+        let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+        assert_eq!(unsafe { bridge.managed_incref_pyobj(ptr) }, Some(bits));
+        let runtime_refs = AtomicU32::new(2);
+        let release = bridge
+            .transition_runtime_owner_release(
+                bits,
+                0,
+                || runtime_refs.fetch_sub(1, Ordering::AcqRel),
+                || panic!("stable view hold must not be restored for 2 -> 1"),
+            )
+            .expect("runtime owner release");
+        assert!(!release.should_finalize());
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+
+        runtime_refs.fetch_add(1, Ordering::AcqRel); // collector pin
+        assert_eq!(
+            bridge.transition_runtime_owner_add(bits, false, 1, || {
+                Some(runtime_refs.fetch_add(1, Ordering::AcqRel))
+            }),
+            Some(2),
+        );
+        assert_eq!(runtime_refs.load(Ordering::Acquire), 3);
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 2);
+    }
+
+    #[test]
+    fn concurrent_runtime_owner_add_release_has_only_live_or_terminal_outcomes() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(60_004).bits();
+        let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+        let runtime_refs = Arc::new(AtomicU32::new(2));
+        let start = Arc::new(Barrier::new(2));
+
+        let add_bridge = Arc::clone(&bridge);
+        let add_refs = Arc::clone(&runtime_refs);
+        let add_start = Arc::clone(&start);
+        let add = thread::spawn(move || {
+            add_start.wait();
+            add_bridge.transition_runtime_owner_add(bits, false, 0, || {
+                Some(add_refs.fetch_add(1, Ordering::AcqRel))
+            })
+        });
+        let drop_bridge = Arc::clone(&bridge);
+        let drop_refs = Arc::clone(&runtime_refs);
+        let drop_start = Arc::clone(&start);
+        let release = thread::spawn(move || {
+            drop_start.wait();
+            drop_bridge
+                .transition_runtime_owner_release(
+                    bits,
+                    0,
+                    || drop_refs.fetch_sub(1, Ordering::AcqRel),
+                    || panic!("stable view hold must not be restored for this race"),
+                )
+                .expect("runtime owner release")
+        });
+
+        let added = add.join().expect("add worker");
+        let released = release.join().expect("release worker");
+        match runtime_refs.load(Ordering::Acquire) {
+            1 => {
+                assert_eq!(added, None);
+                assert!(released.should_finalize());
+                assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+            }
+            2 => {
+                assert_eq!(added, Some(2));
+                assert_eq!(released.previous(), 3);
+                assert!(!released.should_finalize());
+                assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+            }
+            refs => panic!("non-linearized runtime owner count {refs}"),
+        }
     }
 }

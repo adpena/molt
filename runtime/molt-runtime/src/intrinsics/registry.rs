@@ -270,6 +270,11 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
                     if !m.contains(spec.name) {
                         continue;
                     }
+                    if crate::builtins::functions::runtime_callable_symbol_is_non_callable(
+                        spec.symbol,
+                    ) {
+                        continue;
+                    }
                     let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
                         continue;
                     };
@@ -635,6 +640,7 @@ fn build_intrinsic_func(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IntrinsicResolveError {
     Unknown,
+    NotCallable,
     MissingSymbol,
     AllocFailed,
 }
@@ -700,6 +706,9 @@ fn resolve_intrinsic_func(
     let Some(spec) = find_spec(requested_name) else {
         return Err(IntrinsicResolveError::Unknown);
     };
+    if crate::builtins::functions::runtime_callable_symbol_is_non_callable(spec.symbol) {
+        return Err(IntrinsicResolveError::NotCallable);
+    }
     let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
         return Err(IntrinsicResolveError::MissingSymbol);
     };
@@ -873,6 +882,11 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
                     &format!("failed to allocate intrinsic function: {name}"),
                 )
             }
+            Err(IntrinsicResolveError::NotCallable) => raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("intrinsic is a raw non-callable ABI: {name}"),
+            ),
             Err(IntrinsicResolveError::Unknown | IntrinsicResolveError::MissingSymbol) => {
                 raise_exception::<u64>(
                     _py,
@@ -905,9 +919,11 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
                 inc_ref_bits(_py, name_bits);
                 func_bits
             }
-            Err(IntrinsicResolveError::Unknown | IntrinsicResolveError::MissingSymbol) => {
-                MoltObject::none().bits()
-            }
+            Err(
+                IntrinsicResolveError::Unknown
+                | IntrinsicResolveError::NotCallable
+                | IntrinsicResolveError::MissingSymbol,
+            ) => MoltObject::none().bits(),
             Err(IntrinsicResolveError::AllocFailed) => raise_exception::<u64>(
                 _py,
                 "MemoryError",
@@ -964,6 +980,25 @@ mod tests {
         for spec in INTRINSICS {
             assert_eq!(spec.name, spec.symbol, "intrinsic name/symbol drift");
         }
+    }
+
+    #[test]
+    fn borrowed_c_api_intrinsics_cannot_be_materialized_as_python_callables() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            for name in [
+                "molt_type_of_borrowed",
+                "molt_dict_getitem_borrowed",
+                "molt_list_getitem_borrowed",
+                "molt_tuple_getitem_borrowed",
+            ] {
+                assert_eq!(
+                    resolve_intrinsic_func(_py, name, false),
+                    Err(IntrinsicResolveError::NotCallable),
+                    "{name} must remain a compiler/C-ABI-only borrow"
+                );
+            }
+        });
     }
 
     #[test]

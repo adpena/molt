@@ -968,6 +968,10 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
     state.builtin_classes.store(ptr, AtomicOrdering::Release);
+    assert!(
+        crate::builtins::attr::install_weakref_callback_descriptor(&py),
+        "builtin ReferenceType.__callback__ descriptor publication failed"
+    );
     unsafe { &*ptr }
 }
 

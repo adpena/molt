@@ -12,6 +12,38 @@ use super::*;
 pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
 pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
+pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[
+    "molt_dict_getitem_borrowed",
+    "molt_gpu_prim_binary",
+    "molt_gpu_prim_cast",
+    "molt_gpu_prim_create_tensor",
+    "molt_gpu_prim_create_tensor_raw",
+    "molt_gpu_prim_device",
+    "molt_gpu_prim_expand",
+    "molt_gpu_prim_flip",
+    "molt_gpu_prim_pad",
+    "molt_gpu_prim_permute",
+    "molt_gpu_prim_read_data_raw",
+    "molt_gpu_prim_reduce",
+    "molt_gpu_prim_reduce_all",
+    "molt_gpu_prim_reshape",
+    "molt_gpu_prim_shape",
+    "molt_gpu_prim_shrink",
+    "molt_gpu_prim_ternary",
+    "molt_gpu_prim_unary",
+    "molt_gpu_prim_zeros",
+    "molt_gpu_prim_zeros_dtype",
+    "molt_json_parse_scalar",
+    "molt_list_getitem_borrowed",
+    "molt_tuple_getitem_borrowed",
+    "molt_type_of_borrowed",
+];
+
+#[inline]
+pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool {
+    NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)
+}
+
 pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
 
 #[cfg(target_arch = "wasm32")]
@@ -375,7 +407,7 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         20 => Some(molt_types_resolve_bases as *const ()),
         21 => Some(molt_types_new_class as *const ()),
         22 => Some(molt_cpython_abi_cext_call_trampoline as *const ()),
-        23 => Some(crate::molt_importlib_import_transaction as *const ()),
+        23 => Some(molt_importlib_import_transaction as *const ()),
         _ => None,
     }
 }
@@ -1109,5 +1141,5 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     let _ = molt_types_resolve_bases as *const ();
     let _ = molt_types_new_class as *const ();
     let _ = molt_cpython_abi_cext_call_trampoline as *const ();
-    let _ = crate::molt_importlib_import_transaction as *const ();
+    let _ = molt_importlib_import_transaction as *const ();
 }

@@ -4,6 +4,7 @@ use wasm_encoder::ValType;
 #[derive(Clone, Copy)]
 pub(in crate::wasm) struct WasmDispatchFrameLocals {
     pub(in crate::wasm) state_local: u32,
+    pub(in crate::wasm) resume_state_local: Option<u32>,
     pub(in crate::wasm) block_map_base_local: u32,
     pub(in crate::wasm) return_local: u32,
     pub(in crate::wasm) self_ptr_local: Option<u32>,
@@ -34,6 +35,13 @@ impl WasmFrameLocals {
             local_types,
             local_count,
         );
+        let resume_state_local = stateful.then(|| {
+            self.allocate_anonymous(
+                WasmFrameAnonymousLocal::DispatchResumeState,
+                local_types,
+                local_count,
+            )
+        });
         let block_map_base_local = self.allocate_anonymous(
             WasmFrameAnonymousLocal::DispatchBlockMapBase,
             local_types,
@@ -61,6 +69,7 @@ impl WasmFrameLocals {
 
         Some(WasmDispatchFrameLocals {
             state_local,
+            resume_state_local,
             block_map_base_local,
             return_local,
             self_ptr_local,

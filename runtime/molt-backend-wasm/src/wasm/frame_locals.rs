@@ -71,6 +71,18 @@ impl WasmFrameLocals {
         self.insert_with_kind(name, slot, kind)
     }
 
+    pub(in crate::wasm) fn insert_dead_sink_alias(
+        &mut self,
+        name: String,
+        slot: u32,
+    ) -> Option<u32> {
+        self.insert_with_kind(
+            name,
+            slot,
+            WasmFrameLocalKind::FixedSynthetic(WasmFrameSyntheticLocal::DeadSink),
+        )
+    }
+
     pub(in crate::wasm) fn get<Q>(&self, name: &Q) -> Option<&u32>
     where
         String: Borrow<Q>,

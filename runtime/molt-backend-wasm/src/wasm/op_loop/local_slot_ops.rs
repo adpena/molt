@@ -53,12 +53,29 @@ pub(super) fn emit_local_slot_op(
                 && out_name != "none"
             {
                 let src = locals[src_name];
-                func.instruction(&Instruction::LocalGet(src));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-                );
+                // The generated TIR ownership authority distinguishes transparent
+                // bit-passthrough aliases from the sole alias that mints a new
+                // owned reference. Keep generic WASM aligned with TIR/LIR-fast:
+                // load/copy/identity aliases share their source ownership root;
+                // binding_alias alone contributes +1.
+                if molt_tir::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(
+                    op.kind.as_str(),
+                ) {
+                    func.instruction(&Instruction::LocalGet(src));
+                    emit_call(
+                        func,
+                        reloc_enabled,
+                        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                    );
+                } else {
+                    debug_assert!(
+                        molt_tir::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
+                            op.kind.as_str(),
+                        ),
+                        "local alias '{}' lacks generated ownership classification",
+                        op.kind
+                    );
+                }
                 copy_local(func, locals, src_name, out_name);
             }
             true

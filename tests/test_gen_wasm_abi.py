@@ -517,12 +517,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     imports = {entry["name"]: entry for entry in data["import"]}
 
     assert imports["importlib_import_transaction"]["type"] == 12
-    assert imports["importlib_import_transaction"]["runtime_name"] == (
-        "molt_importlib_import_transaction"
-    )
-    assert imports["importlib_import_transaction"]["callable_arity"] == 5
-    assert imports["importlib_import_transaction"]["shared_runtime_callable"] is True
-    assert imports["importlib_import_transaction"]["callable_dispatch"] == "trampoline"
+    assert imports["importlib_import_transaction"] == {
+        "name": "importlib_import_transaction",
+        "type": 12,
+    }
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
     assert imports["types_bootstrap"].get("shared_runtime_callable") is None
@@ -566,22 +564,29 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
+            "callable_dispatch": entry["callable_dispatch"],
             "trampoline_abi": entry["trampoline_abi"],
         }
         for entry in shared_callables[: len(reserved_callables)]
     ] == [
-        {**entry, "trampoline_abi": entry.get("trampoline_abi", "unpack_args")}
+        {
+            **entry,
+            "callable_dispatch": entry.get("callable_dispatch", "direct"),
+            "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
+        }
         for entry in reserved_callables
     ]
+    assert len(shared_callables) == len(reserved_callables)
     assert shared_callables[-1] == {
-        "index": len(reserved_callables),
+        "index": len(reserved_callables) - 1,
         "runtime_name": "molt_importlib_import_transaction",
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
         "callable_result": None,
         "callable_dispatch": "trampoline",
+        "trampoline_abi": "unpack_args",
         "runtime_feature": None,
-        "symbol_path": "crate::molt_importlib_import_transaction",
+        "symbol_path": "molt_importlib_import_transaction",
     }
     assert all(
         entry["runtime_name"] != "molt_types_bootstrap" for entry in shared_callables
@@ -592,7 +597,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_cpython_abi_cext_call_trampoline" in rendered_runtime
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
-        f'({len(reserved_callables)}, "molt_importlib_import_transaction", '
+        f'({len(reserved_callables) - 1}, "molt_importlib_import_transaction", '
         '"importlib_import_transaction", 5, "trampoline")' in gen.render_py(data)
     )
 
@@ -688,28 +693,35 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
     assert imports["statistics_stdev_slice"]["runtime_feature"] == "stdlib_math"
     assert not any(name.startswith("sqlite3_") for name in imports)
-    dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
-        if reserved["import_name"] in dual_use_reserved_imports:
-            reserved_import = imports[reserved["import_name"]]
-            assert "runtime_name" not in reserved_import
-            assert "callable_arity" not in reserved_import
-            assert "callable_result" not in reserved_import
-        else:
-            assert reserved["import_name"] not in imports
+        reserved_import = imports[reserved["import_name"]]
+        reserved_type = data["static_type"][reserved_import["type"]]
+        assert reserved_type == {
+            "params": ["i64"] * reserved["callable_arity"],
+            "results": ["i64"],
+        }
+        assert "runtime_name" not in reserved_import
+        assert "callable_arity" not in reserved_import
+        assert "callable_result" not in reserved_import
 
     rendered_rs = _rendered_rs(gen, data)
+    rendered_reserved_rs = gen.render_rs_modules(data)["runtime_callables.rs"]
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     rendered_py = gen.render_py(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "use super::import_tokens::WasmRuntimeImport;" in rendered_rs
-    assert "import: None" in rendered_rs
-    assert "import: Some(WasmRuntimeImport::ImportlibImportTransaction)" in rendered_rs
+    assert "pub(crate) import: WasmRuntimeImport" in rendered_reserved_rs
+    assert "import: None" not in rendered_reserved_rs
+    assert "import: Some(" not in rendered_reserved_rs
+    assert (
+        "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_reserved_rs
+    )
     assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
+    assert '"molt_type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
     assert (
-        '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)'
-        in rendered_rs
+        '"molt_importlib_import_transaction" => '
+        "Some(WasmRuntimeImport::ImportlibImportTransaction)" in rendered_rs
     )
     assert (
         '"socket_drop" => Some(WasmRuntimeImport::SocketDrop),\n'
@@ -719,7 +731,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
     assert "def wasm_runtime_callable_spec(name: str)" in rendered_py
@@ -804,7 +817,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         ".map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)" in rendered_runtime_rs
     )
     assert 'runtime_name: "molt_type_call"' in rendered_runtime_rs
-    assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
+    assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
     assert (
         '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
     )
@@ -849,6 +862,18 @@ def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
     assert "pub(crate) use registry::try_app_resolve_symbol;" in intrinsics_mod
 
 
+def test_wasm_trampoline_keeps_the_cross_target_owned_result_contract() -> None:
+    source = (ROOT / "runtime/molt-runtime/src/call/function.rs").read_text(
+        encoding="utf-8"
+    )
+    body = source.split("pub(crate) unsafe fn call_function_obj_trampoline", 1)[
+        1
+    ].split("pub(crate) unsafe fn call_function_obj_vec", 1)[0]
+
+    assert "fresh results and argument aliases both arrive" in body
+    assert "inc_ref_bits(_py, res)" not in body
+
+
 def test_runtime_features_are_derived_not_manifest_owned() -> None:
     gen = _load_gen_wasm_abi()
     loaded = gen.load_manifest()
@@ -874,10 +899,19 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
 
+    rematerialized = copy.deepcopy(data)
+    rematerialized["import"] = [
+        entry for entry in rematerialized["import"] if entry["name"] != "type_call"
+    ]
+    manifest.validate_loaded_manifest(rematerialized)
+    assert next(
+        entry for entry in rematerialized["import"] if entry["name"] == "type_call"
+    ) == {"name": "type_call", "type": 2}
+
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "type_call", "type": 2})
     with pytest.raises(
-        manifest.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"
+        manifest.WasmAbiManifestError, match="duplicate import name 'type_call'"
     ):
         manifest.validate_loaded_manifest(broken)
     broken = copy.deepcopy(data)
@@ -888,7 +922,7 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
             break
     with pytest.raises(
         manifest.WasmAbiManifestError,
-        match="dual-use import must not duplicate callable metadata",
+        match="transport import must not duplicate reserved callable metadata",
     ):
         manifest.validate_loaded_manifest(broken)
 
@@ -962,9 +996,31 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
 
     assert "molt_json_parse_scalar" in data["non_runtime_callable_intrinsic"]
     assert "molt_gpu_prim_create_tensor" in data["non_runtime_callable_intrinsic"]
+    assert {
+        "molt_type_of_borrowed",
+        "molt_dict_getitem_borrowed",
+        "molt_list_getitem_borrowed",
+        "molt_tuple_getitem_borrowed",
+    } <= set(data["non_runtime_callable_intrinsic"])
     assert "runtime_name" not in imports["json_parse_scalar"]
     assert "molt_json_parse_scalar" not in runtime_callables
     assert "molt_gpu_prim_create_tensor" not in runtime_callables
+    assert "molt_type_of_borrowed" not in runtime_callables
+    assert "molt_dict_getitem_borrowed" not in runtime_callables
+    assert "molt_list_getitem_borrowed" not in runtime_callables
+    assert "molt_tuple_getitem_borrowed" not in runtime_callables
+    for import_name in (
+        "type_of_borrowed",
+        "dict_getitem_borrowed",
+        "list_getitem_borrowed",
+        "tuple_getitem_borrowed",
+    ):
+        assert "runtime_name" not in imports[import_name]
+        assert "callable_arity" not in imports[import_name]
+    assert "WASM_NON_RUNTIME_CALLABLE_INTRINSICS" in gen.render_py(data)
+    assert "runtime_callable_symbol_is_non_callable" in gen.render_runtime_callables_rs(
+        data
+    )
     assert imports["json_parse_scalar_obj"]["runtime_name"] == (
         "molt_json_parse_scalar_obj"
     )
@@ -990,7 +1046,11 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
         for entry in data["import"]
         if "runtime_name" in entry
     }
-    assert imports["molt_importlib_import_transaction"]["callable_arity"] == 5
+    reserved = {
+        entry["runtime_name"]: entry for entry in data["reserved_runtime_callable"]
+    }
+    assert reserved["molt_importlib_import_transaction"]["callable_arity"] == 5
+    assert "molt_importlib_import_transaction" not in imports
     assert imports["molt_load_intrinsic_runtime"]["callable_arity"] == 2
     assert imports["molt_types_bootstrap"]["callable_arity"] == 0
     assert imports["molt_file_exit_method"]["callable_arity"] == 4
@@ -1333,13 +1393,17 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     assert "def wasm_import_name" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
     assert rendered_ns["wasm_runtime_callable_spec"](
         "molt_importlib_import_transaction"
     ) == ("importlib_import_transaction", 5, "i64")
+    assert rendered_ns["wasm_runtime_callable_spec"](
+        "importlib_import_transaction"
+    ) == ("molt_importlib_import_transaction", 5, "i64")
 
 
 def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
@@ -1524,13 +1588,19 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         "import_name": "type_call",
         "callable_arity": 1,
     }
-    assert reserved[-2]["runtime_name"] == "molt_types_new_class"
-    assert reserved[-1] == {
+    assert reserved[-2] == {
         "index": 22,
         "runtime_name": "molt_cpython_abi_cext_call_trampoline",
         "import_name": "cpython_abi_cext_call_trampoline",
         "callable_arity": 3,
         "trampoline_abi": "call_frame",
+    }
+    assert reserved[-1] == {
+        "index": 23,
+        "runtime_name": "molt_importlib_import_transaction",
+        "import_name": "importlib_import_transaction",
+        "callable_arity": 5,
+        "callable_dispatch": "trampoline",
     }
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
@@ -1738,9 +1808,9 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
 
 
 def test_runtime_execution_token_exports_are_wasm_only() -> None:
-    execution = (
-        ROOT / "runtime/molt-runtime/src/concurrency/execution.rs"
-    ).read_text(encoding="utf-8")
+    execution = (ROOT / "runtime/molt-runtime/src/concurrency/execution.rs").read_text(
+        encoding="utf-8"
+    )
     for name in ("molt_runtime_execution_enter", "molt_runtime_execution_leave"):
         declaration = (
             '#[cfg(target_arch = "wasm32")]\n'

@@ -216,7 +216,10 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
                 .unwrap_or(none_bits);
             (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
         };
-        let _ = call_callable3(_py, exit_bits, exc_type_bits, exc_val_bits, tb_bits);
+        crate::call::discard_owned_call_result(
+            _py,
+            call_callable3(_py, exit_bits, exc_type_bits, exc_val_bits, tb_bits),
+        );
         dec_ref_bits(_py, exit_bits);
     }
 }

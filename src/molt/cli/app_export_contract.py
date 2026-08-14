@@ -18,17 +18,15 @@ from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
 
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
-APP_EXPORT_CALL_ABI_SCHEMA = 1
+APP_EXPORT_CALL_ABI_SCHEMA = 2
 
 
 def _canonical_call_abi() -> dict[str, object]:
     """Return the one browser/WASM app-call boundary ABI.
 
-    Ordinary compiled functions may return a borrowed parameter.  A host call
-    outlives the borrowed argument objects that the host releases immediately
-    after the call, so the public adapter promotes the tagged result to one
-    owned reference.  Immediate tagged values make the retain operation a
-    no-op; heap results are released exactly once by the host after decoding.
+    Compiled functions publish one owned result under the canonical call ABI.
+    The public adapter therefore forwards that result unchanged; retaining it
+    again would leak fresh results and double-retain already-owned aliases.
     """
 
     return {
@@ -43,14 +41,8 @@ def _canonical_call_abi() -> dict[str, object]:
             "ownership": "owned",
         },
         "adapter": {
-            "strategy": "retain-result",
+            "strategy": "forward-owned-result",
             "symbol_prefix": WASM_OUTPUT_EXPORT_ALIAS_PREFIX,
-            "retain_import": {
-                "module": "molt_runtime",
-                "name": "molt_inc_ref_obj",
-                "parameters": ["i64"],
-                "results": [],
-            },
         },
     }
 

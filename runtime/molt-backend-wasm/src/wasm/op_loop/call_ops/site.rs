@@ -1,14 +1,70 @@
+use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{ConstantCache, box_int, stable_ic_site_id};
+use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{Function, Instruction};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalAccessKind {
+    Read,
+    Definition,
+}
+
+/// Path-local value-epoch authority for call-boundary retention.
+///
+/// Physical WASM slots are reused across non-overlapping SSA values. A raw
+/// "last use is later" query therefore mistakes a future value for the stale
+/// bits currently occupying its slot and can temporarily root already-released
+/// objects across calls (including `gc.collect`). The next canonical def/use
+/// event answers the actual question: retain the current epoch only when its
+/// next event is a read; a definition first means the old slot contents are
+/// dead. Stateful/jumpful emitters build this over their exact path slice.
+pub(in crate::wasm::op_loop) struct CallRetentionLiveness {
+    accesses: BTreeMap<String, Vec<(usize, LocalAccessKind)>>,
+}
+
+impl CallRetentionLiveness {
+    pub(in crate::wasm::op_loop) fn for_region(ops: &[OpIR]) -> Self {
+        let mut accesses: BTreeMap<String, Vec<(usize, LocalAccessKind)>> = BTreeMap::new();
+        for (op_idx, op) in ops.iter().enumerate() {
+            visit_simple_ir_reads(op, |read| {
+                if read.name != "none" {
+                    accesses
+                        .entry(read.name.to_string())
+                        .or_default()
+                        .push((op_idx, LocalAccessKind::Read));
+                }
+            });
+            visit_simple_ir_defined_names(op, |name| {
+                if name != "none" {
+                    accesses
+                        .entry(name.to_string())
+                        .or_default()
+                        .push((op_idx, LocalAccessKind::Definition));
+                }
+            });
+        }
+        Self { accesses }
+    }
+
+    fn current_epoch_is_read_later(&self, name: &str, op_idx: usize) -> bool {
+        let Some(accesses) = self.accesses.get(name) else {
+            return false;
+        };
+        let next = accesses.partition_point(|(access_idx, _)| *access_idx <= op_idx);
+        accesses
+            .get(next)
+            .is_some_and(|(_, kind)| *kind == LocalAccessKind::Read)
+    }
+}
+
 pub(super) fn collect_live_object_locals_for_call(
     locals: &WasmFrameLocals,
-    last_use_local: &BTreeMap<String, usize>,
-    rel_idx: usize,
+    liveness: &CallRetentionLiveness,
+    op_idx: usize,
     out_name: Option<&String>,
 ) -> Vec<u32> {
     let mut live = BTreeSet::new();
@@ -19,10 +75,7 @@ pub(super) fn collect_live_object_locals_for_call(
         if local.kind().is_call_retention_exempt() {
             continue;
         }
-        if last_use_local
-            .get(local.name())
-            .is_none_or(|last| *last <= rel_idx)
-        {
+        if !liveness.current_epoch_is_read_later(local.name(), op_idx) {
             continue;
         }
         live.insert(local.slot());
@@ -69,23 +122,8 @@ pub(super) fn push_call_args(func: &mut Function, locals: &WasmFrameLocals, args
     }
 }
 
-pub(super) fn store_call_result(
-    func: &mut Function,
-    import_ids: &TrackedImportIds,
-    reloc_enabled: bool,
-    out: u32,
-    returns_alias_param: bool,
-) {
-    if returns_alias_param {
-        func.instruction(&Instruction::LocalTee(out));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-        );
-    } else {
-        func.instruction(&Instruction::LocalSet(out));
-    }
+pub(super) fn store_call_result(func: &mut Function, out: u32) {
+    func.instruction(&Instruction::LocalSet(out));
 }
 
 pub(super) fn spill_call_args(
@@ -147,10 +185,19 @@ pub(super) fn emit_pending_exception_return(func: &mut Function, const_cache: &C
 
 #[cfg(test)]
 mod tests {
-    use super::collect_live_object_locals_for_call;
+    use super::{CallRetentionLiveness, collect_live_object_locals_for_call};
+    use crate::OpIR;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
     use crate::wasm_abi_generated::WasmConstLiteralPayload;
-    use std::collections::BTreeMap;
+
+    fn op(kind: &str, out: Option<&str>, args: &[&str]) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            out: out.map(str::to_string),
+            args: Some(args.iter().map(|value| (*value).to_string()).collect()),
+            ..OpIR::default()
+        }
+    }
 
     #[test]
     fn call_retention_uses_typed_local_kind_not_name_shape() {
@@ -160,15 +207,16 @@ mod tests {
         locals.insert("__multi_ret_0".to_string(), 2);
         locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 3);
 
-        let last_use_local = BTreeMap::from([
-            ("__molt_tmp0".to_string(), 10),
-            ("payload_ptr".to_string(), 10),
-            ("__multi_ret_0".to_string(), 10),
-            (WasmFrameLocals::NONE_NAME.to_string(), 10),
+        let liveness = CallRetentionLiveness::for_region(&[
+            op("call", Some("result"), &[]),
+            op(
+                "tuple_new",
+                Some("later"),
+                &["__molt_tmp0", "payload_ptr", "__multi_ret_0", "none"],
+            ),
         ]);
-
         assert_eq!(
-            collect_live_object_locals_for_call(&locals, &last_use_local, 0, None),
+            collect_live_object_locals_for_call(&locals, &liveness, 0, None,),
             vec![0, 1, 2]
         );
         assert_eq!(
@@ -198,16 +246,53 @@ mod tests {
             &mut local_count,
         );
 
-        let last_use_local = BTreeMap::from([
-            ("value".to_string(), 10),
-            ("__molt_tmp0".to_string(), 10),
-            ("payload_ptr".to_string(), 10),
-            ("payload_len".to_string(), 10),
+        let liveness = CallRetentionLiveness::for_region(&[
+            op("call", Some("result"), &[]),
+            op(
+                "tuple_new",
+                Some("later"),
+                &["value", "__molt_tmp0", "payload_ptr", "payload_len"],
+            ),
         ]);
-
         assert_eq!(
-            collect_live_object_locals_for_call(&locals, &last_use_local, 0, None),
+            collect_live_object_locals_for_call(&locals, &liveness, 0, None,),
             vec![0]
         );
+    }
+
+    #[test]
+    fn call_retention_exempts_every_dead_sink_alias_by_physical_kind() {
+        let mut locals = WasmFrameLocals::new();
+        locals.insert_dead_sink_alias("dead_result".to_string(), 0);
+        let liveness = CallRetentionLiveness::for_region(&[
+            op("call", Some("result"), &[]),
+            op("print", None, &["dead_result"]),
+        ]);
+        assert!(collect_live_object_locals_for_call(&locals, &liveness, 0, None,).is_empty());
+        assert_eq!(
+            locals.local_kind("dead_result"),
+            Some(WasmFrameLocalKind::FixedSynthetic(
+                WasmFrameSyntheticLocal::DeadSink
+            ))
+        );
+    }
+
+    #[test]
+    fn call_retention_does_not_pin_stale_bits_for_future_or_redefined_values() {
+        let mut locals = WasmFrameLocals::new();
+        locals.insert("released".to_string(), 0);
+        locals.insert("future".to_string(), 0);
+        locals.insert("redefined".to_string(), 1);
+
+        let mut redefine = op("store_var", None, &["incoming"]);
+        redefine.var = Some("redefined".to_string());
+        let liveness = CallRetentionLiveness::for_region(&[
+            op("call", Some("result"), &[]),
+            op("const", Some("future"), &[]),
+            redefine,
+            op("tuple_new", Some("later"), &["future", "redefined"]),
+        ]);
+
+        assert!(collect_live_object_locals_for_call(&locals, &liveness, 0, None).is_empty());
     }
 }

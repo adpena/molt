@@ -363,7 +363,7 @@ pub(crate) unsafe fn visit_owned_values(
                         py,
                         ptr,
                         class_ptr,
-                        &mut |_slot, bits| visit_bits(bits, visit),
+                        &mut |_name, _slot, bits| visit_bits(bits, visit),
                     );
                 }
                 visit_bits(instance_dict_bits(ptr), visit);
@@ -876,7 +876,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                         py,
                         ptr,
                         class_ptr,
-                        &mut |slot, bits| {
+                        &mut |_name, slot, bits| {
                             *slot = 0;
                             sink.detach_if_heap(bits);
                         },

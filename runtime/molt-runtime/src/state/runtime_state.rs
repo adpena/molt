@@ -117,6 +117,7 @@ pub(crate) struct SpecialCache {
     pub(crate) awaitable_await: AtomicU64,
     pub(crate) function_code_descriptor: AtomicU64,
     pub(crate) function_globals_descriptor: AtomicU64,
+    pub(crate) weakref_callback_descriptor: AtomicU64,
 }
 
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
@@ -151,8 +152,9 @@ pub(crate) struct WeakRefEntry {
     pub(crate) callback_bits: u64,
     pub(crate) container_cookie: Option<WeakContainerCookie>,
     /// CPython-compatible sticky hash: once computed while the referent is
-    /// alive, the value remains available after referent death.
-    pub(crate) cached_hash: Option<i64>,
+    /// alive, the value remains available after referent death. `-1` is the
+    /// uncomputed sentinel; Python hash results normalize `-1` to `-2`.
+    pub(crate) cached_hash: i64,
 }
 
 #[derive(Clone)]
@@ -485,6 +487,7 @@ impl SpecialCache {
             awaitable_await: AtomicU64::new(0),
             function_code_descriptor: AtomicU64::new(0),
             function_globals_descriptor: AtomicU64::new(0),
+            weakref_callback_descriptor: AtomicU64::new(0),
         }
     }
 }

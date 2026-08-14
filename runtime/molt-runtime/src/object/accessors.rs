@@ -9,7 +9,7 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
-    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_TYPE,
     attr_name_bits_from_bytes, builtin_classes_if_initialized, class_dict_bits, class_field_offset,
     class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place,
     exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, intern_static_name,
@@ -42,7 +42,7 @@ fn debug_guard_enabled() -> bool {
 unsafe fn attr_ic_class_key(obj_ptr: *mut u8) -> Option<(u64, *mut u8, u64)> {
     unsafe {
         let type_id = object_type_id(obj_ptr);
-        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+        if !super::heap_kind_has_class_shape(type_id) && type_id != TYPE_ID_DATACLASS {
             return None;
         }
         let class_bits = object_class_bits(obj_ptr);
@@ -375,7 +375,7 @@ unsafe fn guard_layout_match(
             }
             return true;
         }
-        if (*header).type_id != TYPE_ID_OBJECT {
+        if !super::heap_kind_has_class_shape((*header).type_id) {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
             return false;
@@ -612,101 +612,6 @@ pub unsafe extern "C" fn molt_object_field_init(
 // IC-accelerated attribute access
 // ---------------------------------------------------------------------------
 
-/// Inline-cache-accelerated attribute get for pointer-based objects.
-///
-/// # Fast path
-/// 1. Read the object's `type_id` from its header.
-/// 2. Read the object's class identity and class layout version.
-/// 3. Probe the global lock-free IC table at `ic_index` with
-///    `(class_bits, class_layout_version)`.
-/// 4. On hit the cached value is a byte offset into the object's payload — read the
-///    field at that offset and return it (same as `object_field_get_ptr_raw`).
-///
-/// # Slow path
-/// Falls through to `molt_get_attr_generic` (the existing full-resolution path).
-/// After a successful lookup, attempts to resolve the attribute to a struct-field
-/// byte offset via `class_field_offset` and populates the IC entry so subsequent
-/// calls hit the fast path.
-///
-/// # Safety
-/// `obj_ptr` must point to a valid molt object.
-/// `attr_name_ptr` must be valid UTF-8 of length encoded in `attr_name_len_bits`.
-/// `ic_index_bits` encodes a u64 index into the global IC table (must be < IC_TABLE_CAPACITY).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_getattr_ic(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len_bits: u64,
-    ic_index_bits: u64,
-) -> i64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            if obj_ptr.is_null() {
-                return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
-            }
-
-            let type_id = object_type_id(obj_ptr);
-
-            // IC fast path: only applicable to OBJECT and DATACLASS types whose
-            // attributes may resolve to fixed-offset struct fields.
-            if (type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS)
-                && let Some(ic_index) = usize_from_bits(ic_index_bits)
-                && ic_index < IC_TABLE_CAPACITY
-            {
-                let ic = global_ic_table().get(ic_index);
-
-                if let Some((class_bits, _class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
-                    && let Some(cached_offset) = ic.probe(class_bits, class_version)
-                {
-                    let offset = cached_offset as usize;
-                    // Bounds-check the offset against the object's payload.
-                    let payload = object_payload_size(obj_ptr);
-                    if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
-                        let slot = obj_ptr.add(offset) as *const u64;
-                        let bits = *slot;
-                        // A cached offset might point at an uninitialised /
-                        // "missing" sentinel slot (e.g. the field was deleted
-                        // after the IC was written). Treat that as a miss and
-                        // fall through to the slow path.
-                        if !is_missing_bits(_py, bits) && bits != 0 {
-                            inc_ref_bits(_py, bits);
-                            return bits as i64;
-                        }
-                    }
-                }
-
-                // --- Slow path: full resolution, then populate IC ---
-                let result =
-                    crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
-
-                // Only try to populate the IC when the lookup succeeded and no
-                // exception is pending.
-                if result != 0
-                    && !obj_from_bits(result as u64).is_none()
-                    && !exception_pending(_py)
-                    && let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
-                    && let Some(attr_len) = usize_from_bits(attr_name_len_bits)
-                {
-                    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                    if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                        if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                            && offset <= u32::MAX as usize
-                        {
-                            ic.update(class_bits, offset as u32, class_version);
-                        }
-                        dec_ref_bits(_py, attr_bits);
-                    }
-                }
-
-                return result;
-            }
-
-            // Non-OBJECT/DATACLASS or invalid IC index: direct dispatch.
-            crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits)
-        })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // GIL-free inline-cache probe for the native backend's split-phase IC.
 //
@@ -766,7 +671,8 @@ pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> 
                         if let Some(p) = ptr {
                             let header = p.sub(std::mem::size_of::<super::MoltHeader>())
                                 as *mut super::MoltHeader;
-                            (*header).retain_owned(1, "molt_ic_probe_fast");
+                            let flags = (*header).load_synchronized_flags();
+                            (*header).retain_owned_mirrored(bits, 1, "molt_ic_probe_fast", flags);
                         }
                         return bits as i64;
                     }

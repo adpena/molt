@@ -6,9 +6,20 @@ pub(crate) mod type_policy;
 
 use crate::builtins::attr::{class_attr_lookup, class_attr_lookup_raw_mro};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_TYPE, exception_pending, intern_static_name, obj_from_bits,
-    object_class_bits, object_type_id, raise_not_callable, runtime_state,
+    MoltObject, PyToken, TYPE_ID_TYPE, dec_ref_bits, exception_pending, intern_static_name,
+    obj_from_bits, object_class_bits, object_type_id, raise_not_callable, runtime_state,
 };
+
+/// Consume the owned result of a call whose value is intentionally ignored.
+///
+/// All Python-call boundaries return a new owning reference, including the
+/// `None` success sentinel.  Keeping the discard at a named boundary prevents
+/// statement-like consumers (`__set__`, `__delete__`, and lifecycle hooks)
+/// from silently leaking successful heap-valued returns.
+#[inline]
+pub(crate) fn discard_owned_call_result(_py: &PyToken<'_>, result_bits: u64) {
+    dec_ref_bits(_py, result_bits);
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallAttrLookup {

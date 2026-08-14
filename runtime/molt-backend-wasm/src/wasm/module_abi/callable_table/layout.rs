@@ -277,10 +277,7 @@ impl WasmBackend {
         );
         let table_import_wrappers =
             poll_table.emit_import_wrappers(self, reloc_enabled, user_type_map);
-        let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS
-            .iter()
-            .filter(|spec| spec.import.is_some())
-            .count();
+        let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS.len();
         let layout = CallableTableRegionLayout::build(
             table_base,
             fixed_shared_runtime_abi_base,
@@ -372,13 +369,8 @@ impl WasmBackend {
 
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             let runtime_name = spec.runtime_name.to_string();
-            let import_idx = spec
-                .import
-                .map(|import| self.import_ids[import])
-                .unwrap_or(sentinel_func_idx);
-            let direct_target_idx = if spec.dispatch == ReservedRuntimeCallableDispatch::Direct
-                && spec.import.is_some()
-            {
+            let import_idx = self.import_ids[spec.import];
+            let direct_target_idx = if spec.dispatch == ReservedRuntimeCallableDispatch::Direct {
                 if import_idx == u32::MAX {
                     panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
                 }
@@ -451,49 +443,45 @@ impl WasmBackend {
                 spec.index,
             );
             func_to_trampoline_idx.insert(runtime_name.clone(), trampoline_table_idx);
-            if let Some(import) = spec.import {
-                let import_idx = self.import_ids[import];
-                if import_idx == u32::MAX {
-                    panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
-                }
-                let expected_func_index = region_index(
-                    "reserved runtime trampoline function index",
-                    reserved_runtime_trampoline_func_start,
-                    reserved_runtime_trampoline_func_offset,
-                );
-                reserved_runtime_trampoline_func_offset = reserved_runtime_trampoline_func_offset
-                    .checked_add(1)
-                    .expect("reserved runtime trampoline function offset overflow");
-                push_trampoline_entry(
-                    &mut slots,
-                    trampoline_table_idx,
-                    &mut trampoline_entries,
-                    WasmCallableTrampolineEntry {
-                        name: runtime_name,
-                        expected_func_index,
-                        target_func_index: import_idx,
-                        target: callable_target(
-                            self,
-                            user_function_imports,
-                            table_base,
-                            fixed_shared_runtime_abi_base,
-                            split_runtime_shared_abi_slot_end,
-                            trampoline_table_idx,
-                            expected_func_index,
-                            WasmCallableTableRole::Trampoline,
-                        ),
-                        spec: TrampolineSpec {
-                            arity: spec.arity,
-                            has_closure: false,
-                            kind: spec.trampoline_abi.trampoline_kind(),
-                            closure_size: 0,
-                            target_has_ret: true,
-                        },
-                    },
-                );
-            } else {
-                slots.set(trampoline_table_idx, sentinel_func_idx, spec.runtime_name);
+            let import_idx = self.import_ids[spec.import];
+            if import_idx == u32::MAX {
+                panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
             }
+            let expected_func_index = region_index(
+                "reserved runtime trampoline function index",
+                reserved_runtime_trampoline_func_start,
+                reserved_runtime_trampoline_func_offset,
+            );
+            reserved_runtime_trampoline_func_offset = reserved_runtime_trampoline_func_offset
+                .checked_add(1)
+                .expect("reserved runtime trampoline function offset overflow");
+            push_trampoline_entry(
+                &mut slots,
+                trampoline_table_idx,
+                &mut trampoline_entries,
+                WasmCallableTrampolineEntry {
+                    name: runtime_name,
+                    expected_func_index,
+                    target_func_index: import_idx,
+                    target: callable_target(
+                        self,
+                        user_function_imports,
+                        table_base,
+                        fixed_shared_runtime_abi_base,
+                        split_runtime_shared_abi_slot_end,
+                        trampoline_table_idx,
+                        expected_func_index,
+                        WasmCallableTableRole::Trampoline,
+                    ),
+                    spec: TrampolineSpec {
+                        arity: spec.arity,
+                        has_closure: false,
+                        kind: spec.trampoline_abi.trampoline_kind(),
+                        closure_size: 0,
+                        target_has_ret: true,
+                    },
+                },
+            );
         }
         let mut app_callable_resolver = None;
         if let Some(resolver_func_index) = app_callable_resolver_func_index {

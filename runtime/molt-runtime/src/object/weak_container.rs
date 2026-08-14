@@ -23,7 +23,8 @@ use crate::{
 
 use super::weakref::{
     WeakContainerCookie, weakref_attach_container_cookie, weakref_container_cookie,
-    weakref_detach_container_cookie, weakref_peek_owned,
+    weakref_detach_container_cookie, weakref_has_live_target, weakref_peek_owned,
+    weakref_seed_cached_hash,
 };
 
 pub(crate) const WEAK_CONTAINER_KIND_KEY_DICT: u8 = 1;
@@ -1230,14 +1231,10 @@ fn attach_entry_cookie(
     weakref_bits: u64,
     id: WeakEntryId,
 ) -> bool {
-    weakref_attach_container_cookie(
-        _py,
-        weakref_bits,
-        WeakContainerCookie {
-            state_bits,
-            entry: id,
-        },
-    )
+    let Some(cookie) = WeakContainerCookie::new(state_bits, id) else {
+        return false;
+    };
+    weakref_attach_container_cookie(_py, weakref_bits, cookie)
 }
 
 #[unsafe(no_mangle)]
@@ -1257,6 +1254,25 @@ pub extern "C" fn molt_weakcontainer_store_commit(
             return raise_exception::<_>(_py, "TypeError", "weak container reference is invalid");
         }
         let hash = hash_from_bits(hash_bits);
+        let expected_target_bits = match state.kind {
+            WeakContainerKind::ValueDict => value_bits,
+            WeakContainerKind::KeyDict | WeakContainerKind::Set => key_bits,
+        };
+        let target_valid = match state.kind {
+            WeakContainerKind::KeyDict | WeakContainerKind::Set => {
+                weakref_seed_cached_hash(_py, weakref_bits, expected_target_bits, hash as i64)
+            }
+            WeakContainerKind::ValueDict => {
+                weakref_has_live_target(_py, weakref_bits, expected_target_bits)
+            }
+        };
+        if !target_valid {
+            return raise_exception::<_>(
+                _py,
+                "ReferenceError",
+                "weak container reference does not match its live referent",
+            );
+        }
         loop {
             let (existing, observed_version) = match find_matching(_py, state, key_bits, hash) {
                 Ok(found) => found,
@@ -1987,7 +2003,7 @@ pub extern "C" fn molt_weakcontainer_dead(state_bits: u64, weakref_bits: u64) ->
         let Some(cookie) = weakref_container_cookie(_py, weakref_bits) else {
             return MoltObject::none().bits();
         };
-        if cookie.state_bits != state_bits {
+        if cookie.state_bits() != state_bits {
             return MoltObject::none().bits();
         }
         let current = {
@@ -2021,7 +2037,7 @@ pub extern "C" fn molt_weakcontainer_dead(state_bits: u64, weakref_bits: u64) ->
 }
 
 pub(crate) fn weakcontainer_target_dead(_py: &PyToken<'_>, cookie: WeakContainerCookie) {
-    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits) else {
+    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits()) else {
         return;
     };
     let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
@@ -2044,7 +2060,7 @@ pub(crate) fn weakcontainer_target_dead_detach(
     cookie: WeakContainerCookie,
     sink: &mut DetachedEdgeSink,
 ) {
-    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits) else {
+    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits()) else {
         return;
     };
     let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
@@ -2060,7 +2076,7 @@ pub(crate) fn weakcontainer_target_dead_detach(
 }
 
 pub(crate) fn weakcontainer_target_dead_detach_edge_count(cookie: WeakContainerCookie) -> usize {
-    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits) else {
+    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits()) else {
         return 0;
     };
     let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, WasmRuntimeImport, runtime_callable_arity, runtime_callable_import,
-    wasm_runtime_import,
+    IMPORT_REGISTRY, RESERVED_RUNTIME_CALLABLE_SPECS, WasmRuntimeImport, runtime_callable_arity,
+    runtime_callable_import, wasm_runtime_import,
 };
 use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -44,6 +44,11 @@ impl WasmRuntimeSurfacePlan {
     pub(super) fn auto_imports(&self, import_ids: &TrackedImportIds) -> Vec<WasmRuntimeImport> {
         let mut auto_imports: Vec<WasmRuntimeImport> =
             self.required_imports.iter().copied().collect();
+        auto_imports.extend(
+            RESERVED_RUNTIME_CALLABLE_SPECS
+                .iter()
+                .map(|spec| spec.import),
+        );
         auto_imports.extend(self.builtin_trampoline_specs.keys().map(|runtime_name| {
             runtime_callable_import(runtime_name).unwrap_or_else(|| {
                 panic!("runtime callable missing generated import spec: {runtime_name}")
@@ -240,7 +245,7 @@ mod tests {
     use crate::wasm_import_tracking::TrackedImportIds;
 
     #[test]
-    fn auto_imports_start_empty_for_unreached_runtime_callables() {
+    fn auto_imports_root_the_complete_reserved_runtime_callable_family() {
         let plan = WasmRuntimeSurfacePlan {
             max_func_arity: 0,
             max_call_arity: 0,
@@ -253,9 +258,10 @@ mod tests {
         let import_ids = TrackedImportIds::new(BTreeMap::new());
         let imports = plan.auto_imports(&import_ids);
 
-        assert!(
-            imports.is_empty(),
-            "unobserved builtins/intrinsics must not create runtime callable imports"
-        );
+        let expected = RESERVED_RUNTIME_CALLABLE_SPECS
+            .iter()
+            .map(|spec| spec.import)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(imports.into_iter().collect::<BTreeSet<_>>(), expected);
     }
 }

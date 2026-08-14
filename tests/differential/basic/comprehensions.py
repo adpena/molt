@@ -64,6 +64,19 @@ except ZeroDivisionError:
     print("genexpr-raised-on-next")
 
 
+outer_events = []
+
+
+class OuterIterable:
+    def __iter__(self):
+        outer_events.append("iter")
+        return iter((3, 4))
+
+
+eager_outer = (value for value in OuterIterable())
+print("genexpr-outer-eager", outer_events, next(eager_outer), outer_events)
+
+
 def make_gen():
     x = 1
     gen = (x for _ in range(2))

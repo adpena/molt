@@ -54,7 +54,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -63,7 +62,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     tracked_vars_set: &mut std::collections::HashSet<String>,
     entry_vars: &mut BTreeMap<String, Value>,
     already_decrefed: &mut BTreeSet<String>,
-    local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
@@ -93,7 +91,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             declared_func_arities,
             function_has_ret,
             defined_functions,
-            return_alias_summaries,
             &mut *block_tracked_obj,
             &mut *block_tracked_ptr,
             &mut *tracked_obj_vars,
@@ -102,7 +99,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *tracked_vars_set,
             &mut *entry_vars,
             &mut *already_decrefed,
-            local_inc_ref_obj,
             local_dec_ref_obj,
             nbc,
         ),
@@ -119,8 +115,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             local_closure_envs,
             function_has_ret,
             defined_functions,
-            return_alias_summaries,
-            local_inc_ref_obj,
             nbc,
         ),
         "call_guarded" => handle_call_guarded_op(
@@ -143,7 +137,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             declared_func_arities,
             function_has_ret,
             defined_functions,
-            local_inc_ref_obj,
             nbc,
         ),
         "call_func" => handle_call_func_op(
@@ -158,7 +151,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             first_defined_at,
             last_use,
-            local_inc_ref_obj,
             nbc,
         ),
         "invoke_ffi" => handle_invoke_ffi_op(
@@ -280,7 +272,6 @@ fn handle_call_direct_op(
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -289,7 +280,6 @@ fn handle_call_direct_op(
     tracked_vars_set: &mut std::collections::HashSet<String>,
     entry_vars: &mut BTreeMap<String, Value>,
     already_decrefed: &mut BTreeSet<String>,
-    local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
@@ -660,13 +650,6 @@ fn handle_call_direct_op(
         builder.inst_results(gc_call)[0]
     };
 
-    if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
-        return_alias_summaries.get(target_name)
-        && *param_idx < args.len()
-    {
-        emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
-    }
-
     // Tracked-value cleanup (stays inline — varies per site).
     // Re-attach surviving tracked values to the current block.
     if let Some(cur_block) = builder.current_block() {
@@ -807,8 +790,6 @@ fn handle_call_internal_op(
     local_closure_envs: &BTreeMap<String, String>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
-    local_inc_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -910,12 +891,6 @@ fn handle_call_internal_op(
     let call = builder.ins().call(local_callee, &args);
     if target_returns {
         let res = builder.inst_results(call)[0];
-        if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
-            return_alias_summaries.get(target_name)
-            && *param_idx < args.len()
-        {
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
-        }
         if let Some(out__) = op.out.as_ref() {
             def_var_named(&mut *builder, vars, out__, res);
         }
@@ -955,7 +930,6 @@ fn handle_call_guarded_op(
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    local_inc_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -1237,14 +1211,6 @@ fn handle_call_guarded_op(
     } else {
         direct_results[0]
     };
-    emit_protect_borrowed_args_aliased_return(
-        &mut *builder,
-        &mut *sealed_blocks,
-        direct_res,
-        &args,
-        local_inc_ref_obj,
-        nbc,
-    );
     if emit_traces {
         let _ = builder.ins().call(trace_exit_local, &[]);
     }
@@ -1301,14 +1267,6 @@ fn handle_call_guarded_op(
     } else {
         fallback_results[0]
     };
-    emit_protect_borrowed_args_aliased_return(
-        &mut *builder,
-        &mut *sealed_blocks,
-        fallback_res,
-        &args,
-        local_inc_ref_obj,
-        nbc,
-    );
     if emit_traces {
         let _ = builder.ins().call(trace_exit_local, &[]);
     }
@@ -1360,7 +1318,6 @@ fn handle_call_func_op(
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
-    local_inc_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -1628,14 +1585,6 @@ fn handle_call_func_op(
         let sig_ref = builder.import_signature(call_sig);
         let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
         let direct_res = builder.inst_results(indirect_call)[0];
-        emit_protect_borrowed_args_aliased_return(
-            &mut *builder,
-            &mut *sealed_blocks,
-            direct_res,
-            &args,
-            local_inc_ref_obj,
-            nbc,
-        );
         let guard_exit = import_func_ref(
             &mut *module,
             &mut *import_ids,

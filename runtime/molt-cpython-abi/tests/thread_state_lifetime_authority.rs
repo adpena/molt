@@ -35,7 +35,10 @@ fn every_thread_state_creation_is_owned_by_prepare_anchor_arm_lifetime() {
     let touch = lifecycle
         .split("pub(crate) fn touch_tls_guard()")
         .nth(1)
-        .expect("touch_tls_guard body");
+        .expect("touch_tls_guard body")
+        .split("pub(crate) fn runtime_teardown")
+        .next()
+        .expect("bounded touch_tls_guard body");
     let prepare = touch
         .find("prepare_runtime_thread_state_lifetime")
         .expect("prepare phase");
@@ -47,6 +50,10 @@ fn every_thread_state_creation_is_owned_by_prepare_anchor_arm_lifetime() {
         .find("arm_runtime_thread_state_lifetime")
         .expect("arm phase");
     assert!(prepare < lease_tls && lease_tls < runtime_tls && runtime_tls < arm);
+    assert!(
+        !touch.contains("target_arch = \"wasm32\""),
+        "WASM uses the CPython ABI thread-state record and must prepare and arm the same lifetime authority"
+    );
 
     let process_exit = runtime
         .split("pub extern \"C\" fn molt_runtime_exit")

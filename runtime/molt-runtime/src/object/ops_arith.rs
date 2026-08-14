@@ -587,7 +587,13 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     if crate::object::refcount_opt::is_heap_ref(val) {
                         let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
                         let header = header_from_obj_ptr(obj_ptr);
-                        (*header).retain_owned(total, "list repeat batch retain");
+                        let flags = (*header).load_synchronized_flags();
+                        (*header).retain_owned_mirrored(
+                            val,
+                            total,
+                            "list repeat batch retain",
+                            flags,
+                        );
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 } else {
@@ -638,7 +644,13 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     if crate::object::refcount_opt::is_heap_ref(val) {
                         let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
                         let header = header_from_obj_ptr(obj_ptr);
-                        (*header).retain_owned(total, "tuple repeat batch retain");
+                        let flags = (*header).load_synchronized_flags();
+                        (*header).retain_owned_mirrored(
+                            val,
+                            total,
+                            "tuple repeat batch retain",
+                            flags,
+                        );
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 } else {

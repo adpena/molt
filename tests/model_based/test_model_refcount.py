@@ -2,7 +2,7 @@
 
 Encodes invariants from ``formal/quint/molt_refcount_protocol.qnt`` as
 executable Python tests.  The Quint model verifies the full refcount lifecycle
-including call_bind protocol, borrow semantics, callargs aliasing, and
+including call protocol, borrow semantics, owned return publication, and
 refcount elision optimizations.
 
 Invariants tested:
@@ -12,7 +12,7 @@ Invariants tested:
   - No leaks (unreachable objects have refcount 0)
   - Borrow safety (borrowed refs point to alive objects)
   - Frame consistency (active frames reference alive objects)
-  - Callargs alias protection (aliased returns are protected before cleanup)
+  - Call results are published with exactly one caller-owned reference
   - Roots alive (root set only contains alive objects)
   - Counted root/container references are well-formed
   - Alive objects have positive refcount
@@ -61,7 +61,7 @@ class CallFrame:
     args: set[int]
     return_val: int  # -1 = no return yet
     active: bool
-    protected_return: bool
+    return_owned: bool
 
 
 @dataclass
@@ -100,7 +100,7 @@ def _make_initial_state() -> RefcountState:
             args=set(),
             return_val=-1,
             active=False,
-            protected_return=False,
+            return_owned=False,
         )
         for fid in range(MAX_FRAMES)
     }
@@ -209,7 +209,7 @@ def begin_call(
         args=set(arg_oids),
         return_val=-1,
         active=True,
-        protected_return=False,
+        return_owned=False,
     )
     s.active_frame_ids.add(frame_id)
     s.accessed = set(arg_oids)
@@ -217,24 +217,18 @@ def begin_call(
 
 
 def call_return(state: RefcountState, frame_id: int, ret_oid: int) -> RefcountState:
-    """Callee returns a value. Apply alias protection if needed."""
+    """Publish the callee's single owned result to its caller."""
     s = state.clone()
     f = s.frames[frame_id]
     assert f.active and f.return_val == -1
     assert s.heap[ret_oid].alive
 
-    is_aliased = ret_oid in f.args
-    if is_aliased:
-        # protect_callargs_aliased_return: inc_ref before cleanup
-        s.heap[ret_oid].refcount += 1
-
+    # Ownership is semantic, not inferred later from representation equality.
+    s.heap[ret_oid].refcount += 1
     f.return_val = ret_oid
-    f.protected_return = is_aliased
+    f.return_owned = True
     s.roots.add(ret_oid)
     s.root_counts[ret_oid] += 1
-
-    if not is_aliased:
-        s.borrows.add((frame_id, ret_oid))
 
     s.accessed = {ret_oid}
     return s
@@ -331,14 +325,12 @@ def check_frame_consistent(state: RefcountState) -> None:
             )
 
 
-def check_alias_protection(state: RefcountState) -> None:
-    """I6: if return value aliases a callarg, protectedReturn is set."""
+def check_call_return_owned(state: RefcountState) -> None:
+    """I6: each published return carries exactly one caller owner."""
     for fid in state.active_frame_ids:
         f = state.frames[fid]
-        if f.return_val != -1 and f.return_val in f.args:
-            assert f.protected_return, (
-                f"Frame {fid}: return {f.return_val} aliases arg but not protected"
-            )
+        if f.return_val != -1:
+            assert f.return_owned, f"Frame {fid}: return {f.return_val} is not owned"
 
 
 def check_roots_alive(state: RefcountState) -> None:
@@ -386,7 +378,7 @@ def check_all_invariants(state: RefcountState) -> None:
     check_no_leak(state)
     check_borrow_safe(state)
     check_frame_consistent(state)
-    check_alias_protection(state)
+    check_call_return_owned(state)
     check_roots_alive(state)
     check_counted_refs_well_formed(state)
     check_alive_positive_refcount(state)
@@ -499,91 +491,40 @@ class TestHeapOwnership:
         check_all_invariants(s)
 
 
-class TestCallArgsProtection:
-    """Test that callargs alias protection prevents use-after-free."""
+class TestOwnedCallResults:
+    """Test the single owned-result ABI across argument cleanup."""
 
-    def test_aliased_return_is_protected(self) -> None:
-        """When return value aliases a callarg, protection flag is set."""
+    def test_aliased_return_is_owned(self) -> None:
         s = _make_initial_state()
-        s = alloc_obj(s)  # obj 0
-        s = begin_call(s, 0, {0})  # frame 0 with arg 0
-        check_all_invariants(s)
-
-        # Return the same object that was passed as arg (aliased)
-        s = call_return(s, 0, 0)
-        check_alias_protection(s)
-        assert s.frames[0].protected_return
-
-    def test_non_aliased_return_not_protected(self) -> None:
-        """When return value is different from args, no protection needed."""
-        s = _make_initial_state()
-        s = alloc_obj(s)  # obj 0
-        s = alloc_obj(s)  # obj 1
+        s = alloc_obj(s)
         s = begin_call(s, 0, {0})
+        s = call_return(s, 0, 0)
+        check_call_return_owned(s)
+        assert s.frames[0].return_owned
 
-        s = call_return(s, 0, 1)  # return different obj
-        assert not s.frames[0].protected_return
-
-    def test_aliased_return_survives_cleanup(self) -> None:
-        """The critical bug scenario: aliased return must survive frame cleanup.
-
-        This encodes the 2026-02-23 bug fix from the Quint model comment.
-        Without protect_callargs_aliased_return, cleanup would dec_ref the arg
-        (which is also the return value), potentially freeing it.
-        """
+    def test_non_aliased_return_is_also_owned(self) -> None:
         s = _make_initial_state()
-        s = alloc_obj(s)  # obj 0, rc=1
+        s = alloc_obj(s)
+        s = alloc_obj(s)
+        s = begin_call(s, 0, {0})
+        s = call_return(s, 0, 1)
+        assert s.frames[0].return_owned
 
-        # Begin call with obj 0 as arg -> rc=2 (callargs takes ownership)
+    def test_aliased_owned_return_survives_cleanup(self) -> None:
+        s = _make_initial_state()
+        s = alloc_obj(s)
         s = begin_call(s, 0, {0})
         assert s.heap[0].refcount == 2
 
-        # Return obj 0 (aliased) -> protection inc_ref -> rc=3
         s = call_return(s, 0, 0)
         assert s.heap[0].refcount == 3
-        assert s.frames[0].protected_return
+        assert s.frames[0].return_owned
         check_all_invariants(s)
 
-        # Cleanup frame -> dec_ref arg -> rc=2
         s = cleanup_frame(s, 0)
-        assert s.heap[0].alive, "Aliased return was freed during cleanup!"
-        assert s.heap[0].refcount >= 1
+        assert s.heap[0].alive
+        assert s.heap[0].refcount == 2
         check_no_double_free(s)
-
-    def test_unprotected_aliased_return_would_fail(self) -> None:
-        """Demonstrate what happens WITHOUT alias protection (the original bug).
-
-        If we skip the protective inc_ref and the object only has the callargs
-        reference, cleanup would free it, leading to use-after-free.
-        """
-        s = _make_initial_state()
-        s = alloc_obj(s)  # obj 0, rc=1
-
-        # Manually simulate begin_call without alias protection
-        s.heap[0].refcount += 1  # callargs inc_ref -> rc=2
-        s.frames[0] = CallFrame(
-            frame_id=0,
-            args={0},
-            return_val=-1,
-            active=True,
-            protected_return=False,
-        )
-        s.active_frame_ids.add(0)
-
-        # Return obj 0 WITHOUT protection (the bug)
-        s.frames[0].return_val = 0
-        s.roots.add(0)
-        # Skip the protective inc_ref -- this is the bug
-
-        # Now dec_ref the root (caller consumed it)
-        s.heap[0].refcount -= 1  # rc=1 (only callargs ref)
-
-        # Cleanup frame dec_refs the arg
-        s.heap[0].refcount -= 1  # rc=0 -- FREED!
-        s.heap[0].alive = False
-
-        # The return value is now dangling -- use-after-free!
-        assert not s.heap[0].alive, "Without protection, the aliased return is freed"
 
 
 class TestBorrowSafety:
@@ -678,7 +619,7 @@ class TestFullProtocolSequences:
             # Call 1: pass obj 0, return obj 0 (aliased)
             s = begin_call(s, 0, {0})
             s = call_return(s, 0, 0)
-            check_alias_protection(s)
+            check_call_return_owned(s)
             s = cleanup_frame(s, 0)
             check_all_invariants(s)
             assert s.heap[0].alive
@@ -686,7 +627,7 @@ class TestFullProtocolSequences:
             # Call 2: pass obj 0 again, return obj 0 again
             s = begin_call(s, 1, {0})
             s = call_return(s, 1, 0)
-            check_alias_protection(s)
+            check_call_return_owned(s)
             s = cleanup_frame(s, 1)
             check_all_invariants(s)
             assert s.heap[0].alive
@@ -698,8 +639,8 @@ class TestFullProtocolSequences:
             s = begin_call(s, 0, {0, 1, 2})
             check_all_invariants(s)
             s = call_return(s, 0, 1)  # return one of the args (aliased)
-            check_alias_protection(s)
+            check_call_return_owned(s)
             s = cleanup_frame(s, 0)
             check_all_invariants(s)
-            # obj 1 must survive because of alias protection
+            # obj 1 survives because the callee published an owned result.
             assert s.heap[1].alive

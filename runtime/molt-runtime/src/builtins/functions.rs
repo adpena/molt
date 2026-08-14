@@ -10,6 +10,7 @@ use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
 use crate::builtins::functions_re::this_build_rot13_text;
+use crate::builtins::platform::molt_importlib_import_transaction;
 use crate::builtins::types::{
     molt_object_new_bound, molt_type_init, molt_type_new, molt_types_capsule_new,
     molt_types_cell_new, molt_types_coroutine, molt_types_dynamic_class_attr_init,
@@ -60,6 +61,7 @@ pub use opcode_payload::*;
 pub use tokenize::*;
 
 pub(crate) use function_abi::python_builtin_functions_clear_runtime_state;
+pub(crate) use wasm_callables_generated::runtime_callable_symbol_is_non_callable;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_callables_generated::{

@@ -1,4 +1,3 @@
-use crate::passes::ReturnAliasSummary;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::WasmCallableTablePlan;
@@ -12,7 +11,6 @@ pub(in crate::wasm) struct WasmCallableCallSiteAbi<'a> {
     closure_functions: &'a BTreeSet<String>,
     escaped_callable_targets: &'a BTreeSet<String>,
     call_func_spill_offset: u32,
-    return_alias_summaries: &'a BTreeMap<String, ReturnAliasSummary>,
 }
 
 impl<'a> WasmCallableCallSiteAbi<'a> {
@@ -20,7 +18,6 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
         plan: &'a WasmCallableTablePlan,
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
-        return_alias_summaries: &'a BTreeMap<String, ReturnAliasSummary>,
     ) -> Self {
         Self {
             func_table_slots: &plan.func_to_table_idx,
@@ -30,7 +27,6 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             closure_functions: &plan.closure_functions,
             escaped_callable_targets,
             call_func_spill_offset,
-            return_alias_summaries,
         }
     }
 
@@ -99,22 +95,6 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
     pub(in crate::wasm) fn call_func_spill_offset(&self) -> u32 {
         self.call_func_spill_offset
     }
-
-    pub(in crate::wasm) fn returns_alias_param(
-        &self,
-        target_name: &str,
-        args_names: &[String],
-    ) -> bool {
-        self.return_alias_summaries
-            .get(target_name)
-            .and_then(|summary| match summary {
-                ReturnAliasSummary::Param(param_idx) if *param_idx < args_names.len() => {
-                    Some(*param_idx)
-                }
-                _ => None,
-            })
-            .is_some()
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +106,6 @@ pub(in crate::wasm) struct WasmCallableTablePair {
 #[cfg(test)]
 mod tests {
     use super::super::WasmCallableTablePlan;
-    use crate::passes::ReturnAliasSummary;
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -150,9 +129,7 @@ mod tests {
             trampoline_entries: Vec::new(),
         };
         let escaped_targets = BTreeSet::from(["callee".to_string()]);
-        let return_alias_summaries =
-            BTreeMap::from([("callee".to_string(), ReturnAliasSummary::Param(1))]);
-        let abi = plan.call_site_abi(&escaped_targets, 4096, &return_alias_summaries);
+        let abi = plan.call_site_abi(&escaped_targets, 4096);
 
         let table_pair = abi.callable_table_pair("callee", "test_call");
         assert_eq!(table_pair.function.current_table_index, 107);
@@ -162,8 +139,6 @@ mod tests {
         assert!(abi.is_closure_function("callee"));
         assert!(abi.is_escaped_callable("callee"));
         assert_eq!(abi.call_func_spill_offset(), 4096);
-        assert!(abi.returns_alias_param("callee", &["x".to_string(), "y".to_string()]));
-        assert!(!abi.returns_alias_param("callee", &["x".to_string()]));
     }
 
     #[test]
@@ -187,8 +162,7 @@ mod tests {
             trampoline_entries: Vec::new(),
         };
         let escaped = BTreeSet::new();
-        let returns = BTreeMap::new();
-        let abi = plan.call_site_abi(&escaped, 0, &returns);
+        let abi = plan.call_site_abi(&escaped, 0);
         let pair = abi.callable_table_pair("callee", "fixed-mask-test");
 
         assert!(matches!(

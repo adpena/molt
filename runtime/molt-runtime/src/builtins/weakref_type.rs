@@ -12,8 +12,7 @@ use crate::builtins::type_ops::{issubclass_bits, type_of_bits};
 use crate::call::class_init::alloc_instance_for_class;
 use crate::{
     TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_WEAKREF, alloc_string, attr_name_bits_from_bytes,
-    dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, molt_eq,
-    molt_weakref_callback, molt_weakref_find_nocallback, molt_weakref_get, molt_weakref_peek,
+    dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, molt_weakref_find_nocallback,
     molt_weakref_register, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
     type_name,
 };
@@ -29,6 +28,21 @@ fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Option<String
         .and_then(|_| string_obj_to_owned(obj_from_bits(name_bits)));
     dec_ref_bits(_py, name_bits);
     name
+}
+
+fn weakref_receiver(_py: &crate::PyToken<'_>, self_bits: u64, method: &str) -> Option<*mut u8> {
+    let self_obj = obj_from_bits(self_bits);
+    if let Some(ptr) = self_obj.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_WEAKREF
+    {
+        return Some(ptr);
+    }
+    let self_type = type_name(_py, self_obj);
+    let message = format!(
+        "descriptor '{method}' requires a 'weakref.ReferenceType' object but received a '{self_type}'"
+    );
+    raise_exception::<()>(_py, "TypeError", &message);
+    None
 }
 
 #[unsafe(no_mangle)]
@@ -88,21 +102,20 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_call(self_bits: u64) -> u64 {
-    molt_weakref_get(self_bits)
+    crate::with_gil_entry_nopanic!(_py, {
+        if weakref_receiver(_py, self_bits, "__call__").is_none() {
+            return MoltObject::none().bits();
+        }
+        crate::object::weakref::weakref_peek_owned(_py, self_bits)
+            .unwrap_or_else(|| MoltObject::none().bits())
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_init(self_bits: u64, _target_bits: u64, _callback_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let valid = obj_from_bits(self_bits)
-            .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_WEAKREF });
-        if !valid {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "weakref.__init__ expects ReferenceType",
-            );
+        if weakref_receiver(_py, self_bits, "__init__").is_none() {
+            return MoltObject::none().bits();
         }
         MoltObject::none().bits()
     })
@@ -110,39 +123,88 @@ pub extern "C" fn molt_weakref_init(self_bits: u64, _target_bits: u64, _callback
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_callback_get(self_bits: u64) -> u64 {
-    molt_weakref_callback(self_bits)
+    crate::with_gil_entry_nopanic!(_py, {
+        if weakref_receiver(_py, self_bits, "__callback__").is_none() {
+            return MoltObject::none().bits();
+        }
+        crate::object::weakref::weakref_callback_owned(_py, self_bits)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_eq(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let other_is_weakref = obj_from_bits(other_bits)
-            .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_WEAKREF });
-        if !other_is_weakref {
-            return MoltObject::from_bool(false).bits();
-        }
-        let left = molt_weakref_peek(self_bits);
-        let right = molt_weakref_peek(other_bits);
-        if exception_pending(_py) {
-            dec_ref_bits(_py, left);
-            dec_ref_bits(_py, right);
-            return MoltObject::none().bits();
-        }
-        let result = if obj_from_bits(left).is_none() || obj_from_bits(right).is_none() {
-            MoltObject::from_bool(self_bits == other_bits).bits()
-        } else {
-            molt_eq(left, right)
-        };
-        dec_ref_bits(_py, left);
-        dec_ref_bits(_py, right);
-        result
+        weakref_richcompare(_py, self_bits, other_bits, false)
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_weakref_ne(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        weakref_richcompare(_py, self_bits, other_bits, true)
+    })
+}
+
+fn weakref_richcompare(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+    is_ne: bool,
+) -> u64 {
+    let method = if is_ne { "__ne__" } else { "__eq__" };
+    if weakref_receiver(_py, self_bits, method).is_none() {
+        return MoltObject::none().bits();
+    }
+    let other_is_weakref = obj_from_bits(other_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_WEAKREF);
+    if !other_is_weakref {
+        return crate::builtins::methods::not_implemented_bits(_py);
+    }
+    let left = crate::object::weakref::weakref_peek_owned(_py, self_bits);
+    let right = crate::object::weakref::weakref_peek_owned(_py, other_bits);
+    let result = if let (Some(left), Some(right)) = (left, right) {
+        let name_bits = if is_ne {
+            crate::intern_static_name(_py, &crate::runtime_state(_py).interned.ne_name, b"__ne__")
+        } else {
+            crate::intern_static_name(_py, &crate::runtime_state(_py).interned.eq_name, b"__eq__")
+        };
+        match crate::object::ops_compare::rich_compare_value(
+            _py,
+            obj_from_bits(left),
+            obj_from_bits(right),
+            name_bits,
+            name_bits,
+        ) {
+            crate::object::ops_compare::CompareValueOutcome::Value(bits) => bits,
+            crate::object::ops_compare::CompareValueOutcome::Error => MoltObject::none().bits(),
+            crate::object::ops_compare::CompareValueOutcome::NotComparable => {
+                MoltObject::from_bool(if is_ne { left != right } else { left == right }).bits()
+            }
+        }
+    } else {
+        MoltObject::from_bool(if is_ne {
+            self_bits != other_bits
+        } else {
+            self_bits == other_bits
+        })
+        .bits()
+    };
+    if let Some(left) = left {
+        dec_ref_bits(_py, left);
+    }
+    if let Some(right) = right {
+        dec_ref_bits(_py, right);
+    }
+    result
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_hash(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if weakref_receiver(_py, self_bits, "__hash__").is_none() {
+            return MoltObject::none().bits();
+        }
         let hash = crate::object::weakref::weakref_cached_hash_or_compute(_py, self_bits);
         if exception_pending(_py) {
             MoltObject::none().bits()
@@ -155,16 +217,16 @@ pub extern "C" fn molt_weakref_hash(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "weakref repr expects ReferenceType");
-        };
-        let target = molt_weakref_peek(self_bits);
-        if exception_pending(_py) {
+        let Some(self_ptr) = weakref_receiver(_py, self_bits, "__repr__") else {
             return MoltObject::none().bits();
-        }
-        let text = if let Some(target_ptr) = obj_from_bits(target).as_ptr() {
-            let target_type = type_name(_py, obj_from_bits(target));
-            let target_class = type_of_bits(_py, target);
+        };
+        let target = crate::object::weakref::weakref_peek_owned(_py, self_bits);
+        let text = if let Some(target_bits) = target {
+            let target_ptr = obj_from_bits(target_bits)
+                .as_ptr()
+                .unwrap_or_else(|| std::process::abort());
+            let target_type = type_name(_py, obj_from_bits(target_bits));
+            let target_class = type_of_bits(_py, target_bits);
             let target_name = if target_class == builtin_classes(_py).type_obj {
                 "type".to_string()
             } else {
@@ -180,14 +242,16 @@ pub extern "C" fn molt_weakref_repr(self_bits: u64) -> u64 {
                 text.push_str(&name);
                 text.push_str(")>");
             } else if exception_pending(_py) {
-                dec_ref_bits(_py, target);
+                dec_ref_bits(_py, target_bits);
                 return MoltObject::none().bits();
             }
             text
         } else {
             format!("<weakref at 0x{:x}; dead>", self_ptr as usize)
         };
-        dec_ref_bits(_py, target);
+        if let Some(target_bits) = target {
+            dec_ref_bits(_py, target_bits);
+        }
         let ptr = alloc_string(_py, text.as_bytes());
         if ptr.is_null() {
             MoltObject::none().bits()

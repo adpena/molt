@@ -867,8 +867,13 @@ def _render_rs_import_registry(data: dict) -> str:
             f'        "{entry["name"]}" => Some('
             f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
         )
-        runtime_name = entry.get("runtime_name")
-        if runtime_name is not None:
+        # Reserved callable rows deliberately keep their derived [[import]]
+        # transport-only, so they do not duplicate callable metadata such as
+        # runtime_name. The transport still has the same Rust export alias as
+        # every ordinary import; derive it from the normalized export authority
+        # so lookup works in both directions for the complete import family.
+        runtime_name = entry.get("runtime_name") or _runtime_export_name(entry)
+        if runtime_name != entry["name"]:
             lines.append(
                 f'        "{runtime_name}" => Some('
                 f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
@@ -1581,7 +1586,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) import_name: &'static str,\n",
-            "    pub(crate) import: Option<WasmRuntimeImport>,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) arity: usize,\n",
             "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "    pub(crate) trampoline_abi: ReservedRuntimeCallableTrampolineAbi,\n",
@@ -1590,12 +1595,8 @@ def _render_rs_runtime_callables(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
-        import_token = (
-            "Some("
-            + _rust_runtime_import_from_variants(import_variants, entry["import_name"])
-            + ")"
-            if entry["import_name"] in import_variants
-            else "None"
+        import_token = _rust_runtime_import_from_variants(
+            import_variants, entry["import_name"]
         )
         lines.extend(
             [
@@ -1627,6 +1628,11 @@ def _render_rs_runtime_callables(data: dict) -> str:
             continue
         lines.append(
             f'        "{entry["runtime_name"]}" => Some({_rust_runtime_import(data, entry["name"])}),\n'
+        )
+    for entry in reserved_callables:
+        lines.append(
+            f'        "{entry["runtime_name"]}" => Some('
+            f"{_rust_runtime_import_from_variants(import_variants, entry['import_name'])}),\n"
         )
     lines.extend(
         [
@@ -1842,6 +1848,7 @@ def _rust_str_slice(values: list[str]) -> str:
 
 def render_runtime_callables_rs(data: dict) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
+    non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     poll_imports = sorted(
         (
             (entry["poll_table_slot"], entry["name"])
@@ -1859,6 +1866,13 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;\n",
             "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
             "    RUNTIME_CALLABLE_KEY_BASE + 0x100;\n\n",
+            "pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[\n",
+            *[f'    "{name}",\n' for name in non_runtime_callables],
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool {\n",
+            "    NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)\n",
+            "}\n\n",
             "pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = ",
             f"{max((slot for slot, _name in poll_imports), default=0)};\n\n",
             '#[cfg(target_arch = "wasm32")]\n',
@@ -2160,6 +2174,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
 def render_py(data: dict) -> str:
     lines: list[str] = [_header("#")]
     reserved_callables = _shared_runtime_callables(data)
+    non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     lines.append(
         "WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (\n"
     )
@@ -2177,6 +2192,10 @@ def render_py(data: dict) -> str:
         )
     lines.append("}\n\n")
     lines.append(f"WASM_STATIC_TYPE_COUNT: int = {len(data['static_type'])}\n\n")
+    lines.append("WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({\n")
+    for name in non_runtime_callables:
+        lines.append(f'    "{name}",\n')
+    lines.append("})\n\n")
     lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
     for entry in data["import"]:
         lines.append(f'    "{entry["name"]}",\n')
@@ -2266,26 +2285,35 @@ def render_py(data: dict) -> str:
             "    import_name: (runtime_name, arity, result)\n",
             "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
             "}\n\n",
-            "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
-            "    runtime_name: arity\n",
-            "    for _index, runtime_name, _import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
+            "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
+            '    runtime_name: (import_name, arity, "i64")\n',
+            "    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
+            "}\n\n",
+            "WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
+            '    import_name: (runtime_name, arity, "i64")\n',
+            "    for _index, runtime_name, import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
             "}\n\n",
             "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
             "    **{\n",
             "        runtime_name: arity\n",
             "        for runtime_name, _import_name, arity, _result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
             "    },\n",
-            "    **WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME,\n",
+            "    **{\n",
+            "        runtime_name: spec[1]\n",
+            "        for runtime_name, spec in WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.items()\n",
+            "    },\n",
             "}\n\n",
             "def wasm_runtime_callable_spec(name: str) -> tuple[str, int, str] | None:\n",
             "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(\n",
             "        name\n",
-            "    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(name)\n\n",
+            "    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(\n",
+            "        name\n",
+            "    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_RUNTIME.get(\n",
+            "        name\n",
+            "    ) or WASM_RESERVED_RUNTIME_CALLABLE_SPEC_BY_IMPORT.get(name)\n\n",
             "def wasm_runtime_callable_arity(name: str) -> int | None:\n",
             "    spec = wasm_runtime_callable_spec(name)\n",
-            "    if spec is not None:\n",
-            "        return spec[1]\n",
-            "    return WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME.get(name)\n\n",
+            "    return None if spec is None else spec[1]\n\n",
             "def wasm_runtime_callable_result(name: str) -> str | None:\n",
             "    spec = wasm_runtime_callable_spec(name)\n",
             "    return None if spec is None else spec[2]\n\n",

@@ -1,7 +1,9 @@
 use super::super::control_flow::{DispatchControlMaps, build_dispatch_control_maps};
 use super::super::function_frame::WasmFrameControlMode;
 use super::block_layout::{build_dispatch_block_map, build_dispatch_blocks};
-use super::state_remap::{build_dense_state_remap_table, build_state_resume_maps};
+use super::state_remap::{
+    build_dense_state_remap_table, build_state_resume_maps, stateful_entry_prologue_end,
+};
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_data::DataSegmentRef;
@@ -24,6 +26,7 @@ pub(super) struct StateResumePlan {
 #[derive(Clone, Copy)]
 pub(in crate::wasm) struct NonLinearDispatchLocals {
     pub(in crate::wasm) state_local: u32,
+    pub(in crate::wasm) resume_state_local: Option<u32>,
     pub(in crate::wasm) block_map_base_local: u32,
     pub(in crate::wasm) return_local: u32,
     pub(in crate::wasm) self_ptr_local: Option<u32>,
@@ -48,7 +51,9 @@ impl NonLinearDispatchPlan {
         let block_map_segment = backend.add_data_segment(reloc_enabled, &block_map_bytes);
         let control_maps = build_dispatch_control_maps(&func_ir.ops, stateful, &func_ir.name);
         let state_resume = stateful.then(|| {
-            let (state_map, const_ints) = build_state_resume_maps(&func_ir.ops);
+            let entry_prologue_end = stateful_entry_prologue_end(&func_ir.ops);
+            let (state_map, const_ints) =
+                build_state_resume_maps(&func_ir.ops, entry_prologue_end + 1);
             let remap_table = build_dense_state_remap_table(&state_map).map(|remap_bytes| {
                 let remap_entries = (remap_bytes.len() / std::mem::size_of::<i64>()) as i64;
                 let remap_segment = backend.add_data_segment(reloc_enabled, &remap_bytes);

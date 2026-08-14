@@ -572,6 +572,12 @@ class LoopLoweringMixin(_MixinBase):
         return None
 
     def _emit_iter_new(self, iterable: MoltValue) -> MoltValue:
+        # Internal iterator transports (not arbitrary Python values inferred as
+        # iterable) have already executed the protocol's eager ``iter()`` call.
+        # Reusing them preserves generator-expression outer-iterator timing and
+        # avoids a second observable ``__iter__`` invocation.
+        if iterable.type_hint == "iter":
+            return iterable
         res = MoltValue(self.next_var(), type_hint="iter")
         self.emit(MoltOp(kind="ITER_NEW", args=[iterable], result=res))
         if self.try_end_labels:
@@ -740,6 +746,8 @@ class LoopLoweringMixin(_MixinBase):
         return condition
 
     def _emit_aiter(self, iterable: MoltValue) -> MoltValue:
+        if iterable.type_hint == "async_iter":
+            return iterable
         if iterable.type_hint in {
             "list",
             "tuple",

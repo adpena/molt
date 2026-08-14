@@ -115,7 +115,6 @@ impl Drop for ThreadLocalGuard {
 }
 
 pub(crate) fn touch_tls_guard() {
-    #[cfg(not(target_arch = "wasm32"))]
     molt_cpython_abi::api::object::prepare_runtime_thread_state_lifetime();
     crate::state::runtime_state::touch_runtime_execution_lease_tls_lifetime();
     crate::concurrency::gil::touch_gil_tls_lifetime();
@@ -127,7 +126,6 @@ pub(crate) fn touch_tls_guard() {
     // reverse initialization order, so it drains the CPython thread-state
     // record while the GIL, heap-lifecycle sink pools, and runtime guard TLS
     // above are all still reachable.
-    #[cfg(not(target_arch = "wasm32"))]
     molt_cpython_abi::api::object::arm_runtime_thread_state_lifetime();
 }
 
@@ -956,6 +954,7 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
         &state.special_cache.awaitable_await,
         &state.special_cache.function_code_descriptor,
         &state.special_cache.function_globals_descriptor,
+        &state.special_cache.weakref_callback_descriptor,
     ];
     clear_atomic_slots(_py, &slots);
 }

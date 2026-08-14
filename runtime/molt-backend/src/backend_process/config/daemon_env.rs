@@ -29,6 +29,8 @@ pub(crate) const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DUMP_CLIF_FILE_FILTER",
     "MOLT_DUMP_FINAL_FUNC_IR",
     "MOLT_DUMP_IR",
+    "MOLT_DUMP_IR_FILE",
+    "MOLT_DEBUG_WASM_LOCALS_FUNC",
     // Optimization-pass instruments. Every optimization lands with a
     // firing/refusal instrument; those instruments are useless if the daemon
     // strips their env keys.

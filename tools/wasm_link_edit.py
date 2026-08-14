@@ -27,7 +27,6 @@ from wasm_link_format import (
     _collect_function_exports,
     _collect_imports,
     _count_func_imports,
-    _find_func_import_index,
     wasm_runtime_export_name,
     _parse_custom_section,
     _parse_import_desc,
@@ -194,11 +193,9 @@ def _inject_app_export_adapters(
 ) -> tuple[Path, dict[str, str]]:
     """Add exact contract-selected host adapters to a relocatable app object.
 
-    Compiled functions use ordinary internal call ownership: a return may alias
-    a borrowed parameter.  The browser host releases its argument objects as
-    soon as the call returns, so every public app-call boundary must promote
-    the tagged result to one owned reference before returning it to the host.
-    The digest-bound contract selects the public symbols; this function never
+    Compiled functions publish one owned result under the canonical call ABI.
+    Each public adapter therefore forwards the target result unchanged.  The
+    digest-bound contract selects the public symbols; this function never
     infers them from source names or export spelling.
     """
 
@@ -215,11 +212,7 @@ def _inject_app_export_adapters(
         assert isinstance(parameters, Mapping)
         assert isinstance(result, Mapping)
         assert isinstance(adapter, Mapping)
-        retain_import = adapter["retain_import"]
-        assert isinstance(retain_import, Mapping)
         symbol_prefix = adapter["symbol_prefix"]
-        retain_module = retain_import["module"]
-        retain_name = retain_import["name"]
     except (AssertionError, KeyError) as exc:
         raise ValueError("canonical app-call ABI is incomplete") from exc
     if (
@@ -227,13 +220,9 @@ def _inject_app_export_adapters(
         or parameters.get("ownership") != "borrowed"
         or result.get("representation") != "tagged-i64"
         or result.get("ownership") != "owned"
-        or adapter.get("strategy") != "retain-result"
+        or adapter.get("strategy") != "forward-owned-result"
         or not isinstance(symbol_prefix, str)
         or not symbol_prefix
-        or not isinstance(retain_module, str)
-        or not retain_module
-        or not isinstance(retain_name, str)
-        or not retain_name
     ):
         raise ValueError("unsupported canonical app-call ABI")
 
@@ -249,28 +238,6 @@ def _inject_app_export_adapters(
     original_func_count = len(func_type_indices)
     export_indices = _collect_function_exports(data)
 
-    retain_index = _find_func_import_index(data, retain_module, retain_name)
-    if retain_index is None:
-        raise ValueError(
-            "app export adapter requires runtime ownership import "
-            f"{retain_module}.{retain_name}"
-        )
-    retain_type_idx: int | None = None
-    for module, name, kind, desc in _collect_imports(data):
-        if kind == 0 and module == retain_module and name == retain_name:
-            retain_type_idx, end = _read_varuint(desc, 0)
-            if end != len(desc):
-                raise ValueError("app export retain import has malformed type index")
-            break
-    if (
-        retain_type_idx is None
-        or retain_type_idx >= len(types)
-        or types[retain_type_idx] != ((0x7E,), ())
-    ):
-        raise ValueError(
-            "app export retain import must have canonical (i64) -> () signature"
-        )
-
     existing_exports = set(export_indices)
     linking_symbols = parse_wasm_linking_symbols(data)
     existing_symbols = {
@@ -282,19 +249,6 @@ def _inject_app_export_adapters(
             symbol_indices_by_function_index.setdefault(symbol.index, []).append(
                 (symbol_index, symbol)
             )
-    retain_symbol_candidates = [
-        (symbol_index, symbol)
-        for symbol_index, symbol in symbol_indices_by_function_index.get(
-            retain_index, ()
-        )
-        if not symbol.is_defined and symbol.name == retain_name
-    ]
-    if len(retain_symbol_candidates) != 1:
-        raise ValueError(
-            "app export retain import must have exactly one undefined linker symbol"
-        )
-    retain_symbol_index = retain_symbol_candidates[0][0]
-
     specs: list[tuple[str, str, int, int, int]] = []
     adapter_symbol_map: dict[str, str] = {}
     for public_name in names:
@@ -415,31 +369,18 @@ def _inject_app_export_adapters(
             ) in specs:
                 params, _results = types[type_idx]
                 body = bytearray()
-                body.extend(_write_varuint(1))
-                body.extend(_write_varuint(1))
-                body.append(0x7E)
+                body.extend(_write_varuint(0))
                 for param_index in range(len(params)):
                     body.append(0x20)
                     body.extend(_write_varuint(param_index))
                 body.append(0x10)
                 target_operand_offset = len(body)
                 body.extend(_write_varuint_padded(target_idx))
-                result_local = len(params)
-                body.append(0x22)
-                body.extend(_write_varuint(result_local))
-                body.append(0x10)
-                retain_operand_offset = len(body)
-                body.extend(_write_varuint_padded(retain_index))
-                body.append(0x20)
-                body.extend(_write_varuint(result_local))
                 body.append(0x0B)
                 encoded_body_size = _write_varuint(len(body))
                 body_start = len(updated_payload) + len(encoded_body_size)
                 code_relocations.append(
                     (body_start + target_operand_offset, target_symbol_index)
-                )
-                code_relocations.append(
-                    (body_start + retain_operand_offset, retain_symbol_index)
                 )
                 updated_payload.extend(encoded_body_size)
                 updated_payload.extend(body)
@@ -500,13 +441,8 @@ def _function_type_for_index(
     return types[type_index]
 
 
-def _retained_result_adapter_calls(data: bytes, function_index: int) -> tuple[int, int]:
-    """Return target/retain calls from an exact owned-result adapter body.
-
-    Binaryen may reuse an i64 parameter as the result temporary after that
-    parameter has been forwarded.  Treat local allocation as an optimizer
-    choice while keeping the executable ownership contract exact.
-    """
+def _forward_owned_result_adapter_call(data: bytes, function_index: int) -> int:
+    """Return the target call from an exact owned-result forwarding adapter."""
 
     params, results = _function_type_for_index(data, function_index)
     if any(param != 0x7E for param in params) or results != (0x7E,):
@@ -540,18 +476,16 @@ def _retained_result_adapter_calls(data: bytes, function_index: int) -> tuple[in
 
     offset = 0
     local_group_count, offset = _read_varuint(body, offset)
-    declared_local_ranges: list[tuple[int, int, int]] = []
-    next_local_index = len(params)
+    declared_local_count = 0
     for _ in range(local_group_count):
         local_count, offset = _read_varuint(body, offset)
         if local_count == 0 or offset >= len(body):
             raise ValueError("app export adapter has invalid local declarations")
-        local_type = body[offset]
+        _local_type = body[offset]
         offset += 1
-        declared_local_ranges.append(
-            (next_local_index, next_local_index + local_count, local_type)
-        )
-        next_local_index += local_count
+        declared_local_count += local_count
+    if declared_local_count:
+        raise ValueError("app export forwarding adapter must not allocate locals")
     for param_index in range(len(params)):
         if offset >= len(body) or body[offset] != 0x20:
             raise ValueError("app export adapter does not forward every parameter")
@@ -562,33 +496,9 @@ def _retained_result_adapter_calls(data: bytes, function_index: int) -> tuple[in
     if offset >= len(body) or body[offset] != 0x10:
         raise ValueError("app export adapter is missing its target call")
     target_call, offset = _read_varuint(body, offset + 1)
-    if offset >= len(body) or body[offset] != 0x22:
-        raise ValueError("app export adapter does not retain its target result local")
-    result_local, offset = _read_varuint(body, offset + 1)
-    if result_local < len(params):
-        result_local_type = params[result_local]
-    else:
-        result_local_type = next(
-            (
-                local_type
-                for start, end, local_type in declared_local_ranges
-                if start <= result_local < end
-            ),
-            None,
-        )
-    if result_local_type != 0x7E:
-        raise ValueError("app export adapter result local is invalid")
-    if offset >= len(body) or body[offset] != 0x10:
-        raise ValueError("app export adapter is missing its retain call")
-    retain_call, offset = _read_varuint(body, offset + 1)
-    if offset >= len(body) or body[offset] != 0x20:
-        raise ValueError("app export adapter does not reload its owned result")
-    actual_local, offset = _read_varuint(body, offset + 1)
-    if actual_local != result_local or body[offset:] != b"\x0b":
-        raise ValueError("app export adapter has a noncanonical result tail")
-    if target_call == retain_call:
-        raise ValueError("app export adapter target and retain calls alias")
-    return target_call, retain_call
+    if body[offset:] != b"\x0b":
+        raise ValueError("app export adapter has a noncanonical forwarding tail")
+    return target_call
 
 
 def _validate_app_export_adapters(
@@ -597,7 +507,6 @@ def _validate_app_export_adapters(
     *,
     adapter_symbol_map: Mapping[str, str] | None = None,
     target_symbol_map: Mapping[str, str] | None = None,
-    retain_symbol_name: str | None = None,
 ) -> None:
     """Validate public identity and ownership semantics for every app export."""
 
@@ -612,21 +521,12 @@ def _validate_app_export_adapters(
         symbol_indices.setdefault(name, index)
     for name, index in exports.items():
         symbol_indices.setdefault(name, index)
-    retain_index = (
-        symbol_indices.get(retain_symbol_name)
-        if retain_symbol_name is not None
-        else None
-    )
-    if retain_symbol_name is not None and retain_index is None:
-        raise ValueError(
-            f"app export adapter retain symbol is absent: {retain_symbol_name}"
-        )
     for public_name in public_names:
         public_index = exports.get(public_name)
         if public_index is None:
             raise ValueError(f"app export adapter is not public: {public_name}")
         if adapter_symbol_map is None:
-            _retained_result_adapter_calls(data, public_index)
+            _forward_owned_result_adapter_call(data, public_index)
             continue
         adapter_symbol = adapter_symbol_map.get(public_name)
         target_symbol = (
@@ -645,14 +545,10 @@ def _validate_app_export_adapters(
                 f"app export {public_name!r} points to raw target {public_index}, "
                 f"not adapter {adapter_index}"
             )
-        target_call, retain_call = _retained_result_adapter_calls(data, public_index)
+        target_call = _forward_owned_result_adapter_call(data, public_index)
         if public_index == target_index or target_call != target_index:
             raise ValueError(
                 f"app export {public_name!r} adapter does not call its distinct raw target"
-            )
-        if retain_index is None or retain_call != retain_index:
-            raise ValueError(
-                f"app export {public_name!r} adapter does not call {retain_symbol_name}"
             )
 
 

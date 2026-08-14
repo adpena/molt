@@ -399,7 +399,10 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
                             class_name, key, val_type_id, set_name_type_id, set_name_type,
                         );
                     }
-                    let _ = call_callable2(_py, set_name, class_bits, name_bits);
+                    crate::call::discard_owned_call_result(
+                        _py,
+                        call_callable2(_py, set_name, class_bits, name_bits),
+                    );
                     dec_ref_bits(_py, set_name);
                 }
                 dec_ref_bits(_py, val_bits);
