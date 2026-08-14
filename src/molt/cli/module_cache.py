@@ -58,7 +58,7 @@ from molt.cli.module_source import (
     _source_content_sha256,
 )
 from molt.cli.runtime_paths import _build_state_root
-from molt.cli.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:

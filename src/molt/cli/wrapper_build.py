@@ -51,7 +51,7 @@ from molt.cli.output import (
     fail as _fail,
     json_payload as _json_payload,
 )
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _parse_target_python_version,
     _resolve_target_python_version,

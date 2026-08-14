@@ -58,7 +58,7 @@ from molt.cli.models import (
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
-from molt.cli.target_python import (
+from molt.target_python import (
     _SUPPORTED_TARGET_PYTHON_BY_SHORT as _SUPPORTED_TARGET_PYTHON_BY_SHORT,
     _SUPPORTED_TARGET_PYTHON_VERSIONS as _SUPPORTED_TARGET_PYTHON_VERSIONS,
     _project_requires_python as _project_requires_python,

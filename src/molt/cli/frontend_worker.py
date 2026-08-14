@@ -47,7 +47,7 @@ from molt.cli.module_cache import (
     _write_persisted_module_lowering,
 )
 from molt.cli.output import CliFailure as _CliFailure
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _parse_source_for_target,
     _parse_target_python_version,

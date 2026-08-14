@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from molt.cli.target_python import TargetPythonVersion, _parse_source_for_target
+from molt.target_python import TargetPythonVersion, _parse_source_for_target
 from molt.cli.extension_manifest import (
     ExtensionSupportFile,
     _manifest_support_file_payloads,

@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 from typing import Mapping
 
-from molt.cli.target_python import TargetPythonVersion, _parse_source_for_target
+from molt.target_python import TargetPythonVersion, _parse_source_for_target
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,

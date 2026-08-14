@@ -21,7 +21,7 @@ from typing import (
 )
 
 from molt.cli.output import CliFailure as _CliFailure
-from molt.cli.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 
 if TYPE_CHECKING:

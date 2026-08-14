@@ -36,7 +36,7 @@ from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
 from molt.cli.queue_cli import handle_queue_command
 from molt.cli.source_extension_producer import produce_source_extension_set
-from molt.cli.target_python import _parse_target_python_version
+from molt.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
 from molt.cli.wrapper_build import _build_args_has_python_version_flag

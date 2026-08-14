@@ -1,8 +1,42 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
-from molt.cli.target_python import TargetPythonVersion, require_verified_target_python
+from molt.target_python import TargetPythonVersion, require_verified_target_python
+
+
+def test_python_interpreter_import_stays_outside_cli_package() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    assert (repo_root / "src" / "molt" / "target_python.py").is_file()
+    assert not (repo_root / "src" / "molt" / "cli" / "target_python.py").exists()
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "import molt.python_interpreter\n"
+                "assert 'molt.cli' not in sys.modules\n"
+                "from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION\n"
+                "print(_DEFAULT_TARGET_PYTHON_VERSION.tag)\n"
+            ),
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "py312\n"
 
 
 def test_verified_windows_312_tuple_resolves() -> None:

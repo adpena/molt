@@ -22,7 +22,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
 )
 from molt.cli.runtime_paths import _build_state_root
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )

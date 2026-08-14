@@ -45,7 +45,7 @@ from molt.cli.project_roots import (
     _find_project_root,
     _require_molt_root,
 )
-from molt.cli.target_python import (
+from molt.target_python import (
     _parse_target_python_version,
 )
 from molt.python_interpreter import (

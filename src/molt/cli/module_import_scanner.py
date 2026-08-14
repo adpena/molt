@@ -8,7 +8,7 @@ from typing import cast
 
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.models import ImportScanMode, _RuntimeImportSupportPolicy
-from molt.cli.target_python import (
+from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
