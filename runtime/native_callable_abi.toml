@@ -1,0 +1,48 @@
+schema_version = 1
+
+[[abi]]
+name = "object_call_v1"
+token = "molt.object_call_v1"
+lowering = "object_values"
+browser_params = ["molt.value..."]
+browser_result = "molt.value"
+wasm_params = ["i64..."]
+wasm_results = ["i64"]
+native_params = ["molt_value..."]
+native_results = ["molt_value"]
+
+[[abi]]
+name = "object_callargs_v1"
+token = "molt.object_callargs_v1"
+lowering = "object_callargs"
+fixed_arity = 1
+browser_params = ["molt.callargs"]
+browser_result = "molt.value"
+wasm_params = ["i64"]
+wasm_results = ["i64"]
+native_params = ["molt_value"]
+native_results = ["molt_value"]
+
+[[abi]]
+name = "forward_f32_v1"
+token = "molt.forward_f32_v1"
+lowering = "forward_f32"
+fixed_arity = 1
+browser_params = ["bytes.float32"]
+browser_result = "bytes.float32"
+wasm_params = ["i32", "i64", "i32"]
+wasm_results = ["i32"]
+native_params = ["pointer", "u64", "pointer"]
+native_results = ["i32"]
+
+[[abi]]
+name = "pyinit_module_v1"
+token = "molt.pyinit_module_v1"
+lowering = "pyinit_module"
+fixed_arity = 0
+browser_params = []
+browser_result = "molt.pyobject_ptr"
+wasm_params = []
+wasm_results = ["i32"]
+native_params = []
+native_results = ["pointer"]

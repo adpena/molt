@@ -1,5 +1,5 @@
 use crate::OpIR;
-use crate::native_callable_abi::NATIVE_CALLABLE_ABI_FORWARD_F32_V1;
+use crate::native_callable_abi::{NativeCallableLowering, parse_native_callable_abi};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::task_runtime::WasmTaskRuntimeLayout;
@@ -31,8 +31,11 @@ impl FrameRuntimeRequirements {
             "store" | "store_init" | "load" | "guarded_load" | "guarded_field_get"
             | "guarded_field_set" | "guarded_field_init" => self.needs_field_fast = true,
             "invoke_ffi"
-                if op.native_callable_abi.as_deref()
-                    == Some(NATIVE_CALLABLE_ABI_FORWARD_F32_V1) =>
+                if op
+                    .native_callable_abi
+                    .as_deref()
+                    .and_then(parse_native_callable_abi)
+                    .is_some_and(|abi| abi.lowering() == NativeCallableLowering::ForwardF32) =>
             {
                 self.needs_native_forward_f32 = true;
             }

@@ -9,8 +9,8 @@
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
 | Hashed executable authority inputs | 1 | 110 |
-| Local path rules | 35 | 37 |
-| Unique local commands | 73 | 79 |
+| Local path rules | 35 | 38 |
+| Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -175,9 +175,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.luau-support.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.differential-lanes.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.target-features.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
-| `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 2 |
+| `repository.browser-assets.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 3 |
 | `repository.cpython-abi-layout.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
-| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 16 |
+| `repository.native-callable-abi.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 17 |
 | `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -238,6 +239,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `heap-kind-lifetime-authority` | 7 | 2 | no |
 | `python-effect-capability-authority` | 6 | 3 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
+| `native-callable-abi` | 19 | 5 | no |
 | `op-kind-registry` | 10 | 2 | no |
 | `frontend-diagnostics` | 6 | 2 | no |
 | `wasm-abi-registry` | 13 | 2 | no |

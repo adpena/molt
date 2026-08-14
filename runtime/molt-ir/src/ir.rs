@@ -2133,6 +2133,112 @@ mod json_parse_tests {
     }
 
     #[test]
+    fn simple_ir_from_json_str_rejects_native_callable_fixed_arity_drift() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["arg0", "arg1"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["arg0", "arg1"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "direct_symbol",
+                                "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
+                                "native_callable_abi": "molt.forward_f32_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("fixed native-callable arity must fail at the SimpleIR boundary");
+
+        assert!(err.contains("with ABI `molt.forward_f32_v1` has 2 argument(s), expected 1"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_counts_module_attr_receiver_outside_payload_arity() {
+        let accepted = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["callable", "callargs"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["callable", "callargs"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.gaussian_filter",
+                                "native_callable_binding": "module_attr",
+                                "native_callable_abi": "molt.object_callargs_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+        assert!(
+            accepted.is_ok(),
+            "module receiver plus one payload must validate"
+        );
+
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["callargs"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["callargs"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.gaussian_filter",
+                                "native_callable_binding": "module_attr",
+                                "native_callable_abi": "molt.object_callargs_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("module_attr receiver participates in transport arity");
+        assert!(err.contains("with ABI `molt.object_callargs_v1` has 1 argument(s), expected 2"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_requires_explicit_empty_pyinit_payload() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "out": "result",
+                                "native_callable_export": "__molt_static_pyinit__.nativepkg._native",
+                                "native_callable_binding": "direct_symbol",
+                                "native_callable_symbol": "PyInit__native",
+                                "native_callable_abi": "molt.pyinit_module_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("native callable transport must distinguish absent args from empty args");
+
+        assert!(err.contains("requires an args payload"));
+    }
+
+    #[test]
     fn simple_ir_from_json_str_accepts_legacy_var_names_at_transport_boundary() {
         let ir = SimpleIR::from_json_str(
             r#"{

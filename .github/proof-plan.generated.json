@@ -112,7 +112,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "1bae0f080cf9f47876caf682be0306d7e150cec5f433e7993ddf32bd87ea7d57",
+  "authority_sha256": "e0bb19fe4c9e66ba7f0b6d3be21a887b2eec12945b7d3d270e9eceed15175e97",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -1794,7 +1794,8 @@
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [
         "repository.target-features.generated",
-        "repository.wasm-abi.generated"
+        "repository.wasm-abi.generated",
+        "repository.native-callable-abi.generated"
       ],
       "family": "repository_policy",
       "id": "repository.browser-assets.generated",
@@ -1841,6 +1842,32 @@
         "uv",
         "run",
         "python3",
+        "tools/gen_native_callable_abi.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.native-callable-abi.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustfmt"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/check_generator_manifest.py",
         "--check"
       ],
@@ -1862,7 +1889,8 @@
         "repository.differential-lanes.generated",
         "repository.target-features.generated",
         "repository.browser-assets.generated",
-        "repository.cpython-abi-layout.generated"
+        "repository.cpython-abi-layout.generated",
+        "repository.native-callable-abi.generated"
       ],
       "family": "repository_policy",
       "id": "repository.generator-manifest",
@@ -3308,7 +3336,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 3300,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2730
+          "repository-policy": 2805
         }
       },
       "rust": {
@@ -3509,6 +3537,11 @@
       "local.llvm-runtime-abi.1": "python3 -m pytest -q tests/test_llvm_runtime_abi_audit.py",
       "local.memory-graph.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_memory_graph.py",
       "local.memory-graph.1": "python3 tools/venv_exec.py python tools/check_memory_graph.py --check",
+      "local.native-callable-abi.0": "python3 tools/gen_native_callable_abi.py --check",
+      "local.native-callable-abi.1": "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
+      "local.native-callable-abi.2": "cargo test --locked -p molt-ir --lib native_callable_abi",
+      "local.native-callable-abi.3": "cargo test --locked -p molt-backend-native --lib native_callable",
+      "local.native-callable-abi.4": "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
       "local.op-kind-registry.0": "python3 tools/gen_op_kinds.py --check",
       "local.op-kind-registry.1": "python3 tools/audit_op_kinds.py --check",
       "local.python-effect-capability-authority.0": "python3 tools/gen_python_effects.py --check",
@@ -3792,6 +3825,45 @@
           "tests/test_gen_runtime_profile_schema.py"
         ],
         "name": "runtime-profile-schema-authority"
+      },
+      {
+        "command_ids": [
+          "local.native-callable-abi.0",
+          "local.native-callable-abi.1",
+          "local.native-callable-abi.2",
+          "local.native-callable-abi.3",
+          "local.native-callable-abi.4"
+        ],
+        "description": "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification.",
+        "gates": [
+          "python3 tools/gen_native_callable_abi.py --check",
+          "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
+          "cargo test --locked -p molt-ir --lib native_callable_abi",
+          "cargo test --locked -p molt-backend-native --lib native_callable",
+          "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable"
+        ],
+        "globs": [
+          "runtime/native_callable_abi.toml",
+          "tools/gen_native_callable_abi.py",
+          "src/molt/native_callable_abi.py",
+          "src/molt/browser_asset_graph.toml",
+          "src/molt/frontend/visitors/call_module_dispatch.py",
+          "docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md",
+          "runtime/molt-ir/src/native_callable_abi.rs",
+          "runtime/molt-ir/src/ir.rs",
+          "runtime/molt-ir/src/ir_schema.rs",
+          "runtime/molt-ir/src/tir/verify.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
+          "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs",
+          "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs",
+          "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs",
+          "runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs",
+          "wasm/browser_embed.js",
+          "wasm/native_callable_abi_generated.js",
+          "tests/test_gen_native_callable_abi.py"
+        ],
+        "name": "native-callable-abi"
       },
       {
         "command_ids": [
