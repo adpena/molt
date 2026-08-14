@@ -17,7 +17,10 @@ from pathlib import Path
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import (
-    command_envelope,
+    command_admission,
+    command_identity,
+    execution_environment as environment_authority,
+    supervisor_custody,
     custody,
     custody_cas,
     evidence,
@@ -174,8 +177,7 @@ def _validated_execution_context(
     if (
         not isinstance(custody, dict)
         or custody.get("identical") is not True
-        or custody.get("capture_semantic_sha256")
-        != artifact.get("semantic_sha256")
+        or custody.get("capture_semantic_sha256") != artifact.get("semantic_sha256")
         or custody.get("verification_identity_sha256")
         != verification.get("identity_sha256")
     ):
@@ -186,10 +188,11 @@ def _validated_execution_context(
     full_toolchains = capture_payload.get("toolchains")
     if (
         not isinstance(full_toolchains, dict)
-        or toolchain_capture.compact_toolchains(full_toolchains)
-        != captured_toolchains
+        or toolchain_capture.compact_toolchains(full_toolchains) != captured_toolchains
     ):
-        raise ValueError("guarded receipt compact toolchains disagree with full capture")
+        raise ValueError(
+            "guarded receipt compact toolchains disagree with full capture"
+        )
     reverified_capture = toolchain_capture.verify_capture(
         artifact, workers=1, cas_root=cas_root
     )
@@ -211,7 +214,9 @@ def _validated_execution_context(
         json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
     )
     if receipt_size > 64 * 1024:
-        raise ValueError("guarded receipt context exceeds the 64 KiB compactness ceiling")
+        raise ValueError(
+            "guarded receipt context exceeds the 64 KiB compactness ceiling"
+        )
     live_custody = context.get("live_input_custody")
     if (
         not isinstance(live_custody, dict)
@@ -234,7 +239,7 @@ def _validated_execution_context(
         or live_custody.get("event_count") != len(live_events)
         or live_custody.get("error_count") != len(live_errors)
         or live_custody.get("identity_sha256")
-        != command_envelope._canonical_payload_sha256(
+        != supervisor_custody._canonical_payload_sha256(
             {
                 "events": live_events,
                 "errors": live_errors,
@@ -263,8 +268,7 @@ def _validated_execution_context(
         raise ValueError("guarded receipt has no complete child-process custody")
     platform_custody = context.get("platform_process_custody")
     platform_applicable = (
-        sys.platform == "win32"
-        and closure.get("descendants") == "declared-toolchains"
+        sys.platform == "win32" and closure.get("descendants") == "declared-toolchains"
     )
     platform_images: list[dict[str, object]] = []
     if platform_custody is not None or platform_applicable:
@@ -280,16 +284,20 @@ def _validated_execution_context(
             or not isinstance(platform_prelaunch, list)
             or platform_custody.get("identical") is not True
             or platform_custody.get("prelaunch_sha256")
-            != command_envelope._canonical_payload_sha256(platform_prelaunch)
+            != supervisor_custody._canonical_payload_sha256(platform_prelaunch)
             or platform_custody.get("postcompletion_sha256")
-            != command_envelope._canonical_payload_sha256(platform_prelaunch)
+            != supervisor_custody._canonical_payload_sha256(platform_prelaunch)
         ):
             raise ValueError("guarded receipt has no stable platform process custody")
         platform_images = process_image_capture.revalidate_images(platform_prelaunch)
         if platform_images != platform_prelaunch:
-            raise ValueError("guarded receipt platform process custody is not reproducible")
+            raise ValueError(
+                "guarded receipt platform process custody is not reproducible"
+            )
         if platform_applicable != bool(platform_images):
-            raise ValueError("guarded receipt platform process custody applicability mismatch")
+            raise ValueError(
+                "guarded receipt platform process custody applicability mismatch"
+            )
     supervisor = context.get("process_supervisor")
     supervisor_receipt = (
         supervisor.get("receipt") if isinstance(supervisor, dict) else None
@@ -314,8 +322,7 @@ def _validated_execution_context(
         or supervisor.get("schema") != "molt.proof-process-supervision.v1"
         or supervisor.get("supervisor_returncode") != 0
         or not isinstance(supervisor_receipt, dict)
-        or supervisor_receipt.get("schema")
-        != "molt.proof-process-closure-receipt.v3"
+        or supervisor_receipt.get("schema") != "molt.proof-process-closure-receipt.v3"
         or supervisor_receipt.get("complete") is not True
         or supervisor_receipt.get("state") != "COMPLETE"
         or not isinstance(supervisor_binary, dict)
@@ -329,9 +336,9 @@ def _validated_execution_context(
     policy_path = Path(str(supervisor_policy.get("path")))
     receipt_path = Path(str(supervisor_receipt_file.get("path")))
     if (
-        command_envelope._file_identity(binary_path) != supervisor_binary
-        or command_envelope._file_identity(policy_path) != supervisor_policy
-        or command_envelope._file_identity(receipt_path) != supervisor_receipt_file
+        command_identity._file_identity(binary_path) != supervisor_binary
+        or command_identity._file_identity(policy_path) != supervisor_policy
+        or command_identity._file_identity(receipt_path) != supervisor_receipt_file
     ):
         raise ValueError("native process supervisor authority changed after execution")
     custody_cas.verify_file_ref(supervisor_binary_artifact, expected_root=cas_root)
@@ -342,7 +349,9 @@ def _validated_execution_context(
         != supervisor_binary.get("size_bytes")
         or supervisor_binary_artifact.get("executable") is not True
     ):
-        raise ValueError("native process supervisor has no durable executable authority")
+        raise ValueError(
+            "native process supervisor has no durable executable authority"
+        )
     event_log = supervisor_receipt.get("event_log")
     durable_event = supervisor_event_artifact.get("artifact")
     if not isinstance(event_log, dict) or not isinstance(durable_event, dict):
@@ -371,15 +380,15 @@ def _validated_execution_context(
         policy_payload.get("command") if isinstance(policy_payload, dict) else None
     )
     fixed_images = (
-        policy_payload.get("fixed_images")
-        if isinstance(policy_payload, dict)
-        else None
+        policy_payload.get("fixed_images") if isinstance(policy_payload, dict) else None
     )
     policy_environment = (
         policy_payload.get("environment") if isinstance(policy_payload, dict) else None
     )
     policy_derived_roots = (
-        policy_payload.get("derived_roots") if isinstance(policy_payload, dict) else None
+        policy_payload.get("derived_roots")
+        if isinstance(policy_payload, dict)
+        else None
     )
     source_custody = context.get("source_custody")
     execution_environment = context.get("execution_environment")
@@ -419,7 +428,7 @@ def _validated_execution_context(
         and policy_command
     ):
         expected_root_role, expected_fixed_images = (
-            command_envelope._supervisor_fixed_images(
+            supervisor_custody._supervisor_fixed_images(
                 full_toolchains,
                 environment_executables,
                 policy_command,
@@ -428,7 +437,7 @@ def _validated_execution_context(
         )
     expected_derived_roots = None
     if isinstance(policy_environment, dict):
-        expected_derived_roots = command_envelope._supervisor_derived_roots(
+        expected_derived_roots = supervisor_custody._supervisor_derived_roots(
             descendants=closure.get("descendants"),
             env={str(key): str(value) for key, value in policy_environment.items()},
         )
@@ -456,16 +465,14 @@ def _validated_execution_context(
         or not isinstance(executable_inputs, dict)
         or executable_inputs.get("identical") is not True
         or executable_inputs.get("postcompletion_sha256")
-        != command_envelope._canonical_payload_sha256(environment_executables)
+        != supervisor_custody._canonical_payload_sha256(environment_executables)
         or not isinstance(custody_authorities, dict)
         or not isinstance(custody_authorities_prelaunch, list)
         or custody_authorities.get("identical") is not True
         or custody_authorities.get("postcompletion_sha256")
-        != command_envelope._canonical_payload_sha256(
-            custody_authorities_prelaunch
-        )
+        != supervisor_custody._canonical_payload_sha256(custody_authorities_prelaunch)
         or set(policy_environment) != set(environment_prelaunch.get("passed_names", []))
-        or command_envelope._canonical_environment_sha256(
+        or environment_authority._canonical_environment_sha256(
             {str(key): str(value) for key, value in policy_environment.items()}
         )
         != environment_prelaunch.get("canonical_values_sha256")
@@ -481,7 +488,7 @@ def _validated_execution_context(
             or row.get("run_owned") is not True
             or row.get("initial_entry_count") != 0
             or row.get("initial_manifest_sha256")
-            != command_envelope._canonical_payload_sha256([])
+            != supervisor_custody._canonical_payload_sha256([])
             for row in derived_root_prelaunch
         )
         or [
@@ -495,7 +502,7 @@ def _validated_execution_context(
             and os.path.normcase(os.path.abspath(str(image.get("path"))))
             == os.path.normcase(os.path.abspath(str(policy_command[0])))
             and image.get("sha256")
-            == command_envelope._hash_file(Path(str(policy_command[0])))
+            == command_identity._hash_file(Path(str(policy_command[0])))
             for image in fixed_images
         )
         or supervisor_receipt.get("nonce_sha256") != expected_nonce_hash
@@ -515,8 +522,10 @@ def _validated_execution_context(
         text=True,
     )
     if verified_supervisor.returncode != 0:
-        raise ValueError("native process supervisor receipt failed independent verification")
-    expected_custody = command_envelope.execution_custody_sha256(
+        raise ValueError(
+            "native process supervisor receipt failed independent verification"
+        )
+    expected_custody = supervisor_custody.execution_custody_sha256(
         context,
         run_id=run_id,
         returncode=returncode,
@@ -533,7 +542,7 @@ def _validated_execution_context(
             raise ValueError(
                 f"guarded {stream_name} transcript path substitution detected"
             )
-        actual = command_envelope._transcript_identity(expected_path)
+        actual = command_identity._transcript_identity(expected_path)
         if expected != actual:
             raise ValueError(
                 f"guarded {stream_name} transcript content substitution detected"
@@ -565,7 +574,7 @@ def _write_execution_request(
     envelope = json.loads(str(row["command_envelope_json"]))
     if not isinstance(envelope, dict):
         raise ValueError("proof row command envelope is malformed")
-    command_envelope.validate_envelope(envelope, command)
+    command_admission.validate_envelope(envelope, command)
     request_path = log_path.with_suffix(".execution-request.json")
     result_path = log_path.with_suffix(".execution.json")
     execution_nonce = uuid.uuid4().hex + uuid.uuid4().hex
@@ -581,7 +590,7 @@ def _write_execution_request(
         except FileNotFoundError:
             pass
     request = {
-        "schema": command_envelope.EXECUTION_SCHEMA,
+        "schema": command_admission.EXECUTION_SCHEMA,
         "command": command,
         "envelope": envelope,
         "cwd": str(repo_root),
@@ -607,7 +616,7 @@ def _read_execution_record(path: Path) -> dict[str, object]:
         ) from exc
     if (
         not isinstance(payload, dict)
-        or payload.get("schema") != command_envelope.EXECUTION_SCHEMA
+        or payload.get("schema") != command_admission.EXECUTION_SCHEMA
     ):
         raise ValueError("guarded proof execution record schema mismatch")
     return payload
@@ -698,7 +707,7 @@ def _queue_one(
 ) -> tuple[int, str | None]:
     if not command:
         raise SystemExit("proof command is empty")
-    secret_error = command_envelope.command_secret_policy_error(command)
+    secret_error = environment_authority.command_secret_policy_error(command)
     env_error = policy._proof_env_policy_error(env_overrides)
     if secret_error is not None or env_error is not None:
         print(secret_error or env_error, file=sys.stderr)
@@ -1038,7 +1047,7 @@ def _run_one(
 ) -> int:
     if not command:
         raise SystemExit("proof command is empty")
-    secret_error = command_envelope.command_secret_policy_error(command)
+    secret_error = environment_authority.command_secret_policy_error(command)
     env_error = policy._proof_env_policy_error(env_overrides)
     if secret_error is not None or env_error is not None:
         print(secret_error or env_error, file=sys.stderr)
@@ -1150,11 +1159,29 @@ def _run_one(
         )
     try:
         session_id = state._proof_session_id(resource_family, contention_key)
+        admitted_envelope = command_admission.envelope_for_command(command)
+        uses_cargo = "cargo" in admitted_envelope.get("toolchains", [])
         env = development_artifact_env(
             repo_root,
             os.environ,
             session_prefix=f"proof-{resource_family}",
             session_id=session_id,
+            create_dirs=uses_cargo,
+        )
+        if not uses_cargo:
+            # A non-Cargo proof owns no Cargo artifact lane.  The native proof
+            # supervisor has its separate result-root target, so retaining a
+            # repo-local session target here only dirties admitted source.
+            env.pop("CARGO_TARGET_DIR", None)
+        proof_tmp = (logs_root / "tmp").resolve()
+        env.update(
+            {
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
+                "PYTHONPYCACHEPREFIX": str(proof_tmp / "pycache"),
+                "TEMP": str(proof_tmp),
+                "TMP": str(proof_tmp),
+                "TMPDIR": str(proof_tmp),
+            }
         )
         bind_repo_src_pythonpath(repo_root, env)
         env["MOLT_PROOF_QUEUE"] = "1"
@@ -1181,7 +1208,7 @@ def _run_one(
         env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
         guarded_command = [
             sys.executable,
-            str(state.ROOT / "tools" / "proof_queue_pkg" / "command_envelope.py"),
+            str(state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py"),
             "--request",
             str(request_path),
         ]
@@ -1319,14 +1346,14 @@ def _run_one(
             )
             receipt_context["guard_receipt"] = guard_receipt
             receipt_context["terminal_evidence_sha256"] = (
-                command_envelope.terminal_evidence_sha256(
+                supervisor_custody.terminal_evidence_sha256(
                     receipt_context,
                     run_id=run_id,
                     returncode=command_rc,
                 )
             )
             execution_record["receipt_context"] = receipt_context
-            command_envelope._atomic_json(execution_path, execution_record)
+            supervisor_custody._atomic_json(execution_path, execution_record)
             source_custody = (
                 receipt_context.get("source_custody")
                 if receipt_context is not None

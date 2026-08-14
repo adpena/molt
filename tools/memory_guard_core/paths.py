@@ -14,6 +14,12 @@ def active_guard_marker_dir(
     """Return the active-marker directory under the admitted artifact root."""
 
     source = os.environ if environ is None else environ
+    state_root = source.get("MOLT_MEMORY_GUARD_STATE_ROOT", "").strip()
+    if state_root:
+        root = Path(state_root).expanduser()
+        if not root.is_absolute():
+            root = repo_root / root
+        return root.resolve(strict=False) / "active"
     raw_root = source.get("MOLT_EXT_ROOT", "").strip()
     if not raw_root:
         raw_root = next(

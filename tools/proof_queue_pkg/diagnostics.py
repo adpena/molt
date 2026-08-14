@@ -1330,7 +1330,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     ),
                     scopes=(
                         "tools/proof_queue_pkg/process_image_capture.py",
-                        "tools/proof_queue_pkg/command_envelope.py",
+                        "tools/proof_queue_pkg/guarded_execution.py",
                         "tools/proof_supervisor/",
                     ),
                     artifacts=tuple(dict.fromkeys(artifacts)),
@@ -1351,7 +1351,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                         "rerunning. This row is infrastructure evidence, not product proof."
                     ),
                     scopes=(
-                        "tools/proof_queue_pkg/command_envelope.py",
+                        "tools/proof_queue_pkg/guarded_execution.py",
                         "tools/proof_queue_pkg/execution_custody.py",
                         "tools/memory_guard.py",
                         "tools/proof_supervisor/",

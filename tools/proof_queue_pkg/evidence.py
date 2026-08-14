@@ -13,7 +13,12 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from tools.proof_queue_pkg import command_envelope, diagnostics, state
+from tools.proof_queue_pkg import (
+    command_admission,
+    diagnostics,
+    state,
+    supervisor_custody,
+)
 
 _NON_EXECUTED_RECEIPT_STATUSES = frozenset({"queued", "dispatched", "blocked"})
 
@@ -264,7 +269,7 @@ def _queue_proof_receipt(
             raise ValueError(
                 "passed proof run has no stable platform process-image custody"
             )
-        expected_terminal = command_envelope.terminal_evidence_sha256(
+        expected_terminal = supervisor_custody.terminal_evidence_sha256(
             context,
             run_id=str(row["run_id"]),
             returncode=int(returncode),
@@ -407,7 +412,7 @@ def _write_queued_submission_log(
         print(f"command={shlex.join(command)}", file=log)
         print(
             "command_envelope="
-            + json.dumps(command_envelope.admission_envelope(command), sort_keys=True),
+            + json.dumps(command_admission.admission_envelope(command), sort_keys=True),
             file=log,
         )
         if scopes:
