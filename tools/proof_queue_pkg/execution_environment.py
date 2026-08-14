@@ -16,6 +16,8 @@ from typing import Mapping, Sequence
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
+from tools.proof_queue_pkg import process_image_capture
+from tools.proof_queue_pkg import supervisor_custody
 from tools.proof_queue_pkg import toolchain_capture
 
 
@@ -253,6 +255,9 @@ def _capture_toolchains(
         located = located_toolchains.get(name)
         if not isinstance(located, Mapping):
             raise ValueError(f"located {name} toolchain identity is unavailable")
+        process_image_capture.revalidate_images(
+            process_image_capture.toolchain_images(name, located)
+        )
         if name == "rustc":
             toolchain_capture.revalidate_rust_link_process_images(
                 located,
@@ -282,6 +287,7 @@ def _locate_toolchain_watch_roots(
     *,
     cwd: Path,
     env: Mapping[str, str],
+    supervisor_binary: Path,
 ) -> tuple[list[Path], dict[str, object], dict[str, object]]:
     """Locate broad roots and child executables without a full inventory."""
     started = time.perf_counter()
@@ -292,6 +298,7 @@ def _locate_toolchain_watch_roots(
     ):
         raise ValueError("proof command envelope has no toolchain authority")
     requested = [str(name) for name in requested_raw]
+    policies = {policy.name: policy for policy in plan.toolchain_policies}
     roots: list[Path] = []
     policy_identities: dict[str, object] = {}
     if "python" in requested:
@@ -346,6 +353,39 @@ def _locate_toolchain_watch_roots(
         identity = command_identity._tool_identity(
             plan, name, envelope, exact, cwd=cwd, env=env
         )
+        probes = policies[name].data.get("process_image_probes", [])
+        assert isinstance(probes, list)
+        if probes:
+            process_images = list(identity["process_images"])
+            inventories: list[dict[str, object]] = []
+            for probe in probes:
+                assert isinstance(probe, list)
+                observed, telemetry = (
+                    supervisor_custody.capture_process_image_inventory(
+                        binary=supervisor_binary,
+                        role=name,
+                        executable=Path(str(identity["path"])),
+                        probe_args=[str(value) for value in probe],
+                        cwd=cwd,
+                        env=env,
+                    )
+                )
+                process_images.extend(observed)
+                inventories.append(telemetry)
+            identity["process_images"] = process_image_capture.canonical_images(
+                process_images
+            )
+            identity["process_image_inventories"] = inventories
+            identity_without_digest = dict(identity)
+            identity_without_digest.pop("identity_sha256", None)
+            identity["identity_sha256"] = hashlib.sha256(
+                json.dumps(
+                    identity_without_digest,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        command_identity._validate_toolchain_identity(plan, name, identity)
         policy_identities[name] = identity
         roots.extend(_broad_toolchain_roots({name: identity}))
     roots = list(dict.fromkeys(roots))

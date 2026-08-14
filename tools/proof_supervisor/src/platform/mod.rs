@@ -26,11 +26,11 @@ pub fn capability(mode: ClosureMode) -> Capability {
     );
 }
 
-pub fn run(policy: &ValidatedPolicy, events: &mut EventJournal) -> Receipt {
+pub fn run(policy: &ValidatedPolicy, _events: &mut EventJournal) -> Receipt {
     #[cfg(target_os = "windows")]
-    return windows::run(policy, events);
+    return windows::run(policy, _events);
     #[cfg(target_os = "linux")]
-    return linux::run(policy, events);
+    return linux::run(policy, _events);
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let capability = capability(policy.policy.mode);

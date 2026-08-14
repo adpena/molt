@@ -1,7 +1,8 @@
 #![cfg(any(target_os = "windows", target_os = "linux"))]
 
 use molt_proof_supervisor::{
-    ClosureMode, FixedImage, POLICY_SCHEMA, Policy, Receipt, RootExitDisposition, sha256_file,
+    ClosureMode, FixedImage, ImageClass, POLICY_SCHEMA, Policy, ProcessEvent, Receipt,
+    RootExitDisposition, sha256_file,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -43,6 +44,100 @@ fn declared_tree_accepts_a_fixed_descendant_image() {
         receipt.accounting.observed_process_creates,
         receipt.accounting.observed_process_exits
     );
+}
+
+#[test]
+fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
+    let directory = unique_directory();
+    fs::create_dir_all(&directory).unwrap();
+    let runtime = directory.join(if cfg!(windows) {
+        "fixture-runtime.exe"
+    } else {
+        "fixture-runtime"
+    });
+    fs::copy(&binary, &runtime).unwrap();
+    let policy_path = directory.join("inventory-policy.json");
+    let receipt_path = directory.join("inventory-receipt.json");
+    let mut policy = Policy {
+        schema: POLICY_SCHEMA.to_owned(),
+        nonce: format!(
+            "{:032x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ),
+        mode: ClosureMode::InventoryTree,
+        cwd: std::env::current_dir().unwrap(),
+        command: vec![
+            binary.display().to_string(),
+            "fixture-child".to_owned(),
+            "spawn-and-wait".to_owned(),
+            runtime.display().to_string(),
+        ],
+        environment: BTreeMap::new(),
+        root_role: "fixture-launcher".to_owned(),
+        fixed_images: vec![FixedImage {
+            role: "fixture-launcher".to_owned(),
+            path: binary.clone(),
+            sha256: sha256_file(&binary).unwrap(),
+            root_exit_disposition: RootExitDisposition::RequireExit,
+        }],
+        derived_roots: vec![],
+    };
+    fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    let rejected = Command::new(&binary)
+        .args(["run", "--policy"])
+        .arg(&policy_path)
+        .arg("--receipt")
+        .arg(&receipt_path)
+        .status()
+        .unwrap();
+    assert_eq!(rejected.code(), Some(2));
+    assert!(!receipt_path.exists());
+    let status = Command::new(&binary)
+        .args(["inventory", "--policy"])
+        .arg(&policy_path)
+        .arg("--receipt")
+        .arg(&receipt_path)
+        .status()
+        .unwrap();
+    let receipt: Receipt = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    assert!(status.success(), "{receipt:#?}");
+    assert!(receipt.complete, "{receipt:#?}");
+    assert!(receipt.violations.is_empty(), "{receipt:#?}");
+    let event_file = receipt_path.with_file_name(&receipt.event_log.as_ref().unwrap().file);
+    let runtime = fs::canonicalize(&runtime).unwrap();
+    let observed_runtime = fs::read_to_string(event_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<ProcessEvent>(line).unwrap())
+        .filter_map(|event| event.image)
+        .any(|image| image.path == runtime && image.class == ImageClass::Unknown);
+    assert!(observed_runtime, "inventory omitted {}", runtime.display());
+
+    policy.mode = ClosureMode::DeclaredTree;
+    policy.fixed_images.push(FixedImage {
+        role: "fixture-runtime".to_owned(),
+        path: runtime,
+        sha256: sha256_file(&binary).unwrap(),
+        root_exit_disposition: RootExitDisposition::RequireExit,
+    });
+    let sealed_policy_path = directory.join("sealed-policy.json");
+    let sealed_receipt_path = directory.join("sealed-receipt.json");
+    fs::write(&sealed_policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    let status = Command::new(&binary)
+        .args(["run", "--policy"])
+        .arg(&sealed_policy_path)
+        .arg("--receipt")
+        .arg(&sealed_receipt_path)
+        .status()
+        .unwrap();
+    let sealed: Receipt = serde_json::from_slice(&fs::read(&sealed_receipt_path).unwrap()).unwrap();
+    assert!(status.success(), "{sealed:#?}");
+    assert!(sealed.complete, "{sealed:#?}");
+    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]

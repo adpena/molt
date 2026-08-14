@@ -7,13 +7,16 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
+import tempfile
 import time
 from typing import Mapping, Sequence
 
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
+from tools.proof_queue_pkg import process_image_capture
 
 
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -62,7 +65,8 @@ def _supervisor_fixed_images(
     platform_process_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[str, list[dict[str, str]]]:
     root = os.path.normcase(os.path.abspath(execution_command[0]))
-    images: dict[str, dict[str, str]] = {}
+    identities: dict[str, tuple[str, str]] = {}
+    images: dict[tuple[str, str], dict[str, str]] = {}
 
     def add(
         role: str,
@@ -90,18 +94,16 @@ def _supervisor_fixed_images(
         row = {"role": role, "path": str(path), "sha256": raw_digest}
         if disposition != "require-exit":
             row["root_exit_disposition"] = disposition
-        prior = images.get(key)
-        if prior is not None and prior["sha256"] != raw_digest:
+        identity = (raw_digest, disposition)
+        prior_identity = identities.get(key)
+        if prior_identity is not None and prior_identity[0] != raw_digest:
             raise ValueError(f"supervisor image has conflicting identities: {path}")
-        if (
-            prior is not None
-            and prior.get("root_exit_disposition", "require-exit") != disposition
-        ):
+        if prior_identity is not None and prior_identity[1] != disposition:
             raise ValueError(
                 f"supervisor image has conflicting root-exit dispositions: {path}"
             )
-        if prior is None:
-            images[key] = row
+        identities[key] = identity
+        images[(key, role)] = row
 
     root_path = Path(os.path.abspath(execution_command[0]))
     if not root_path.is_file():
@@ -110,19 +112,13 @@ def _supervisor_fixed_images(
     for name, raw in toolchains.items():
         if not isinstance(raw, Mapping):
             continue
-        add(str(name), raw.get("executable"), raw.get("executable_sha256"))
-        add(str(name), raw.get("path"), raw.get("launcher_sha256"))
-        add(str(name), raw.get("content_path"), raw.get("executable_sha256"))
-        process_images = raw.get("process_images")
-        if isinstance(process_images, list):
-            for image in process_images:
-                if isinstance(image, Mapping):
-                    add(
-                        str(image.get("role") or name),
-                        image.get("path"),
-                        image.get("sha256"),
-                        image.get("root_exit_disposition"),
-                    )
+        for image in process_image_capture.toolchain_images(str(name), raw):
+            add(
+                str(image["role"]),
+                image["path"],
+                image["sha256"],
+                image.get("root_exit_disposition"),
+            )
     for name, raw in environment_executables.items():
         if not isinstance(raw, Mapping):
             continue
@@ -136,10 +132,9 @@ def _supervisor_fixed_images(
             image.get("sha256"),
             image.get("root_exit_disposition"),
         )
-    root_image = images.get(root)
-    if root_image is None:
+    if root not in identities:
         raise ValueError("supervisor policy has no captured root executable image")
-    return root_image["role"], [images[key] for key in sorted(images)]
+    return "root-command", [images[key] for key in sorted(images)]
 
 
 def _supervisor_derived_roots(
@@ -281,6 +276,159 @@ def _validated_supervisor_receipt(
     if not isinstance(receipt, dict):
         raise ValueError("native proof supervisor receipt is not an object")
     return receipt
+
+
+def capture_process_image_inventory(
+    *,
+    binary: Path,
+    role: str,
+    executable: Path,
+    probe_args: Sequence[str],
+    cwd: Path,
+    env: Mapping[str, str],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Observe one bounded toolchain probe without granting proof authority."""
+
+    if not probe_args or not all(
+        isinstance(value, str) and value for value in probe_args
+    ):
+        raise ValueError("process-image probe arguments must be non-empty strings")
+    launcher = process_image_capture.capture_image(
+        f"{role}-launcher", executable, preserve_path=True
+    )
+    command = [str(executable.resolve(strict=True)), *probe_args]
+    with tempfile.TemporaryDirectory(prefix="molt-process-image-inventory-") as raw:
+        root = Path(raw).resolve()
+        policy_path = root / "policy.json"
+        receipt_path = root / "receipt.json"
+        policy = {
+            "schema": "molt.proof-process-closure.v2",
+            "nonce": secrets.token_hex(32),
+            "mode": "inventory-tree",
+            "cwd": str(cwd.resolve(strict=True)),
+            "command": command,
+            "environment": dict(
+                sorted(env.items(), key=lambda item: item[0].casefold())
+            ),
+            "root_role": launcher["role"],
+            "fixed_images": [
+                {
+                    "role": launcher["role"],
+                    "path": launcher["path"],
+                    "sha256": launcher["sha256"],
+                }
+            ],
+            "derived_roots": [],
+        }
+        _atomic_json(policy_path, policy)
+        completed = command_identity._run_captured(
+            (
+                str(binary),
+                "inventory",
+                "--policy",
+                str(policy_path),
+                "--receipt",
+                str(receipt_path),
+            ),
+            cwd=cwd,
+            env=env,
+            timeout=30.0,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            if receipt_path.is_file():
+                try:
+                    failed_receipt = json.loads(
+                        receipt_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    failed_receipt = None
+                if isinstance(failed_receipt, Mapping):
+                    diagnostics = [
+                        str(value)
+                        for field in ("errors", "violations")
+                        for value in failed_receipt.get(field, [])
+                    ]
+                    if diagnostics:
+                        detail = "; ".join(diagnostics)
+            raise ValueError(
+                f"{role} process-image inventory failed: {detail or completed.returncode}"
+            )
+        receipt = _validated_supervisor_receipt(
+            binary=binary,
+            policy_path=policy_path,
+            receipt_path=receipt_path,
+            cwd=cwd,
+            env=env,
+        )
+        if (
+            receipt.get("complete") is not True
+            or receipt.get("state") != "COMPLETE"
+            or receipt.get("root_exit_code") != 0
+            or receipt.get("errors") != []
+            or receipt.get("violations") != []
+        ):
+            raise ValueError(f"{role} process-image inventory is incomplete")
+        descriptor = receipt.get("event_log")
+        if not isinstance(descriptor, Mapping):
+            raise ValueError(f"{role} process-image inventory has no event log")
+        file_name = descriptor.get("file")
+        if not isinstance(file_name, str) or Path(file_name).name != file_name:
+            raise ValueError(f"{role} process-image inventory event path is invalid")
+        event_path = receipt_path.with_name(file_name).resolve(strict=True)
+        rows: list[dict[str, object]] = []
+        launcher_path = Path(str(launcher["path"]))
+        for line in event_path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{role} process-image inventory event is malformed"
+                ) from exc
+            image = event.get("image") if isinstance(event, Mapping) else None
+            if not isinstance(image, Mapping):
+                continue
+            raw_path = image.get("path")
+            digest = image.get("sha256")
+            size = image.get("size_bytes")
+            if (
+                not isinstance(raw_path, str)
+                or not isinstance(digest, str)
+                or not isinstance(size, int)
+            ):
+                raise ValueError(
+                    f"{role} process-image inventory identity is malformed"
+                )
+            observed = Path(raw_path)
+            try:
+                is_launcher = observed.samefile(launcher_path)
+            except OSError as exc:
+                raise ValueError(
+                    f"{role} process-image inventory image is unavailable: {observed}"
+                ) from exc
+            captured = process_image_capture.capture_image(
+                f"{role}-launcher" if is_launcher else f"{role}-runtime",
+                observed,
+            )
+            if captured["sha256"] != digest or captured["size_bytes"] != size:
+                raise ValueError(
+                    f"{role} process-image inventory changed before capture: {observed}"
+                )
+            rows.append(captured)
+        images = process_image_capture.canonical_images(rows)
+        if not any(
+            Path(str(image["path"])).samefile(launcher_path) for image in images
+        ):
+            raise ValueError(f"{role} process-image inventory omitted its launcher")
+        telemetry = {
+            "schema": "molt.proof-process-image-inventory.v1",
+            "probe_argv_sha256": _canonical_payload_sha256(command),
+            "stdout_sha256": hashlib.sha256(completed.stdout.encode()).hexdigest(),
+            "stderr_sha256": hashlib.sha256(completed.stderr.encode()).hexdigest(),
+            "observed_image_count": len(images),
+            "receipt_identity_sha256": receipt.get("identity_sha256"),
+        }
+        return images, telemetry
 
 
 def _publish_supervisor_event_artifact(
