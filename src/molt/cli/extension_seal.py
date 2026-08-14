@@ -30,6 +30,10 @@ from molt.cli.source_extensions import (
     source_extension_manifest_runtime_python_imports,
     source_extension_manifest_source_path,
 )
+from molt.cli.source_extension_link_requirements import (
+    materialize_source_extension_link_requirements,
+    parse_source_extension_link_requirements,
+)
 from molt.cli.target_python import _parse_target_python_version
 from molt.wasm_artifact import read_wasm_function_exports
 
@@ -354,8 +358,7 @@ def _canonicalize_runtime_python_import_modules(
             "extension seal cannot derive runtime_python_import_modules from a "
             "partial source scan. Re-run seal where every object_closure source "
             "resolves, or rebuild the extension manifest from source custody "
-            "before sealing. Unresolved sources: "
-            + "; ".join(errors[:3])
+            "before sealing. Unresolved sources: " + "; ".join(errors[:3])
         ]
     persisted.update(scanned)
     if persisted:
@@ -725,6 +728,39 @@ def extension_seal(
     output_root = Path(out_dir).expanduser()
     if not output_root.is_absolute():
         output_root = (Path.cwd() / output_root).absolute()
+    target_triple = sealed_manifest.get("target_triple")
+    assert isinstance(target_triple, str)
+    link_requirements, link_requirement_errors = (
+        parse_source_extension_link_requirements(
+            sealed_manifest,
+            expected_target_triple=target_triple,
+        )
+    )
+    if link_requirement_errors:
+        return _fail(
+            "; ".join(link_requirement_errors),
+            json_output,
+            command="extension-seal",
+        )
+    assert link_requirements is not None
+    materialized_link_requirements, link_materialization_errors = (
+        materialize_source_extension_link_requirements(
+            link_requirements,
+            package_root=source_package_root,
+            manifest_dir=manifest_path.parent,
+            publish_root=output_root / package,
+        )
+    )
+    if link_materialization_errors:
+        return _fail(
+            "; ".join(link_materialization_errors),
+            json_output,
+            command="extension-seal",
+        )
+    assert materialized_link_requirements is not None
+    sealed_manifest["link_requirements"] = (
+        materialized_link_requirements.manifest_payload()
+    )
     dest_artifact_rel = Path(*module_parts[:-1], artifact_path.name)
     dest_artifact_path = output_root / dest_artifact_rel
     _atomic_copy_file(artifact_path, dest_artifact_path)

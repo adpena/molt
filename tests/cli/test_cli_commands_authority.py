@@ -39,7 +39,6 @@ _COMMAND_AUTHORITIES = {
         "_extension_export_package",
         "_extension_manifest_public_exports",
         "_extension_source_text_by_path",
-        "_shared_library_defines_symbol",
         "_source_extension_compile_command_for_source",
         "_source_plan_abi_include_order",
         "_source_plan_include_paths_for_abi",

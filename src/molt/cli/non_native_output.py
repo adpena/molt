@@ -303,9 +303,7 @@ def _runtime_host_abi_import_names() -> set[str]:
     return {
         import_name
         for export_name in WASM_ESSENTIAL_EXPORTS
-        if (
-            import_name := _runtime_import_name_for_export_from_manifest(export_name)
-        )
+        if (import_name := _runtime_import_name_for_export_from_manifest(export_name))
         is not None
     }
 
@@ -579,6 +577,14 @@ def _wasm_static_link_native_artifact_inputs(
     return tuple(out)
 
 
+def _wasm_static_link_arguments(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        argument for artifact in artifacts for argument in artifact.link_arguments
+    )
+
+
 def _staged_artifacts_need_wasm_libc_link(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> bool:
@@ -622,6 +628,7 @@ def _external_native_artifact_fingerprint_inputs(
             artifact.staged_path,
             artifact.staged_manifest_path,
             *artifact.staged_support_paths,
+            *artifact.staged_link_input_paths,
         )
     )
 
@@ -699,6 +706,7 @@ def _prepare_non_native_build_result(
         ] = ()
         external_native_fingerprint_inputs: tuple[Path, ...] = ()
         wasm_static_link_native_inputs: tuple[Path, ...] = ()
+        wasm_static_link_arguments: tuple[str, ...] = ()
         app_export_contract: dict[str, object] | None = None
         if linked or _split_runtime:
             if app_export_contract_path is None:
@@ -708,9 +716,7 @@ def _prepare_non_native_build_result(
                     command="build",
                 )
             try:
-                app_export_contract = load_app_export_contract(
-                    app_export_contract_path
-                )
+                app_export_contract = load_app_export_contract(app_export_contract_path)
             except ValueError as exc:
                 return None, _fail(
                     f"Invalid frontend app export contract: {exc}",
@@ -729,6 +735,9 @@ def _prepare_non_native_build_result(
                         _wasm_static_link_native_artifact_inputs(
                             staged_external_native_artifacts
                         )
+                    )
+                    wasm_static_link_arguments = _wasm_static_link_arguments(
+                        staged_external_native_artifacts
                     )
                     external_native_fingerprint_inputs = (
                         _external_native_artifact_fingerprint_inputs(
@@ -899,11 +908,11 @@ def _prepare_non_native_build_result(
                 "--wasm-facts-scanner",
                 str(wasm_facts_scanner),
             ]
-            link_cmd.extend(
-                ["--app-export-contract", str(app_export_contract_path)]
-            )
+            link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
             for native_input in wasm_static_link_native_inputs:
                 link_cmd.extend(["--native-object", str(native_input)])
+            for native_link_argument in wasm_static_link_arguments:
+                link_cmd.extend(["--native-link-arg", native_link_argument])
             if _split_runtime:
                 if runtime_wasm is not None:
                     link_cmd.extend(["--deploy-runtime", str(runtime_wasm)])

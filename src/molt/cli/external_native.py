@@ -4,7 +4,9 @@ import ast
 import contextlib
 import json
 import os
+import platform
 import re
+import sys
 from functools import lru_cache
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
@@ -57,9 +59,12 @@ from molt.cli.source_extensions import (
     source_extension_manifest_runtime_python_imports,
 )
 from molt.cli.source_extension_link_requirements import (
+    SourceExtensionLinkInput,
+    SourceExtensionLinkRequirements,
     parse_source_extension_link_requirements,
     resolve_source_extension_link_arguments,
 )
+from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
 
@@ -1187,6 +1192,9 @@ def _validate_external_package_native_artifact(
     package: str,
     package_dir: Path,
     artifact_path: Path,
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
+    expected_target_triple: str,
 ) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
     errors: list[str] = []
     module_name = _external_extension_module_name(
@@ -1194,23 +1202,6 @@ def _validate_external_package_native_artifact(
         package_dir=package_dir,
         artifact_path=artifact_path,
     )
-    manifest_path = _find_external_extension_manifest(
-        artifact_path=artifact_path,
-        package_dir=package_dir,
-    )
-    if manifest_path is None:
-        return None, [
-            f"{package}: native artifact {artifact_path} is missing "
-            "extension_manifest.json sidecar"
-        ]
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, [f"{package}: invalid extension manifest {manifest_path}: {exc}"]
-    if not isinstance(manifest, dict):
-        return None, [
-            f"{package}: extension manifest {manifest_path} must be an object"
-        ]
     validation = _validate_extension_manifest(
         manifest,
         manifest_dir=manifest_path.parent,
@@ -1259,6 +1250,11 @@ def _validate_external_package_native_artifact(
             f"expected {expected_extension_sha}, got {actual_extension_sha}"
         )
     target_triple = _required_manifest_str(manifest, "target_triple", errors)
+    if target_triple and target_triple.lower() != expected_target_triple.lower():
+        errors.append(
+            f"{package}: native artifact target {target_triple!r} does not match "
+            f"requested target {expected_target_triple!r}"
+        )
     platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
     abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
     link_requirements, link_requirement_errors = (
@@ -1269,6 +1265,7 @@ def _validate_external_package_native_artifact(
     )
     errors.extend(f"{package}: {error}" for error in link_requirement_errors)
     link_arguments: tuple[str, ...] = ()
+    link_inputs: tuple[tuple[int, str, str, str], ...] = ()
     if link_requirements is not None:
         resolved_link_arguments, resolution_errors = (
             resolve_source_extension_link_arguments(
@@ -1279,7 +1276,11 @@ def _validate_external_package_native_artifact(
         )
         errors.extend(f"{package}: {error}" for error in resolution_errors)
         if resolved_link_arguments is not None:
-            link_arguments = resolved_link_arguments
+            link_arguments = link_requirements.arguments
+            link_inputs = tuple(
+                (item.argument_index, item.path, item.sha256, item.prefix)
+                for item in link_requirements.inputs
+            )
     provided_capsules = _manifest_str_tuple(manifest, "provided_capsules")
     required_capsules = _manifest_object_closure_required_capsules(manifest)
     capsule_requirement_errors = _validate_manifest_source_capsule_requirements(
@@ -1482,6 +1483,7 @@ def _validate_external_package_native_artifact(
             runtime_linkage=runtime_linkage,
             artifact_kind=artifact_kind,
             link_arguments=link_arguments,
+            link_inputs=link_inputs,
             support_file_sha256=support_file_sha256,
             provided_capsules=provided_capsules,
             required_capsules=required_capsules,
@@ -1572,6 +1574,49 @@ def _peek_external_artifact_callable_export_names(
     )
 
 
+def _load_external_artifact_manifest(
+    *,
+    artifact_path: Path,
+    package_dir: Path,
+) -> tuple[Path | None, Mapping[str, Any] | None, list[str]]:
+    manifest_path = _find_external_extension_manifest(
+        artifact_path=artifact_path,
+        package_dir=package_dir,
+    )
+    if manifest_path is None:
+        return (
+            None,
+            None,
+            [
+                f"native artifact {artifact_path} is missing extension_manifest.json sidecar"
+            ],
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return (
+            manifest_path,
+            None,
+            [f"invalid extension manifest {manifest_path}: {exc}"],
+        )
+    if not isinstance(manifest, Mapping):
+        return (
+            manifest_path,
+            None,
+            [f"extension manifest {manifest_path} must be an object"],
+        )
+    return manifest_path, manifest, []
+
+
+def _external_artifact_requested_target_triple(target: str) -> str:
+    return resolve_source_extension_target_plan(
+        target,
+        host_target_triple=_host_target_triple(),
+        host_platform=sys.platform,
+        host_arch=platform.machine(),
+    ).target_triple
+
+
 def _capsule_provider_errors(
     artifacts: Sequence[_ExternalPackageNativeArtifact],
 ) -> list[str]:
@@ -1609,19 +1654,15 @@ def _missing_capsule_requirements(
 
 def _close_external_native_capsule_provider_artifacts(
     artifacts: Sequence[_ExternalPackageNativeArtifact],
-    provider_candidates: Sequence[tuple[str, Path, Path, str]],
+    provider_candidates: Sequence[_ExternalPackageNativeArtifact],
+    mismatched_capsule_providers: Mapping[str, Collection[str]],
 ) -> tuple[tuple[_ExternalPackageNativeArtifact, ...] | None, list[str]]:
     selected = list(artifacts)
     selected_keys = {(artifact.package, artifact.path) for artifact in selected}
     remaining = {
-        (package, artifact_path): (
-            package,
-            package_dir,
-            artifact_path,
-            module_name,
-        )
-        for package, package_dir, artifact_path, module_name in provider_candidates
-        if (package, artifact_path) not in selected_keys
+        (artifact.package, artifact.path): artifact
+        for artifact in provider_candidates
+        if (artifact.package, artifact.path) not in selected_keys
     }
     while True:
         provider_errors = _capsule_provider_errors(selected)
@@ -1630,10 +1671,7 @@ def _close_external_native_capsule_provider_artifacts(
         missing = _missing_capsule_requirements(selected)
         if not missing:
             return tuple(selected), []
-        to_add: dict[
-            tuple[str, Path],
-            tuple[str, Path, Path, str, _ExternalPackageNativeArtifact],
-        ] = {}
+        to_add: dict[tuple[str, Path], _ExternalPackageNativeArtifact] = {}
         errors: list[str] = []
         for capsule, consumers in missing.items():
             consumer_modules = ", ".join(consumer.module for consumer in consumers)
@@ -1641,43 +1679,26 @@ def _close_external_native_capsule_provider_artifacts(
                 (consumer.runtime_linkage, consumer.target_triple.lower())
                 for consumer in consumers
             }
-            providers: list[
-                tuple[
-                    str,
-                    Path,
-                    Path,
-                    str,
-                    _ExternalPackageNativeArtifact,
-                ]
-            ] = []
+            providers: list[_ExternalPackageNativeArtifact] = []
             incompatible_providers: list[str] = []
-            for candidate in remaining.values():
-                package, package_dir, artifact_path, _module_name = candidate
-                if capsule not in _peek_external_artifact_provided_capsules(
-                    artifact_path=artifact_path,
-                    package_dir=package_dir,
-                ):
+            for provider in remaining.values():
+                if capsule not in provider.provided_capsules:
                     continue
-                provider, provider_errors = _validate_external_package_native_artifact(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                )
-                if provider_errors:
-                    return None, provider_errors
-                assert provider is not None
                 provider_key = (
                     provider.runtime_linkage,
                     provider.target_triple.lower(),
                 )
                 if provider_key in consumer_keys:
-                    providers.append((*candidate, provider))
+                    providers.append(provider)
                 else:
                     incompatible_providers.append(
                         f"{provider.module}={provider.runtime_linkage}/"
                         f"{provider.target_triple}"
                     )
             if not providers:
+                incompatible_providers.extend(
+                    mismatched_capsule_providers.get(capsule, ())
+                )
                 suffix = ""
                 if incompatible_providers:
                     suffix = "; incompatible provider artifact(s): " + ", ".join(
@@ -1694,7 +1715,9 @@ def _close_external_native_capsule_provider_artifacts(
                 )
                 continue
             if len(providers) > 1:
-                provider_names = ", ".join(sorted(item[3] for item in providers))
+                provider_names = ", ".join(
+                    sorted(provider.module for provider in providers)
+                )
                 errors.append(
                     "native capsule "
                     f"{capsule!r} required by {consumer_modules} has multiple "
@@ -1702,7 +1725,7 @@ def _close_external_native_capsule_provider_artifacts(
                 )
                 continue
             provider = providers[0]
-            to_add[(provider[0], provider[2])] = provider
+            to_add[(provider.package, provider.path)] = provider
         if errors:
             return None, errors
         if not to_add:
@@ -1710,9 +1733,9 @@ def _close_external_native_capsule_provider_artifacts(
                 "native capsule provider closure made no progress for "
                 + ", ".join(missing)
             ]
-        for package, _package_dir, artifact_path, _module_name, artifact in sorted(
+        for artifact in sorted(
             to_add.values(),
-            key=lambda item: (item[0], item[3], str(item[2])),
+            key=lambda item: (item.package, item.module, str(item.path)),
         ):
             selected.append(artifact)
             key = (artifact.package, artifact.path)
@@ -1724,6 +1747,7 @@ def _resolve_external_package_native_artifact_plan(
     *,
     external_module_roots: Sequence[Path],
     admitted_packages: Collection[str],
+    target: str,
     required_modules: Collection[str] | None = None,
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
     artifacts: list[_ExternalPackageNativeArtifact] = []
@@ -1737,7 +1761,7 @@ def _resolve_external_package_native_artifact_plan(
     if errors:
         return None, errors
     required = frozenset(required_modules) if required_modules is not None else None
-    provider_candidates: list[tuple[str, Path, Path, str]] = []
+    provider_candidates: list[_ExternalPackageNativeArtifact] = []
     required_package_roots = (
         {
             package
@@ -1752,8 +1776,12 @@ def _resolve_external_package_native_artifact_plan(
     package_root_providers: dict[str, set[str]] = {
         package: set() for package in required_package_roots
     }
-    selected_modules: set[tuple[str, str]] = set()
     provider_identities: dict[tuple[str, str], tuple[Path, str, str]] = {}
+    mismatched_provider_targets: dict[str, set[str]] = {
+        package: set() for package in required_package_roots
+    }
+    mismatched_capsule_providers: dict[str, set[str]] = {}
+    requested_target_triple = _external_artifact_requested_target_triple(target)
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
@@ -1765,76 +1793,109 @@ def _resolve_external_package_native_artifact_plan(
                     package_dir=package_dir,
                     artifact_path=artifact_path,
                 )
-                provider_candidates.append(
-                    (package, package_dir, artifact_path, module_name)
+                manifest_path, manifest, manifest_errors = (
+                    _load_external_artifact_manifest(
+                        artifact_path=artifact_path,
+                        package_dir=package_dir,
+                    )
                 )
-                manifest_path = _find_external_extension_manifest(
-                    artifact_path=artifact_path,
-                    package_dir=package_dir,
-                )
-                if manifest_path is not None:
-                    try:
-                        identity = (
-                            artifact_path.resolve(),
-                            _sha256_file(artifact_path),
-                            _sha256_file(manifest_path),
-                        )
-                    except OSError:
-                        identity = None
-                    if identity is not None:
-                        module_key = (package, module_name)
-                        previous = provider_identities.get(module_key)
-                        if previous is None:
-                            provider_identities[module_key] = identity
-                        elif previous[0] != identity[0] and previous[1:] != identity[1:]:
-                            errors.append(
-                                f"{package}: conflicting native artifact providers for "
-                                f"{module_name!r}: {previous[0]} "
-                                f"(artifact={previous[1]}, manifest={previous[2]}) vs "
-                                f"{identity[0]} (artifact={identity[1]}, "
-                                f"manifest={identity[2]}). Module-root order is not "
-                                "provider authority; publish one canonical package seal."
+                if manifest_errors:
+                    if (
+                        manifest_path is None
+                        and required is not None
+                        and not (
+                            _external_native_artifact_module_required(
+                                package=package,
+                                module_name=module_name,
+                                required_modules=required,
                             )
-                python_exports = _peek_external_artifact_python_exports(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                )
-                callable_exports = _peek_external_artifact_callable_export_names(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                )
-                provider_names = (
-                    module_name,
-                    *python_exports,
-                    *callable_exports,
-                )
-                module_key = (package, module_name)
-                if module_key in selected_modules:
+                        )
+                    ):
+                        continue
+                    errors.extend(f"{package}: {error}" for error in manifest_errors)
                     continue
+                assert manifest_path is not None
+                assert manifest is not None
+                artifact_target_triple = manifest.get("target_triple")
+                if (
+                    not isinstance(artifact_target_triple, str)
+                    or not artifact_target_triple.strip()
+                ):
+                    errors.append(
+                        f"{package}: extension manifest {manifest_path} has no "
+                        "target_triple authority"
+                    )
+                    continue
+                artifact_target_triple = artifact_target_triple.strip().lower()
+                if artifact_target_triple != requested_target_triple:
+                    if package in mismatched_provider_targets:
+                        mismatched_provider_targets[package].add(
+                            f"{module_name}={artifact_target_triple}"
+                        )
+                    runtime_linkage = manifest.get("runtime_linkage")
+                    linkage = (
+                        runtime_linkage.strip()
+                        if isinstance(runtime_linkage, str) and runtime_linkage.strip()
+                        else "<unknown>"
+                    )
+                    for capsule in _manifest_str_tuple(manifest, "provided_capsules"):
+                        mismatched_capsule_providers.setdefault(capsule, set()).add(
+                            f"{module_name}={linkage}/{artifact_target_triple}"
+                        )
+                    continue
+                artifact, artifact_errors = _validate_external_package_native_artifact(
+                    package=package,
+                    package_dir=package_dir,
+                    artifact_path=artifact_path,
+                    manifest_path=manifest_path,
+                    manifest=manifest,
+                    expected_target_triple=requested_target_triple,
+                )
+                errors.extend(artifact_errors)
+                if artifact is None:
+                    continue
+                module_key = (package, artifact.module)
+                identity = (
+                    artifact.path,
+                    artifact.extension_sha256,
+                    artifact.manifest_sha256,
+                )
+                previous = provider_identities.get(module_key)
+                if previous is not None:
+                    if previous[0] != identity[0] and previous[1:] != identity[1:]:
+                        errors.append(
+                            f"{package}: conflicting native artifact providers for "
+                            f"{artifact.module!r}: {previous[0]} "
+                            f"(artifact={previous[1]}, manifest={previous[2]}) vs "
+                            f"{identity[0]} (artifact={identity[1]}, "
+                            f"manifest={identity[2]}). Module-root order is not "
+                            "provider authority; publish one canonical package seal."
+                        )
+                    continue
+                provider_identities[module_key] = identity
+                provider_candidates.append(artifact)
+                provider_names = (
+                    artifact.module,
+                    *artifact.python_exports,
+                    *(
+                        f"{export.module}.{export.name}"
+                        for export in artifact.callable_exports
+                    ),
+                )
                 if package in package_root_providers:
                     package_root_providers[package].update(provider_names)
                 if (
                     required is not None
                     and not _external_native_artifact_module_required(
                         package=package,
-                        module_name=module_name,
+                        module_name=artifact.module,
                         required_modules=required,
                     )
-                    and not required.intersection(python_exports)
-                    and not required.intersection(callable_exports)
+                    and not required.intersection(artifact.python_exports)
+                    and not required.intersection(provider_names)
                 ):
                     continue
-                artifact, artifact_errors = _validate_external_package_native_artifact(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                )
-                errors.extend(artifact_errors)
-                if artifact is not None:
-                    artifacts.append(artifact)
-                    selected_modules.add(module_key)
+                artifacts.append(artifact)
     for package, providers in sorted(package_root_providers.items()):
         if any(
             _external_native_provider_reaches_required(
@@ -1845,13 +1906,15 @@ def _resolve_external_package_native_artifact_plan(
         ):
             continue
         provider_summary = ", ".join(sorted(providers)) or "<none>"
+        mismatched = ", ".join(sorted(mismatched_provider_targets[package]))
+        target_detail = f" Wrong-target candidates: {mismatched}." if mismatched else ""
         errors.append(
             f"{package}: required source-recompiled package import {package!r} "
             "has no manifest-symbol owner in admitted native artifacts. Child "
             "artifact modules are not package-root import custody; publish "
             f"{package!r} in python_exports before graph/backend admission. "
             "Candidate providers: "
-            f"{provider_summary}"
+            f"{provider_summary}.{target_detail}"
         )
     if errors:
         return None, errors
@@ -1859,6 +1922,7 @@ def _resolve_external_package_native_artifact_plan(
         _close_external_native_capsule_provider_artifacts(
             artifacts,
             provider_candidates,
+            mismatched_capsule_providers,
         )
     )
     if capsule_errors:
@@ -2123,6 +2187,7 @@ def _resolve_import_admission_policy(
             _resolve_external_package_native_artifact_plan(
                 external_module_roots=external_module_roots,
                 admitted_packages=packages,
+                target=target,
             )
         )
         if native_plan_errors:
@@ -2382,6 +2447,54 @@ def _stage_external_native_support_files(
     return tuple(staged_paths)
 
 
+def _stage_external_native_link_inputs(
+    artifact: _ExternalPackageNativeArtifact,
+    *,
+    runtime_root: Path,
+    package_source_root: Path,
+) -> tuple[Path, ...]:
+    staged_paths: list[Path] = []
+    for (
+        _argument_index,
+        relative_path,
+        expected_sha256,
+        _prefix,
+    ) in artifact.link_inputs:
+        relative = Path(relative_path)
+        candidates = (
+            artifact.manifest_path.parent / relative,
+            artifact.package_dir / relative,
+        )
+        source_path = next(
+            (candidate.resolve() for candidate in candidates if candidate.is_file()),
+            None,
+        )
+        if source_path is None:
+            raise OSError(
+                "External native link input disappeared after plan resolution: "
+                f"{relative_path}"
+            )
+        package_dir = artifact.package_dir.resolve()
+        if not (source_path == package_dir or source_path.is_relative_to(package_dir)):
+            raise OSError(
+                "External native link input escaped package custody after plan "
+                f"resolution: {source_path}"
+            )
+        staged_path = _external_staged_path_for_source(
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+            source_path=source_path,
+        )
+        _stage_external_native_required_file(
+            source_path=source_path,
+            staged_path=staged_path,
+            expected_sha256=expected_sha256,
+            label=f"link input {relative_path}",
+        )
+        staged_paths.append(staged_path)
+    return tuple(staged_paths)
+
+
 def _stage_external_package_native_artifacts_for_build(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan,
     *,
@@ -2425,6 +2538,33 @@ def _stage_external_package_native_artifacts_for_build(
             runtime_root=runtime_root,
             package_source_root=package_source_root,
         )
+        staged_link_input_paths = _stage_external_native_link_inputs(
+            artifact,
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+        )
+        staged_link_arguments, staged_link_argument_errors = (
+            resolve_source_extension_link_arguments(
+                SourceExtensionLinkRequirements(
+                    target_triple=artifact.target_triple,
+                    arguments=artifact.link_arguments,
+                    inputs=tuple(
+                        SourceExtensionLinkInput(
+                            argument_index=argument_index,
+                            path=path,
+                            sha256=sha256,
+                            prefix=prefix,
+                        )
+                        for argument_index, path, sha256, prefix in artifact.link_inputs
+                    ),
+                ),
+                package_root=runtime_root,
+                manifest_dir=staged_manifest_path.parent,
+            )
+        )
+        if staged_link_argument_errors:
+            raise OSError("; ".join(staged_link_argument_errors))
+        assert staged_link_arguments is not None
         staged_artifacts.append(
             _StagedExternalPackageNativeArtifact(
                 package=artifact.package,
@@ -2444,7 +2584,9 @@ def _stage_external_package_native_artifacts_for_build(
                 init_symbol=artifact.init_symbol,
                 runtime_linkage=artifact.runtime_linkage,
                 artifact_kind=artifact.artifact_kind,
-                link_arguments=artifact.link_arguments,
+                link_arguments=staged_link_arguments,
+                link_inputs=artifact.link_inputs,
+                staged_link_input_paths=staged_link_input_paths,
                 support_file_sha256=artifact.support_file_sha256,
                 provided_capsules=artifact.provided_capsules,
                 required_capsules=artifact.required_capsules,
@@ -2492,8 +2634,7 @@ def _external_native_artifact_output_custody_error(
         if linkage_mismatches:
             return (
                 "External static package native binary output requires "
-                "static_link static_archive artifacts: "
-                + ", ".join(linkage_mismatches)
+                "static_link static_archive artifacts: " + ", ".join(linkage_mismatches)
             )
         return None
     if output_layout.is_wasm and output_layout.linked:

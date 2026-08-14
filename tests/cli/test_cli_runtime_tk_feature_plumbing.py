@@ -1211,14 +1211,16 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         source_root: Path,
         source_fingerprint: dict[str, object],
         stdlib_obj_path: Path | None = None,
-        export_molt_runtime_symbols: bool = False,
+        external_static_archives: tuple[Path, ...] = (),
+        external_link_arguments: tuple[str, ...] = (),
         bolt_requested: bool = False,
     ) -> SimpleNamespace:
         del output_obj, stub_path, target_triple, sysroot_path, profile
         del source_root, source_fingerprint
         del stdlib_obj_path
         del bolt_requested
-        assert not export_molt_runtime_symbols
+        assert not external_static_archives
+        assert not external_link_arguments
         captured_runtime_libs.append(runtime_lib)
         return SimpleNamespace(
             command=("clang", str(runtime_lib), "-o", str(output_binary)),

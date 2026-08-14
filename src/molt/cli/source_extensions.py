@@ -134,12 +134,13 @@ class _SourceExtensionObjectClosure:
     init_symbol: str
     init_symbol_owner: _SourceExtensionObjectFact
     objects: tuple[_SourceExtensionObjectFact, ...]
-    runtime_symbols: tuple[str, ...]
+    undefined_symbols: tuple[str, ...]
     closure_sha256: str
 
     def manifest_payload(
         self,
         *,
+        runtime_symbols: Sequence[str] | None = None,
         required_c_api_by_source: Mapping[Path, Sequence[str]] | None = None,
         required_capsules_by_source: Mapping[Path, Sequence[str]] | None = None,
         project_generated_c_api_by_source: Mapping[Path, Sequence[str]] | None = None,
@@ -161,14 +162,12 @@ class _SourceExtensionObjectClosure:
             "init_symbol_owner": self.init_symbol_owner.object_path.name,
             "closure_sha256": self.closure_sha256,
             "defined_symbols": sorted(
-                {
-                    symbol
-                    for fact in self.objects
-                    for symbol in fact.defined_symbols
-                }
+                {symbol for fact in self.objects for symbol in fact.defined_symbols}
             ),
-            "undefined_symbols": list(self.runtime_symbols),
-            "runtime_symbols": list(self.runtime_symbols),
+            "undefined_symbols": list(self.undefined_symbols),
+            "runtime_symbols": list(
+                self.undefined_symbols if runtime_symbols is None else runtime_symbols
+            ),
             "required_capsules": required_capsules,
             "project_generated_c_api_prefixes": list(
                 sorted(project_generated_c_api_prefixes)
@@ -220,9 +219,7 @@ class _SourceExtensionCAPIRequirements:
                 for path, symbols in self.required_by_source.items()
             },
             required_capsules_by_source=self.required_capsules_by_source,
-            project_generated_c_api_by_source=(
-                self.project_generated_c_api_by_source
-            ),
+            project_generated_c_api_by_source=(self.project_generated_c_api_by_source),
             project_generated_c_api_prefixes=self.project_generated_c_api_prefixes,
             project_defined_symbols=self.project_defined_symbols,
             missing_symbols=tuple(
@@ -840,8 +837,7 @@ def _meson_target_archive_basenames(target: Mapping[str, Any]) -> set[str]:
     return {
         base
         for value in (raw if isinstance(raw, list) else (raw,))
-        if isinstance(value, str)
-        and (base := Path(value.replace("\\", "/")).name)
+        if isinstance(value, str) and (base := Path(value.replace("\\", "/")).name)
     }
 
 
@@ -1045,6 +1041,7 @@ def _meson_linked_static_library_targets(
                 break
     return linked
 
+
 def _filter_meson_source_group_to_existing(
     group: Mapping[str, Any],
     *,
@@ -1192,6 +1189,7 @@ def _load_meson_intro_targets_source_extension_plan(
     # object closure (recorded as runtime_symbols), so they resolve against the
     # primary extension's exported definitions at final link — the same thin
     # shape ``scipy.ndimage._nd_image`` already relies on for numpy's C-API.
+    excluded: set[str] = set()
     if excluded_linked_static_libraries:
         excluded = {name.strip().lower() for name in excluded_linked_static_libraries}
 
@@ -1215,6 +1213,18 @@ def _load_meson_intro_targets_source_extension_plan(
             for linked_target in linked_static_targets
             if not (_target_archive_names(linked_target) & excluded)
         ]
+    link_args = tuple(
+        arg
+        for arg in _meson_link_args(target)
+        if not (
+            excluded
+            & {
+                Path(arg).name.lower(),
+                Path(arg).stem.lower(),
+                Path(arg).stem.removeprefix("lib").lower(),
+            }
+        )
+    )
     folded_static_archives = tuple(
         sorted(
             {
@@ -1498,7 +1508,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_units=tuple(compile_units),
         include_dirs=_dedupe_paths(include_dirs),
         compile_args=tuple(compile_args),
-        link_args=_meson_link_args(target),
+        link_args=link_args,
         folded_static_archives=folded_static_archives,
         digest="",
     )
@@ -1544,9 +1554,7 @@ def _coerce_plan_string_sequence(value: Any) -> tuple[str, ...]:
         return (stripped,) if stripped else ()
     if isinstance(value, (list, tuple)):
         return tuple(
-            item.strip()
-            for item in value
-            if isinstance(item, str) and item.strip()
+            item.strip() for item in value if isinstance(item, str) and item.strip()
         )
     return ()
 
@@ -2448,9 +2456,7 @@ def canonicalize_source_extension_manifest_required_capsules(
         if not isinstance(value, list):
             return set()
         return {
-            item.strip()
-            for item in value
-            if isinstance(item, str) and item.strip()
+            item.strip() for item in value if isinstance(item, str) and item.strip()
         }
 
     required_capsules = string_set(object_closure.get("required_capsules"))
@@ -2866,8 +2872,7 @@ def _source_extension_closure_digest(
                 "compile_command": list(fact.compile_command),
                 "symbol_command": list(fact.symbol_command),
                 "dependencies": [
-                    dependency.manifest_payload()
-                    for dependency in fact.dependencies
+                    dependency.manifest_payload() for dependency in fact.dependencies
                 ],
             }
             for fact in objects
@@ -2904,7 +2909,7 @@ def _compute_source_extension_object_closure(
 
     included: set[Path] = set()
     pending: list[_SourceExtensionObjectFact] = [init_owners[0]]
-    runtime_symbols: set[str] = set()
+    undefined_symbols: set[str] = set()
     while pending:
         fact = pending.pop()
         if fact.object_path in included:
@@ -2913,7 +2918,7 @@ def _compute_source_extension_object_closure(
         for symbol in fact.undefined_symbols:
             symbol_owners = owners.get(symbol)
             if not symbol_owners:
-                runtime_symbols.add(symbol)
+                undefined_symbols.add(symbol)
                 continue
             if len(symbol_owners) != 1:
                 owner_names = ", ".join(
@@ -2932,18 +2937,18 @@ def _compute_source_extension_object_closure(
     closure_objects = tuple(
         fact for fact in object_facts if fact.object_path in included
     )
-    runtime_symbols_sorted = tuple(sorted(runtime_symbols))
+    undefined_symbols_sorted = tuple(sorted(undefined_symbols))
     closure_sha256 = _source_extension_closure_digest(
         init_symbol=init_symbol,
         objects=closure_objects,
-        runtime_symbols=runtime_symbols_sorted,
+        runtime_symbols=undefined_symbols_sorted,
     )
     return (
         _SourceExtensionObjectClosure(
             init_symbol=init_symbol,
             init_symbol_owner=init_owners[0],
             objects=closure_objects,
-            runtime_symbols=runtime_symbols_sorted,
+            undefined_symbols=undefined_symbols_sorted,
             closure_sha256=closure_sha256,
         ),
         [],

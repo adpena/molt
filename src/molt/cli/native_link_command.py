@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import functools
 import os
 from pathlib import Path
 import platform
-import re
 import shlex
 import sys
 from typing import Mapping, Sequence
@@ -159,21 +157,6 @@ def _resolve_native_linker_hint(
     return None
 
 
-@functools.lru_cache(maxsize=1)
-def _molt_c_api_export_names() -> tuple[str, ...]:
-    include_root = Path(__file__).resolve().parents[3] / "include" / "molt"
-    header_text: list[str] = []
-    for header_name in ("molt.h", "Python.h"):
-        try:
-            header_text.append((include_root / header_name).read_text(encoding="utf-8"))
-        except OSError:
-            continue
-    names = sorted(
-        set(re.findall(r"\bmolt_[A-Za-z0-9_]+(?=\s*\()", "\n".join(header_text)))
-    )
-    return tuple(names or ("molt_c_api_version",))
-
-
 def _build_native_link_driver_command(
     *,
     output_obj: Path | None,
@@ -286,7 +269,8 @@ def _build_native_link_plan(
     source_root: Path,
     source_fingerprint: Mapping[str, object],
     stdlib_obj_path: Path | None = None,
-    export_molt_runtime_symbols: bool = False,
+    external_static_archives: Sequence[Path] = (),
+    external_link_arguments: Sequence[str] = (),
     bolt_requested: bool = False,
     host_platform: str | None = None,
     host_arch: str | None = None,
@@ -341,33 +325,62 @@ def _build_native_link_plan(
         keep_symbols=os.environ.get("MOLT_KEEP_SYMBOLS") == "1",
         bolt_requested=bolt_requested,
     )
+    try:
+        resolved_external_archives = tuple(
+            archive.resolve(strict=True) for archive in external_static_archives
+        )
+    except OSError as exc:
+        raise RuntimeError(f"External static archive is unavailable: {exc}") from exc
     runtime_lib_str = str(runtime_lib)
     if target.object_format is NativeObjectFormat.ELF:
         link_inputs.extend(
             [
                 "-Wl,--start-group",
+                *[str(archive) for archive in resolved_external_archives],
                 runtime_lib_str,
                 "-Wl,--end-group",
+                *external_link_arguments,
                 "-o",
                 str(output_binary),
             ]
         )
     elif target.object_format is NativeObjectFormat.COFF:
-        link_inputs.extend([runtime_lib_str, "-o", str(output_binary)])
+        link_inputs.extend(
+            [
+                *[
+                    f"-Wl,/WHOLEARCHIVE:{archive}"
+                    for archive in resolved_external_archives
+                ],
+                runtime_lib_str,
+                *external_link_arguments,
+                "-o",
+                str(output_binary),
+            ]
+        )
     else:
         # ld64 has no ELF-style archive group.  Preserve its explicit second
         # archive pass until the Mach-O runtime is represented as one acyclic
         # archive graph or a measured -force_load policy replaces it.
-        link_inputs.extend([runtime_lib_str, runtime_lib_str, "-o", str(output_binary)])
+        link_inputs.extend(
+            [
+                *[
+                    f"-Wl,-force_load,{archive}"
+                    for archive in resolved_external_archives
+                ],
+                runtime_lib_str,
+                runtime_lib_str,
+                *external_link_arguments,
+                "-o",
+                str(output_binary),
+            ]
+        )
     link_cmd.extend(link_inputs)
 
     if target.object_format is NativeObjectFormat.MACHO:
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
         exported_symbols = ["_main"]
-        if export_molt_runtime_symbols:
-            exported_symbols.extend(f"_{name}" for name in _molt_c_api_export_names())
+        if resolved_external_archives:
             for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
-                exported_symbols.extend((f"_{canonical}", f"_{storage}"))
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
         _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{exported_symbols_path}")
@@ -380,28 +393,25 @@ def _build_native_link_plan(
             link_cmd.append("-Wl,--emit-relocs")
         version_script_path = output_binary.parent / ".molt_version.ver"
         globals = "main;"
-        if export_molt_runtime_symbols:
+        if resolved_external_archives:
             singleton_globals = " ".join(
                 f"{canonical}; {storage};"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
             )
-            globals = f"main; molt_*; {singleton_globals}"
+            globals = f"main; {singleton_globals}"
             link_cmd.extend(
                 f"-Wl,--defsym={canonical}={storage}"
                 for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
             )
         _atomic_write_text(version_script_path, f"{{ global: {globals} local: *; }};\n")
         link_cmd.append(f"-Wl,--version-script={version_script_path}")
-        if export_molt_runtime_symbols:
-            link_cmd.append("-Wl,--export-dynamic")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
     elif target.object_format is NativeObjectFormat.COFF:
-        if export_molt_runtime_symbols:
+        if resolved_external_archives:
             def_path = output_binary.parent / ".molt_exports.def"
             exports = "\n".join(
                 (
-                    *_molt_c_api_export_names(),
                     *(
                         f"{canonical}={storage}"
                         for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
