@@ -60,7 +60,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (22)
+### large_source_file (21)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -73,7 +73,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4609 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4577 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/typeobj.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4313 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3210 lines (ceiling 2500) | `tools/memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2956 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2955 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2896 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
