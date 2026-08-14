@@ -20,8 +20,10 @@ deterministic regression that the divergence logic itself is correct.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +34,75 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "tests"), str(_REPO_ROOT / "src")):
 
 import molt_diff  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
+
+
+_COMPAT_GUARD_PHASES = (
+    "MOLT_COMPAT_WASM_BUILD",
+    "MOLT_COMPAT_WASM_RUN",
+    "MOLT_COMPAT_LLVM_BUILD",
+    "MOLT_COMPAT_LLVM_RUN",
+    "MOLT_COMPAT_LUAU_BUILD",
+    "MOLT_COMPAT_LUAU_RUN",
+)
+
+
+@pytest.mark.parametrize("prefix", _COMPAT_GUARD_PHASES)
+def test_compat_backend_timeouts_use_shared_guard_authority(
+    prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import harness_memory_guard
+
+    captured: dict[str, object] = {}
+
+    def fake_guarded_completed_process(command, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, timed_out=False)
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    compat_backends._guarded_run(
+        ["noop"],
+        prefix=prefix,
+        env={f"{prefix}_TIMEOUT_SEC": "1234"},
+        timeout_default=60.0,
+    )
+    assert captured["prefix"] == prefix
+    assert captured["timeout"] == 1234.0
+
+
+def test_compat_backend_timeout_family_has_no_private_parser() -> None:
+    source = inspect.getsource(compat_backends)
+    assert "def _build_timeout(" not in source
+    for prefix in _COMPAT_GUARD_PHASES:
+        assert f'prefix="{prefix}"' in source
+
+
+def test_compat_backend_timeout_accepts_shared_process_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import harness_memory_guard
+
+    captured: dict[str, object] = {}
+
+    def fake_guarded_completed_process(command, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, timed_out=False)
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    compat_backends._guarded_run(
+        ["noop"],
+        prefix="MOLT_COMPAT_WASM_BUILD",
+        env={"MOLT_TEST_PROCESS_TIMEOUT_SEC": "1800"},
+        timeout_default=600.0,
+    )
+    assert captured["timeout"] == 1800.0
 
 
 # ---------------------------------------------------------------------------
